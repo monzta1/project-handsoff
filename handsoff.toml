@@ -1,0 +1,23 @@
+[project]
+name = "project-handsoff"
+status_file = "handsoff-status.json"
+acceptance_file = "handsoff-acceptance.json"
+event_log = "handsoff-events.jsonl"
+
+[workflow]
+max_design_rounds = 3
+max_review_rounds = 3
+stall_minutes = 10
+require_live_verification = true
+deployment_requires_explicit_approval = true
+
+[agents]
+supervisor = "configure-me"
+implementer = "configure-me"
+reviewer = "configure-me"
+
+[checks]
+# Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
+# Each criterion's evidence should point at one of these having run, not a
+# free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
+commands = []

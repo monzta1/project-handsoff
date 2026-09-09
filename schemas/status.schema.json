@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "required": ["feature", "phase_number", "phase", "progress", "status", "updated_at", "next_action", "events", "requirement_coverage"],
+  "properties": {
+    "feature": {"type": "string"},
+    "phase_number": {"type": "integer", "minimum": 1, "maximum": 8},
+    "phase": {"type": "string"},
+    "progress": {"type": "number", "minimum": 0, "maximum": 100},
+    "status": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "next_action": {"type": "string"},
+    "design_round": {"type": "integer", "minimum": 0},
+    "review_round": {"type": "integer", "minimum": 0},
+    "retry_count": {"type": "integer", "minimum": 0},
+    "implemented_by": {"type": ["string", "null"]},
+    "reviewed_by": {"type": ["string", "null"]},
+    "deployment_approved": {
+      "type": ["object", "null"],
+      "properties": {"at": {"type": "string"}, "by": {"type": "string"}}
+    },
+    "requirement_coverage": {
+      "type": "object",
+      "required": ["passing", "failing", "not_tested", "blocked", "original_symptom_resolved"],
+      "properties": {
+        "passing": {"type": "integer"}, "failing": {"type": "integer"},
+        "not_tested": {"type": "integer"}, "blocked": {"type": "integer"},
+        "original_symptom_resolved": {"type": "boolean"}
+      }
+    },
+    "events": {"type": "array"}
+  }
+}

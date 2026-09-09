@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.handsoff.lock
+handsoff-status.json
+handsoff-acceptance.json
+handsoff-events.jsonl

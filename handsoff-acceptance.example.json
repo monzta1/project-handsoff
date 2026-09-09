@@ -1,0 +1,16 @@
+{
+  "feature": "Describe the requested feature or bug fix",
+  "criteria": [
+    {
+      "id": "REQ-001",
+      "type": "primary_fix",
+      "requirement": "State the exact observable outcome.",
+      "verification": "unit_and_browser",
+      "tests": [
+        "name_or_path_of_test"
+      ],
+      "evidence": [],
+      "state": "failing"
+    }
+  ]
+}

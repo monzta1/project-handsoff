@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["feature", "criteria"],
+  "properties": {
+    "feature": {"type": "string"},
+    "criteria": {"type": "array", "items": {"type": "object", "required": ["id", "type", "requirement", "verification", "tests", "state"], "properties": {"id": {"type": "string"}, "type": {"enum": ["primary_fix", "supporting"]}, "requirement": {"type": "string"}, "verification": {"type": "string"}, "tests": {"type": "array"}, "evidence": {"type": "array"}, "state": {"enum": ["failing", "passing", "not_tested", "blocked"]}}}}
+  }
+}

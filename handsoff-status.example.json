@@ -1,0 +1,31 @@
+{
+  "feature": "Describe the requested feature or bug fix",
+  "phase_number": 1,
+  "phase": "Orient",
+  "progress": 10,
+  "status": "in_progress",
+  "updated_at": "",
+  "next_action": "Read the project rules and reproduce the original symptom.",
+  "review_round": 0,
+  "retry_count": 0,
+  "summary": "",
+  "reassurance": "",
+  "requirement_coverage": {
+    "passing": 0,
+    "failing": 1,
+    "not_tested": 0,
+    "blocked": 0,
+    "original_symptom_resolved": false
+  },
+  "reviewer_checklist": {
+    "symptom_reproduced": "not_verifiable",
+    "symptom_resolved": "not_verifiable",
+    "all_criteria_verified": "no",
+    "evidence_attached": "no"
+  },
+  "events": [],
+  "design_round": 0,
+  "implemented_by": null,
+  "reviewed_by": null,
+  "deployment_approved": null
+}
