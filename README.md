@@ -1,27 +1,49 @@
 # Project Handsoff
 
-Project Handsoff is a portable, domain-neutral delivery framework with three roles:
+Project Handsoff is a portable, domain-neutral delivery gate for a three-role workflow:
 
 ```text
 Supervisor -> Implementer -> Reviewer -> repair loop -> verified result
 ```
 
-The Supervisor owns state, phase gates, acceptance evidence, retries, and user escalation. The Implementer changes the target project. The Reviewer is read-only and independently checks the brief, diff, tests, and original symptom.
+The Supervisor owns state, phase gates, acceptance evidence, retries, and user escalation. The Implementer changes the target project. The Reviewer independently checks the brief, diff, tests, and original symptom. Handsoff makes their claims auditable; it deliberately does not treat a free-text status update as proof.
+
+MIT licensed, see [LICENSE](LICENSE).
 
 ## Quick start
 
-Copy `handsoff.toml`, `schemas/`, `prompts/`, and everything in `bin/` into a target project, then from that project's root:
+Copy `handsoff.toml`, `schemas/`, `prompts/`, `dashboard/`, and everything in `bin/` into a target project. Configure `[checks].commands` and `[checks].live_commands`, then initialize from the target project's root:
 
 ```bash
 python3 bin/handsoff_supervisor.py init "Fix the thing that is broken"
-python3 bin/handsoff_supervisor.py status
-python3 bin/handsoff_supervisor.py validate
-python3 bin/handsoff_supervisor.py advance 2 20
+python3 bin/handsoff_supervisor.py criterion-update REQ-001 --requirement "Exact observable outcome" --verification automated --test "pytest tests/test_fix.py -q"
 ```
 
-`init` scaffolds `handsoff-status.json` and `handsoff-acceptance.json` at the project root. Replace the acceptance registry's placeholder criterion with the real one(s) for this piece of work next. Every command resolves the project root itself: `--root DIR`, then `$HANDSOFF_ROOT`, then the nearest ancestor of the current directory that has a `handsoff.toml`, then the current directory. Run the commands from anywhere inside the project; you do not need to `cd` into `bin/`.
+`init` scaffolds `handsoff-status.json` and `handsoff-acceptance.json` at the project root. Use `criterion-update`, `criterion-add`, and `criterion-remove` instead of editing the registry by hand. Every command resolves the project root itself: `--root DIR`, then `$HANDSOFF_ROOT`, then the nearest ancestor with `handsoff.toml`, then the current directory.
 
-The framework is intentionally integration-neutral. Configure test commands, evidence paths, and workflow limits in `handsoff.toml`. It does not assume a language, tracker, hosting platform, or repository provider.
+Launch the read-only Mission Control dashboard from the target project:
+
+```bash
+python3 bin/handsoff_supervisor.py dashboard
+```
+
+It opens `http://127.0.0.1:8765`, refreshes automatically, and shows phase progress, acceptance coverage, audit integrity, evidence, activity, assigned roles, release readiness, and a plain-language Supervisor briefing. When the Supervisor records a user-dependent pause as `blocked`, or Phase 7 is waiting for deployment approval, a sticky red alert appears, the browser-tab title flashes, and optional desktop notifications identify the exact action required. It binds to localhost and exposes no write endpoints; the CLI remains the only state writer. Add `--no-open` to start the server without opening a browser, or `--port PORT` to choose another local port.
+
+The evidence-bearing part of a normal run looks like this:
+
+```bash
+python3 bin/handsoff_supervisor.py verify --criterion REQ-001 --by implementer-1
+python3 bin/handsoff_supervisor.py record-symptom-resolved --evidence vr-... --by implementer-1
+python3 bin/handsoff_supervisor.py record-review --by reviewer-1
+python3 bin/handsoff_supervisor.py deployment-gate --approve --by release-owner
+python3 bin/handsoff_supervisor.py verify-live --by production-monitor
+```
+
+`verify` and `verify-live` return the exact `vr-...` run id. Phase advances still happen one at a time with `advance PHASE PROGRESS`. The framework is integration-neutral: it does not assume a language, tracker, hosting platform, or repository provider.
+
+Each criterion declares one verification policy: `automated`, `manual`, `browser`, or `automated_and_browser`. An automated criterion's `tests` must exactly name commands in `[checks].commands`, and `verify` runs and judges only that criterion's own tests: an unrelated command elsewhere in `[checks].commands` can neither fail it nor satisfy it, and naming several criteria in one call still gives each its own independent evidence record. `[checks].commands` also decides run order: `verify` runs the union of needed commands in that configured order, not alphabetically. The combined policy requires both automated and browser evidence, and a criterion only reads as `passing` once every kind its policy requires has a valid record; one kind landing first leaves it `not_tested`, not a premature `passing`. Command output is shown to the caller but not persisted, only its SHA-256 digest and execution metadata enter the ledger, avoiding accidental secret retention. Each command has a configurable timeout (`[checks].timeout_seconds`, default 600s); a hanging check is killed and recorded as exit 124 instead of hanging the Supervisor.
+
+If an interrupted write ever leaves the ledgers out of sync with `handsoff-status.json` (see Known limitations), run `handsoff_supervisor.py doctor` (add `--dry-run` to preview). It recovers only the two specific, provably safe gaps a crash between writes can leave, and refuses, with a specific reason, on anything that looks like real tampering or an invalid resulting state.
 
 ## Eight phases
 
@@ -42,27 +64,38 @@ Every claim below is backed by a test in `tests/test_handsoff_supervisor.py`. Ru
 python3 tests/test_handsoff_supervisor.py -v
 ```
 
-- **The gate checks the state a call is about to write, not the state already on disk.** `advance` builds the proposed status in memory, validates that, and only writes it if the proposal passes. Phase 6 and beyond require every acceptance criterion `passing` and the original symptom marked resolved; 95%+ progress and a `ready_to_deploy`/`complete` status require the same.
-- **No self-approval.** Phase 6+ requires BOTH `implemented_by` and `reviewed_by` recorded, and they must differ. Leaving either unset blocks the transition; it is not enough to only check them when both happen to be filled in.
+- **The gate checks proposed state.** `advance` validates the state it is about to write. Progress cannot decrease, is bounded from 0–100, and the phase label must match the phase number.
+- **Passing means evidenced.** Phase 6+, 95%+ progress, and deployable/complete statuses require every criterion to reference a successful record in the hash-chained verification ledger. Each record is bound to the criterion specification, so changing the requirement invalidates its earlier evidence.
+- **Coverage is derived.** Passing/failing/not-tested/blocked totals must exactly match the acceptance registry. They cannot drift into a second, contradictory source of truth.
+- **No self-approval.** Phase 6+ requires an independent review record bound to the current acceptance hash, a complete reviewer checklist, an implementer identity, and a different reviewer identity.
 - **Deployment approval is load-bearing, not a side command you can skip.** `advance` to Phase 8 checks for a recorded approval; `deployment-gate --approve` is what records it, and refuses before Phase 7 so approval cannot be granted before an Implementer or Reviewer has touched anything. The approval is bound to a hash of the acceptance criteria at the moment it was given; if the registry changes afterward, the Phase 8 gate recomputes the hash and refuses the now-stale approval.
-- **The read-validate-write sequence is one locked operation, not three, in every command that writes.** `advance`, `deployment-gate`, `init`, and `verify` all hold the project lock across their reads, validation, and writes, including the event log append. Locking only the final write, or locking some write paths and not others, is how a race gets in: two concurrent `init` or `verify` calls used to fork the event log's hash chain and produce false tamper reports on lines nobody had touched.
+- **Live verified means live checked.** With `require_live_verification = true`, Phase 8 requires `[checks].live_commands` to pass after deployment approval and against the unchanged acceptance registry. `verify-live` re-reads `handsoff.toml` from disk after the checks finish, not the config it captured before starting them, so a policy change landing in that window (a slow live suite is exactly when this matters) is actually detected rather than compared against itself.
+- **Mutations are serialized.** `advance`, criterion mutations, evidence/review recording, deployment approval, and verification use the project lock. `verify` rechecks criterion hashes after long-running commands before attaching their results.
 - **A malformed hand-edit refuses cleanly, it does not crash.** `progress`, `design_round`, and `review_round` are type-checked before any gate logic casts them, including rejecting `NaN`/`Infinity` (valid JSON-extension floats that pass a plain `isinstance(x, float)` check and then crash `int()`/`float()` arithmetic). A bad value in a hand-edited status.json is reported as a validation error, not a raw Python traceback, in both `handsoff_supervisor.py` and `validate_handsoff_status.py`. Both scripts also catch any unexpected exception as a last resort, for the same reason.
 - **The acceptance hash behind a deployment approval ignores harmless reordering.** It sorts criteria by id first, so re-saving or merging `handsoff-acceptance.json` without changing any criterion's content does not falsely invalidate a still-valid approval.
 - **Round and stall limits are enforced, not decorative.** `design_round` and `review_round` past `handsoff.toml`'s `max_design_rounds`/`max_review_rounds` block further advancement. A run with no update past `stall_minutes` surfaces a `stall_warning` in `status` for escalation; this is advisory, not a hard block, so a stalled run can still be inspected and unstuck.
 - **Writes are atomic.** Every status write lands in a sibling temp file first, then replaces the real file; a process killed mid-write leaves the old file intact, never a truncated one.
-- **The event log is tamper-evident.** Each event is hash-chained to the one before it. `verify-log` walks the chain and reports exactly which line was edited or reordered, if any.
+- **The audit logs are tamper-evident and tail-anchored.** Events and verification records are separately hash-chained. A stored chain head detects edited, reordered, and deleted tail records. Every event also binds the exact status and acceptance file hashes, so an unlogged hand edit is detected; `verify-log` checks both ledgers and current state.
 - **`handsoff.toml` is actually read.** `status_file`, `acceptance_file`, `event_log`, the round/stall limits, and `[checks].commands` all come from the config, not hardcoded defaults, with sane defaults only when a key is absent.
-- **A criterion can point at something real.** `handsoff_supervisor.py verify` runs `[checks].commands` for real and reports each command's exit code and output hash, evidence that something executed, not a sentence someone typed into JSON.
+- **A criterion points at something real.** `verify` persists command, exit code, output hash, actor, timestamp, criterion id, and criterion-specification hash. Manual/browser evidence is an explicit named attestation through `record-evidence`, not an arbitrary string inserted into JSON.
+- **Identities and records are typed, not just present.** `implemented_by`, `reviewed_by`, and evidence-id fields must be non-empty strings or null; `review` and `deployment_approved` records must carry a non-empty `by`, a timezone-aware `at`, and an `acceptance_hash`, or the whole state is refused as malformed rather than partially trusted. `init`, `verify`, `record-evidence`, `record-review`, and `verify-live` all reject an empty or whitespace-only `--by`/feature/description before touching disk, so `init ""` cannot brick a project against reinitialization and no command can attach evidence to a blank actor.
+- **Evidence is structurally validated, not just cryptographically authenticated.** The hash chain proves a verification record was not altered after it was written; it says nothing about whether the record was ever real. Every loaded record, not only ones this CLI just wrote, is separately checked for a non-empty `by`, a recognized `kind`, a non-empty `criteria` list, and a boolean `ok`; a hand-crafted record that chains and hashes perfectly but claims an empty actor is still refused.
+- **`handsoff.toml`'s governance settings are in the chain of trust.** `deployment_requires_explicit_approval`, `require_live_verification`, and the round/stall limits are hashed into every review, deployment-approval, and live-verification record at the moment it is granted. Changing one of those settings afterward invalidates the decisions bound to the old value, the same way changing the acceptance registry already did; `[checks].commands`/`live_commands` and the file paths are deliberately excluded from this hash so routine test-list edits do not need a fresh review.
+- **A configured state-file path cannot resolve outside the project root, symlinks included.** `handsoff.toml`'s `status_file`, `acceptance_file`, `event_log`, and `verification_log` are checked both as literal strings (no `..`, not absolute) and by resolving the real path and confirming it is still a descendant of the resolved project root, so a symlinked directory component cannot quietly redirect state outside the project.
 - **One validator, not two that can drift.** `handsoff_supervisor.py validate` and `validate_handsoff_status.py` both call the same `compute_errors()` in `handsoff_lib.py`.
+- **An interrupted cross-file write has a supported recovery path that cannot be used to launder a hand edit.** Every mutating command writes through one shared `commit()` in `handsoff_lib.py`, which journals the exact digest of what it is about to write *before* touching any file, then clears the journal once the describing event is durably appended. `doctor` (see Quick start) uses that journal, not gate-passing alone, to tell a real interrupted write apart from an untracked edit that merely happens to still validate: it closes the event-log gap only when the current status/acceptance content exactly matches a journal entry proving a real command intended it, and it patches a stale `verification_head` anchor (a value it derives itself from the authenticated ledger, never from file content) only when status has not otherwise drifted from the last logged event. A hand edit with no journal behind it is refused, even if it happens to pass every other gate; so is a journal-confirmed write whose content still fails validation. Anything else (a broken hash chain, a deleted tail) is reported and left for the operator to restore from version control or backup.
 
 ## Known limitations
 
 - **The advisory file lock is best-effort and POSIX-only.** `project_lock()` uses `fcntl.flock` around the whole read-validate-write; on a platform without `fcntl` it is a silent no-op, and multiple writers on such a platform can still race. Enforce single-writer discipline at the process level (only the Supervisor writes `handsoff-status.json`) if you need this on Windows.
-- **`schemas/*.json` document the expected shape; they are not executed.** The rules actually enforced at runtime are the hand-written checks in `handsoff_lib.py`'s `validate_status_schema`/`validate_acceptance_schema`, which cover the same required fields and enum values. Editing a schema file changes documentation, not behavior.
+- **`schemas/*.json` document the expected shape; they are not executed.** Runtime enforcement lives in `handsoff_lib.py`. Editing a schema file changes documentation, not behavior.
 - **A killed process can leave a stray temp file.** `atomic_write_json` cleans up its `.tmp<pid>` file on any ordinary exception, but a `SIGKILL` or power loss between the write and the atomic rename can still leave one behind. Harmless (the real file is never touched), just worth pruning occasionally.
 - **Stall detection reads `updated_at` on the status file**, not a live heartbeat. A process that hangs without ever calling `advance` again will correctly show as stalled; a process that is merely slow but still calling `advance` periodically will not.
 - **`verify` runs commands with `shell=True`.** `[checks].commands` is trusted configuration, the same trust level as any other line in `handsoff.toml`; do not populate it from untrusted input.
-- **The hash chain detects tampering, it does not prevent it.** Anyone with filesystem access can still delete the whole log, or delete and rewrite it consistently from scratch. It catches an edited or reordered record; it is not a substitute for real access control.
+- **Hash chains detect tampering; they do not provide access control.** A writer that can replace a ledger and its separate anchor can forge a new history. Protect the project directory and CI artifacts with normal filesystem/repository permissions.
+- **Cross-file commits are fail-safe, not transactional.** A crash between appending evidence and updating status leaves a chain-head mismatch that blocks delivery. It will not silently accept the half-commit; run `handsoff_supervisor.py doctor` to attempt recovery. `doctor` only closes the two journal-provable gaps described above: an event log or acceptance/status pair damaged by anything else (a broken hash chain, a deleted tail, hand-edited ledger lines, an edit with no write-ahead journal behind it) still requires restoring from version control or backup.
+- **`doctor` recovers ledger *anchoring*, not lost writes.** If the crash happened before a write reached disk at all (as opposed to after one write landed but before its companion write or event did), there is nothing to recover from; `doctor` will correctly report nothing wrong; get the missing information from the operator or agent that was mid-command.
+- **The write-ahead journal (`.handsoff-writeahead.json`) is a single, overwritten-per-command file, not a full log.** It only ever proves the *most recent* in-flight write, matching the project lock's one-writer-at-a-time discipline; it is not a history of past writes and is not meant to be. It is generated state, alongside the lock and chain-head files, and belongs in `.gitignore`.
 
 ## Agent roles
 
@@ -70,14 +103,27 @@ python3 tests/test_handsoff_supervisor.py -v
 - `prompts/implementer.md`: scoped implementation and repair instructions.
 - `prompts/reviewer.md`: independent, read-only verification rubric.
 
-These are prose instructions for whichever agent or person plays each role. `handsoff.toml`'s `[agents]` section names them for a human operator to configure a launch command against; nothing in `bin/` spawns a process from it today. If you wire that up, keep the constraint the prompts already assume: the Reviewer never writes to the target project.
+These are prose instructions for whichever agent runner or person plays each role. The `[agents]` values are adapter labels; the portable core intentionally does not assume a particular agent CLI. A host integration should launch the agents and require all state mutations to go through this command surface. The Reviewer reports findings; the Supervisor records an approved review with `record-review`.
 
 ## Import into another project
 
 1. Copy the framework files into the project.
-2. Run `handsoff_supervisor.py init "<feature>"`, then edit `handsoff-acceptance.json` to name the real criteria.
-3. Set `[checks].commands` in `handsoff.toml` to the project's actual test/check commands, and the round/stall limits if the defaults do not fit.
+2. Run `handsoff_supervisor.py init "<feature>"`, then use the criterion commands to define the acceptance registry.
+3. Set `[checks].commands` and `[checks].live_commands` to the project's pre-deployment and deployed-system checks.
 4. Start the Supervisor with the target issue or brief.
-5. Point any UI at `handsoff-status.json` for progress monitoring.
+5. Run `python3 bin/handsoff_supervisor.py dashboard` for local progress monitoring; treat the CLI as the writer.
 
 No project-specific work, credentials, hostnames, or tracker assumptions are included.
+
+## Self-hosting
+
+Using Handsoff to ship a change to Handsoff itself works, with one rule: never configure this repo's own root `handsoff.toml` with real `[checks].commands`/`live_commands`. That file is exactly what step 1 above copies into every target project verbatim; baking this repo's own dogfooding commands into it would ship them to everyone who imports it, and this repo's own test suite (`tests/test_handsoff_supervisor.py`) depends on it staying the pristine `commands = []` template too -- it fails loudly and explains why if that invariant is ever violated.
+
+Instead, track a self-hosting run from a separate, gitignored root with its own `handsoff.toml` (absolute paths in its `[checks]` commands, since it is not the repo root):
+
+```bash
+mkdir -p .handsoff-selfcheck
+echo ".handsoff-selfcheck/" >> .gitignore
+# write .handsoff-selfcheck/handsoff.toml with real commands, absolute paths
+cd .handsoff-selfcheck && python3 ../bin/handsoff_supervisor.py init "..."
+```

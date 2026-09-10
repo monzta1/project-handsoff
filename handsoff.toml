@@ -3,6 +3,7 @@ name = "project-handsoff"
 status_file = "handsoff-status.json"
 acceptance_file = "handsoff-acceptance.json"
 event_log = "handsoff-events.jsonl"
+verification_log = "handsoff-verifications.jsonl"
 
 [workflow]
 max_design_rounds = 3
@@ -21,3 +22,9 @@ reviewer = "configure-me"
 # Each criterion's evidence should point at one of these having run, not a
 # free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
 commands = []
+# Commands that verify the deployed system. Phase 8 is blocked until these
+# run successfully after deployment approval.
+live_commands = []
+# Per-command timeout. A hanging check is killed and recorded as exit 124
+# rather than hanging the Supervisor indefinitely.
+timeout_seconds = 600

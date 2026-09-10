@@ -27,5 +27,9 @@
   "design_round": 0,
   "implemented_by": null,
   "reviewed_by": null,
-  "deployment_approved": null
+  "review": null,
+  "deployment_approved": null,
+  "original_symptom_evidence_id": null,
+  "live_verification_id": null,
+  "verification_head": "GENESIS"
 }

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Handsoff Mission Control</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Handsoff Mission Control">
+        <span class="brand-mark">H<span>//</span>O</span>
+        <span class="brand-copy"><strong>HANDSOFF</strong><small>MISSION CONTROL</small></span>
+      </a>
+      <div class="topbar-meta">
+        <span class="connection"><i></i> LIVE</span>
+        <span id="last-sync">Connecting…</span>
+      </div>
+    </header>
+
+    <main id="dashboard" aria-live="polite">
+      <section id="empty-state" class="empty-state hidden">
+        <span class="empty-code">NO ACTIVE RUN</span>
+        <h1>Mission control is standing by.</h1>
+        <p id="empty-message">Initialize a Ship Feature in this project and the dashboard will pick it up automatically.</p>
+        <code>python3 bin/handsoff_supervisor.py init "Your feature"</code>
+      </section>
+
+      <div id="active-state" class="hidden">
+        <section class="mission-header">
+          <div>
+            <p class="eyebrow"><span id="project-name">PROJECT</span> / ACTIVE SHIP FEATURE</p>
+            <h1 id="feature-name">Loading current mission…</h1>
+            <p class="project-root" id="project-root"></p>
+          </div>
+          <div class="mission-state" id="mission-state">IN PROGRESS</div>
+        </section>
+
+        <section id="input-alert" class="input-alert hidden" role="alert" aria-live="assertive">
+          <div class="input-alert-beacon" aria-hidden="true"><span>!</span></div>
+          <div class="input-alert-copy">
+            <span>SHIP FEATURE PAUSED</span>
+            <h2>YOUR INPUT IS REQUIRED</h2>
+            <p id="input-alert-message">The Supervisor is waiting for your decision.</p>
+          </div>
+          <button id="enable-alerts" class="alert-button" type="button">Enable desktop alerts</button>
+        </section>
+
+        <section class="phase-rail-wrap" aria-label="Delivery phases">
+          <div class="phase-rail" id="phase-rail"></div>
+        </section>
+
+        <section class="hero-grid">
+          <article class="progress-panel panel">
+            <div class="panel-label">DELIVERY PROGRESS</div>
+            <div class="progress-body">
+              <div class="progress-ring" id="progress-ring"><div><strong id="progress-value">0</strong><span>%</span></div></div>
+              <div class="progress-copy">
+                <span id="phase-kicker">PHASE 1 OF 8</span>
+                <h2 id="phase-name">Orient</h2>
+                <p id="status-updated">Awaiting first update</p>
+              </div>
+            </div>
+            <div class="mini-stats">
+              <div><span>Design rounds</span><strong id="design-rounds">0 / 3</strong></div>
+              <div><span>Review rounds</span><strong id="review-rounds">0 / 3</strong></div>
+              <div><span>Evidence runs</span><strong id="evidence-runs">0</strong></div>
+            </div>
+          </article>
+
+          <article class="supervisor-panel panel" id="supervisor-panel">
+            <div class="supervisor-topline">
+              <div class="supervisor-id"><span class="supervisor-avatar">S</span><div><strong>SUPERVISOR</strong><small>AUTONOMOUS DELIVERY CONTROL</small></div></div>
+              <span class="briefing-state" id="briefing-state">ASSESSING</span>
+            </div>
+            <div class="supervisor-message">
+              <span class="quote-mark">“</span>
+              <h2 id="supervisor-headline">I’m reviewing the current state.</h2>
+              <p id="supervisor-summary"></p>
+            </div>
+            <div class="next-action">
+              <span>NEXT CONTROLLED ACTION</span>
+              <strong id="supervisor-next"></strong>
+            </div>
+            <p class="reassurance" id="supervisor-reassurance"></p>
+          </article>
+        </section>
+
+        <section class="signal-grid">
+          <article class="signal-card"><span>Acceptance</span><strong id="acceptance-score">0 / 0</strong><small>criteria passing</small></article>
+          <article class="signal-card"><span>Original symptom</span><strong id="symptom-state">OPEN</strong><small id="symptom-detail">resolution not evidenced</small></article>
+          <article class="signal-card"><span>Audit integrity</span><strong id="audit-state">CHECKING</strong><small id="audit-detail">verifying ledgers</small></article>
+          <article class="signal-card"><span>Release authority</span><strong id="approval-state">PENDING</strong><small id="approval-detail">explicit approval required</small></article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel acceptance-panel">
+            <div class="section-head"><div><p class="panel-label">ACCEPTANCE REGISTRY</p><h2>What must be true</h2></div><div class="legend"><span class="pass-dot">Passing</span><span class="open-dot">Open</span></div></div>
+            <div id="criteria-list" class="criteria-list"></div>
+          </article>
+
+          <aside class="right-stack">
+            <article class="panel attention-panel">
+              <div class="section-head"><div><p class="panel-label">SUPERVISOR WATCHLIST</p><h2>Needs attention</h2></div><span class="count-badge" id="attention-count">0</span></div>
+              <div id="attention-list" class="attention-list"></div>
+            </article>
+            <article class="panel crew-panel">
+              <div class="section-head"><div><p class="panel-label">CHAIN OF RESPONSIBILITY</p><h2>Assigned crew</h2></div></div>
+              <div id="crew-list" class="crew-list"></div>
+            </article>
+          </aside>
+        </section>
+
+        <section class="lower-grid">
+          <article class="panel activity-panel">
+            <div class="section-head"><div><p class="panel-label">TAMPER-EVIDENT ACTIVITY</p><h2>Mission timeline</h2></div><span id="event-total" class="section-meta">0 EVENTS</span></div>
+            <div id="event-list" class="event-list"></div>
+          </article>
+          <article class="panel evidence-panel">
+            <div class="section-head"><div><p class="panel-label">VERIFICATION LEDGER</p><h2>Latest evidence</h2></div><span id="verification-total" class="section-meta">0 RUNS</span></div>
+            <div id="verification-list" class="verification-list"></div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

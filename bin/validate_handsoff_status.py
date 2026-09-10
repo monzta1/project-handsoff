@@ -28,9 +28,13 @@ def main() -> int:
     acceptance_file = Path(args.acceptance) if args.acceptance else lib.acceptance_path(root, cfg)
 
     try:
-        status = lib.load_unique_json(status_file)
-        acceptance = lib.load_unique_json(acceptance_file)
-        errors = lib.compute_errors(status, acceptance, cfg)
+        with lib.project_lock(root):
+            status = lib.load_unique_json(status_file)
+            acceptance = lib.load_unique_json(acceptance_file)
+            verifications, verification_problems = lib.load_verifications(root, cfg)
+            errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
+                                        verification_problems=verification_problems)
+            errors += [f"event log: {problem}" for problem in lib.verify_event_log(root, cfg)]
     except lib.HandsoffError as e:
         print("SHIP_FEATURE_STATUS_INVALID")
         print(f"- {e}")

@@ -1,22 +1,32 @@
 {
   "type": "object",
-  "required": ["feature", "phase_number", "phase", "progress", "status", "updated_at", "next_action", "events", "requirement_coverage"],
+  "required": ["feature", "phase_number", "phase", "progress", "status", "updated_at", "next_action", "events", "requirement_coverage", "verification_head"],
   "properties": {
     "feature": {"type": "string"},
     "phase_number": {"type": "integer", "minimum": 1, "maximum": 8},
-    "phase": {"type": "string"},
+    "phase": {"enum": ["Orient", "Design debate", "Design approved", "Implementation", "Independent review", "Checks & documentation", "Awaiting deployment approval", "Live verified"]},
     "progress": {"type": "number", "minimum": 0, "maximum": 100},
-    "status": {"type": "string"},
-    "updated_at": {"type": "string"},
+    "status": {"enum": ["in_progress", "blocked", "ready_to_deploy", "awaiting_approval", "complete"]},
+    "updated_at": {"type": "string", "format": "date-time"},
     "next_action": {"type": "string"},
     "design_round": {"type": "integer", "minimum": 0},
     "review_round": {"type": "integer", "minimum": 0},
     "retry_count": {"type": "integer", "minimum": 0},
     "implemented_by": {"type": ["string", "null"]},
     "reviewed_by": {"type": ["string", "null"]},
+    "original_symptom_evidence_id": {"type": ["string", "null"]},
+    "live_verification_id": {"type": ["string", "null"]},
+    "verification_head": {"type": "string"},
+    "review": {
+      "type": ["object", "null"],
+      "properties": {
+        "by": {"type": "string"}, "at": {"type": "string", "format": "date-time"},
+        "acceptance_hash": {"type": "string"}, "checklist": {"type": "object"}
+      }
+    },
     "deployment_approved": {
       "type": ["object", "null"],
-      "properties": {"at": {"type": "string"}, "by": {"type": "string"}}
+      "properties": {"at": {"type": "string"}, "by": {"type": "string"}, "acceptance_hash": {"type": "string"}}
     },
     "requirement_coverage": {
       "type": "object",
