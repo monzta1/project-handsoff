@@ -48,12 +48,18 @@ def _read_events(root: Path, cfg: dict) -> list[dict]:
     return events
 
 
-def _phase_view(current: int) -> list[dict]:
+def _phase_view(current: int, run_complete: bool) -> list[dict]:
+    """The current phase renders "active" (the pulsing in-progress bar) only
+    while the run is still moving. Once status is complete, phase 8 being
+    "current" no longer means "in progress", so it renders solid-complete
+    like every phase before it instead of blinking forever.
+    """
     return [
         {
             "number": number,
             "name": name,
-            "state": "complete" if number < current else "active" if number == current else "upcoming",
+            "state": ("complete" if number < current or (number == current and run_complete)
+                      else "active" if number == current else "upcoming"),
         }
         for number, name in lib.PHASES.items()
     ]
@@ -250,7 +256,7 @@ def build_snapshot(root: Path) -> dict:
         "root": str(root),
         "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature"))},
         "status": status,
-        "phases": _phase_view(int(status.get("phase_number", 1) or 1)),
+        "phases": _phase_view(int(status.get("phase_number", 1) or 1), status.get("status") == "complete"),
         "acceptance": {
             "criteria": criteria,
             "passing": coverage.get("passing", 0),
