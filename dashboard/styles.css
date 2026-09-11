@@ -15,8 +15,8 @@
   --blue: #8fc0ff;
   --violet: #c8a8ff;
   --violet-soft: rgba(200, 168, 255, .14);
-  --gold: #ffd76a;
-  --gold-soft: rgba(255, 215, 106, .16);
+  --emerald: #3ddc84;
+  --emerald-soft: rgba(61, 220, 132, .16);
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Roboto, ui-sans-serif, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-family: var(--sans);
@@ -132,12 +132,12 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .progress-ring > div { height: 100%; display: grid; place-content: center; grid-template-columns: auto auto; align-items: baseline; border-radius: 50%; background: var(--panel-solid); border: 1px solid rgba(111, 179, 245, .14); }
 .progress-ring strong { font: 700 40px/1 var(--sans); letter-spacing: -.02em; }
 .progress-ring span { color: var(--green); font: 700 16px/1 var(--sans); }
-.progress-ring.is-complete { background: conic-gradient(var(--gold) var(--progress), var(--gold-soft) 0); box-shadow: 0 0 40px rgba(255, 215, 106, .3); animation: celebrate-glow 2.4s ease-in-out infinite; }
-.progress-ring.is-complete > div { border-color: rgba(255, 215, 106, .3); }
-.progress-ring.is-complete strong, .progress-ring.is-complete span { color: var(--gold); }
+.progress-ring.is-complete { background: conic-gradient(var(--emerald) var(--progress), var(--emerald-soft) 0); box-shadow: 0 0 40px rgba(61, 220, 132, .3); animation: celebrate-glow 2.4s ease-in-out infinite; }
+.progress-ring.is-complete > div { border-color: rgba(61, 220, 132, .3); }
+.progress-ring.is-complete strong, .progress-ring.is-complete span { color: var(--emerald); }
 @keyframes celebrate-glow {
-  0%, 100% { box-shadow: 0 0 28px rgba(255, 215, 106, .26); }
-  50% { box-shadow: 0 0 54px rgba(255, 215, 106, .5); }
+  0%, 100% { box-shadow: 0 0 28px rgba(61, 220, 132, .26); }
+  50% { box-shadow: 0 0 54px rgba(61, 220, 132, .5); }
 }
 .progress-copy span { color: var(--muted); font: 700 13px/1 var(--sans); letter-spacing: .03em; }
 .progress-copy h2 { margin: 10px 0 8px; font-size: 25px; font-weight: 700; letter-spacing: -.01em; }

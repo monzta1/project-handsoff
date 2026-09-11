@@ -171,6 +171,7 @@ function render(snapshot) {
     $("active-state").classList.add("hidden");
     $("empty-state").classList.remove("hidden");
     $("empty-message").textContent = snapshot.error || "No active Handsoff run was found.";
+    setFaviconState("idle");
     return;
   }
 
@@ -184,6 +185,8 @@ function render(snapshot) {
 
   renderInputAlert(snapshot.input_required, snapshot.project.feature);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
+  setFaviconState(status.status === "complete" ? "complete"
+    : state.inputRequired ? "blocked" : "in_progress");
   $("project-name").textContent = snapshot.project.name.toUpperCase();
   $("feature-name").textContent = snapshot.project.feature;
   $("project-root").textContent = snapshot.root;
@@ -226,6 +229,50 @@ function render(snapshot) {
   renderRoleChiclets(snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);
+}
+
+// --- favicon: a small colored dot standing in for run state at a glance,
+// visible in the browser tab without the dashboard needing focus. Blue and
+// blinking while work is moving, solid red while blocked on a decision,
+// solid green once the run is complete. Drawn on a canvas rather than a
+// static file so it needs no image asset and can change color live.
+const FAVICON_COLORS = { in_progress: "#6fb3f5", blocked: "#ff8f88", complete: "#3ddc84", idle: "#75858f" };
+const faviconCanvas = document.createElement("canvas");
+faviconCanvas.width = 32;
+faviconCanvas.height = 32;
+const faviconCtx = faviconCanvas.getContext("2d");
+let faviconBlinkTimer = null;
+let faviconState = null;
+
+function paintFavicon(color, alpha) {
+  const ctx = faviconCtx;
+  ctx.clearRect(0, 0, 32, 32);
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(16, 16, 13, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  $("favicon").href = faviconCanvas.toDataURL("image/png");
+}
+
+function setFaviconState(state) {
+  if (state === faviconState) return;
+  faviconState = state;
+  if (faviconBlinkTimer) {
+    window.clearInterval(faviconBlinkTimer);
+    faviconBlinkTimer = null;
+  }
+  const color = FAVICON_COLORS[state] || FAVICON_COLORS.in_progress;
+  if (state === "in_progress") {
+    let bright = true;
+    paintFavicon(color, 1);
+    faviconBlinkTimer = window.setInterval(() => {
+      bright = !bright;
+      paintFavicon(color, bright ? 1 : 0.25);
+    }, 600);
+  } else {
+    paintFavicon(color, 1);
+  }
 }
 
 function showError(message) {
