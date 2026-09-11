@@ -59,6 +59,32 @@ def _phase_view(current: int) -> list[dict]:
     ]
 
 
+#: Which crew role is doing the work during each phase, for the dashboard's
+#: chiclet row. The Supervisor (this session) drives phases 1-3 and 7-8
+#: directly; phases 4 and 6 are implementation work; phase 5 is handed to an
+#: independent reviewer, which record-review refuses to be the same identity
+#: as the implementer.
+ACTIVE_ROLE_BY_PHASE = {
+    1: "supervisor", 2: "supervisor", 3: "supervisor",
+    4: "implementer", 5: "reviewer", 6: "implementer",
+    7: "supervisor", 8: "supervisor",
+}
+
+
+def _active_role(status: dict, input_request: dict) -> str | None:
+    """The crew role currently doing the work, or None when nobody is: the
+    run is complete, or it is paused waiting on a human decision (the
+    input-required banner already covers that case, so the chiclets go
+    dark rather than falsely claiming the Supervisor is mid-task).
+    """
+    if status.get("status") == "complete":
+        return None
+    if input_request.get("required"):
+        return None
+    phase_number = int(status.get("phase_number", 1) or 1)
+    return ACTIVE_ROLE_BY_PHASE.get(phase_number)
+
+
 def _input_request(status: dict, cfg: dict) -> dict:
     """Translate an explicit workflow pause into a dashboard alert.
 
@@ -238,6 +264,7 @@ def build_snapshot(root: Path) -> dict:
             "implemented_by": status.get("implemented_by"),
             "reviewed_by": status.get("reviewed_by"),
             "approved_by": (status.get("deployment_approved") or {}).get("by"),
+            "active_role": _active_role(status, input_request),
         },
         "audit": {
             "healthy": audit_healthy,

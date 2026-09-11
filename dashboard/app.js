@@ -123,6 +123,12 @@ function renderAttention(items) {
     : '<div class="attention-clear">All monitored conditions are clear.</div>';
 }
 
+function renderRoleChiclets(activeRole) {
+  document.querySelectorAll("#role-chiclets .chiclet").forEach((el) => {
+    el.classList.toggle("is-active", el.dataset.role === activeRole);
+  });
+}
+
 function renderCrew(actors) {
   const crew = [
     ["IMPLEMENTER", actors.implemented_by],
@@ -182,9 +188,11 @@ function render(snapshot) {
   $("feature-name").textContent = snapshot.project.feature;
   $("project-root").textContent = snapshot.root;
   $("mission-state").textContent = String(status.status || "unknown").replaceAll("_", " ").toUpperCase();
+  const complete = progress >= 100;
   $("progress-value").textContent = Math.round(progress);
   $("progress-ring").style.setProperty("--progress", `${progress * 3.6}deg`);
-  $("phase-kicker").textContent = `PHASE ${status.phase_number} OF 8`;
+  $("progress-ring").classList.toggle("is-complete", complete);
+  $("phase-kicker").textContent = complete ? "\u{1F389} MISSION COMPLETE" : `PHASE ${status.phase_number} OF 8`;
   $("phase-name").textContent = status.phase;
   $("status-updated").textContent = `State updated ${relativeTime(status.updated_at)}`;
   $("design-rounds").textContent = `${policy.design_round} / ${policy.max_design_rounds}`;
@@ -215,6 +223,7 @@ function render(snapshot) {
   renderCriteria(acceptance.criteria);
   renderAttention(supervisor.attention);
   renderCrew(snapshot.actors);
+  renderRoleChiclets(snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);
 }

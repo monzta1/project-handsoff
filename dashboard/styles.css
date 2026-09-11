@@ -13,6 +13,10 @@
   --red: #ff8f88;
   --red-soft: rgba(255, 143, 136, .14);
   --blue: #8fc0ff;
+  --violet: #c8a8ff;
+  --violet-soft: rgba(200, 168, 255, .14);
+  --gold: #ffd76a;
+  --gold-soft: rgba(255, 215, 106, .16);
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Roboto, ui-sans-serif, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-family: var(--sans);
@@ -128,6 +132,13 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .progress-ring > div { height: 100%; display: grid; place-content: center; grid-template-columns: auto auto; align-items: baseline; border-radius: 50%; background: var(--panel-solid); border: 1px solid rgba(111, 179, 245, .14); }
 .progress-ring strong { font: 700 40px/1 var(--sans); letter-spacing: -.02em; }
 .progress-ring span { color: var(--green); font: 700 16px/1 var(--sans); }
+.progress-ring.is-complete { background: conic-gradient(var(--gold) var(--progress), var(--gold-soft) 0); box-shadow: 0 0 40px rgba(255, 215, 106, .3); animation: celebrate-glow 2.4s ease-in-out infinite; }
+.progress-ring.is-complete > div { border-color: rgba(255, 215, 106, .3); }
+.progress-ring.is-complete strong, .progress-ring.is-complete span { color: var(--gold); }
+@keyframes celebrate-glow {
+  0%, 100% { box-shadow: 0 0 28px rgba(255, 215, 106, .26); }
+  50% { box-shadow: 0 0 54px rgba(255, 215, 106, .5); }
+}
 .progress-copy span { color: var(--muted); font: 700 13px/1 var(--sans); letter-spacing: .03em; }
 .progress-copy h2 { margin: 10px 0 8px; font-size: 25px; font-weight: 700; letter-spacing: -.01em; }
 .progress-copy p { margin: 0; color: var(--muted); font-size: 14px; }
@@ -187,6 +198,22 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .criterion-state.not_tested { color: var(--amber); border-color: rgba(255, 203, 122, .26); background: var(--amber-soft); }
 .right-stack { display: grid; gap: 16px; }
 .count-badge { display: grid; place-items: center; min-width: 27px; height: 27px; border-radius: 50%; border: 1px solid rgba(255, 203, 122, .26); color: var(--amber); font: 700 12px/1 var(--sans); }
+.role-chiclets { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
+.chiclet {
+  display: flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap;
+  padding: 9px 13px; border-radius: 8px; background: #101815; border: 1px solid var(--line);
+  color: var(--faint); font: 700 11px/1 var(--sans); letter-spacing: .04em;
+  transition: color .25s ease, border-color .25s ease, background .25s ease, box-shadow .25s ease;
+}
+.chiclet i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); transition: background .25s ease, box-shadow .25s ease; }
+.chiclet.is-active i { animation: chiclet-pulse 1.6s ease-in-out infinite; }
+.chiclet[data-role="supervisor"].is-active { color: var(--blue); border-color: rgba(143, 192, 255, .45); background: var(--green-soft); box-shadow: 0 0 16px rgba(143, 192, 255, .22); }
+.chiclet[data-role="supervisor"].is-active i { background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+.chiclet[data-role="implementer"].is-active { color: var(--amber); border-color: rgba(255, 203, 122, .45); background: var(--amber-soft); box-shadow: 0 0 16px rgba(255, 203, 122, .22); }
+.chiclet[data-role="implementer"].is-active i { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.chiclet[data-role="reviewer"].is-active { color: var(--violet); border-color: rgba(200, 168, 255, .45); background: var(--violet-soft); box-shadow: 0 0 16px rgba(200, 168, 255, .22); }
+.chiclet[data-role="reviewer"].is-active i { background: var(--violet); box-shadow: 0 0 8px var(--violet); }
+@keyframes chiclet-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
 .attention-list, .crew-list { display: grid; gap: 8px; }
 .attention-item, .crew-member { padding: 13px 14px; border-radius: 9px; background: #101815; font-size: 13px; line-height: 1.5; }
 .attention-item { display: grid; grid-template-columns: 8px 1fr; gap: 10px; color: #c8d5cf; }
