@@ -232,6 +232,18 @@ def cmd_advance(args) -> int:
         lib.commit(root, cfg, status=proposed,
                   event_kind="phase_advanced", event_message=f"Advanced to {lib.PHASES[args.phase]}",
                   phase_number=args.phase, progress=args.progress)
+
+        if args.phase == 8 and proposed.get("status") == "complete":
+            # The phase transition above already committed successfully; an
+            # archive failure (e.g. an unwritable Documents folder) must not
+            # be reported as if the run itself failed.
+            try:
+                fresh_verifications, _ = lib.load_verifications(root, cfg)
+                archive_path = lib.archive_run(root, cfg, proposed, acceptance,
+                                               fresh_verifications, lib.read_events(root, cfg))
+                print(f"HANDSOFF_ARCHIVED: {archive_path}")
+            except OSError as exc:
+                print(f"HANDSOFF_ARCHIVE_FAILED (run still completed successfully): {exc}")
     print("SHIP_FEATURE_ADVANCED")
     return 0
 

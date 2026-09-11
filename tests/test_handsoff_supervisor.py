@@ -42,6 +42,23 @@ def setUpModule():
             "verbatim. Revert it, and track any real dogfooding check "
             "commands in a separate, gitignored root instead."
         )
+    # Any test that lands Phase 8 with status complete now triggers a real
+    # archive write (see handsoff_lib.archive_run). Sandboxed here at module
+    # scope, not just in TestRunArchive, so a test class that reaches
+    # completion for an unrelated reason (there are several) can never write
+    # into the real ~/Documents/Handsoff-Archive on a developer's machine.
+    global _MODULE_ARCHIVE_DIR
+    _MODULE_ARCHIVE_DIR = tempfile.mkdtemp(prefix="handsoff-archive-module-")
+    os.environ["HANDSOFF_ARCHIVE_DIR"] = _MODULE_ARCHIVE_DIR
+
+
+def tearDownModule():
+    os.environ.pop("HANDSOFF_ARCHIVE_DIR", None)
+    if _MODULE_ARCHIVE_DIR:
+        shutil.rmtree(_MODULE_ARCHIVE_DIR, ignore_errors=True)
+
+
+_MODULE_ARCHIVE_DIR = None
 
 
 def run(args, cwd):
@@ -1292,6 +1309,85 @@ class TestDoctorRecoveryCommand(HandsoffTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("CANNOT_RECOVER", r.stdout)
         self.assertIn("does not independently validate", r.stdout)
+
+
+class TestRunArchive(HandsoffTestCase):
+    """Landing Phase 8 complete writes one self-contained JSON record to a
+    centralized archive outside any project repo, so what Handsoff learns
+    about ITSELF survives that repo's own cleanup and can be read across
+    every project it has ever run in. Automatic, not a step a Supervisor
+    session has to remember."""
+
+    def setUp(self):
+        super().setUp()
+        self.archive_dir = Path(tempfile.mkdtemp(prefix="handsoff-archive-test-"))
+        self._old_env = os.environ.get("HANDSOFF_ARCHIVE_DIR")
+        os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
+
+    def tearDown(self):
+        if self._old_env is None:
+            os.environ.pop("HANDSOFF_ARCHIVE_DIR", None)
+        else:
+            os.environ["HANDSOFF_ARCHIVE_DIR"] = self._old_env
+        shutil.rmtree(self.archive_dir, ignore_errors=True)
+        super().tearDown()
+
+    def _complete_a_run(self, feature="Archive test feature"):
+        self.init(feature)
+        self.set_criterion_state("passing", resolved=True)
+        self.advance_to(7, implemented_by="impl-1", reviewed_by="rev-1")
+        run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp)
+        run(["verify-live", "--by", "monitor"], cwd=self.tmp)
+        r = run(["advance", "8", "100"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def test_completing_a_run_writes_exactly_one_archive_file(self):
+        self._complete_a_run()
+        files = list(self.archive_dir.glob("*.json"))
+        self.assertEqual(len(files), 1, files)
+
+    def test_the_archive_reports_its_own_path(self):
+        r = self._complete_a_run()
+        self.assertIn("HANDSOFF_ARCHIVED:", r.stdout)
+
+    def test_the_archived_record_is_a_faithful_self_contained_copy(self):
+        self._complete_a_run(feature="Archive content test")
+        record = json.loads(next(self.archive_dir.glob("*.json")).read_text())
+        self.assertEqual(record["repo"], self.tmp.name)
+        self.assertEqual(record["feature"], "Archive content test")
+        self.assertEqual(record["status"]["phase_number"], 8)
+        self.assertEqual(record["status"]["status"], "complete")
+        self.assertTrue(record["acceptance"]["criteria"])
+        self.assertTrue(record["verifications"])
+        self.assertTrue(record["events"])
+        self.assertIn("archived_at", record)
+
+    def test_archiving_only_happens_at_completion_not_every_phase(self):
+        self.init()
+        self.set_criterion_state("passing", resolved=True)
+        self.advance_to(4, implemented_by="impl-1")
+        self.assertEqual(list(self.archive_dir.glob("*.json")), [])
+
+    def test_archive_dir_is_created_if_missing(self):
+        shutil.rmtree(self.archive_dir)
+        self._complete_a_run()
+        self.assertTrue(self.archive_dir.is_dir())
+        self.assertEqual(len(list(self.archive_dir.glob("*.json"))), 1)
+
+    def test_two_different_repos_archive_to_the_same_place_without_colliding(self):
+        self._complete_a_run(feature="First repo run")
+        other = Path(tempfile.mkdtemp(prefix="handsoff-test-other-"))
+        try:
+            for name in ("handsoff.toml",):
+                shutil.copy(ROOT / name, other / name)
+            shutil.copytree(ROOT / "schemas", other / "schemas")
+            real_tmp, self.tmp = self.tmp, other
+            self._complete_a_run(feature="Second repo run")
+            self.tmp = real_tmp
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+        self.assertEqual(len(list(self.archive_dir.glob("*.json"))), 2)
 
 
 if __name__ == "__main__":

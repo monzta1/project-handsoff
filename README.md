@@ -56,6 +56,21 @@ If an interrupted write ever leaves the ledgers out of sync with `handsoff-statu
 7. Awaiting deployment approval
 8. Live verified
 
+## The run archive
+
+Landing Phase 8 with status `complete` automatically writes one
+self-contained JSON record of the whole run (status, acceptance criteria,
+verification ledger, event log) to `~/Documents/Handsoff-Archive/` (override
+with `HANDSOFF_ARCHIVE_DIR`), named `<repo>-<timestamp>-<feature-slug>.json`.
+This is centralized outside any project repo on purpose, so a repo's own
+archive/cleanup of its `handsoff-*.json` files never loses the history, and
+so patterns across every project Handsoff has ever run in can be mined later
+to improve Handsoff itself (which findings reviewers catch most often, how
+many design/review rounds a typical run takes, and so on). It never blocks
+or fails a run: an archive write failure prints a warning and the run still
+reports success, since the phase transition it is recording already
+committed by the time archiving happens.
+
 ## What is actually enforced
 
 Every claim below is backed by a test in `tests/test_handsoff_supervisor.py`. Run it after copying the framework in, and again after changing `handsoff_lib.py`, to confirm the guarantees still hold:

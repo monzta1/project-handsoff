@@ -952,3 +952,86 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
             "output_tail": output[-2000:],
         })
     return results
+
+
+# --------------------------------------------------------------------------
+# run archive: one self-contained JSON snapshot per completed run, written
+# outside any project repo so what Handsoff learns about ITSELF survives a
+# repo's own archive/cleanup and can be read across every project it has
+# ever run in, not just the one it just finished.
+# --------------------------------------------------------------------------
+
+def archive_dir() -> Path:
+    override = os.environ.get("HANDSOFF_ARCHIVE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / "Documents" / "Handsoff-Archive"
+
+
+def read_events(root: Path, cfg: dict) -> list[dict]:
+    """Every event for this run, oldest first. Tolerant of a corrupt line the
+    way the dashboard already is: a bad line is skipped, not fatal, because
+    archiving a finished run must never be the thing that fails a run."""
+    path = event_log_path(root, cfg)
+    if not path.exists():
+        return []
+    events = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            events.append(record)
+    return events
+
+
+def _archive_slug(text: str, max_len: int = 60) -> str:
+    out, prev_dash = [], False
+    for ch in (text or "").lower():
+        if ch.isalnum():
+            out.append(ch)
+            prev_dash = False
+        elif not prev_dash:
+            out.append("-")
+            prev_dash = True
+    slug = "".join(out).strip("-")
+    return (slug or "run")[:max_len]
+
+
+def archive_run(root: Path, cfg: dict, status: dict, acceptance: dict,
+                verifications: list[dict], events: list[dict]) -> Path:
+    """Write one self-contained JSON record of a just-completed run to the
+    centralized archive (~/Documents/Handsoff-Archive by default, override
+    with HANDSOFF_ARCHIVE_DIR). Called automatically by `advance` when a
+    transition lands Phase 8 with status complete, so no Supervisor session
+    has to remember a separate step -- the same failure mode that let the
+    dashboard's blocked-alert protocol go unused until Moncy actually hit it.
+
+    The record is a full copy of status + acceptance + verifications +
+    events, not a hand-picked summary: which fields turn out to matter for
+    improving Handsoff is exactly the open question this archive exists to
+    answer, and a summary decided today could not answer a question nobody
+    has thought to ask yet.
+    """
+    record = {
+        "archived_at": datetime.now(timezone.utc).isoformat(),
+        "repo": root.name,
+        "root": str(root),
+        "feature": status.get("feature"),
+        "started_at": events[0]["at"] if events else status.get("updated_at"),
+        "completed_at": status.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "acceptance": acceptance,
+        "verifications": verifications,
+        "events": events,
+    }
+    out_dir = archive_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"{_archive_slug(root.name)}-{stamp}-{_archive_slug(status.get('feature'))}.json"
+    out_path = out_dir / filename
+    out_path.write_text(json.dumps(record, indent=1, sort_keys=True))
+    return out_path
