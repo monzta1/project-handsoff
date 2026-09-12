@@ -3355,6 +3355,34 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
                          "design_approved must survive an evidence-recording call even at phase 6+")
 
 
+class TestArchitectScalesDesignDepth(unittest.TestCase):
+    """AR4: design rigor stays constant while discussion depth matches the task."""
+
+    def setUp(self):
+        self.prompt = (ROOT / "prompts" / "architect.md").read_text().lower()
+
+    def test_architect_proposes_concise_or_full_depth_from_task_complexity(self):
+        for phrase in (
+            "propose one of these paths",
+            "concise path",
+            "small, clear, low-risk work",
+            "full path",
+            "large, ambiguous, high-risk, or cross-cutting work",
+            "one-sentence reason",
+        ):
+            self.assertIn(phrase, self.prompt)
+
+    def test_human_can_adjust_depth_without_bypassing_gates(self):
+        for phrase in (
+            '"go deeper"',
+            '"that\'s enough, proceed"',
+            "submit the smallest sufficient design for independent review",
+            "it is not itself human design approval or permission to enter phase 3",
+            "neither path bypasses independent design review or human approval",
+        ):
+            self.assertIn(phrase, self.prompt)
+
+
 class TestArchitectRespectsSettledDesigns(HandsoffTestCase):
     """AR9: the Architect treats existing/shipped work as settled context
     to build around, proposing a change to it only on the human's

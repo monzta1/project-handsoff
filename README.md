@@ -23,6 +23,8 @@ python3 bin/handsoff_supervisor.py criterion-update REQ-001 --requirement "Exact
 
 The Architect (see "Agent roles") collaborates with the human to turn that placeholder criterion into a real design and testable criteria. In Phase 2 an independent reviewer critiques that design first; the Supervisor records either approval or actionable revision findings:
 
+The Architect scales that collaboration to the request. Small, clear, low-risk work gets a concise scope, approach, and criteria proposal; large, ambiguous, high-risk, or cross-cutting work gets fuller exploration and tradeoff analysis. It states which path it recommends and why. The human can say `go deeper` to expand the design or `that's enough, proceed` to stop exploration and submit the smallest sufficient proposal for independent review. That instruction is not itself design approval; both paths retain the same independent-review and human-approval gates.
+
 ```bash
 python3 bin/handsoff_supervisor.py advance 2 20 --new-design-round
 python3 bin/handsoff_supervisor.py record-design-review --by design-reviewer-1 --architect architect-1 --approve --summary "Design and criteria are implementation-ready"
