@@ -253,6 +253,447 @@ class TestRoundCaps(HandsoffTestCase):
         self.assertIn("round cap", r.stdout)
 
 
+class TestNewDesignRoundTracking(HandsoffTestCase):
+    """--new-design-round is the organic-tracking path that AR8 will build
+    instrumentation on top of: design_round must reflect real rounds, the
+    cap must fire from normal use (not only a hand-typed --design-round),
+    and each round boundary must be its own distinguishable event, not a
+    repeat of the generic phase_advanced message."""
+
+    def _events(self):
+        return [json.loads(l) for l in (self.tmp / "handsoff-events.jsonl").read_text().splitlines() if l.strip()]
+
+    def test_increments_from_current_value_and_emits_distinct_event(self):
+        self.init()
+        self.advance_to(2)
+        self.assertEqual(self.read_status()["design_round"], 0)
+
+        r = run(["advance", "2", "30", "--new-design-round", "--design-round-reason", "reviewer flagged the approach"],
+               cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.read_status()["design_round"], 1)
+
+        events = self._events()
+        last = events[-1]
+        self.assertEqual(last["kind"], "design_round_advanced")
+        self.assertNotEqual(last["kind"], "phase_advanced")
+        self.assertEqual(last["design_round"], 1)
+        self.assertEqual(last["previous_design_round"], 0)
+        self.assertEqual(last["reason"], "reviewer flagged the approach")
+        self.assertIn("0 -> 1", last["message"])
+        self.assertIn("reviewer flagged the approach", last["message"])
+
+    def test_reason_is_optional(self):
+        self.init()
+        self.advance_to(2)
+        r = run(["advance", "2", "30", "--new-design-round"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        last = self._events()[-1]
+        self.assertEqual(last["kind"], "design_round_advanced")
+        self.assertIsNone(last["reason"])
+
+    def test_repeated_rounds_are_distinguishable_in_the_event_log(self):
+        self.init()
+        self.advance_to(2)
+        for progress, reason in ((30, "round 1"), (40, "round 2"), (50, "round 3")):
+            r = run(["advance", "2", str(progress), "--new-design-round", "--design-round-reason", reason], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.read_status()["design_round"], 3)
+        round_events = [e for e in self._events() if e["kind"] == "design_round_advanced"]
+        self.assertEqual([e["design_round"] for e in round_events], [1, 2, 3])
+        self.assertEqual([e["previous_design_round"] for e in round_events], [0, 1, 2])
+        # Distinct messages -- this is the exact gap AR8 needs closed: five
+        # identical "Advanced to Design debate" lines used to be indistinguishable.
+        self.assertEqual(len({e["message"] for e in round_events}), 3)
+
+    def test_organic_increment_trips_the_cap_without_a_manual_override(self):
+        self.init()
+        self.advance_to(2)
+        for progress in (21, 22, 23):
+            r = run(["advance", "2", str(progress), "--new-design-round"], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.read_status()["design_round"], 3)
+
+        r = run(["advance", "2", "24", "--new-design-round"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("round cap", r.stdout)
+        self.assertIn("escalate to the user", r.stdout)
+        # blocked call must not have written through
+        self.assertEqual(self.read_status()["design_round"], 3)
+        self.assertFalse(any(e["kind"] == "design_round_advanced" and e["design_round"] == 4 for e in self._events()))
+
+    def test_design_round_and_new_design_round_are_mutually_exclusive(self):
+        self.init()
+        self.advance_to(2)
+        r = run(["advance", "2", "30", "--design-round", "5", "--new-design-round"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not both", r.stdout)
+        self.assertEqual(self.read_status()["design_round"], 0)
+
+    def test_reason_flag_requires_new_design_round(self):
+        self.init()
+        self.advance_to(2)
+        r = run(["advance", "2", "30", "--design-round-reason", "no round flag here"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--design-round-reason", r.stdout)
+        self.assertEqual(self.read_status()["design_round"], 0)
+
+    def test_new_design_round_rejected_outside_phase_2(self):
+        self.init()
+        r = run(["advance", "1", "50", "--new-design-round"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("phase 2", r.stdout)
+        self.assertEqual(self.read_status()["design_round"], 0)
+
+    def test_explicit_design_round_override_still_works_unchanged(self):
+        """--design-round <n> is the pre-existing AR-era direct-set behavior;
+        this change must not touch it."""
+        self.init()
+        self.advance_to(2)
+        r = run(["advance", "2", "30", "--design-round", "2"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.read_status()["design_round"], 2)
+        last = self._events()[-1]
+        self.assertEqual(last["kind"], "phase_advanced")
+
+
+class TestDesignPhaseInstrumentation(HandsoffTestCase):
+    """AR8: design_round_advanced (AR8's foundation, see
+    TestNewDesignRoundTracking) plus a round-end marker, an auto-detected
+    design_approval_requested, and small explicit wait/pause commands,
+    all read back by `design-timing` into an active/background_wait/
+    human_wait breakdown per round. Builds on AR1-AR9 and stall detection
+    without touching their behavior."""
+
+    def _events(self):
+        return [json.loads(l) for l in (self.tmp / "handsoff-events.jsonl").read_text().splitlines() if l.strip()]
+
+    def _kinds(self):
+        return [e["kind"] for e in self._events()]
+
+    # -- round_end -----------------------------------------------------
+
+    def test_round_end_emitted_when_next_round_starts(self):
+        self.init()
+        self.advance_to(2)
+        run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        run(["advance", "2", "30", "--new-design-round"], cwd=self.tmp)
+        kinds = self._kinds()
+        ended_idx = kinds.index("design_round_ended")
+        started_idx = kinds.index("design_round_advanced", ended_idx)
+        self.assertLess(ended_idx, started_idx, "round 1 must end before round 2 starts in the log")
+        ended = self._events()[ended_idx]
+        self.assertEqual(ended["design_round"], 1)
+        self.assertEqual(ended["trigger"], "next_round_started")
+
+    def test_round_end_not_emitted_for_the_very_first_round(self):
+        """design_round goes 0 -> 1 on the first --new-design-round call;
+        there is no round 0 in progress to close."""
+        self.init()
+        self.advance_to(2)
+        run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        self.assertNotIn("design_round_ended", self._kinds())
+
+    def test_round_end_emitted_when_design_is_approved(self):
+        self.init()
+        self.advance_to(2)
+        run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        self.set_criterion_state("not_tested", resolved=False)
+        approve = run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                      "--summary", "s"], cwd=self.tmp)
+        self.assertEqual(approve.returncode, 0, approve.stdout + approve.stderr)
+        kinds = self._kinds()
+        ended_idx = kinds.index("design_round_ended")
+        approved_idx = kinds.index("design_approved")
+        self.assertLess(ended_idx, approved_idx)
+        ended = self._events()[ended_idx]
+        self.assertEqual(ended["design_round"], 1)
+        self.assertEqual(ended["trigger"], "design_approved")
+
+    def test_round_end_not_emitted_on_approval_at_round_zero(self):
+        """A run that never called --new-design-round (design_round stays
+        0) has no organic round to close on approval either."""
+        self.init()
+        self.advance_to(2)
+        self.set_criterion_state("not_tested", resolved=False)
+        approve = run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                      "--summary", "s"], cwd=self.tmp)
+        self.assertEqual(approve.returncode, 0, approve.stdout + approve.stderr)
+        self.assertNotIn("design_round_ended", self._kinds())
+
+    # -- design_approval_requested --------------------------------------
+
+    def test_approval_requested_emitted_on_blocked_advance_to_phase_3(self):
+        self.init()
+        self.advance_to(2)
+        run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        blocked = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(blocked.returncode, 1)
+        self.assertIn("design gate", blocked.stdout)
+        events = self._events()
+        self.assertEqual(events[-1]["kind"], "design_approval_requested")
+        # the blocked call itself must still write nothing to status
+        self.assertEqual(self.read_status()["phase_number"], 2)
+
+    def test_approval_requested_not_duplicated_on_repeated_blocked_attempts(self):
+        self.init()
+        self.advance_to(2)
+        run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        for _ in range(3):
+            r = run(["advance", "3", "30"], cwd=self.tmp)
+            self.assertEqual(r.returncode, 1)
+        self.assertEqual(self._kinds().count("design_approval_requested"), 1)
+
+    def test_approval_requested_not_emitted_for_unrelated_block_reasons(self):
+        """Only a design-gate failure counts as 'entered awaiting design
+        approval' -- a phase-6 review-gate block, for instance, must not
+        be misread as one."""
+        self.init()
+        self.set_criterion_state("failing", resolved=False)
+        self.advance_to(6, implemented_by="impl-1", reviewed_by="rev-1")
+        self.assertNotIn("design_approval_requested", self._kinds())
+
+    def test_approval_requested_not_emitted_when_advancing_to_phase_2(self):
+        """The gate only applies to LEAVING phase 2 (--phase 3); ordinary
+        design-round work must never look like an approval request."""
+        self.init()
+        self.advance_to(2)
+        self.assertNotIn("design_approval_requested", self._kinds())
+
+    # -- background-wait / human-pause -----------------------------------
+
+    def test_background_wait_start_and_end_round_trip(self):
+        self.init()
+        r = run(["background-wait-start", "--by", "architect-1", "--note", "scanning the codebase"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNotNone(self.read_status()["last_heartbeat_at"])
+        r = run(["background-wait-end", "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self._kinds()[-2:], ["background_wait_started", "background_wait_ended"])
+
+    def test_background_wait_feeds_the_existing_heartbeat_signal(self):
+        """Reuses stall_warning's own signal rather than a second
+        mechanism: last_heartbeat_at moves forward exactly as it does for
+        a plain `heartbeat` call."""
+        self.init()
+        before = self.read_status()["last_heartbeat_at"]
+        self.assertIsNone(before)
+        run(["background-wait-start", "--by", "architect-1"], cwd=self.tmp)
+        self.assertIsNotNone(self.read_status()["last_heartbeat_at"])
+
+    def test_background_wait_double_start_rejected(self):
+        self.init()
+        run(["background-wait-start", "--by", "a"], cwd=self.tmp)
+        r = run(["background-wait-start", "--by", "a"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("already open", r.stdout)
+
+    def test_background_wait_end_without_start_rejected(self):
+        self.init()
+        r = run(["background-wait-end", "--by", "a"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no open background wait", r.stdout)
+
+    def test_human_pause_start_and_end_round_trip(self):
+        self.init()
+        r = run(["human-pause-start", "--by", "architect-1", "--note", "clarifying question"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["human-pause-end", "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self._kinds()[-2:], ["human_pause_started", "human_pause_ended"])
+
+    def test_human_pause_does_not_touch_heartbeat(self):
+        self.init()
+        run(["human-pause-start", "--by", "a"], cwd=self.tmp)
+        self.assertIsNone(self.read_status()["last_heartbeat_at"])
+
+    def test_human_pause_double_start_rejected(self):
+        self.init()
+        run(["human-pause-start", "--by", "a"], cwd=self.tmp)
+        r = run(["human-pause-start", "--by", "a"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("already open", r.stdout)
+
+    def test_human_pause_end_without_start_rejected(self):
+        self.init()
+        r = run(["human-pause-end", "--by", "a"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no open human pause", r.stdout)
+
+    def test_wait_commands_require_non_empty_by(self):
+        self.init()
+        for cmd in ("background-wait-start", "background-wait-end", "human-pause-start", "human-pause-end"):
+            r = run([cmd, "--by", "  "], cwd=self.tmp)
+            self.assertEqual(r.returncode, 1, cmd)
+            self.assertIn("--by", r.stdout)
+
+    # -- design-timing summarizer (CLI-level smoke; precise math is unit-tested
+    #    directly against lib.summarize_design_timing in TestSummarizeDesignTiming) --
+
+    def test_design_timing_cli_reports_rounds_and_categories(self):
+        self.init()
+        # One call both enters Phase 2 and starts round 1, so there is no
+        # brief round-0 gap to account for separately (see
+        # test_round_zero_covers_pre_round_tracking_design_work for that case).
+        run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        run(["background-wait-start", "--by", "a"], cwd=self.tmp)
+        run(["background-wait-end", "--by", "a"], cwd=self.tmp)
+        self.set_criterion_state("not_tested", resolved=False)
+        run(["design-approve", "--by", "moncy", "--architect", "arch-1", "--summary", "s"], cwd=self.tmp)
+        r = run(["design-timing"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        summary = json.loads(r.stdout)
+        self.assertEqual(len(summary["episodes"]), 1)
+        episode = summary["episodes"][0]
+        self.assertEqual(episode["status"], "approved")
+        self.assertEqual(set(episode["rounds"]), {"1"})
+        self.assertGreater(episode["rounds"]["1"]["seconds"]["background_wait"], 0)
+        self.assertEqual(set(summary["total_seconds"]), {"active", "background_wait", "human_wait"})
+
+    def test_design_timing_reads_an_arbitrary_events_file(self):
+        """The task's own framing: given a run's handsoff-events.jsonl
+        (e.g. one pulled out of .handsoff-archive/<run>/), not only the
+        live project's own log."""
+        self.init()
+        self.advance_to(2)
+        run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        events_file = self.tmp / "handsoff-events.jsonl"
+        r = run(["design-timing", "--events-file", str(events_file)], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        summary = json.loads(r.stdout)
+        self.assertEqual(len(summary["episodes"]), 1)
+
+    def test_design_timing_missing_events_file_refused_cleanly(self):
+        self.init()
+        r = run(["design-timing", "--events-file", str(self.tmp / "nope.jsonl")], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no such events file", r.stdout)
+
+
+class TestSummarizeDesignTiming(unittest.TestCase):
+    """Unit tests against lib.summarize_design_timing directly, with
+    hand-built events and exact timestamps, for precise arithmetic that
+    would be flaky against real sleeps in a subprocess-driven CLI test."""
+
+    def setUp(self):
+        sys.path.insert(0, str(BIN))
+        global lib
+        import handsoff_lib as lib
+
+    @staticmethod
+    def _ev(kind, at, **extra):
+        return {"kind": kind, "at": at, **extra}
+
+    T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+    @classmethod
+    def _t(cls, seconds):
+        return (cls.T0 + timedelta(seconds=seconds)).isoformat()
+
+    def test_single_round_all_active(self):
+        events = [
+            self._ev("phase_advanced", self._t(0), phase_number=2),
+            self._ev("design_round_advanced", self._t(0), design_round=1, previous_design_round=0),
+            self._ev("design_approved", self._t(100)),
+        ]
+        summary = lib.summarize_design_timing(events)
+        self.assertEqual(len(summary["episodes"]), 1)
+        ep = summary["episodes"][0]
+        self.assertEqual(ep["status"], "approved")
+        self.assertEqual(ep["rounds"][1]["seconds"], {"active": 100.0, "background_wait": 0.0, "human_wait": 0.0})
+        self.assertEqual(summary["total_seconds"]["active"], 100.0)
+
+    def test_background_and_human_wait_are_carved_out_of_active(self):
+        events = [
+            self._ev("design_round_advanced", self._t(0), design_round=1, previous_design_round=0),
+            self._ev("background_wait_started", self._t(10)),
+            self._ev("background_wait_ended", self._t(40)),   # 30s background_wait
+            self._ev("human_pause_started", self._t(60)),
+            self._ev("human_pause_ended", self._t(90)),        # 30s human_wait
+            self._ev("design_approved", self._t(100)),          # remaining 10s active
+        ]
+        summary = lib.summarize_design_timing(events)
+        seconds = summary["episodes"][0]["rounds"][1]["seconds"]
+        # active: [0,10) + [40,60) + [90,100) = 10+20+10 = 40
+        self.assertAlmostEqual(seconds["active"], 40.0)
+        self.assertAlmostEqual(seconds["background_wait"], 30.0)
+        self.assertAlmostEqual(seconds["human_wait"], 30.0)
+
+    def test_design_round_advanced_is_the_round_boundary(self):
+        events = [
+            self._ev("design_round_advanced", self._t(0), design_round=1, previous_design_round=0),
+            self._ev("design_round_ended", self._t(50), design_round=1, trigger="next_round_started"),
+            self._ev("design_round_advanced", self._t(50), design_round=2, previous_design_round=1),
+            self._ev("design_approved", self._t(80)),
+        ]
+        summary = lib.summarize_design_timing(events)
+        rounds = summary["episodes"][0]["rounds"]
+        self.assertEqual(set(rounds), {1, 2})
+        self.assertAlmostEqual(rounds[1]["seconds"]["active"], 50.0)
+        self.assertAlmostEqual(rounds[2]["seconds"]["active"], 30.0)
+
+    def test_approval_requested_counts_as_human_wait_until_approved(self):
+        events = [
+            self._ev("design_round_advanced", self._t(0), design_round=1, previous_design_round=0),
+            self._ev("design_approval_requested", self._t(20)),
+            self._ev("design_approved", self._t(50)),
+        ]
+        summary = lib.summarize_design_timing(events)
+        seconds = summary["episodes"][0]["rounds"][1]["seconds"]
+        self.assertAlmostEqual(seconds["active"], 20.0)
+        self.assertAlmostEqual(seconds["human_wait"], 30.0)
+
+    def test_round_zero_covers_pre_round_tracking_design_work(self):
+        events = [
+            self._ev("phase_advanced", self._t(0), phase_number=2),
+            self._ev("design_approved", self._t(15)),
+        ]
+        summary = lib.summarize_design_timing(events)
+        rounds = summary["episodes"][0]["rounds"]
+        self.assertEqual(set(rounds), {0})
+        self.assertAlmostEqual(rounds[0]["seconds"]["active"], 15.0)
+
+    def test_in_progress_episode_is_flushed_to_now_not_dropped(self):
+        events = [self._ev("design_round_advanced", self._t(0), design_round=1, previous_design_round=0)]
+        summary = lib.summarize_design_timing(events, now=self.T0 + timedelta(seconds=30))
+        ep = summary["episodes"][0]
+        self.assertEqual(ep["status"], "in_progress")
+        self.assertIsNone(ep["end"])
+        self.assertAlmostEqual(ep["rounds"][1]["seconds"]["active"], 30.0)
+
+    def test_unrecognized_events_do_not_stop_the_clock(self):
+        events = [
+            self._ev("design_round_advanced", self._t(0), design_round=1, previous_design_round=0),
+            self._ev("checks_run", self._t(10)),
+            self._ev("evidence_recorded", self._t(20)),
+            self._ev("design_approved", self._t(30)),
+        ]
+        summary = lib.summarize_design_timing(events)
+        self.assertAlmostEqual(summary["episodes"][0]["rounds"][1]["seconds"]["active"], 30.0)
+
+    def test_second_episode_after_a_rollback_is_handled_independently(self):
+        """A criterion mutation after approval can force a rollback to
+        Phase 2 (see _invalidate_decisions); a fresh design_round_advanced
+        after that opens a SECOND episode, not a continuation of the
+        first."""
+        events = [
+            self._ev("design_round_advanced", self._t(0), design_round=1, previous_design_round=0),
+            self._ev("design_approved", self._t(10)),
+            self._ev("criterion_added", self._t(20)),
+            self._ev("design_round_advanced", self._t(30), design_round=1, previous_design_round=0),
+            self._ev("design_approved", self._t(50)),
+        ]
+        summary = lib.summarize_design_timing(events)
+        self.assertEqual(len(summary["episodes"]), 2)
+        self.assertEqual(summary["episodes"][0]["status"], "approved")
+        self.assertEqual(summary["episodes"][1]["status"], "approved")
+        self.assertAlmostEqual(summary["episodes"][1]["rounds"][1]["seconds"]["active"], 20.0)
+
+    def test_no_events_yields_no_episodes(self):
+        summary = lib.summarize_design_timing([])
+        self.assertEqual(summary, {"episodes": [], "total_seconds": {"active": 0.0, "background_wait": 0.0, "human_wait": 0.0}})
+
+
 class TestDuplicateKeyDetection(HandsoffTestCase):
     def test_duplicate_key_in_status_file_is_rejected(self):
         self.init()

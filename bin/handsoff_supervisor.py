@@ -35,6 +35,18 @@ def _criterion(acceptance: dict, criterion_id: str) -> dict | None:
     return next((c for c in acceptance.get("criteria", []) if c.get("id") == criterion_id), None)
 
 
+def _most_recent_kind(events: list[dict], kinds: set[str]) -> str | None:
+    """Scan the event log backwards for the latest event whose kind is one
+    of `kinds`, ignoring everything else in between. Used to tell an
+    open start/end pair (background-wait, human-pause, a still-pending
+    design approval request) apart from a closed one, without a second
+    piece of state to keep in sync with the log."""
+    for event in reversed(events):
+        if event.get("kind") in kinds:
+            return event["kind"]
+    return None
+
+
 def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_design: bool = False) -> None:
     """Any acceptance mutation makes earlier review/deployment/live decisions
     stale. `invalidate_design=True` additionally clears design_approved and,
@@ -189,6 +201,16 @@ def cmd_advance(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
 
+    if args.design_round is not None and args.new_design_round:
+        print("SHIP_FEATURE_INVALID: pass either --design-round or --new-design-round, not both")
+        return 1
+    if args.design_round_reason and not args.new_design_round:
+        print("SHIP_FEATURE_INVALID: --design-round-reason only applies together with --new-design-round")
+        return 1
+    if args.new_design_round and args.phase != 2:
+        print("SHIP_FEATURE_INVALID: --new-design-round only applies when advancing to phase 2 (Design debate)")
+        return 1
+
     # The lock covers the ENTIRE read-validate-write sequence, not just the
     # final write. Locking only the write let two concurrent callers both
     # read the same stale state, both validate successfully against it,
@@ -235,14 +257,42 @@ def cmd_advance(args) -> int:
             proposed["status"] = "complete"
         if args.implemented_by:
             proposed["implemented_by"] = args.implemented_by
+        new_design_round_event = None
         if args.design_round is not None:
             proposed["design_round"] = args.design_round
+        elif args.new_design_round:
+            # Organic tracking: bump from whatever design_round actually is
+            # on disk right now, so repeated --new-design-round calls count
+            # real rounds one at a time instead of the caller having to
+            # compute and pass an absolute number (that's still --design-round,
+            # kept for explicit overrides/fixture setup).
+            previous_round = int(status.get("design_round", 0) or 0)
+            new_round = previous_round + 1
+            proposed["design_round"] = new_round
+            new_design_round_event = {
+                "design_round": new_round,
+                "previous_design_round": previous_round,
+                "reason": args.design_round_reason,
+            }
         if args.review_round is not None:
             proposed["review_round"] = args.review_round
 
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems)
         if errors:
+            # A blocked attempt to LEAVE Phase 2 specifically because design
+            # approval is missing/stale IS the state machine telling us the
+            # run just entered "awaiting design approval" -- log that fact
+            # even though the phase transition itself is refused and
+            # nothing else is written. Deduped against the log itself (no
+            # second field to keep in sync): skip if the most recent
+            # design-lifecycle event is already an unresolved request.
+            if args.phase == 3 and any(e.startswith("design gate:") for e in errors):
+                pending = _most_recent_kind(lib.read_events(root, cfg),
+                                            {"design_round_advanced", "design_approval_requested", "design_approved"})
+                if pending != "design_approval_requested":
+                    lib.commit(root, cfg, event_kind="design_approval_requested",
+                              event_message="Design approval requested (advance to Phase 3 blocked pending it)")
             print("SHIP_FEATURE_BLOCKED")
             print("\n".join(f"- {x}" for x in errors))
             return 1
@@ -250,9 +300,27 @@ def cmd_advance(args) -> int:
             print("SHIP_FEATURE_ADVANCE_WOULD_SUCCEED")
             return 0
 
-        lib.commit(root, cfg, status=proposed,
-                  event_kind="phase_advanced", event_message=f"Advanced to {lib.PHASES[args.phase]}",
-                  phase_number=args.phase, progress=args.progress)
+        if new_design_round_event is not None:
+            reason = new_design_round_event["reason"]
+            message = (f"Design round {new_design_round_event['previous_design_round']} -> "
+                       f"{new_design_round_event['design_round']}")
+            if reason:
+                message += f": {reason}"
+            extra_events = None
+            if new_design_round_event["previous_design_round"] >= 1:
+                extra_events = [{
+                    "kind": "design_round_ended",
+                    "message": f"Design round {new_design_round_event['previous_design_round']} ended (next round started)",
+                    "design_round": new_design_round_event["previous_design_round"],
+                    "trigger": "next_round_started",
+                }]
+            lib.commit(root, cfg, status=proposed, extra_events=extra_events,
+                      event_kind="design_round_advanced", event_message=message,
+                      phase_number=args.phase, progress=args.progress, **new_design_round_event)
+        else:
+            lib.commit(root, cfg, status=proposed,
+                      event_kind="phase_advanced", event_message=f"Advanced to {lib.PHASES[args.phase]}",
+                      phase_number=args.phase, progress=args.progress)
 
         if args.phase == 8 and proposed.get("status") == "complete":
             # The phase transition above already committed successfully; an
@@ -536,7 +604,22 @@ def cmd_design_approve(args) -> int:
             "config_hash": lib.config_hash(cfg),
             "redesigns_settled_work": args.redesigns_settled_work,
         }
-        lib.commit(root, cfg, status=status, acceptance=acceptance,
+        # Approval is round_end's other trigger (the first being the next
+        # round starting, see cmd_advance): whatever round was open when
+        # approval landed just ended, closing the episode a design-timing
+        # read-back needs. Only meaningful for a run that ever tracked an
+        # organic round (design_round > 0); a run that went straight from
+        # init to design-approve at round 0 has no round to close.
+        current_round = int(status.get("design_round", 0) or 0)
+        extra_events = None
+        if current_round >= 1:
+            extra_events = [{
+                "kind": "design_round_ended",
+                "message": f"Design round {current_round} ended (design approved)",
+                "design_round": current_round,
+                "trigger": "design_approved",
+            }]
+        lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra_events,
                   event_kind="design_approved", event_message=args.summary,
                   by=args.by, architect=args.architect,
                   redesigns_settled_work=args.redesigns_settled_work)
@@ -761,6 +844,14 @@ def cmd_criterion_remove(args) -> int:
     return 0
 
 
+def _record_heartbeat(status: dict) -> None:
+    """The exact liveness update `heartbeat` performs, factored out so
+    background-wait-start/end can feed the SAME signal stall_warning/
+    activity_note already read, instead of growing a second, parallel
+    stall mechanism just for background waits."""
+    status["last_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+
+
 def cmd_heartbeat(args) -> int:
     """Record a pure liveness signal for a run doing long background work
     (a slow check, an async agent, a scheduled self-wakeup) that has no
@@ -781,11 +872,153 @@ def cmd_heartbeat(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
-        status["last_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        _record_heartbeat(status)
         message = args.note.strip() if args.note and args.note.strip() else "Heartbeat: run is active"
         lib.commit(root, cfg, status=status,
                   event_kind="heartbeat", event_message=message, by=args.by)
     print("HEARTBEAT_RECORDED")
+    return 0
+
+
+def cmd_background_wait_start(args) -> int:
+    """Mark the start of a stretch where the run is waiting on a
+    background task (an async agent, a slow check, a scheduled
+    self-wakeup) rather than idle or waiting on a human. Feeds
+    last_heartbeat_at through the exact same path `heartbeat` uses --
+    a declared background wait IS a liveness signal, not a second,
+    parallel stall mechanism."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        events = lib.read_events(root, cfg)
+        if _most_recent_kind(events, {"background_wait_started", "background_wait_ended"}) == "background_wait_started":
+            print("SHIP_FEATURE_BLOCKED: a background wait is already open; call background-wait-end first")
+            return 1
+        _record_heartbeat(status)
+        message = args.note.strip() if args.note and args.note.strip() else "Background task wait started"
+        lib.commit(root, cfg, status=status,
+                  event_kind="background_wait_started", event_message=message, by=args.by)
+    print("BACKGROUND_WAIT_STARTED")
+    return 0
+
+
+def cmd_background_wait_end(args) -> int:
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        events = lib.read_events(root, cfg)
+        if _most_recent_kind(events, {"background_wait_started", "background_wait_ended"}) != "background_wait_started":
+            print("SHIP_FEATURE_BLOCKED: no open background wait to end")
+            return 1
+        _record_heartbeat(status)
+        message = args.note.strip() if args.note and args.note.strip() else "Background task wait ended"
+        lib.commit(root, cfg, status=status,
+                  event_kind="background_wait_ended", event_message=message, by=args.by)
+    print("BACKGROUND_WAIT_ENDED")
+    return 0
+
+
+def cmd_human_pause_start(args) -> int:
+    """Mark the start of a stretch where the run is waiting on a human for
+    something other than the design-approval gate (design_approval_
+    requested/design_approved already cover that pair automatically from
+    the state machine). Deliberately does not touch last_heartbeat_at:
+    nothing is actively running here, so there is nothing alive to
+    declare -- that is the whole point of distinguishing this from a
+    background wait."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        events = lib.read_events(root, cfg)
+        if _most_recent_kind(events, {"human_pause_started", "human_pause_ended"}) == "human_pause_started":
+            print("SHIP_FEATURE_BLOCKED: a human pause is already open; call human-pause-end first")
+            return 1
+        message = args.note.strip() if args.note and args.note.strip() else "Human input pause started"
+        lib.commit(root, cfg, event_kind="human_pause_started", event_message=message, by=args.by)
+    print("HUMAN_PAUSE_STARTED")
+    return 0
+
+
+def cmd_human_pause_end(args) -> int:
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        events = lib.read_events(root, cfg)
+        if _most_recent_kind(events, {"human_pause_started", "human_pause_ended"}) != "human_pause_started":
+            print("SHIP_FEATURE_BLOCKED: no open human pause to end")
+            return 1
+        message = args.note.strip() if args.note and args.note.strip() else "Human input pause ended"
+        lib.commit(root, cfg, event_kind="human_pause_ended", event_message=message, by=args.by)
+    print("HUMAN_PAUSE_ENDED")
+    return 0
+
+
+def cmd_design_timing(args) -> int:
+    """Read-back over the event log: report design-phase wall-clock time
+    by category (active/background_wait/human_wait), per round -- the
+    piece that makes 'did the Architect make design faster' answerable
+    from a finished or in-flight run, not just 'how long did design take
+    total'. Defaults to the live project's own event log; --events-file
+    points it at any handsoff-events.jsonl, including an archived one
+    under .handsoff-archive/<run>/, so a past run can be re-examined
+    exactly like a current one."""
+    json_module = __import__("json")
+    if args.events_file:
+        path = Path(args.events_file)
+        if not path.exists():
+            print(f"SHIP_FEATURE_BLOCKED: no such events file: {path}")
+            return 1
+        events = [json_module.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    else:
+        root = lib.resolve_root(args.root)
+        cfg = lib.load_config(root)
+        events = lib.read_events(root, cfg)
+    summary = lib.summarize_design_timing(events)
+    print(json_module.dumps(summary, indent=2))
     return 0
 
 
@@ -1001,6 +1234,30 @@ def main() -> int:
     heartbeat.add_argument("--by", required=True)
     heartbeat.add_argument("--note", default=None, help="optional one-line description of the background activity")
 
+    bg_start = sub.add_parser("background-wait-start", help="mark the start of a wait on a background "
+                              "task (an async agent, a slow check); also records a heartbeat")
+    bg_start.add_argument("--by", required=True)
+    bg_start.add_argument("--note", default=None, help="optional one-line description of the background task")
+
+    bg_end = sub.add_parser("background-wait-end", help="mark the end of the currently open background-task wait")
+    bg_end.add_argument("--by", required=True)
+    bg_end.add_argument("--note", default=None)
+
+    hp_start = sub.add_parser("human-pause-start", help="mark the start of a wait on a human, other than "
+                              "the design-approval gate (which is tracked automatically)")
+    hp_start.add_argument("--by", required=True)
+    hp_start.add_argument("--note", default=None, help="optional one-line description of what is being waited on")
+
+    hp_end = sub.add_parser("human-pause-end", help="mark the end of the currently open human-input pause")
+    hp_end.add_argument("--by", required=True)
+    hp_end.add_argument("--note", default=None)
+
+    timing = sub.add_parser("design-timing", help="report design-phase wall-clock time by category "
+                            "(active/background_wait/human_wait) and by round")
+    timing.add_argument("--events-file", default=None,
+                        help="path to a handsoff-events.jsonl to summarize instead of the live project's own "
+                        "(e.g. an archived run under .handsoff-archive/<run>/handsoff-events.jsonl)")
+
     criterion = sub.add_parser("criterion-update")
     criterion.add_argument("criterion")
     criterion.add_argument("--type", choices=("primary_fix", "supporting"))
@@ -1024,7 +1281,16 @@ def main() -> int:
     adv.add_argument("progress", type=int)
     adv.add_argument("--status", default=None)
     adv.add_argument("--implemented-by", default=None)
-    adv.add_argument("--design-round", type=int, default=None)
+    adv.add_argument("--design-round", type=int, default=None,
+                     help="explicitly set design_round to this value (override; use --new-design-round "
+                     "for normal organic tracking)")
+    adv.add_argument("--new-design-round", action="store_true",
+                     help="increment design_round by 1 from its current on-disk value and record a "
+                     "distinct design_round_advanced event; only valid when advancing to phase 2 "
+                     "(Design debate); mutually exclusive with --design-round")
+    adv.add_argument("--design-round-reason", default=None,
+                     help="optional short reason/what triggered the new design round; only valid "
+                     "together with --new-design-round")
     adv.add_argument("--review-round", type=int, default=None)
     adv.add_argument("--dry-run", action="store_true")
     adv.add_argument("--next-action", default=None,
@@ -1046,6 +1312,11 @@ def main() -> int:
         "record-review": cmd_record_review,
         "verify-live": cmd_verify_live,
         "heartbeat": cmd_heartbeat,
+        "background-wait-start": cmd_background_wait_start,
+        "background-wait-end": cmd_background_wait_end,
+        "human-pause-start": cmd_human_pause_start,
+        "human-pause-end": cmd_human_pause_end,
+        "design-timing": cmd_design_timing,
         "criterion-update": cmd_criterion_update,
         "criterion-add": cmd_criterion_add,
         "criterion-remove": cmd_criterion_remove,

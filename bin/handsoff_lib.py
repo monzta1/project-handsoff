@@ -342,18 +342,30 @@ def read_write_ahead(root: Path) -> dict | None:
 
 
 def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dict | None = None,
-          event_kind: str, event_message: str, **event_extra) -> str:
-    """Write status and/or acceptance, and append the event describing
+          event_kind: str, event_message: str, extra_events: list[dict] | None = None,
+          **event_extra) -> str:
+    """Write status and/or acceptance, and append the event(s) describing
     them, as one write-ahead-journaled unit. Every mutating command uses
     this instead of calling atomic_write_json/append_event directly, so
     every real write leaves the journal `doctor` needs to recover it
     safely. Caller must hold project_lock for the entire surrounding
-    read-validate-write, not just this call."""
+    read-validate-write, not just this call.
+
+    `extra_events`, if given, are appended (in list order) BEFORE the
+    primary event_kind/event_message, so a single state transition that is
+    really two consecutive facts (a design round ending because the next
+    one just started, say) can log both without a second write-ahead cycle
+    or a second caller of commit(). Each entry is {"kind": ..., "message":
+    ..., **extra}. Returns the hash of the PRIMARY event only; callers that
+    need an extra event's own hash should read it back from the log."""
     write_ahead(root, status=status, acceptance=acceptance)
     if acceptance is not None:
         atomic_write_json(acceptance_path(root, cfg), acceptance)
     if status is not None:
         atomic_write_json(status_path(root, cfg), status)
+    for extra in extra_events or ():
+        rest = {k: v for k, v in extra.items() if k not in ("kind", "message")}
+        append_event(root, cfg, extra["kind"], extra["message"], **rest)
     event_hash = append_event(root, cfg, event_kind, event_message, **event_extra)
     clear_write_ahead(root)
     return event_hash
@@ -1137,6 +1149,141 @@ def read_events(root: Path, cfg: dict) -> list[dict]:
         if isinstance(record, dict):
             events.append(record)
     return events
+
+
+# --------------------------------------------------------------------------
+# AR8: design-phase timing (read-back over the event log, not a new store)
+# --------------------------------------------------------------------------
+
+DESIGN_DEBATE_PHASE = 2
+
+_WAIT_STARTS = {"background_wait_started": "background_wait", "human_pause_started": "human_wait"}
+_WAIT_ENDS = {"background_wait_ended": "active", "human_pause_ended": "active"}
+
+
+def _parse_event_time(ts: str) -> datetime:
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def summarize_design_timing(events: list[dict], *, now: datetime | None = None) -> dict:
+    """Walk a run's event log (oldest first, as `read_events` returns it) and
+    account design-phase wall-clock time by category (active / background_wait
+    / human_wait) per round, so an archived run can answer 'where did design
+    time actually go', not just 'how long did design take total'.
+
+    A design-phase EPISODE opens at the first event carrying phase_number==2
+    (either a plain phase_advanced -- pre-round-tracking design work counts
+    as round 0 -- or a design_round_advanced that transitions straight from
+    Phase 1 into round 1 in one call) and closes at design_approved. Most
+    runs have exactly one episode; a criterion mutation that invalidates an
+    already-approved design and rolls back to Phase 2 (see
+    _invalidate_decisions) can reopen a second one, handled the same way.
+
+    design_round_advanced is the round boundary, per AR8's contract: it both
+    closes whatever round preceded it (a safety net -- design_round_ended
+    already closes it explicitly, see cmd_advance/cmd_design_approve) and
+    opens the new one. Time defaults to 'active'; background_wait_started/
+    human_pause_started/design_approval_requested switch the running
+    category until their matching end (or the episode/round boundary that
+    supersedes them). Events this function does not recognize never stop
+    the clock -- they simply accrue to whatever category is already
+    running, the same as any other quiet stretch of real work.
+
+    An episode with no closing design_approved yet (the run is still mid-
+    design) is included with status 'in_progress', its still-open category
+    flushed up to `now` (default: real now) so a live read gives a sane
+    answer, not a truncated one."""
+    now = now or datetime.now(timezone.utc)
+    episode: dict | None = None
+    episodes: list[dict] = []
+
+    def empty_totals() -> dict:
+        return {"active": 0.0, "background_wait": 0.0, "human_wait": 0.0}
+
+    def new_round(round_number, ts: str) -> dict:
+        return {"round": round_number, "start": ts, "end": None, "seconds": empty_totals()}
+
+    def flush(ts: str) -> None:
+        elapsed = max(0.0, (_parse_event_time(ts) - _parse_event_time(episode["_cat_start"])).total_seconds())
+        episode["rounds"][episode["_current_round"]]["seconds"][episode["_category"]] += elapsed
+        episode["_cat_start"] = ts
+
+    def switch_category(category: str, ts: str) -> None:
+        flush(ts)
+        episode["_category"] = category
+
+    def open_episode(ts: str, round_number) -> None:
+        nonlocal episode
+        episode = {
+            "start": ts, "end": None, "status": "in_progress",
+            "rounds": {round_number: new_round(round_number, ts)},
+            "_current_round": round_number, "_category": "active", "_cat_start": ts,
+        }
+
+    def start_round(round_number, ts: str) -> None:
+        flush(ts)
+        prev = episode["rounds"][episode["_current_round"]]
+        prev["end"] = prev["end"] or ts
+        episode["rounds"][round_number] = new_round(round_number, ts)
+        episode["_current_round"] = round_number
+        episode["_category"] = "active"
+        episode["_cat_start"] = ts
+
+    def close_episode(ts: str) -> None:
+        nonlocal episode
+        flush(ts)
+        cur = episode["rounds"][episode["_current_round"]]
+        cur["end"] = cur["end"] or ts
+        episode["end"] = ts
+        episode["status"] = "approved"
+        for key in ("_current_round", "_category", "_cat_start"):
+            del episode[key]
+        episodes.append(episode)
+        episode = None
+
+    for ev in events:
+        kind, ts = ev.get("kind"), ev.get("at")
+        if not ts:
+            continue
+        if kind == "design_round_advanced":
+            if episode is None:
+                open_episode(ts, ev.get("design_round"))
+            else:
+                start_round(ev.get("design_round"), ts)
+            continue
+        if episode is None:
+            if kind == "phase_advanced" and ev.get("phase_number") == DESIGN_DEBATE_PHASE:
+                open_episode(ts, 0)
+            continue
+        if kind == "design_round_ended":
+            flush(ts)
+            target = episode["rounds"].get(ev.get("design_round"), episode["rounds"][episode["_current_round"]])
+            target["end"] = target["end"] or ts
+        elif kind == "design_approval_requested":
+            switch_category("human_wait", ts)
+        elif kind in _WAIT_STARTS:
+            switch_category(_WAIT_STARTS[kind], ts)
+        elif kind in _WAIT_ENDS:
+            switch_category(_WAIT_ENDS[kind], ts)
+        elif kind == "design_approved":
+            close_episode(ts)
+
+    if episode is not None:
+        flush(now.isoformat())
+        for key in ("_current_round", "_category", "_cat_start"):
+            del episode[key]
+        episodes.append(episode)
+
+    totals = empty_totals()
+    for ep in episodes:
+        for r in ep["rounds"].values():
+            for key in totals:
+                totals[key] += r["seconds"][key]
+
+    return {"episodes": episodes, "total_seconds": totals}
 
 
 def _archive_slug(text: str, max_len: int = 60) -> str:
