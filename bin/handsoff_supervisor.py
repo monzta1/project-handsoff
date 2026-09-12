@@ -96,7 +96,7 @@ def cmd_init(args) -> int:
         }
         status = {
             "feature": args.feature, "phase_number": 1, "phase": lib.PHASES[1], "progress": 0,
-            "status": "in_progress", "updated_at": now,
+            "status": "in_progress", "updated_at": now, "last_heartbeat_at": None,
             "next_action": lib.NEXT_ACTION_DEFAULTS[1],
             "design_round": 0, "review_round": 0, "retry_count": 0, "summary": "", "reassurance": "",
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
@@ -127,6 +127,7 @@ def cmd_status(args) -> int:
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems)
         warning = lib.stall_warning(status, cfg)
+        activity = lib.activity_note(status, cfg)
         log_problems = lib.verify_event_log(root, cfg)
     print(__import__("json").dumps({
         "root": str(root), "feature": status.get("feature"), "phase": status.get("phase"),
@@ -137,7 +138,8 @@ def cmd_status(args) -> int:
         "live_verification_id": status.get("live_verification_id"),
         "verification_runs": len(verifications),
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
-        "stall_warning": warning, "event_log_intact": not log_problems, "event_log_problems": log_problems,
+        "stall_warning": warning, "activity_note": activity,
+        "event_log_intact": not log_problems, "event_log_problems": log_problems,
     }, indent=2))
     return 1 if errors or log_problems else 0
 
@@ -670,6 +672,34 @@ def cmd_criterion_remove(args) -> int:
     return 0
 
 
+def cmd_heartbeat(args) -> int:
+    """Record a pure liveness signal for a run doing long background work
+    (a slow check, an async agent, a scheduled self-wakeup) that has no
+    progress to report yet. Deliberately does not touch phase_number,
+    progress, or updated_at -- those stay reserved for calls that actually
+    advance the work; last_heartbeat_at is reserved for 'still alive'."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        status["last_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        message = args.note.strip() if args.note and args.note.strip() else "Heartbeat: run is active"
+        lib.commit(root, cfg, status=status,
+                  event_kind="heartbeat", event_message=message, by=args.by)
+    print("HEARTBEAT_RECORDED")
+    return 0
+
+
 def cmd_verify_log(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -865,6 +895,11 @@ def main() -> int:
     live = sub.add_parser("verify-live")
     live.add_argument("--by", required=True)
 
+    heartbeat = sub.add_parser("heartbeat", help="record a liveness signal for a run doing long "
+                               "background work, without advancing phase or progress")
+    heartbeat.add_argument("--by", required=True)
+    heartbeat.add_argument("--note", default=None, help="optional one-line description of the background activity")
+
     criterion = sub.add_parser("criterion-update")
     criterion.add_argument("criterion")
     criterion.add_argument("--type", choices=("primary_fix", "supporting"))
@@ -908,6 +943,7 @@ def main() -> int:
         "record-symptom-resolved": cmd_record_symptom,
         "record-review": cmd_record_review,
         "verify-live": cmd_verify_live,
+        "heartbeat": cmd_heartbeat,
         "criterion-update": cmd_criterion_update,
         "criterion-add": cmd_criterion_add,
         "criterion-remove": cmd_criterion_remove,

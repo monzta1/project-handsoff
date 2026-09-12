@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1388,6 +1389,195 @@ class TestRunArchive(HandsoffTestCase):
         finally:
             shutil.rmtree(other, ignore_errors=True)
         self.assertEqual(len(list(self.archive_dir.glob("*.json"))), 2)
+
+
+class TestActivityAwareStallDetection(HandsoffTestCase):
+    """The ir-command B3 dogfooding bug: a run doing hours of legitimate
+    background work (a long design review, which had even scheduled its
+    own fallback heartbeat) was flagged 'stalled' because stall detection
+    read only the status file's updated_at mtime. Fix: stall_warning()
+    now reads the FRESHEST of updated_at and a new, optional
+    last_heartbeat_at field, written by a new `heartbeat` command; a
+    fresh heartbeat suppresses a false stall, while a run with neither
+    signal current is still correctly flagged. See README "Known
+    limitations"."""
+
+    NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _ago(self, minutes, delta=timedelta()):
+        return (self.NOW - timedelta(minutes=minutes) - delta).isoformat()
+
+    def _real_ago(self, minutes):
+        """For tests that go through the real CLI (which always reads the
+        real wall clock, not an injectable `now`): a genuinely past
+        timestamp relative to the actual current time, not a sleep."""
+        return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+    def _write_status(self, status):
+        """Write a status dict directly (to simulate time having passed
+        without a real advance/heartbeat call) and re-anchor the event log
+        to it exactly the way commit() would, so the write reads as
+        legitimate rather than tripping the (unrelated) tamper detector --
+        this test simulates a normal passage of time, not a corrupted
+        file, so it must not exercise that separate guarantee."""
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        with lib.project_lock(self.tmp):
+            lib.atomic_write_json(lib.status_path(self.tmp, cfg), status)
+            lib.append_event(self.tmp, cfg, "test_backdate", "test harness adjusted status timestamps directly")
+
+    def test_fresh_heartbeat_suppresses_stall_warning(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = {"stall_minutes": 10}
+        status = {"status": "in_progress", "updated_at": self._ago(260), "last_heartbeat_at": self._ago(2)}
+        self.assertIsNone(lib.stall_warning(status, cfg, now=self.NOW))
+        note = lib.activity_note(status, cfg, now=self.NOW)
+        self.assertIsNotNone(note)
+        self.assertIn("background task", note)
+
+    def test_no_heartbeat_and_stale_status_still_stalled(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = {"stall_minutes": 10}
+        # No heartbeat field at all.
+        no_heartbeat = {"status": "in_progress", "updated_at": self._ago(15)}
+        self.assertIsNotNone(lib.stall_warning(no_heartbeat, cfg, now=self.NOW))
+        self.assertIsNone(lib.activity_note(no_heartbeat, cfg, now=self.NOW))
+        # Heartbeat present but itself stale: still a real stall.
+        stale_heartbeat = {"status": "in_progress", "updated_at": self._ago(15), "last_heartbeat_at": self._ago(20)}
+        self.assertIsNotNone(lib.stall_warning(stale_heartbeat, cfg, now=self.NOW))
+        # Boundary: exactly stall_minutes old still counts as fresh (the
+        # existing strict '>' comparison, not '>='), so this must NOT stall.
+        at_boundary = {"status": "in_progress", "updated_at": self._ago(10)}
+        self.assertIsNone(lib.stall_warning(at_boundary, cfg, now=self.NOW))
+        # One second past the boundary must stall.
+        past_boundary = {"status": "in_progress", "updated_at": self._ago(10, delta=timedelta(seconds=1))}
+        self.assertIsNotNone(lib.stall_warning(past_boundary, cfg, now=self.NOW))
+
+    def test_stall_and_busy_state_never_block_advance_or_status(self):
+        self.init()
+        # Genuinely stalled: no heartbeat, updated_at stale.
+        s = self.read_status()
+        s["updated_at"] = self._real_ago(20)
+        self._write_status(s)
+        status_r = run(["status"], cwd=self.tmp)
+        self.assertEqual(status_r.returncode, 0, status_r.stdout + status_r.stderr)
+        self.assertIsNotNone(json.loads(status_r.stdout)["stall_warning"])
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0, "a stall warning must not block validate")
+        same_state = run(["advance", "1", "0"], cwd=self.tmp)
+        self.assertEqual(same_state.returncode, 0, same_state.stdout + same_state.stderr)
+
+        # Busy background task: fresh heartbeat, updated_at still stale.
+        s2 = self.read_status()
+        s2["updated_at"] = self._real_ago(20)
+        s2["last_heartbeat_at"] = self._real_ago(1)
+        self._write_status(s2)
+        status_r2 = run(["status"], cwd=self.tmp)
+        self.assertEqual(status_r2.returncode, 0, status_r2.stdout + status_r2.stderr)
+        payload2 = json.loads(status_r2.stdout)
+        self.assertIsNone(payload2["stall_warning"])
+        self.assertIsNotNone(payload2["activity_note"])
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0, "a busy state must not block validate")
+        self.assertEqual(run(["advance", "1", "0"], cwd=self.tmp).returncode, 0, "a busy state must not block advance")
+
+    def test_heartbeat_command_records_liveness_without_mutating_progress(self):
+        self.init()
+        before = self.read_status()
+        r = run(["heartbeat", "--by", "impl-1", "--note", "long design review running"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("HEARTBEAT_RECORDED", r.stdout)
+        after = self.read_status()
+        self.assertEqual(after["phase_number"], before["phase_number"])
+        self.assertEqual(after["progress"], before["progress"])
+        self.assertEqual(after["updated_at"], before["updated_at"], "heartbeat must not touch updated_at")
+        self.assertIsNotNone(after["last_heartbeat_at"])
+        self.assertNotEqual(after["last_heartbeat_at"], before.get("last_heartbeat_at"))
+        events_text = (self.tmp / "handsoff-events.jsonl").read_text()
+        self.assertIn('"kind":"heartbeat"', events_text)
+        self.assertIn("long design review running", events_text)
+        log_r = run(["verify-log"], cwd=self.tmp)
+        self.assertEqual(log_r.returncode, 0, log_r.stdout + log_r.stderr)
+        self.assertIn("EVENT_LOG_INTACT", log_r.stdout)
+        missing_by = run(["heartbeat"], cwd=self.tmp)
+        self.assertNotEqual(missing_by.returncode, 0)
+        self.assertNotIn("Traceback", missing_by.stdout + missing_by.stderr)
+
+    def test_dashboard_shows_distinct_busy_label_and_still_shows_stalled_banner(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_dashboard as dash
+        self.init()
+        # Busy background task.
+        s = self.read_status()
+        s["updated_at"] = self._real_ago(20)
+        s["last_heartbeat_at"] = self._real_ago(1)
+        self._write_status(s)
+        snapshot = dash.build_snapshot(self.tmp)
+        self.assertTrue(snapshot["initialized"])
+        self.assertIsNotNone(snapshot["activity_note"])
+        supervisor = snapshot["supervisor"]
+        self.assertNotEqual(supervisor["label"], "On course")
+        self.assertNotIn("stalled", supervisor["headline"].lower())
+        self.assertIn("background", (supervisor["label"] + supervisor["headline"]).lower())
+
+        # Genuinely stalled: no heartbeat at all.
+        s2 = self.read_status()
+        s2["updated_at"] = self._real_ago(20)
+        s2.pop("last_heartbeat_at", None)
+        self._write_status(s2)
+        snapshot2 = dash.build_snapshot(self.tmp)
+        supervisor2 = snapshot2["supervisor"]
+        self.assertIsNone(snapshot2["activity_note"])
+        self.assertIn("stalled", supervisor2["headline"].lower())
+        self.assertTrue(any("no update" in item for item in supervisor2["attention"]),
+                        supervisor2["attention"])
+
+    def test_missing_heartbeat_field_is_backward_compatible(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        self.init()
+        s = self.read_status()
+        self.assertIn("last_heartbeat_at", s)  # init writes it as None going forward
+        del s["last_heartbeat_at"]  # simulate a status.json from BEFORE this fix
+        self._write_status(s)
+        r = run(["validate"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        without_field = dict(s)
+        without_field["status"] = "in_progress"
+        without_field["updated_at"] = self._ago(20)
+        with_null_field = dict(without_field)
+        with_null_field["last_heartbeat_at"] = None
+        cfg = {"stall_minutes": 10}
+        self.assertEqual(lib.stall_warning(without_field, cfg, now=self.NOW),
+                         lib.stall_warning(with_null_field, cfg, now=self.NOW))
+        self.assertIsNotNone(lib.stall_warning(without_field, cfg, now=self.NOW))
+
+    def test_malformed_heartbeat_field_rejected_by_schema(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        self.init()
+        s = self.read_status()
+        s["last_heartbeat_at"] = "not-a-timestamp"
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(s))
+        r = run(["validate"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+        self.assertIn("last_heartbeat_at", r.stdout)
+
+        s2 = self.read_status()
+        s2["last_heartbeat_at"] = datetime(2026, 1, 1, 12, 0, 0).isoformat()  # no timezone
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(s2))
+        r2 = run(["validate"], cwd=self.tmp)
+        self.assertEqual(r2.returncode, 1)
+        self.assertNotIn("Traceback", r2.stdout + r2.stderr)
+        self.assertIn("last_heartbeat_at", r2.stdout)
+
+        cfg = {"stall_minutes": 10}
+        bad_status = {"status": "in_progress", "updated_at": self._ago(20), "last_heartbeat_at": "not-a-timestamp"}
+        self.assertIsNotNone(lib.stall_warning(bad_status, cfg, now=self.NOW),
+                            "a malformed heartbeat must never be read as fresh")
 
 
 if __name__ == "__main__":

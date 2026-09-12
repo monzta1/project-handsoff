@@ -652,6 +652,22 @@ def validate_status_schema(status: dict) -> list[str]:
                 errors.append("status: 'updated_at' must include a timezone")
         except ValueError:
             errors.append("status: 'updated_at' must be an ISO-8601 timestamp")
+    # 'last_heartbeat_at' is optional and nullable (absent entirely on any
+    # status.json written before this field existed, in this repo or any
+    # other project already running Handsoff) but when PRESENT it is held
+    # to the same timestamp discipline as 'updated_at', so a malformed
+    # heartbeat is refused as a schema error rather than silently read as
+    # fresh by stall_warning()/activity_note().
+    if "last_heartbeat_at" in status and status["last_heartbeat_at"] is not None:
+        if not isinstance(status["last_heartbeat_at"], str) or not status["last_heartbeat_at"].strip():
+            errors.append("status: 'last_heartbeat_at' must be a non-empty string or null")
+        else:
+            try:
+                parsed = datetime.fromisoformat(status["last_heartbeat_at"])
+                if parsed.tzinfo is None:
+                    errors.append("status: 'last_heartbeat_at' must include a timezone")
+            except ValueError:
+                errors.append("status: 'last_heartbeat_at' must be an ISO-8601 timestamp")
     if "events" in status and not isinstance(status["events"], list):
         errors.append("status: 'events' must be an array")
     for field in ("passing", "failing", "not_tested", "blocked"):
@@ -901,23 +917,68 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     return errors
 
 
-def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None) -> str | None:
-    """Advisory only, never blocks a call: a stalled run should surface for
-    escalation, not lock the operator out of even reading status."""
-    now = now or datetime.now(timezone.utc)
-    updated = status.get("updated_at")
-    if not updated or status.get("status") not in ("in_progress",):
+def _minutes_since(timestamp: str | None, now: datetime) -> float | None:
+    """Age of an ISO-8601 timestamp in minutes, or None if it is missing or
+    unparsable -- callers treat None as 'no signal', never as 'fresh'."""
+    if not timestamp:
         return None
     try:
-        last = datetime.fromisoformat(updated)
+        last = datetime.fromisoformat(timestamp)
     except ValueError:
         return None
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
-    minutes = (now - last).total_seconds() / 60
+    return (now - last).total_seconds() / 60
+
+
+def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None) -> str | None:
+    """Advisory only, never blocks a call: a stalled run should surface for
+    escalation, not lock the operator out of even reading status.
+
+    Reads the FRESHEST of two signals, not `updated_at` alone: `updated_at`
+    (bumped by any progress-making call: advance, verify, record-evidence,
+    ...) and `last_heartbeat_at` (bumped only by the `heartbeat` command, a
+    pure liveness ping for a run doing legitimate long background work that
+    has no progress to report yet). A run flagged stalled here has NEITHER
+    signal current -- genuinely no activity, not merely no status-file
+    write. `last_heartbeat_at` may be entirely absent (any status.json
+    written before this field existed); that reads as 'no heartbeat', the
+    same as if it were missing today, never as an error."""
+    now = now or datetime.now(timezone.utc)
+    if status.get("status") not in ("in_progress",):
+        return None
+    updated_minutes = _minutes_since(status.get("updated_at"), now)
+    if updated_minutes is None:
+        return None
+    heartbeat_minutes = _minutes_since(status.get("last_heartbeat_at"), now)
     limit = float(cfg.get("stall_minutes", 10))
-    if minutes > limit:
-        return f"no update in {minutes:.0f} minutes (limit {limit:.0f}), consider escalating"
+    freshest = min(m for m in (updated_minutes, heartbeat_minutes) if m is not None)
+    if freshest > limit:
+        return f"no update in {updated_minutes:.0f} minutes (limit {limit:.0f}), consider escalating"
+    return None
+
+
+def activity_note(status: dict, cfg: dict, *, now: datetime | None = None) -> str | None:
+    """The other half of the same signal: a run that is alive but not
+    currently progressing. Fires only in the specific case that would
+    otherwise look ambiguous -- `updated_at` is stale past `stall_minutes`,
+    but `last_heartbeat_at` is fresh -- so a caller (the dashboard, `status`)
+    can say 'busy on a long background task' instead of leaving the
+    operator to guess between 'stalled' and 'on course'. Mutually exclusive
+    with `stall_warning`: whenever this returns non-None, `stall_warning`
+    is guaranteed None, since a fresh heartbeat is exactly what suppresses
+    it."""
+    now = now or datetime.now(timezone.utc)
+    if status.get("status") not in ("in_progress",):
+        return None
+    updated_minutes = _minutes_since(status.get("updated_at"), now)
+    heartbeat_minutes = _minutes_since(status.get("last_heartbeat_at"), now)
+    if updated_minutes is None or heartbeat_minutes is None:
+        return None
+    limit = float(cfg.get("stall_minutes", 10))
+    if updated_minutes > limit and heartbeat_minutes <= limit:
+        return (f"background task active (heartbeat {heartbeat_minutes:.0f} min ago); "
+                f"no status update in {updated_minutes:.0f} minutes, but the run is alive")
     return None
 
 

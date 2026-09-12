@@ -125,8 +125,8 @@ def _input_request(status: dict, cfg: dict) -> dict:
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
-                         audit_errors: list[str], stall: str | None, latest_event: dict | None,
-                         input_request: dict) -> dict:
+                         audit_errors: list[str], stall: str | None, activity: str | None,
+                         latest_event: dict | None, input_request: dict) -> dict:
     phase_number = int(status.get("phase_number", 1) or 1)
     phase = status.get("phase") or lib.PHASES.get(phase_number, "Unknown phase")
     progress = status.get("progress", 0)
@@ -153,6 +153,12 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
         label = "Attention needed"
         headline = "This run appears to have stalled."
         summary = (f"No unsafe transition has occurred. Work remains at Phase {phase_number}, {phase}, "
+                   f"with {passing} of {total} acceptance criteria verified.")
+    elif activity:
+        tone = "steady"
+        label = "Working (background task)"
+        headline = "This run is alive and working in the background."
+        summary = (f"{activity}. Work remains at Phase {phase_number}, {phase}, "
                    f"with {passing} of {total} acceptance criteria verified.")
     elif blocked or failing:
         tone = "warning"
@@ -242,6 +248,7 @@ def build_snapshot(root: Path) -> dict:
             if status.get("verification_head") != actual_head:
                 audit_errors.append("Verification ledger tail does not match its anchored head.")
             stall = lib.stall_warning(status, cfg)
+            activity = lib.activity_note(status, cfg)
     except (lib.HandsoffError, OSError) as exc:
         return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
@@ -291,8 +298,9 @@ def build_snapshot(root: Path) -> dict:
             "configured_live_checks": len(cfg.get("live_check_commands", [])),
         },
         "input_required": input_request,
-        "supervisor": _supervisor_briefing(status, criteria, gate_errors, audit_errors, stall, latest_event,
-                                            input_request),
+        "activity_note": activity,
+        "supervisor": _supervisor_briefing(status, criteria, gate_errors, audit_errors, stall, activity,
+                                            latest_event, input_request),
         "events": list(reversed(events[-12:])),
         "verifications": list(reversed(verifications[-8:])),
     }
