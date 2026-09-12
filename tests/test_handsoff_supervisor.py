@@ -104,7 +104,13 @@ class HandsoffTestCase(unittest.TestCase):
                 symptom = run(["record-symptom-resolved", "--evidence", run_id, "--by", "test-implementer"], cwd=self.tmp)
                 self.assertEqual(symptom.returncode, 0, symptom.stdout + symptom.stderr)
         else:
-            changed = run(["criterion-update", "REQ-001", "--state", state], cwd=self.tmp)
+            # Also give it a non-placeholder requirement (state alone
+            # would otherwise leave it exactly matching init's default
+            # text, which design-approve refuses -- see AR-009/Architect
+            # gate); this changes only fixture text, not the state/
+            # evidence behavior these tests actually exercise.
+            changed = run(["criterion-update", "REQ-001", "--state", state,
+                          "--requirement", "A test-fixture criterion under evaluation"], cwd=self.tmp)
             self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
 
     def advance_to(self, phase, **extra):
@@ -113,6 +119,15 @@ class HandsoffTestCase(unittest.TestCase):
         last = None
         reviewed_by = extra.pop("reviewed_by", None)
         for n in range(current + 1, phase + 1):
+            if n == 3 and self.read_status().get("requires_design_approval") and not self.read_status().get("design_approved"):
+                # The Architect gate: every run init flags going forward
+                # needs a recorded, non-self human design approval before
+                # Phase 3+. Fixture identities here are unrelated to
+                # implemented_by/reviewed_by, which the caller controls.
+                approval = run(["design-approve", "--by", "test-approver", "--architect", "test-architect",
+                               "--summary", "Test-fixture design approval"], cwd=self.tmp)
+                if approval.returncode:
+                    return approval
             if n == 6 and reviewed_by:
                 review = run(["record-review", "--by", str(reviewed_by)], cwd=self.tmp)
                 if review.returncode:
@@ -393,6 +408,9 @@ class TestConcurrentAdvanceDoesNotCorruptState(HandsoffTestCase):
         self.init()
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(2)
+        design = run(["design-approve", "--by", "test-approver", "--architect", "test-architect",
+                     "--summary", "Test-fixture design approval"], cwd=self.tmp)
+        self.assertEqual(design.returncode, 0, design.stdout + design.stderr)
         p1 = subprocess.Popen([sys.executable, str(BIN / "handsoff_supervisor.py"), "advance", "3", "30"],
                               cwd=self.tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         p2 = subprocess.Popen([sys.executable, str(BIN / "handsoff_supervisor.py"), "advance", "3", "35"],
@@ -1578,6 +1596,364 @@ class TestActivityAwareStallDetection(HandsoffTestCase):
         bad_status = {"status": "in_progress", "updated_at": self._ago(20), "last_heartbeat_at": "not-a-timestamp"}
         self.assertIsNotNone(lib.stall_warning(bad_status, cfg, now=self.NOW),
                             "a malformed heartbeat must never be read as fresh")
+
+
+class TestArchitectDesignApprovalGate(HandsoffTestCase):
+    """The Architect role's core (AR1-AR3): /ship-feature opens with an
+    Architect that collaboratively authors design + testable criteria,
+    then a human -- never the Architect itself -- must explicitly
+    approve before Phase 3+ opens. `design-approve` records that
+    approval; Phase 3+ refuses to advance for any run `init` flagged
+    `requires_design_approval` without one bound to the current
+    acceptance hash, naming a human approver distinct from the
+    architect. A run from before this feature (missing the flag) is
+    completely unaffected -- this changes the ENTRY for new runs, not
+    the existing phases."""
+
+    def _new_project_root(self):
+        root = Path(tempfile.mkdtemp(prefix="handsoff-test-architect-"))
+        shutil.copy(ROOT / "handsoff.toml", root / "handsoff.toml")
+        shutil.copytree(ROOT / "schemas", root / "schemas")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        return root
+
+    def _author_real_criterion(self, requirement="A real, specific, observable outcome",
+                               test="pytest tests/test_real.py -q", root=None):
+        root = root or self.tmp
+        r = run(["criterion-update", "REQ-001", "--requirement", requirement, "--test", test], cwd=root)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def _write_status(self, status, root=None):
+        """Write a status dict directly (to simulate a hand-crafted or
+        pre-existing state no real command would produce) and re-anchor
+        the event log to it exactly the way commit() would, so the write
+        reads as legitimate rather than tripping the unrelated tamper
+        detector -- these tests simulate specific states, not corruption."""
+        root = root or self.tmp
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(root)
+        with lib.project_lock(root):
+            lib.atomic_write_json(lib.status_path(root, cfg), status)
+            lib.append_event(root, cfg, "test_backdate", "test harness adjusted status fields directly")
+
+    def test_phase_3_blocked_without_non_self_design_approval(self):
+        self.init()
+        self.assertTrue(self.read_status()["requires_design_approval"])
+        self._author_real_criterion()
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+
+        blocked = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
+        self.assertIn("design gate", blocked.stdout)
+        self.assertEqual(self.read_status()["phase_number"], 2)
+
+        self_approve = run(["design-approve", "--by", "arch-1", "--architect", "arch-1",
+                            "--summary", "Approach and tradeoffs"], cwd=self.tmp)
+        self.assertEqual(self_approve.returncode, 1)
+        self.assertIn("self-approval", self_approve.stdout)
+        self.assertIsNone(self.read_status()["design_approved"])
+
+        # Gate-level self-approval refusal, independent of the command's
+        # own check: hand-craft a self-approved record directly (bypassing
+        # cmd_design_approve entirely) and confirm advance still refuses.
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        status = self.read_status()
+        acceptance = self.read_acceptance()
+        status["design_approved"] = {
+            "at": datetime.now(timezone.utc).isoformat(), "by": "same-id", "architect": "same-id",
+            "design_hash": lib.design_hash(acceptance["criteria"]), "config_hash": lib.config_hash(cfg),
+        }
+        self._write_status(status)
+        bypass = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(bypass.returncode, 1, bypass.stdout + bypass.stderr)
+        self.assertIn("design gate", bypass.stdout)
+        self.assertIn("self-approval", bypass.stdout)
+
+        approve = run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                      "--summary", "Approach and tradeoffs"], cwd=self.tmp)
+        self.assertEqual(approve.returncode, 0, approve.stdout + approve.stderr)
+        ok = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertEqual(self.read_status()["phase_number"], 3)
+
+    def test_design_approve_command_records_and_refuses_self_approval(self):
+        self.init()
+        self._author_real_criterion()
+        for args, expect_substr in (
+            (["design-approve", "--by", "", "--architect", "a", "--summary", "s"], "--by"),
+            (["design-approve", "--by", "h", "--architect", "  ", "--summary", "s"], "--architect"),
+            (["design-approve", "--by", "h", "--architect", "a", "--summary", "   "], "--summary"),
+            (["design-approve", "--by", "same", "--architect", "same", "--summary", "s"], "self-approval"),
+            # Whitespace/case variants of the same identity must not slip
+            # past the self-approval check -- the load-bearing guarantee
+            # this feature exists for.
+            (["design-approve", "--by", "moncy ", "--architect", "moncy", "--summary", "s"], "self-approval"),
+            (["design-approve", "--by", " moncy", "--architect", "moncy", "--summary", "s"], "self-approval"),
+            (["design-approve", "--by", "Moncy", "--architect", "moncy", "--summary", "s"], "self-approval"),
+            (["design-approve", "--by", "MONCY", "--architect", "moncy", "--summary", "s"], "self-approval"),
+        ):
+            r = run(args, cwd=self.tmp)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn(expect_substr, r.stdout)
+            self.assertNotIn("Traceback", r.stdout + r.stderr)
+        self.assertIsNone(self.read_status()["design_approved"])
+
+        # The gate-level re-check (independent of the command's own
+        # refusal) must also catch a whitespace/case-varied self-approval
+        # hand-crafted directly into status.json, not only byte-identical
+        # strings.
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        status = self.read_status()
+        acceptance = self.read_acceptance()
+        status["design_approved"] = {
+            "at": datetime.now(timezone.utc).isoformat(), "by": "Moncy ", "architect": "moncy",
+            "design_hash": lib.design_hash(acceptance["criteria"]), "config_hash": lib.config_hash(cfg),
+        }
+        self._write_status(status)
+        bypass = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(bypass.returncode, 1, bypass.stdout + bypass.stderr)
+        self.assertIn("self-approval", bypass.stdout)
+
+        r = run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                "--summary", "Approach: X. Tradeoffs: Y. Decisions: Z."], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("DESIGN_APPROVAL_RECORDED", r.stdout)
+        status = self.read_status()
+        record = status["design_approved"]
+        self.assertEqual(record["by"], "moncy")
+        self.assertEqual(record["architect"], "arch-1")
+        self.assertTrue(record["at"])
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        acceptance = self.read_acceptance()
+        self.assertEqual(record["design_hash"], lib.design_hash(acceptance["criteria"]))
+        self.assertEqual(record["config_hash"], lib.config_hash(cfg))
+        events_text = (self.tmp / "handsoff-events.jsonl").read_text()
+        self.assertIn('"kind":"design_approved"', events_text)
+        self.assertIn("Approach: X. Tradeoffs: Y. Decisions: Z.", events_text)
+
+    def test_criterion_mutation_invalidates_design_approval_and_rolls_back_to_phase_2(self):
+        for phase in (3, 4, 5):
+            root = self._new_project_root()
+            self.assertEqual(run(["init", "Test feature"], cwd=root).returncode, 0)
+            toml = root / "handsoff.toml"
+            toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+            self._author_real_criterion(root=root)
+            self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                                  "--summary", "s"], cwd=root).returncode, 0)
+            self.assertEqual(run(["advance", "2", "20"], cwd=root).returncode, 0)
+            self.assertEqual(run(["advance", "3", "30"], cwd=root).returncode, 0)
+            if phase >= 4:
+                self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=root).returncode, 0)
+            if phase >= 5:
+                self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-1"], cwd=root).returncode, 0)
+
+            status = json.loads((root / "handsoff-status.json").read_text())
+            self.assertEqual(status["phase_number"], phase)
+            self.assertIsNotNone(status["design_approved"])
+
+            r = run(["criterion-update", "REQ-001", "--requirement", "A changed outcome"], cwd=root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            after = json.loads((root / "handsoff-status.json").read_text())
+            self.assertIsNone(after["design_approved"])
+            self.assertEqual(after["phase_number"], 2, f"starting phase {phase} should roll back to 2")
+
+    def test_pre_existing_runs_without_the_new_field_are_unaffected(self):
+        self.init()
+        self._author_real_criterion()
+        status = self.read_status()
+        del status["requires_design_approval"]
+        self._write_status(status)
+        self.assertNotIn("requires_design_approval", self.read_status())
+
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        r = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.read_status()["phase_number"], 3)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_full_pre_existing_suite_unmodified_and_passing(self):
+        """Re-affirms 2 pre-existing pipeline invariants -- self-approval
+        blocked at review, deployment approval blocked before Phase 7 --
+        hold byte-for-byte for a run that went through the new Architect
+        gate. The broader 'nothing else in this file changed' half of
+        this guarantee is structural: every pre-existing test class above
+        this one is untouched by this feature's diff."""
+        self.init()
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+        self._author_real_criterion(test="true")
+        self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                              "--summary", "s"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
+        self.assertEqual(verify_r.returncode, 0, verify_r.stdout + verify_r.stderr)
+        run_id = json.loads(verify_r.stdout)["criteria"]["REQ-001"]["run_id"]
+        self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+
+        self_review = run(["record-review", "--by", "impl-1"], cwd=self.tmp)
+        self.assertEqual(self_review.returncode, 1)
+        self.assertIn("reviewer must differ", self_review.stdout)
+
+        self.assertEqual(run(["record-review", "--by", "rev-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "6", "60", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+
+        early_deploy = run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp)
+        self.assertEqual(early_deploy.returncode, 1)
+        self.assertIn("Phase 7", early_deploy.stdout)
+
+        self.assertEqual(run(["advance", "7", "70"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp).returncode, 0)
+        live_r = run(["verify-live", "--by", "monitor"], cwd=self.tmp)
+        self.assertEqual(live_r.returncode, 0, live_r.stdout + live_r.stderr)
+        self.assertEqual(run(["advance", "8", "100", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(self.read_status()["status"], "complete")
+
+    def test_end_to_end_architect_flow_through_existing_pipeline(self):
+        self.init()
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+        self._author_real_criterion(requirement="The sample feature does the observable thing.", test="true")
+
+        refused = run(["design-approve", "--by", "arch-1", "--architect", "arch-1",
+                       "--summary", "Approach"], cwd=self.tmp)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIsNone(self.read_status()["design_approved"])
+
+        approved = run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                       "--summary", "Approach: do X. Tradeoffs: Y vs Z. Decision: Y."], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
+        self.assertEqual(verify_r.returncode, 0, verify_r.stdout + verify_r.stderr)
+        run_id = json.loads(verify_r.stdout)["criteria"]["REQ-001"]["run_id"]
+        self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "6", "60", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "7", "70"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["verify-live", "--by", "monitor"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "8", "100", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+
+        validated = run(["validate"], cwd=self.tmp)
+        self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+        self.assertIn("SHIP_FEATURE_VALID", validated.stdout)
+
+    def test_design_approve_refuses_on_untouched_placeholder_criteria(self):
+        self.init()
+        r = run(["design-approve", "--by", "moncy", "--architect", "arch-1", "--summary", "s"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("placeholder", r.stdout)
+        self.assertIsNone(self.read_status()["design_approved"])
+
+        self._author_real_criterion()
+        ok = run(["design-approve", "--by", "moncy", "--architect", "arch-1", "--summary", "s"], cwd=self.tmp)
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+
+    def test_pre_existing_run_rollback_cascade_unaffected_by_new_gate(self):
+        for phase in (4, 5):
+            root = self._new_project_root()
+            self.assertEqual(run(["init", "Test feature"], cwd=root).returncode, 0)
+            toml = root / "handsoff.toml"
+            toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+            self._author_real_criterion(root=root)
+            self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                                  "--summary", "s"], cwd=root).returncode, 0)
+            self.assertEqual(run(["advance", "2", "20"], cwd=root).returncode, 0)
+            self.assertEqual(run(["advance", "3", "30"], cwd=root).returncode, 0)
+            self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=root).returncode, 0)
+            if phase == 5:
+                self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-1"], cwd=root).returncode, 0)
+
+            status = json.loads((root / "handsoff-status.json").read_text())
+            self.assertEqual(status["phase_number"], phase)
+            status.pop("requires_design_approval", None)
+            self._write_status(status, root=root)
+
+            r = run(["criterion-update", "REQ-001", "--requirement", "A changed outcome"], cwd=root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            after = json.loads((root / "handsoff-status.json").read_text())
+            # Pre-existing behavior: _invalidate_decisions only forces a
+            # phase rollback when phase_number >= 6 (rollback_to=4); at
+            # phase 4 or 5 it leaves phase_number untouched today. An
+            # unflagged run must see that exact same behavior, not the
+            # new phase-2 force-rollback this feature adds for flagged runs.
+            self.assertEqual(after["phase_number"], phase,
+                            f"unflagged run starting at phase {phase} must be left exactly as before this "
+                            "feature (unchanged), not force-rolled to phase 2")
+
+    def test_malformed_design_approved_rejected_by_schema(self):
+        self.init()
+        self._author_real_criterion()
+        self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                              "--summary", "s"], cwd=self.tmp).returncode, 0)
+
+        status = self.read_status()
+        status["design_approved"]["architect"] = ""
+        self._write_status(status)
+        r = run(["validate"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+        self.assertIn("design_approved.architect", r.stdout)
+
+        status2 = self.read_status()
+        status2["design_approved"]["at"] = "not-a-timestamp"
+        self._write_status(status2)
+        r2 = run(["validate"], cwd=self.tmp)
+        self.assertEqual(r2.returncode, 1)
+        self.assertIn("design_approved.at", r2.stdout)
+
+    def test_evidence_recording_never_invalidates_design_approval(self):
+        self.init()
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+        self._author_real_criterion(test="true")
+        self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                              "--summary", "s"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+
+        before = self.read_status()
+        self.assertIsNotNone(before["design_approved"])
+        verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
+        self.assertEqual(verify_r.returncode, 0, verify_r.stdout + verify_r.stderr)
+        after = self.read_status()
+        self.assertEqual(after["design_approved"], before["design_approved"])
+        self.assertEqual(after["phase_number"], 4)
+        run_id = json.loads(verify_r.stdout)["criteria"]["REQ-001"]["run_id"]
+        self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-1"], cwd=self.tmp).returncode, 0)
+        self.assertIsNotNone(self.read_status()["design_approved"])
+
+        self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "6", "80", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        design_before_p6_evidence = self.read_status()["design_approved"]
+
+        # Re-running verify at phase 6 must still re-invalidate review per
+        # the pre-existing rollback_to=5 cascade (unchanged regression
+        # coverage), while design_approved -- the new field -- survives.
+        verify_again = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
+        self.assertEqual(verify_again.returncode, 0, verify_again.stdout + verify_again.stderr)
+        after_p6 = self.read_status()
+        self.assertIsNone(after_p6["review"], "pre-existing rollback_to=5 behavior must still clear review")
+        self.assertEqual(after_p6["phase_number"], 5, "pre-existing rollback_to=5 behavior must still fire")
+        self.assertEqual(after_p6["design_approved"], design_before_p6_evidence,
+                         "design_approved must survive an evidence-recording call even at phase 6+")
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ PHASES = {
 #: "reproduce the original symptom", a self-contradictory status.
 NEXT_ACTION_DEFAULTS = {
     1: "Read the project rules and reproduce the original symptom.",
-    2: "Debate the design until the reviewer answers DESIGN_APPROVED.",
+    2: "Debate the design until the reviewer answers DESIGN_APPROVED, then get human design-approve.",
     3: "Begin implementation against the approved design.",
     4: "Implement the change and run `verify` against each criterion's tests.",
     5: "Get an independent reviewer to run `record-review`.",
@@ -66,6 +66,13 @@ NEXT_ACTION_DEFAULTS = {
     7: "Get explicit deployment approval, then run `verify-live` before advancing to Phase 8.",
     8: "Workflow complete; no further action required.",
 }
+
+#: The literal placeholder criterion `init` seeds a fresh run with. Shared
+#: between cmd_init (which writes it) and design-approve (which refuses to
+#: bless a registry that still contains it untouched), so the two can never
+#: drift apart into checking different text.
+PLACEHOLDER_REQUIREMENT = "State the exact observable outcome."
+PLACEHOLDER_TESTS = ["name_or_path_of_test"]
 
 DEFAULT_CONFIG = {
     "status_file": "handsoff-status.json",
@@ -678,6 +685,8 @@ def validate_status_schema(status: dict) -> list[str]:
     for field in ("implemented_by", "reviewed_by", "original_symptom_evidence_id", "live_verification_id"):
         if field in status and status[field] is not None and (not isinstance(status[field], str) or not status[field].strip()):
             errors.append(f"status: '{field}' must be a non-empty string or null")
+    if "requires_design_approval" in status and not isinstance(status["requires_design_approval"], bool):
+        errors.append("status: 'requires_design_approval' must be a boolean")
     for field, record_name in (("review", "review"), ("deployment_approved", "deployment_approved")):
         record = status.get(field)
         if record is None:
@@ -695,6 +704,22 @@ def validate_status_schema(status: dict) -> list[str]:
                     errors.append(f"status: '{record_name}.at' must include a timezone")
             except ValueError:
                 errors.append(f"status: '{record_name}.at' must be an ISO-8601 timestamp")
+    design_approved = status.get("design_approved")
+    if design_approved is not None:
+        if not isinstance(design_approved, dict):
+            errors.append("status: 'design_approved' must be an object or null")
+        else:
+            for sub in ("by", "architect", "at", "design_hash"):
+                if sub not in design_approved or not isinstance(design_approved[sub], str) \
+                        or not design_approved[sub].strip():
+                    errors.append(f"status: 'design_approved.{sub}' must be a non-empty string")
+            if "at" in design_approved and isinstance(design_approved["at"], str):
+                try:
+                    parsed = datetime.fromisoformat(design_approved["at"])
+                    if parsed.tzinfo is None:
+                        errors.append("status: 'design_approved.at' must include a timezone")
+                except ValueError:
+                    errors.append("status: 'design_approved.at' must be an ISO-8601 timestamp")
     review = status.get("review")
     if isinstance(review, dict) and "checklist" in review and not isinstance(review["checklist"], dict):
         errors.append("status: 'review.checklist' must be an object")
@@ -734,6 +759,23 @@ def acceptance_hash(criteria: list[dict]) -> str:
     pay for it when the content genuinely has not changed."""
     ordered = sorted(criteria, key=lambda c: c.get("id") or "")
     return hashlib.sha256(_canonical({"criteria": ordered}).encode("utf-8")).hexdigest()
+
+
+def design_hash(criteria: list[dict]) -> str:
+    """Binds a design approval to the SPEC of each criterion (id, type,
+    requirement, verification, tests), never its evidence state --
+    unlike acceptance_hash, which deliberately includes state/evidence so
+    a deployment/review approval notices new or changed evidence. A
+    design approval is given before implementation exists; if it were
+    bound to acceptance_hash, the very first `verify` call (which flips
+    a criterion's state) would invalidate it, forcing re-approval for
+    every criterion the moment it is first evidenced. Adding, removing,
+    or respecifying a criterion still invalidates it; recording evidence
+    about one that already exists does not."""
+    ordered = sorted(criteria, key=lambda c: c.get("id") or "")
+    return hashlib.sha256(_canonical(
+        {"criteria": [{"id": c.get("id"), "spec": criterion_spec_hash(c)} for c in ordered]}
+    ).encode("utf-8")).hexdigest()
 
 
 def _is_green(criteria: list[dict]) -> bool:
@@ -815,6 +857,33 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
     return errors
 
 
+def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
+    """The Architect gate: Phase 3+ requires a recorded human design
+    approval, for any run `requires_design_approval` (a run a NEW init
+    created). Absent for any status.json that predates this field --
+    those runs are simply never subject to this check, so an
+    already-in-progress run elsewhere is unaffected by upgrading bin/."""
+    if not status.get("requires_design_approval"):
+        return []
+    errors: list[str] = []
+    approval = status.get("design_approved")
+    if not isinstance(approval, dict):
+        return ["design gate: Phase 3+ requires a recorded human design approval"]
+    if approval.get("design_hash") != design_hash(acceptance.get("criteria", [])):
+        errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
+    if approval.get("config_hash") != config_hash(cfg):
+        errors.append("design gate: workflow policy changed since design approval; record a new approval")
+    approver = approval.get("by")
+    architect = approval.get("architect")
+    if not approver:
+        errors.append("design gate: design approval must identify the human approver")
+    if not architect:
+        errors.append("design gate: design approval must identify the architect")
+    if approver and architect and approver.strip().casefold() == architect.strip().casefold():
+        errors.append("design gate: approver must differ from the architect, no self-approval")
+    return errors
+
+
 def _valid_symptom_record(status: dict, criteria: list[dict], verifications: list[dict]) -> dict | None:
     evidence_id = status.get("original_symptom_evidence_id")
     primary = {c["id"]: c for c in criteria if c.get("type") == "primary_fix"}
@@ -863,6 +932,9 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         errors.append("state gate: requirement_coverage does not match the acceptance registry")
     if phase == 7 and status.get("status") not in {"awaiting_approval", "ready_to_deploy"}:
         errors.append("state gate: Phase 7 requires status 'awaiting_approval' or 'ready_to_deploy'")
+
+    if phase >= 3:
+        errors.extend(_design_errors(status, acceptance, cfg))
 
     if phase >= 6 and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("phase gate: every criterion and the original symptom must have verified evidence before Phase 6+")

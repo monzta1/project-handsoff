@@ -35,8 +35,19 @@ def _criterion(acceptance: dict, criterion_id: str) -> dict | None:
     return next((c for c in acceptance.get("criteria", []) if c.get("id") == criterion_id), None)
 
 
-def _invalidate_decisions(status: dict, *, rollback_to: int = 5) -> None:
-    """Any acceptance mutation makes earlier review/deployment/live decisions stale."""
+def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_design: bool = False) -> None:
+    """Any acceptance mutation makes earlier review/deployment/live decisions
+    stale. `invalidate_design=True` additionally clears design_approved and,
+    for a flagged run (requires_design_approval) that had advanced to phase
+    3+, forces it back to phase 2 -- landing at phase 3+ with a cleared
+    approval would otherwise be an immediately-blocked state, which no
+    other rollback in this function ever produces. Only the three
+    criterion-registry-mutating callers (criterion-add/update/remove) pass
+    this; the three evidence-recording callers (verify, record-evidence,
+    record-symptom-resolved) do not, since they change nothing about WHAT
+    is being asked for, only whether it has been proven -- an already-
+    approved design must not be forced back into re-approval just because
+    evidence was attached to it."""
     status["review"] = None
     status["reviewed_by"] = None
     status["deployment_approved"] = None
@@ -46,6 +57,13 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5) -> None:
         status["phase"] = lib.PHASES[rollback_to]
         status["status"] = "in_progress"
         status["progress"] = min(status.get("progress", 0), 40 if rollback_to == 4 else 50)
+    if invalidate_design:
+        status["design_approved"] = None
+        if status.get("requires_design_approval") and status.get("phase_number", 1) >= 3:
+            status["phase_number"] = 2
+            status["phase"] = lib.PHASES[2]
+            status["status"] = "in_progress"
+            status["progress"] = min(status.get("progress", 0), 20)
 
 
 def _durable_results(results: list[dict]) -> list[dict]:
@@ -90,8 +108,8 @@ def cmd_init(args) -> int:
         acceptance = {
             "feature": args.feature,
             "criteria": [{
-                "id": "REQ-001", "type": "primary_fix", "requirement": "State the exact observable outcome.",
-                "verification": "automated", "tests": ["name_or_path_of_test"], "evidence": [], "state": "failing",
+                "id": "REQ-001", "type": "primary_fix", "requirement": lib.PLACEHOLDER_REQUIREMENT,
+                "verification": "automated", "tests": list(lib.PLACEHOLDER_TESTS), "evidence": [], "state": "failing",
             }],
         }
         status = {
@@ -100,6 +118,7 @@ def cmd_init(args) -> int:
             "next_action": lib.NEXT_ACTION_DEFAULTS[1],
             "design_round": 0, "review_round": 0, "retry_count": 0, "summary": "", "reassurance": "",
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
+            "requires_design_approval": True, "design_approved": None,
             "review": None, "live_verification_id": None, "original_symptom_evidence_id": None,
             "verification_head": "GENESIS",
             "requirement_coverage": {"passing": 0, "failing": 1, "not_tested": 0, "blocked": 0,
@@ -455,6 +474,56 @@ def cmd_record_symptom(args) -> int:
     return 0
 
 
+def cmd_design_approve(args) -> int:
+    """Record the Architect's core gate: an explicit human approval of the
+    proposed design/criteria, distinct from the Architect identity that
+    proposed them. This is what actually unblocks Phase 3+ for a flagged
+    run (requires_design_approval); the Architect's own text is never
+    self-sufficient, the same way a Reviewer's own text never advances
+    the review gate without record-review."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    if not args.architect or not args.architect.strip():
+        print("SHIP_FEATURE_BLOCKED: --architect must be a non-empty string")
+        return 1
+    if not args.summary or not args.summary.strip():
+        print("SHIP_FEATURE_BLOCKED: --summary must be a non-empty string")
+        return 1
+    if args.by.strip().casefold() == args.architect.strip().casefold():
+        print("SHIP_FEATURE_BLOCKED: approver must differ from the architect, no self-approval")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        criteria = acceptance.get("criteria", [])
+        if any(c.get("requirement") == lib.PLACEHOLDER_REQUIREMENT and c.get("tests") == lib.PLACEHOLDER_TESTS
+               for c in criteria):
+            print("SHIP_FEATURE_BLOCKED: acceptance registry still contains init's untouched placeholder "
+                  "criterion; author a real criterion before requesting design approval")
+            return 1
+        status["design_approved"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "by": args.by,
+            "architect": args.architect,
+            "design_hash": lib.design_hash(criteria),
+            "config_hash": lib.config_hash(cfg),
+        }
+        lib.commit(root, cfg, status=status,
+                  event_kind="design_approved", event_message=args.summary,
+                  by=args.by, architect=args.architect)
+    print("DESIGN_APPROVAL_RECORDED")
+    return 0
+
+
 def cmd_record_review(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -597,7 +666,7 @@ def cmd_criterion_update(args) -> int:
             status["requirement_coverage"]["original_symptom_resolved"] = False
             status["original_symptom_evidence_id"] = None
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status, rollback_to=4)
+        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         errors = lib.validate_acceptance_schema(acceptance)
         if errors:
@@ -634,7 +703,7 @@ def cmd_criterion_add(args) -> int:
             print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
             return 1
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status, rollback_to=4)
+        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="criterion_added", event_message="Acceptance criterion added",
@@ -663,7 +732,7 @@ def cmd_criterion_remove(args) -> int:
             print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
             return 1
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status, rollback_to=4)
+        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="criterion_removed", event_message="Acceptance criterion removed",
@@ -888,6 +957,14 @@ def main() -> int:
     symptom.add_argument("--evidence", required=True, help="successful verification run id")
     symptom.add_argument("--by", required=True)
 
+    design_approve = sub.add_parser("design-approve", help="record explicit human approval of the Architect's "
+                                    "proposed design/criteria; required before Phase 3+ for any run init flagged")
+    design_approve.add_argument("--by", required=True, help="the human approver's identity")
+    design_approve.add_argument("--architect", required=True,
+                                help="the identity that proposed the design (must differ from --by)")
+    design_approve.add_argument("--summary", required=True,
+                                help="non-empty design summary (approach/tradeoffs/decisions), recorded as the event message")
+
     review = sub.add_parser("record-review")
     review.add_argument("--by", required=True)
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
@@ -941,6 +1018,7 @@ def main() -> int:
         "dashboard": cmd_dashboard,
         "record-evidence": cmd_record_evidence,
         "record-symptom-resolved": cmd_record_symptom,
+        "design-approve": cmd_design_approve,
         "record-review": cmd_record_review,
         "verify-live": cmd_verify_live,
         "heartbeat": cmd_heartbeat,
