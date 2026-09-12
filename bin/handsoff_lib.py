@@ -720,6 +720,10 @@ def validate_status_schema(status: dict) -> list[str]:
                         errors.append("status: 'design_approved.at' must include a timezone")
                 except ValueError:
                     errors.append("status: 'design_approved.at' must be an ISO-8601 timestamp")
+            if "redesigns_settled_work" in design_approved and design_approved["redesigns_settled_work"] is not None \
+                    and (not isinstance(design_approved["redesigns_settled_work"], str)
+                         or not design_approved["redesigns_settled_work"].strip()):
+                errors.append("status: 'design_approved.redesigns_settled_work' must be a non-empty string or null")
     review = status.get("review")
     if isinstance(review, dict) and "checklist" in review and not isinstance(review["checklist"], dict):
         errors.append("status: 'review.checklist' must be an object")

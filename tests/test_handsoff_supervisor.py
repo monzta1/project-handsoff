@@ -9,6 +9,7 @@ project" ethos.
 
 Run: python3 tests/test_handsoff_supervisor.py -v
 """
+import io
 import json
 import os
 import shutil
@@ -1954,6 +1955,74 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertEqual(after_p6["phase_number"], 5, "pre-existing rollback_to=5 behavior must still fire")
         self.assertEqual(after_p6["design_approved"], design_before_p6_evidence,
                          "design_approved must survive an evidence-recording call even at phase 6+")
+
+
+class TestArchitectRespectsSettledDesigns(HandsoffTestCase):
+    """AR9: the Architect treats existing/shipped work as settled context
+    to build around, proposing a change to it only on the human's
+    explicit request (`design-approve --redesigns-settled-work`). The
+    behavioral half of this guarantee (does the Architect actually fit
+    vs. re-architect, and ask when ambiguous) is a prompt-governed LLM
+    behavior, not deterministic code, and is verified separately by a
+    recorded actor/judge agent scenario (manual evidence, see
+    REQ-001/AR9-003/AR9-007 in the acceptance registry) -- not by a test
+    in this class. This class covers the two MECHANICALLY testable
+    guarantees: the new optional CLI flag, and that the AR1-3 core is
+    unregressed."""
+
+    def _author_real_criterion(self, requirement="A real, specific, observable outcome",
+                               test="pytest tests/test_real.py -q"):
+        r = run(["criterion-update", "REQ-001", "--requirement", requirement, "--test", test], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_redesigns_settled_work_flag_optional_and_auditable(self):
+        self.init()
+        self._author_real_criterion()
+
+        # Omitted (the default): no claim is made about touching settled work.
+        r1 = run(["design-approve", "--by", "moncy", "--architect", "arch-1", "--summary", "s"], cwd=self.tmp)
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+        status1 = self.read_status()
+        self.assertIn("redesigns_settled_work", status1["design_approved"])
+        self.assertIsNone(status1["design_approved"]["redesigns_settled_work"])
+
+        # Explicitly passed but empty/whitespace-only: refused cleanly.
+        r2 = run(["design-approve", "--by", "moncy", "--architect", "arch-2", "--summary", "s",
+                 "--redesigns-settled-work", "   "], cwd=self.tmp)
+        self.assertEqual(r2.returncode, 1, r2.stdout + r2.stderr)
+        self.assertIn("--redesigns-settled-work", r2.stdout)
+        self.assertNotIn("Traceback", r2.stdout + r2.stderr)
+
+        # Explicit, non-empty value: recorded on status.design_approved
+        # AND in the hash-chained event, auditable either way.
+        note = "Changing the payment retry policy, per explicit human request"
+        r3 = run(["design-approve", "--by", "moncy", "--architect", "arch-3", "--summary", "s2",
+                 "--redesigns-settled-work", note], cwd=self.tmp)
+        self.assertEqual(r3.returncode, 0, r3.stdout + r3.stderr)
+        status3 = self.read_status()
+        self.assertEqual(status3["design_approved"]["redesigns_settled_work"], note)
+        events_text = (self.tmp / "handsoff-events.jsonl").read_text()
+        self.assertIn(note, events_text)
+        log_r = run(["verify-log"], cwd=self.tmp)
+        self.assertEqual(log_r.returncode, 0, log_r.stdout + log_r.stderr)
+        self.assertIn("EVENT_LOG_INTACT", log_r.stdout)
+
+    def test_ar1_ar3_core_unregressed(self):
+        """Programmatically loads and RUNS the real, pre-existing
+        TestArchitectDesignApprovalGate class (not a re-assertion of its
+        behavior): a renamed or deleted class fails to resolve here, and
+        a net shrinkage in its test methods fails the exact-count check,
+        so this criterion is bound to the actual class, not a copy of
+        what it once asserted."""
+        loader = unittest.TestLoader()
+        suite = loader.loadTestsFromTestCase(TestArchitectDesignApprovalGate)
+        self.assertEqual(suite.countTestCases(), 10,
+                        "TestArchitectDesignApprovalGate must still have exactly its known 10 test methods")
+        runner = unittest.TextTestRunner(verbosity=0, stream=io.StringIO())
+        result = runner.run(suite)
+        self.assertTrue(result.wasSuccessful(),
+                       f"AR1-3 core regressed: {len(result.failures)} failures, {len(result.errors)} errors "
+                       f"({[f[0].id() for f in result.failures] + [e[0].id() for e in result.errors]})")
 
 
 if __name__ == "__main__":

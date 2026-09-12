@@ -493,6 +493,9 @@ def cmd_design_approve(args) -> int:
     if args.by.strip().casefold() == args.architect.strip().casefold():
         print("SHIP_FEATURE_BLOCKED: approver must differ from the architect, no self-approval")
         return 1
+    if args.redesigns_settled_work is not None and not args.redesigns_settled_work.strip():
+        print("SHIP_FEATURE_BLOCKED: --redesigns-settled-work must be a non-empty string when passed")
+        return 1
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     with lib.project_lock(root):
@@ -516,10 +519,12 @@ def cmd_design_approve(args) -> int:
             "architect": args.architect,
             "design_hash": lib.design_hash(criteria),
             "config_hash": lib.config_hash(cfg),
+            "redesigns_settled_work": args.redesigns_settled_work,
         }
         lib.commit(root, cfg, status=status,
                   event_kind="design_approved", event_message=args.summary,
-                  by=args.by, architect=args.architect)
+                  by=args.by, architect=args.architect,
+                  redesigns_settled_work=args.redesigns_settled_work)
     print("DESIGN_APPROVAL_RECORDED")
     return 0
 
@@ -964,6 +969,10 @@ def main() -> int:
                                 help="the identity that proposed the design (must differ from --by)")
     design_approve.add_argument("--summary", required=True,
                                 help="non-empty design summary (approach/tradeoffs/decisions), recorded as the event message")
+    design_approve.add_argument("--redesigns-settled-work", default=None,
+                                help="omit for a design that only fits around existing/shipped work; pass a "
+                                "non-empty description ONLY when the human explicitly asked to redesign "
+                                "already-settled work, making that exception visible in the audit trail")
 
     review = sub.add_parser("record-review")
     review.add_argument("--by", required=True)
