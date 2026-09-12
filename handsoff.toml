@@ -18,6 +18,14 @@ supervisor = "configure-me"
 implementer = "configure-me"
 reviewer = "configure-me"
 
+[models]
+# Use "default" to inherit the runner's configured model, or enter an exact
+# model ID/alias supported by the selected adapter.
+architect = "default"
+supervisor = "default"
+implementer = "default"
+reviewer = "default"
+
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a

@@ -24,6 +24,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import shutil
 import sys
 import time
 import uuid
@@ -87,7 +89,26 @@ DEFAULT_CONFIG = {
     "check_commands": [],
     "live_check_commands": [],
     "check_timeout_seconds": 600,
+    "agents": {
+        "architect": "configure-me",
+        "supervisor": "configure-me",
+        "implementer": "configure-me",
+        "reviewer": "configure-me",
+    },
+    "models": {
+        "architect": "default",
+        "supervisor": "default",
+        "implementer": "default",
+        "reviewer": "default",
+    },
 }
+
+AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
+SELECTABLE_AGENT_ROLES = AGENT_ROLES
+LEGACY_AGENT_ROLES = ("architect", "implementer", "reviewer")
+SELECTABLE_AGENT_ADAPTERS = ("codex", "claude")
+DEFAULT_AGENT_MODEL = "default"
+MAX_AGENT_MODEL_LENGTH = 128
 
 REQUIRED_STATUS_FIELDS = (
     "feature", "phase_number", "phase", "progress", "status", "updated_at",
@@ -144,6 +165,8 @@ def load_config(root: Path) -> dict:
     DEFAULT_CONFIG rather than erroring, since a fresh project may not have
     customised every field yet."""
     cfg = dict(DEFAULT_CONFIG)
+    cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
+    cfg["models"] = dict(DEFAULT_CONFIG["models"])
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -155,9 +178,11 @@ def load_config(root: Path) -> dict:
         raise HandsoffError(f"cannot load {path}: {exc}") from exc
     project = raw.get("project", {})
     workflow = raw.get("workflow", {})
+    agents = raw.get("agents", {})
+    models = raw.get("models", {})
     checks = raw.get("checks", {})
-    if not all(isinstance(section, dict) for section in (project, workflow, checks)):
-        raise HandsoffError("handsoff.toml: project, workflow, and checks must be tables")
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, checks)):
+        raise HandsoffError("handsoff.toml: project, workflow, agents, models, and checks must be tables")
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
@@ -172,6 +197,14 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
         cfg[key] = value
+    for role in AGENT_ROLES:
+        value = agents.get(role, cfg["agents"][role])
+        if not isinstance(value, str) or not value.strip():
+            raise HandsoffError(f"handsoff.toml: agents.{role} must be a non-empty string")
+        cfg["agents"][role] = value.strip()
+    for role in SELECTABLE_AGENT_ROLES:
+        value = models.get(role, cfg["models"][role])
+        cfg["models"][role] = validate_agent_model(value)
     for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
         value = checks.get(toml_key, cfg[config_key])
         if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
@@ -201,6 +234,175 @@ def load_config(root: Path) -> dict:
         if cfg[key] < 0:
             raise HandsoffError(f"handsoff.toml: {key} must not be negative")
     return cfg
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Atomically replace a UTF-8 text file and clean up on failure."""
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            os.chmod(tmp, path.stat().st_mode)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def validate_agent_model(value: object) -> str:
+    """Validate a literal runner model ID without interpreting it.
+
+    The value is passed as one argv element only after validation. Leading
+    dashes are rejected so a model can never be confused for another CLI
+    option even if a runner changes how it parses option values.
+    """
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise HandsoffError("agent model must be a non-empty string without surrounding whitespace")
+    if len(value) > MAX_AGENT_MODEL_LENGTH:
+        raise HandsoffError(f"agent model must be at most {MAX_AGENT_MODEL_LENGTH} characters")
+    if value.startswith("-"):
+        raise HandsoffError("agent model must not begin with '-'")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise HandsoffError("agent model must not contain control characters")
+    return value
+
+
+def agent_profiles(cfg: dict) -> dict:
+    return {
+        role: {"adapter": cfg["agents"][role], "model": cfg["models"][role]}
+        for role in SELECTABLE_AGENT_ROLES
+    }
+
+
+def adapter_availability() -> dict:
+    """Executable discovery only; callers must not imply runtime readiness."""
+    result = {}
+    for adapter in SELECTABLE_AGENT_ADAPTERS:
+        discovered = shutil.which(adapter)
+        executable = str(Path(discovered).resolve()) if discovered else None
+        result[adapter] = {"available": executable is not None, "executable": executable}
+    return result
+
+
+def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
+                           assignments: dict[str, str]) -> list[str]:
+    section_pattern = re.compile(rf"^\s*\[{re.escape(table)}\]\s*(?:#.*)?(?:\r?\n)?$")
+    section_starts = [i for i, line in enumerate(lines)
+                      if re.match(r"^\s*\[[^\]]+\]\s*(?:#.*)?(?:\r?\n)?$", line)]
+    headers = [i for i in section_starts if section_pattern.match(lines[i])]
+    if len(headers) > 1:
+        raise HandsoffError(f"handsoff.toml: ambiguous duplicate [{table}] tables")
+    if headers:
+        start = headers[0]
+        end = next((i for i in section_starts if i > start), len(lines))
+    elif table in parsed:
+        raise HandsoffError(f"handsoff.toml: unsupported [{table}] table syntax")
+    else:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += "\n"
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        start = len(lines)
+        lines.append(f"[{table}]\n")
+        end = len(lines)
+
+    patterns = {
+        role: re.compile(
+            rf"^(\s*{role}\s*=\s*)(?:\"(?:[^\"\\]|\\.)*\"|'[^']*')(\s*(?:#.*)?)(\r?\n)?$"
+        ) for role in assignments
+    }
+    found: set[str] = set()
+    for index in range(start + 1, end):
+        for role, pattern in patterns.items():
+            match = pattern.match(lines[index])
+            if not match:
+                continue
+            if role in found:
+                raise HandsoffError(f"handsoff.toml: duplicate {table}.{role} assignment")
+            found.add(role)
+            newline = match.group(3) or ""
+            lines[index] = f"{match.group(1)}{json.dumps(assignments[role])}{match.group(2)}{newline}"
+
+    insert_at = end
+    while insert_at > start + 1 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    lines[insert_at:insert_at] = [
+        f"{role} = {json.dumps(value)}\n" for role, value in assignments.items() if role not in found
+    ]
+    return lines
+
+
+def update_agent_config(root: Path, assignments: dict) -> dict:
+    """Patch dashboard-selectable role profiles in TOML.
+
+    Legacy `{role: adapter}` calls still update only `[agents]`. New
+    `{role: {adapter, model}}` calls atomically update `[agents]` and
+    `[models]`. Unknown TOML remains byte-for-byte unchanged.
+    """
+    submitted = frozenset(assignments) if isinstance(assignments, dict) else frozenset()
+    current_shape = frozenset(SELECTABLE_AGENT_ROLES)
+    legacy_shape = frozenset(LEGACY_AGENT_ROLES)
+    if not isinstance(assignments, dict) or submitted not in {frozenset(current_shape), frozenset(legacy_shape)}:
+        raise HandsoffError(
+            "agent settings must contain all four roles, or the legacy architect, implementer, and reviewer set"
+        )
+    legacy = all(isinstance(value, str) for value in assignments.values())
+    profiles = all(isinstance(value, dict) for value in assignments.values())
+    if not legacy and not profiles:
+        raise HandsoffError("agent settings must use either all adapter strings or all role profiles")
+    if legacy:
+        adapters = assignments
+        # An older client knows nothing about model IDs. Reset to the runner
+        # default rather than silently retaining a custom model that may be
+        # incompatible with the newly selected adapter.
+        models = {role: DEFAULT_AGENT_MODEL for role in assignments}
+    else:
+        if any(set(value) != {"adapter", "model"} for value in assignments.values()):
+            raise HandsoffError("each agent profile must contain exactly adapter and model")
+        adapters = {role: value["adapter"] for role, value in assignments.items()}
+        models = {role: validate_agent_model(value["model"]) for role, value in assignments.items()}
+    if any(value not in SELECTABLE_AGENT_ADAPTERS for value in adapters.values()):
+        raise HandsoffError("agent adapters must be exactly 'codex' or 'claude'")
+    path = root / "handsoff.toml"
+    if tomllib is None:
+        raise HandsoffError("agent settings require Python 3.11+ TOML support")
+
+    with project_lock(root):
+        try:
+            original = path.read_text(encoding="utf-8")
+            parsed = tomllib.loads(original)
+        except (OSError, ValueError) as exc:
+            raise HandsoffError(f"cannot update {path}: {exc}") from exc
+        if "agents" in parsed and not isinstance(parsed["agents"], dict):
+            raise HandsoffError("handsoff.toml: agents must be a table")
+        if legacy and submitted == legacy_shape:
+            raw_models = parsed.get("models", {})
+            supervisor_model = raw_models.get("supervisor", DEFAULT_AGENT_MODEL)
+            models["supervisor"] = validate_agent_model(supervisor_model)
+
+        lines = _patch_toml_role_table(original.splitlines(keepends=True), parsed, "agents", adapters)
+        lines = _patch_toml_role_table(lines, parsed, "models", models)
+        proposed = "".join(lines)
+        try:
+            proposed_raw = tomllib.loads(proposed)
+        except ValueError as exc:
+            raise HandsoffError(f"refusing invalid proposed handsoff.toml: {exc}") from exc
+        effective_agents = proposed_raw.get("agents", {})
+        if any(effective_agents.get(role) != adapters[role] for role in adapters):
+            raise HandsoffError("refusing ambiguous agent settings update")
+        effective_models = proposed_raw.get("models", {})
+        if any(effective_models.get(role) != models[role] for role in SELECTABLE_AGENT_ROLES):
+            raise HandsoffError("refusing ambiguous agent model update")
+        _atomic_write_text(path, proposed)
+    if legacy:
+        return {role: adapters[role] for role in assignments}
+    return {role: {"adapter": adapters[role], "model": models[role]}
+            for role in SELECTABLE_AGENT_ROLES}
 
 
 def status_path(root: Path, cfg: dict) -> Path:

@@ -262,6 +262,15 @@ def cmd_advance(args) -> int:
             proposed["status"] = "complete"
         if args.implemented_by:
             proposed["implemented_by"] = args.implemented_by
+        if args.authorization_hold:
+            if args.phase != 2 or proposed.get("status") != "blocked":
+                print("SHIP_FEATURE_INVALID: --authorization-hold requires Phase 2 with --status blocked")
+                return 1
+            proposed["authorization_hold"] = args.authorization_hold
+        else:
+            # Holds are assertions about THIS exact transition, never sticky
+            # state inherited by a later, unrelated Phase-2 block.
+            proposed.pop("authorization_hold", None)
         new_design_round_event = None
         if args.design_round is not None:
             proposed["design_round"] = args.design_round
@@ -695,6 +704,7 @@ def cmd_record_design_review(args) -> int:
             "design_hash": lib.design_hash(criteria),
             "config_hash": lib.config_hash(cfg),
         }
+        status.pop("authorization_hold", None)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         if decision == "approved":
             if not lib._design_errors(status, acceptance, cfg):
@@ -996,8 +1006,21 @@ def cmd_background_wait_start(args) -> int:
         if _most_recent_kind(events, {"background_wait_started", "background_wait_ended"}) == "background_wait_started":
             print("SHIP_FEATURE_BLOCKED: a background wait is already open; call background-wait-end first")
             return 1
-        _record_heartbeat(status)
         message = args.note.strip() if args.note and args.note.strip() else "Background task wait started"
+        if getattr(args, "resume_after_authorization", False):
+            if status.get("phase_number") != 2:
+                print("SHIP_FEATURE_BLOCKED: --resume-after-authorization is only valid for a Phase-2 design review")
+                return 1
+            if status.get("status") != "blocked" or status.get("design_review") \
+                    or status.get("authorization_hold") != "design_review":
+                print("SHIP_FEATURE_BLOCKED: --resume-after-authorization requires a blocked Phase-2 run "
+                      "with authorization_hold=design_review before any review has been recorded")
+                return 1
+            status["status"] = "in_progress"
+            status["next_action"] = message
+            status["updated_at"] = datetime.now(timezone.utc).isoformat()
+            status.pop("authorization_hold", None)
+        _record_heartbeat(status)
         lib.commit(root, cfg, status=status,
                   event_kind="background_wait_started", event_message=message, by=args.by)
     print("BACKGROUND_WAIT_STARTED")
@@ -1338,6 +1361,10 @@ def main() -> int:
                               "task (an async agent, a slow check); also records a heartbeat")
     bg_start.add_argument("--by", required=True)
     bg_start.add_argument("--note", default=None, help="optional one-line description of the background task")
+    bg_start.add_argument(
+        "--resume-after-authorization", action="store_true",
+        help="atomically clear a Phase-2 human authorization hold as the approved background review starts",
+    )
 
     bg_end = sub.add_parser("background-wait-end", help="mark the end of the currently open background-task wait")
     bg_end.add_argument("--by", required=True)
@@ -1395,6 +1422,8 @@ def main() -> int:
     adv.add_argument("--dry-run", action="store_true")
     adv.add_argument("--next-action", default=None,
                      help="override the phase-appropriate default next_action message")
+    adv.add_argument("--authorization-hold", choices=("design_review",), default=None,
+                     help="tag an explicit Phase-2 blocked wait for reviewer authorization")
 
     gate = sub.add_parser("deployment-gate")
     gate.add_argument("--approve", action="store_true")

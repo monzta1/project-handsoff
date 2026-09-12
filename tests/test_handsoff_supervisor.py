@@ -10,13 +10,17 @@ project" ethos.
 Run: python3 tests/test_handsoff_supervisor.py -v
 """
 import io
+import http.client
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -149,6 +153,702 @@ class HandsoffTestCase(unittest.TestCase):
             last = run(args, cwd=self.tmp)
         return last
 
+
+class TestEveMissionControl(HandsoffTestCase):
+    """The dashboard speaks like a calm tactical computer without hiding
+    real delivery facts, and receives workflow changes without waiting for
+    a browser polling interval."""
+
+    def _dashboard(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_dashboard as dashboard
+        return dashboard
+
+    def test_static_interface_uses_tactical_vocabulary(self):
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        for phrase in (
+            "E.V.E. MISSION CONTROL",
+            "ACTIVE MISSION OBJECTIVE",
+            "MISSION TRAJECTORY",
+            "MISSION OBJECTIVES",
+            "FLIGHT LOG",
+            "INCOMING TRANSMISSIONS",
+            "SYSTEM DIAGNOSTICS",
+            "Welcome back, Pilot",
+        ):
+            self.assertIn(phrase, html)
+
+    def test_supervisor_briefing_is_calm_concise_and_pilot_focused(self):
+        dashboard = self._dashboard()
+        base = {"phase_number": 4, "phase": "Implement", "progress": 40,
+                "status": "in_progress", "requirement_coverage": {}}
+        clear_input = {"required": False, "kind": None, "message": None}
+        scenarios = [
+            dashboard._supervisor_briefing(base, [], [], [], None, None, None, clear_input),
+            dashboard._supervisor_briefing(base, [], ["Gate failed"], [], None, None, None, clear_input),
+            dashboard._supervisor_briefing(base, [], [], [], "No update for 12 minutes.", None, None, clear_input),
+            dashboard._supervisor_briefing(
+                {**base, "phase_number": 8, "phase": "Complete", "progress": 100, "status": "complete",
+                 "requirement_coverage": {"original_symptom_resolved": True}},
+                [], [], [], None, None, None, clear_input),
+        ]
+        for briefing in scenarios:
+            self.assertIn("Pilot", briefing["headline"])
+            self.assertLess(len(briefing["headline"]), 100)
+            self.assertLess(len(briefing["summary"]), 260)
+            self.assertNotIn("!!!", briefing["headline"] + briefing["summary"])
+
+    def test_alerts_and_empty_state_remain_actionable(self):
+        dashboard = self._dashboard()
+        exact_action = "Run the targeted verification for EVE-003."
+        request = dashboard._input_request(
+            {"status": "blocked", "phase_number": 4, "next_action": exact_action},
+            {"deployment_requires_explicit_approval": True},
+        )
+        self.assertTrue(request["required"])
+        self.assertEqual(request["message"], exact_action)
+        briefing = dashboard._supervisor_briefing(
+            {"phase_number": 4, "phase": "Implement", "progress": 40, "status": "blocked",
+             "requirement_coverage": {}}, [], [], [], None, None, None, request)
+        self.assertIn("Pilot", briefing["headline"])
+        self.assertEqual(briefing["summary"], exact_action)
+
+        deployment = dashboard._input_request(
+            {"status": "in_progress", "phase_number": 7, "next_action": "Review deployment."},
+            {"deployment_requires_explicit_approval": True},
+        )
+        self.assertIn("Pilot", deployment["message"])
+        self.assertIn("deployment approval", deployment["message"])
+        design = dashboard._input_request(
+            {"status": "in_progress", "phase_number": 2, "requires_design_approval": True,
+             "design_approved": None, "design_review": {"decision": "approved"},
+             "next_action": "Background text no longer mentions authorization."},
+            {"deployment_requires_explicit_approval": True},
+        )
+        self.assertTrue(design["required"])
+        self.assertEqual(design["kind"], "design_approval")
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        script = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertIn("PILOT AUTHORIZATION REQUIRED", html)
+        self.assertIn('id="design-approve"', html)
+        self.assertIn('fetch("/api/design-approval"', script)
+        self.assertIn('signature !== state.alertSignature', script)
+        self.assertIn("python3 bin/handsoff_supervisor.py init", html)
+
+        self.init("Dashboard design authorization")
+        authored = run([
+            "criterion-update", "REQ-001", "--requirement",
+            "Dashboard approval fixture has a real acceptance criterion",
+        ], cwd=self.tmp)
+        self.assertEqual(authored.returncode, 0, authored.stdout + authored.stderr)
+        phase_two = run(["advance", "2", "20"], cwd=self.tmp)
+        self.assertEqual(phase_two.returncode, 0, phase_two.stdout + phase_two.stderr)
+        reviewed = approve_design_review(self.tmp, architect="arch-ui", reviewer="reviewer-ui")
+        self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
+        awaiting = dashboard.build_snapshot(self.tmp)
+        self.assertEqual(awaiting["input_required"]["kind"], "design_approval")
+
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=3)
+            connection.request(
+                "POST", "/api/design-approval", body="{}",
+                headers={"Content-Type": "application/json", "Origin": f"http://{host}:{port}"},
+            )
+            response = connection.getresponse()
+            body = response.read()
+            connection.close()
+            self.assertEqual(response.status, 200, body)
+            approved = self.read_status()["design_approved"]
+            self.assertEqual(approved["by"], "Mission Control Pilot")
+            self.assertEqual(approved["architect"], "arch-ui")
+            self.assertEqual(self.read_status()["status"], "in_progress")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_technical_facts_and_accessibility_are_preserved(self):
+        dashboard = self._dashboard()
+        self.init("Exact feature name: E.V.E. telemetry")
+        snapshot = dashboard.build_snapshot(self.tmp)
+        self.assertEqual(snapshot["project"]["feature"], "Exact feature name: E.V.E. telemetry")
+        self.assertEqual(snapshot["status"]["phase_number"], 1)
+        self.assertEqual(snapshot["acceptance"]["criteria"][0]["id"], "REQ-001")
+        self.assertIn("updated_at", snapshot["status"])
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        self.assertIn('aria-live="polite"', html)
+        self.assertIn('role="alert"', html)
+        self.assertIn('data-role="architect"', html)
+        self.assertIn('data-role="reviewer"', html)
+
+    def test_dashboard_refreshes_immediately_from_server_events(self):
+        dashboard = self._dashboard()
+        self.init("Real-time telemetry fixture")
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        stream = http.client.HTTPConnection(host, port, timeout=3)
+        response = None
+        try:
+            stream.request("GET", "/api/events")
+            response = stream.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Content-Type"), "text/event-stream")
+            while response.readline() not in (b"\n", b"\r\n", b""):
+                pass
+
+            started = time.monotonic()
+            heartbeat = run(["heartbeat", "--by", "telemetry-test", "--note", "state changed"], cwd=self.tmp)
+            self.assertEqual(heartbeat.returncode, 0, heartbeat.stdout + heartbeat.stderr)
+            event = ""
+            for _ in range(12):
+                line = response.readline().decode("utf-8")
+                if line.startswith("event:"):
+                    event = line.strip()
+                if not line.strip() and event == "event: invalidate":
+                    break
+            self.assertEqual(event, "event: invalidate")
+            self.assertLess(time.monotonic() - started, 2.0)
+
+            snapshot_conn = http.client.HTTPConnection(host, port, timeout=3)
+            snapshot_conn.request("GET", "/api/dashboard")
+            snapshot_response = snapshot_conn.getresponse()
+            snapshot = json.loads(snapshot_response.read())
+            snapshot_conn.close()
+            self.assertIsNotNone(snapshot["status"]["last_heartbeat_at"])
+            self.assertEqual(snapshot["events"][0]["by"], "telemetry-test")
+
+            script = (ROOT / "dashboard" / "app.js").read_text()
+            self.assertIn('new EventSource("/api/events")', script)
+            self.assertIn('document.addEventListener("visibilitychange"', script)
+            self.assertIn('window.addEventListener("focus"', script)
+            self.assertIn('window.addEventListener("pageshow"', script)
+        finally:
+            if response is not None:
+                response.close()
+            stream.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_agent_settings_gui_persists_role_assignments_safely(self):
+        dashboard = self._dashboard()
+        import handsoff_lib as lib
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        script = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertIn('id="settings-toggle"', html)
+        self.assertIn('id="settings-dialog"', html)
+        for role in ("architect", "supervisor", "implementer", "reviewer"):
+            self.assertIn(f'<select id="agent-{role}"', html)
+        self.assertIn('aria-live="polite"', html)
+        self.assertIn('fetch("/api/settings/agents"', script)
+
+        config_path = self.tmp / "handsoff.toml"
+        original = config_path.read_text()
+        customized = original.replace('architect = "configure-me"\n', '# architect intentionally omitted\n')
+        customized += '\n[adapter.extra]\nnote = "preserve this byte-for-byte"\n'
+        config_path.write_text(customized)
+
+        effective = lib.update_agent_config(self.tmp, {
+            "architect": "codex", "implementer": "claude", "reviewer": "codex",
+        })
+        updated = config_path.read_text()
+        self.assertEqual(effective, {"architect": "codex", "implementer": "claude", "reviewer": "codex"})
+        self.assertIn('# architect intentionally omitted\n', updated)
+        self.assertIn('architect = "codex"\n', updated)
+        self.assertIn('supervisor = "configure-me"', updated)
+        self.assertIn('[adapter.extra]\nnote = "preserve this byte-for-byte"', updated)
+        self.assertEqual(lib.load_config(self.tmp)["agents"]["implementer"], "claude")
+
+        stable = config_path.read_text()
+        with self.assertRaises(lib.HandsoffError):
+            lib.update_agent_config(self.tmp, {
+                "architect": "remote-agent", "implementer": "claude", "reviewer": "codex",
+            })
+        self.assertEqual(config_path.read_text(), stable)
+        with mock.patch.object(lib.os, "replace", side_effect=OSError("simulated disk failure")):
+            with self.assertRaises(OSError):
+                lib.update_agent_config(self.tmp, {
+                    "architect": "claude", "implementer": "codex", "reviewer": "claude",
+                })
+        self.assertEqual(config_path.read_text(), stable)
+
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+
+        def post(raw, *, origin=True):
+            connection = http.client.HTTPConnection(host, port, timeout=3)
+            headers = {"Content-Type": "application/json"}
+            if origin:
+                headers["Origin"] = f"http://{host}:{port}"
+            connection.request("POST", "/api/settings/agents", body=raw, headers=headers)
+            response = connection.getresponse()
+            body = response.read()
+            status = response.status
+            connection.close()
+            return status, body
+
+        try:
+            payload = json.dumps({"architect": "claude", "implementer": "codex", "reviewer": "claude"})
+            status, body = post(payload)
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(body)["agents"], {
+                "architect": "claude", "implementer": "codex", "reviewer": "claude",
+            })
+            self.assertEqual(lib.load_config(self.tmp)["agents"]["architect"], "claude")
+
+            unchanged = config_path.read_text()
+            forbidden, _ = post(payload, origin=False)
+            self.assertEqual(forbidden, 403)
+            duplicate, _ = post(
+                '{"architect":"codex","architect":"claude","implementer":"codex","reviewer":"claude"}'
+            )
+            self.assertEqual(duplicate, 400)
+            self.assertEqual(config_path.read_text(), unchanged)
+
+            snapshot = dashboard.build_snapshot(self.tmp)
+            self.assertEqual(snapshot["settings"]["agents"]["reviewer"], "claude")
+            self.assertEqual(snapshot["settings"]["allowed_adapters"], ["codex", "claude"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_agent_settings_include_role_specific_models_and_availability(self):
+        dashboard = self._dashboard()
+        import handsoff_lib as lib
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        script = (ROOT / "dashboard" / "app.js").read_text()
+        for role in ("architect", "supervisor", "implementer", "reviewer"):
+            self.assertIn(f'id="agent-{role}-model"', html)
+        self.assertIn("Executable detection does not prove", html)
+        self.assertIn("default</code> sends no model flag", html)
+        self.assertIn("exact model ID to pin it", html)
+        self.assertIn("JSON.stringify(profiles)", script)
+
+        self.assertEqual(lib.load_config(self.tmp)["models"], {
+            "architect": "default", "supervisor": "default",
+            "implementer": "default", "reviewer": "default",
+        })
+        config_path = self.tmp / "handsoff.toml"
+        config_path.write_text(config_path.read_text() + '\n[adapter.extra]\nnote = "preserve-model-update"\n')
+        profiles = {
+            "architect": {"adapter": "codex", "model": "gpt-5.4"},
+            "supervisor": {"adapter": "claude", "model": "opus"},
+            "implementer": {"adapter": "claude", "model": "sonnet"},
+            "reviewer": {"adapter": "codex", "model": "custom/reviewer-v2"},
+        }
+        self.assertEqual(lib.update_agent_config(self.tmp, profiles), profiles)
+        updated = config_path.read_text()
+        self.assertIn('[models]\n', updated)
+        self.assertIn('architect = "gpt-5.4"\n', updated)
+        self.assertIn('[adapter.extra]\nnote = "preserve-model-update"', updated)
+        self.assertEqual(lib.agent_profiles(lib.load_config(self.tmp)), profiles)
+
+        for bad in ("", " model", "model ", "-override", "bad\nmodel", "x" * 129):
+            invalid = {role: dict(profile) for role, profile in profiles.items()}
+            invalid["reviewer"]["model"] = bad
+            with self.assertRaises(lib.HandsoffError):
+                lib.update_agent_config(self.tmp, invalid)
+
+        legacy = {"architect": "claude", "implementer": "codex", "reviewer": "claude"}
+        self.assertEqual(lib.update_agent_config(self.tmp, legacy), legacy)
+        self.assertEqual(lib.load_config(self.tmp)["models"], {
+            "architect": "default", "supervisor": "opus",
+            "implementer": "default", "reviewer": "default",
+        })
+        with mock.patch.object(lib.shutil, "which", side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+            view = dashboard._settings_view(lib.load_config(self.tmp))
+        self.assertTrue(view["availability"]["codex"]["available"])
+        self.assertFalse(view["availability"]["claude"]["available"])
+        self.assertIn("does not prove", view["availability_scope"])
+
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=3)
+            connection.request(
+                "POST", "/api/settings/agents", body=json.dumps(profiles),
+                headers={"Content-Type": "application/json", "Origin": f"http://{host}:{port}"},
+            )
+            response = connection.getresponse()
+            body = response.read()
+            connection.close()
+            self.assertEqual(response.status, 200, body)
+            payload = json.loads(body)
+            self.assertEqual(payload["profiles"], profiles)
+            self.assertIn("availability", payload)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_background_review_start_clears_stale_authorization_state(self):
+        dashboard = self._dashboard()
+        self.init("Instant review transition")
+        changed = run(["criterion-update", "REQ-001", "--requirement", "Instant review state is visible"], cwd=self.tmp)
+        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        moved = run([
+            "advance", "2", "20", "--status", "blocked", "--next-action",
+            "Credentials are required for an unrelated service.",
+        ], cwd=self.tmp)
+        self.assertEqual(moved.returncode, 0, moved.stdout + moved.stderr)
+        wrong_hold = run([
+            "background-wait-start", "--by", "supervisor", "--resume-after-authorization",
+            "--note", "This must not clear an unrelated hold.",
+        ], cwd=self.tmp)
+        self.assertEqual(wrong_hold.returncode, 1)
+        self.assertEqual(self.read_status()["status"], "blocked")
+        tagged = run([
+            "advance", "2", "20", "--status", "blocked", "--authorization-hold", "design_review",
+            "--next-action", "Authorize the independent design reviewer.",
+        ], cwd=self.tmp)
+        self.assertEqual(tagged.returncode, 0, tagged.stdout + tagged.stderr)
+        before = self.read_status()
+
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        stream = http.client.HTTPConnection(host, port, timeout=3)
+        response = None
+        try:
+            stream.request("GET", "/api/events")
+            response = stream.getresponse()
+            while response.readline() not in (b"\n", b"\r\n", b""):
+                pass
+            started = time.monotonic()
+            resumed = run([
+                "background-wait-start", "--by", "supervisor", "--resume-after-authorization",
+                "--note", "Independent design reviewer is analyzing the design.",
+            ], cwd=self.tmp)
+            self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+            event = ""
+            for _ in range(12):
+                line = response.readline().decode("utf-8")
+                if line.startswith("event:"):
+                    event = line.strip()
+                if not line.strip() and event == "event: invalidate":
+                    break
+            self.assertEqual(event, "event: invalidate")
+            self.assertLess(time.monotonic() - started, 2.0)
+
+            after = self.read_status()
+            self.assertEqual(after["status"], "in_progress")
+            self.assertEqual(after["next_action"], "Independent design reviewer is analyzing the design.")
+            self.assertGreater(after["updated_at"], before["updated_at"])
+            self.assertIsNotNone(after["last_heartbeat_at"])
+            snapshot = dashboard.build_snapshot(self.tmp)
+            self.assertFalse(snapshot["input_required"]["required"])
+            self.assertEqual(snapshot["actors"]["active_role"], "reviewer")
+            self.assertEqual(snapshot["events"][0]["kind"], "background_wait_started")
+
+            ended = run(["background-wait-end", "--by", "supervisor"], cwd=self.tmp)
+            self.assertEqual(ended.returncode, 0, ended.stdout + ended.stderr)
+            reviewed = approve_design_review(self.tmp, architect="arch", reviewer="design-reviewer")
+            self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
+            refused = run([
+                "background-wait-start", "--by", "supervisor", "--resume-after-authorization",
+                "--note", "This must not hide the design approval gate.",
+            ], cwd=self.tmp)
+            self.assertEqual(refused.returncode, 1)
+            protected = dashboard.build_snapshot(self.tmp)
+            self.assertEqual(protected["status"]["status"], "blocked")
+            self.assertEqual(protected["input_required"]["kind"], "design_approval")
+        finally:
+            if response is not None:
+                response.close()
+            stream.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
+class TestAgentRuntimeAdapter(HandsoffTestCase):
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+
+    def _runtime(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_agent
+        return handsoff_agent
+
+    def test_selected_role_profile_builds_the_executable_model_command(self):
+        runtime = self._runtime()
+        import handsoff_lib as lib
+
+        for adapter in ("codex", "claude"):
+            for role in lib.SELECTABLE_AGENT_ROLES:
+                model = f"exact-{adapter}-{role}"
+                profiles = {
+                    item: {"adapter": adapter, "model": model if item == role else "default"}
+                    for item in lib.SELECTABLE_AGENT_ROLES
+                }
+                lib.update_agent_config(self.tmp, profiles)
+                spec = runtime.build_launch_spec(
+                    self.tmp, role, "-m remains task data; $(touch never-runs)",
+                    which=lambda name: f"/usr/local/bin/{name}",
+                )
+                self.assertEqual(spec.cwd, str(self.tmp.resolve()))
+                self.assertEqual(spec.argv[0], f"/usr/local/bin/{adapter}")
+                self.assertIn("--model", spec.argv)
+                self.assertEqual(spec.argv[spec.argv.index("--model") + 1], model)
+                self.assertNotIn("$(touch never-runs)", spec.argv)
+                self.assertIn("$(touch never-runs)", spec.stdin)
+                self.assertIn((self.tmp / "prompts" / f"{role}.md").read_text().strip(), spec.stdin)
+                self.assertNotIn("--resume", spec.argv)
+                self.assertNotIn("--continue", spec.argv)
+                self.assertFalse(any("bypass" in arg for arg in spec.argv))
+                if adapter == "codex":
+                    self.assertEqual(spec.argv[-1], "-")
+                    self.assertIn("--ephemeral", spec.argv)
+                    sandbox = spec.argv[spec.argv.index("--sandbox") + 1]
+                    self.assertEqual(sandbox, "read-only" if role in {"reviewer", "supervisor"} else "workspace-write")
+                else:
+                    self.assertIn("-p", spec.argv)
+                    permission = spec.argv[spec.argv.index("--permission-mode") + 1]
+                    self.assertEqual(permission, "plan" if role in {"reviewer", "supervisor"} else "acceptEdits")
+
+                default_profiles = {item: {"adapter": adapter, "model": "default"}
+                                    for item in lib.SELECTABLE_AGENT_ROLES}
+                lib.update_agent_config(self.tmp, default_profiles)
+                default_spec = runtime.build_launch_spec(
+                    self.tmp, role, "default model", which=lambda name: f"/usr/local/bin/{name}"
+                )
+                self.assertNotIn("--model", default_spec.argv)
+                self.assertNotIn("default", default_spec.argv)
+
+        with self.assertRaisesRegex(lib.HandsoffError, "not available"):
+            runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: None)
+        (self.tmp / "prompts" / "reviewer.md").unlink()
+        with self.assertRaisesRegex(lib.HandsoffError, "prompt is missing"):
+            runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: "/bin/reviewer")
+
+        spec = runtime.LaunchSpec("reviewer", "codex", "default", ("/bin/codex", "exec", "-"),
+                                  str(self.tmp), "prompt and task")
+        calls = []
+
+        class FakeProcess:
+            pid = None
+            returncode = 0
+            def communicate(self, *, input, timeout):
+                calls.append((input, timeout))
+            def terminate(self):
+                calls.append("terminate")
+            def wait(self, timeout=None):
+                return self.returncode
+            def kill(self):
+                calls.append("kill")
+
+        factory = mock.Mock(return_value=FakeProcess())
+        self.assertEqual(runtime.execute_launch(spec, timeout=12, popen_factory=factory), 0)
+        _, kwargs = factory.call_args
+        self.assertFalse(kwargs["shell"])
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(kwargs["cwd"], str(self.tmp))
+        self.assertEqual(calls[0], ("prompt and task", 12))
+
+        failed = FakeProcess()
+        failed.returncode = 9
+        with self.assertRaisesRegex(lib.HandsoffError, "status 9"):
+            runtime.execute_launch(spec, popen_factory=mock.Mock(return_value=failed))
+
+        class TimedOut(FakeProcess):
+            def communicate(self, *, input, timeout):
+                raise subprocess.TimeoutExpired(spec.argv, timeout)
+
+        with self.assertRaisesRegex(lib.HandsoffError, "timed out"):
+            runtime.execute_launch(spec, timeout=1, popen_factory=mock.Mock(return_value=TimedOut()))
+
+        class StubbornGroup(TimedOut):
+            pid = 424242
+            waits = 0
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired(spec.argv, timeout)
+                return 0
+
+        with mock.patch.object(runtime.os, "killpg") as killpg:
+            with self.assertRaisesRegex(lib.HandsoffError, "timed out"):
+                runtime.execute_launch(spec, timeout=1, popen_factory=mock.Mock(return_value=StubbornGroup()))
+        self.assertEqual(killpg.call_args_list, [
+            mock.call(424242, runtime.signal.SIGTERM),
+            mock.call(424242, runtime.signal.SIGKILL),
+        ])
+
+        class Cancelled(FakeProcess):
+            pid = 515151
+            def communicate(self, *, input, timeout):
+                raise KeyboardInterrupt()
+
+        with mock.patch.object(runtime.os, "killpg") as cancel_group:
+            with self.assertRaisesRegex(lib.HandsoffError, "cancelled"):
+                runtime.execute_launch(spec, popen_factory=mock.Mock(return_value=Cancelled()))
+        cancel_group.assert_called_once_with(515151, runtime.signal.SIGTERM)
+
+        import handsoff_broker as broker
+        self.init("Trusted Supervisor broker")
+        root_text = str(self.tmp.resolve())
+        class WorkflowProcess:
+            pid = None
+            returncode = 0
+            def wait(self, timeout=None):
+                return self.returncode
+            def terminate(self):
+                return None
+            def kill(self):
+                return None
+
+        workflow = mock.Mock(return_value=WorkflowProcess())
+        status_request = {
+            "actor": "supervisor", "project_root": root_text,
+            "action": "workflow", "command": "status",
+        }
+        self.assertEqual(broker.dispatch_supervisor_request(
+            self.tmp, status_request, workflow_popen=workflow
+        ), 0)
+        _, workflow_kwargs = workflow.call_args
+        self.assertFalse(workflow_kwargs["shell"])
+        self.assertEqual(workflow_kwargs["cwd"], root_text)
+
+        state_before = self.read_status()
+        rejected = [
+            ({**status_request, "project_root": str(self.tmp / "..")}, "supervisor"),
+            ({**status_request, "command": "design-approve"}, "supervisor"),
+            ({**status_request, "command": "deployment-gate"}, "supervisor"),
+            ({**status_request, "command": "bash"}, "supervisor"),
+            ({**status_request, "source_path": "../product.py"}, "supervisor"),
+            ({"actor": "supervisor", "project_root": root_text, "action": "launch_role",
+              "role": "supervisor", "task": "recurse"}, "supervisor"),
+            (status_request, "implementer"),
+        ]
+        for request, caller in rejected:
+            with self.subTest(request=request, caller=caller):
+                before_calls = workflow.call_count
+                with self.assertRaises(lib.HandsoffError):
+                    if caller == "supervisor":
+                        broker.dispatch_supervisor_request(
+                            self.tmp, request, workflow_popen=workflow, agent_launcher=mock.Mock(),
+                        )
+                    else:
+                        broker.execute_request(
+                            self.tmp, request, capability=object(), workflow_popen=workflow,
+                            agent_launcher=mock.Mock(),
+                        )
+                self.assertEqual(workflow.call_count, before_calls)
+                self.assertEqual(self.read_status(), state_before)
+
+        launch_request = {
+            "actor": "supervisor", "project_root": root_text, "action": "launch_role",
+            "role": "reviewer", "task": "Inspect only", "timeout": 30,
+        }
+        launch_spec = runtime.LaunchSpec(
+            "reviewer", "codex", "default", ("/bin/codex", "exec", "-"), root_text, "prompt"
+        )
+        launcher = mock.Mock(return_value=0)
+        with mock.patch.object(broker.agent_runtime, "build_launch_spec", return_value=launch_spec) as build:
+            self.assertEqual(broker.dispatch_supervisor_request(
+                self.tmp, launch_request, agent_launcher=launcher,
+            ), 0)
+        build.assert_called_once_with(self.tmp.resolve(), "reviewer", "Inspect only")
+        launcher.assert_called_once_with(launch_spec, timeout=30)
+
+        class BrokerTimeout(WorkflowProcess):
+            waits = 0
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired("status", timeout)
+                return 0
+
+        timed_workflow = mock.Mock(return_value=BrokerTimeout())
+        with self.assertRaisesRegex(lib.HandsoffError, "timed out"):
+            broker.dispatch_supervisor_request(self.tmp, status_request, workflow_popen=timed_workflow)
+
+        class BrokerCancelled(WorkflowProcess):
+            waits = 0
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise KeyboardInterrupt()
+                return 0
+
+        cancelled_workflow = mock.Mock(return_value=BrokerCancelled())
+        with self.assertRaisesRegex(lib.HandsoffError, "cancelled"):
+            broker.dispatch_supervisor_request(self.tmp, status_request, workflow_popen=cancelled_workflow)
+
+        supervisor_request = {
+            "actor": "supervisor", "project_root": root_text,
+            "action": "workflow", "command": "status",
+        }
+        protocol = f'{runtime.SUPERVISOR_REQUEST_PREFIX} {json.dumps(supervisor_request)}\n'
+
+        class InputPipe:
+            def __init__(self):
+                self.value = ""
+            def write(self, value):
+                self.value += value
+            def close(self):
+                return None
+
+        class SupervisorProcess(WorkflowProcess):
+            def __init__(self):
+                self.stdin = InputPipe()
+                self.stdout = io.StringIO(protocol)
+
+        supervisor_spec = runtime.LaunchSpec(
+            "supervisor", "codex", "default", ("/bin/codex", "exec", "-"), root_text, "supervisor prompt"
+        )
+        with mock.patch.object(broker, "dispatch_supervisor_request", return_value=0) as dispatch:
+            self.assertEqual(runtime.execute_launch(
+                supervisor_spec, popen_factory=mock.Mock(return_value=SupervisorProcess())
+            ), 0)
+        dispatch.assert_called_once_with(self.tmp.resolve(), supervisor_request)
+
+        tagged_hold = {
+            "actor": "supervisor", "project_root": root_text, "action": "workflow",
+            "command": "advance", "phase": 2, "progress": 20, "status": "blocked",
+            "next_action": "Authorize the independent design reviewer.",
+            "authorization_hold": "design_review",
+        }
+        self.assertEqual(broker.dispatch_supervisor_request(self.tmp, tagged_hold), 0)
+        self.assertEqual(self.read_status()["authorization_hold"], "design_review")
+
+        unrelated_hold = {
+            "actor": "supervisor", "project_root": root_text, "action": "workflow",
+            "command": "advance", "phase": 2, "progress": 20, "status": "blocked",
+            "next_action": "Provide unrelated service credentials.",
+        }
+        self.assertEqual(broker.dispatch_supervisor_request(self.tmp, unrelated_hold), 0)
+        self.assertNotIn("authorization_hold", self.read_status())
+        resume = {
+            "actor": "supervisor", "project_root": root_text, "action": "workflow",
+            "command": "background-wait-start", "by": "supervisor",
+            "note": "Independent design review active.", "resume_after_authorization": True,
+        }
+        with self.assertRaisesRegex(lib.HandsoffError, "exited with status"):
+            broker.dispatch_supervisor_request(self.tmp, resume)
+        self.assertEqual(self.read_status()["status"], "blocked")
+
+        self.assertEqual(broker.dispatch_supervisor_request(self.tmp, tagged_hold), 0)
+        self.assertEqual(broker.dispatch_supervisor_request(self.tmp, resume), 0)
+        self.assertEqual(self.read_status()["status"], "in_progress")
+        self.assertNotIn("authorization_hold", self.read_status())
 
 class TestQuickStartPaths(HandsoffTestCase):
     """The original bug: the README's own quick-start crashed on a fresh

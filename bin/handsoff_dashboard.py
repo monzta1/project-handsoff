@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only local dashboard for Project Handsoff.
+"""Local dashboard for Project Handsoff.
 
-The dashboard deliberately exposes no mutation endpoint. The supervisor CLI
-remains the only writer; this process only translates authenticated project
-state into a compact monitoring view for a human operator.
+Most workflow artifacts remain read-only. Two narrow same-origin endpoints
+exist: Agent Settings atomically persists allowlisted role profiles, and the
+design-approval action invokes the same guarded command as the supervisor CLI.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -20,6 +21,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_supervisor as supervisor  # noqa: E402
 
 
 ASSET_ROOT = Path(__file__).resolve().parent.parent / "dashboard"
@@ -29,6 +31,38 @@ ASSETS = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
+MAX_SETTINGS_BODY = 4096
+
+
+def _settings_view(cfg: dict) -> dict:
+    return {
+        "agents": dict(cfg.get("agents", {})),
+        "profiles": lib.agent_profiles(cfg),
+        "allowed_adapters": list(lib.SELECTABLE_AGENT_ADAPTERS),
+        "availability": lib.adapter_availability(),
+        "availability_scope": (
+            "Executable discovery only; it does not prove authentication, account entitlement, "
+            "network access, or model validity."
+        ),
+    }
+
+
+def _strict_json_object(payload: bytes) -> dict:
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON field: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise lib.HandsoffError(f"invalid settings JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise lib.HandsoffError("settings payload must be a JSON object")
+    return value
 
 
 def _read_events(root: Path, cfg: dict) -> list[dict]:
@@ -46,6 +80,35 @@ def _read_events(root: Path, cfg: dict) -> list[dict]:
         if isinstance(record, dict):
             events.append(record)
     return events
+
+
+def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
+    """Return a cheap, lock-consistent fingerprint of dashboard inputs.
+
+    SSE carries only an invalidation signal. `/api/dashboard` remains the
+    authoritative snapshot, which keeps event delivery small and avoids
+    duplicating the gate calculations in two code paths.
+    """
+    with lib.project_lock(root):
+        try:
+            cfg = lib.load_config(root)
+            paths = [
+                root / "handsoff.toml",
+                lib.status_path(root, cfg),
+                lib.acceptance_path(root, cfg),
+                lib.event_log_path(root, cfg),
+                lib.verification_log_path(root, cfg),
+            ]
+        except lib.HandsoffError:
+            paths = [root / "handsoff.toml"]
+        signature = []
+        for path in paths:
+            try:
+                stat = path.stat()
+                signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                signature.append((str(path), -1, -1))
+        return tuple(signature)
 
 
 def _phase_view(current: int, run_complete: bool) -> list[dict]:
@@ -102,20 +165,30 @@ def _input_request(status: dict, cfg: dict) -> dict:
     """
     workflow_status = str(status.get("status") or "")
     phase = int(status.get("phase_number", 1) or 1)
-    next_action = str(status.get("next_action") or "Your decision is needed before work can continue.")
+    next_action = str(status.get("next_action") or "Pilot authorization is required before the mission can continue.")
     approval_missing = (
         cfg.get("deployment_requires_explicit_approval", True)
         and phase == 7
         and not status.get("deployment_approved")
     )
+    design_review = status.get("design_review") or {}
+    design_approval_missing = (
+        status.get("requires_design_approval") is True
+        and phase == 2
+        and not status.get("design_approved")
+        and design_review.get("decision") == "approved"
+    )
     older_signal = any(phrase in next_action.lower() for phrase in (
         "waiting for user", "waiting on user", "your input", "need your decision",
         "need your approval", "provide credentials", "grant permission", "authorize",
     ))
-    required = workflow_status == "blocked" or approval_missing or older_signal
+    required = workflow_status == "blocked" or approval_missing or design_approval_missing or older_signal
     if approval_missing:
         kind = "deployment_approval"
-        message = "Explicit deployment approval is required before live verification can continue."
+        message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
+    elif design_approval_missing:
+        kind = "design_approval"
+        message = "Independent design review is approved. Authorize this exact design to open Phase 3."
     elif workflow_status == "blocked":
         kind = "blocked"
         message = next_action
@@ -140,43 +213,43 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
 
     if input_request["required"]:
         tone = "critical"
-        label = "Your input required"
-        headline = "I’m waiting for you before I can continue."
+        label = "Pilot authorization required"
+        headline = "Holding position. Awaiting your command, Pilot."
         summary = input_request["message"]
     elif all_errors:
         tone = "critical"
-        label = "Line stopped"
-        headline = "I have stopped this run at the safety gate."
+        label = "Safety interlock"
+        headline = "Tactical advance suspended, Pilot."
         summary = (f"The feature is at Phase {phase_number}, {phase}, with {progress}% reported progress. "
                    f"I found {len(all_errors)} condition{'s' if len(all_errors) != 1 else ''} that must be resolved before advancement.")
     elif stall:
         tone = "warning"
-        label = "Attention needed"
-        headline = "This run appears to have stalled."
+        label = "Telemetry interruption"
+        headline = "Mission telemetry has gone silent, Pilot."
         summary = (f"No unsafe transition has occurred. Work remains at Phase {phase_number}, {phase}, "
                    f"with {passing} of {total} acceptance criteria verified.")
     elif activity:
         tone = "steady"
-        label = "Working (background task)"
-        headline = "This run is alive and working in the background."
+        label = "Background operation"
+        headline = "Systems active. Background sequence in progress, Pilot."
         summary = (f"{activity}. Work remains at Phase {phase_number}, {phase}, "
                    f"with {passing} of {total} acceptance criteria verified.")
     elif blocked or failing:
         tone = "warning"
-        label = "Work in progress"
-        headline = "I’m holding the line until the open criteria are proven."
+        label = "Objectives unresolved"
+        headline = "Holding trajectory until Mission Objectives are verified, Pilot."
         summary = (f"We are in Phase {phase_number}, {phase}, at {progress}%. "
                    f"{passing} of {total} criteria are passing; {len(failing)} are failing and {len(blocked)} are blocked.")
     elif phase_number == 8 and status.get("status") == "complete":
         tone = "success"
         label = "Mission complete"
-        headline = "The feature is live, verified, and complete."
+        headline = "Objectives neutralized. Mission complete, Pilot."
         summary = (f"All {total} acceptance criteria are evidenced, the original symptom is resolved, "
                    "and the live verification gate has passed.")
     else:
         tone = "steady"
-        label = "On course"
-        headline = f"The run is moving through {phase}."
+        label = "Trajectory stable"
+        headline = f"System online. {phase} sequence active, Pilot."
         summary = (f"Progress is {progress}% with {passing} of {total} acceptance criteria verified. "
                    f"The original symptom is {'confirmed resolved' if resolved else 'not yet confirmed resolved'}.")
 
@@ -208,7 +281,7 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
         "label": label,
         "headline": headline,
         "summary": status.get("summary") or summary,
-        "reassurance": status.get("reassurance") or "I will not advance this run unless every required gate remains satisfied.",
+        "reassurance": status.get("reassurance") or "Reactor core stable. Safety interlocks active. I will advance only when every required gate is satisfied.",
         "next_action": input_request["message"] or status.get("next_action") or lib.NEXT_ACTION_DEFAULTS.get(phase_number, "Review the current state."),
         "attention": attention,
         "completed": completed,
@@ -232,7 +305,8 @@ def build_snapshot(root: Path) -> dict:
             "initialized": False,
             "generated_at": generated_at,
             "root": str(root),
-            "error": "No active Handsoff run was found in this project.",
+            "error": "System online. No active Mission Objective was found in this project, Pilot.",
+            "settings": _settings_view(cfg),
         }
 
     try:
@@ -301,6 +375,7 @@ def build_snapshot(root: Path) -> dict:
             "configured_checks": len(cfg.get("check_commands", [])),
             "configured_live_checks": len(cfg.get("live_check_commands", [])),
         },
+        "settings": _settings_view(cfg),
         "input_required": input_request,
         "activity_note": activity,
         "supervisor": _supervisor_briefing(status, criteria, gate_errors, audit_errors, stall, activity,
@@ -320,6 +395,7 @@ class DashboardServer(ThreadingHTTPServer):
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server: DashboardServer
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, _format: str, *_args) -> None:
         return
@@ -334,12 +410,76 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'")
         self.end_headers()
 
+    def _sse_headers(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'")
+        self.end_headers()
+
+    def _json_response(self, status: HTTPStatus, value: dict) -> None:
+        payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        self._headers(status, "application/json; charset=utf-8", len(payload))
+        self.wfile.write(payload)
+
+    def _same_origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return False
+        try:
+            parsed = urlsplit(origin)
+            port = parsed.port
+        except ValueError:
+            return False
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+            and port == self.server.server_port
+            and not parsed.username
+            and not parsed.password
+            and parsed.path in {"", "/"}
+            and not parsed.query
+            and not parsed.fragment
+        )
+
+    def _send_event(self, event: str, data: dict) -> None:
+        payload = f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode("utf-8")
+        self.wfile.write(payload)
+        self.wfile.flush()
+
+    def _serve_events(self) -> None:
+        self._sse_headers()
+        signature = _artifact_signature(self.server.project_root)
+        last_keepalive = time.monotonic()
+        self.wfile.write(b"retry: 1000\n")
+        self._send_event("ready", {"connected": True})
+        while True:
+            time.sleep(0.2)
+            current = _artifact_signature(self.server.project_root)
+            if current != signature:
+                signature = current
+                self._send_event("invalidate", {"changed": True})
+                last_keepalive = time.monotonic()
+            elif time.monotonic() - last_keepalive >= 15:
+                self.wfile.write(b": telemetry keepalive\n\n")
+                self.wfile.flush()
+                last_keepalive = time.monotonic()
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
         if path == "/api/dashboard":
             payload = json.dumps(build_snapshot(self.server.project_root), separators=(",", ":")).encode("utf-8")
             self._headers(HTTPStatus.OK, "application/json; charset=utf-8", len(payload))
             self.wfile.write(payload)
+            return
+        if path == "/api/events":
+            try:
+                self._serve_events()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
             return
         if path == "/healthz":
             payload = b'{"ok":true}'
@@ -362,6 +502,73 @@ class DashboardHandler(BaseHTTPRequestHandler):
         payload = b"Not found"
         self._headers(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", len(payload))
         self.wfile.write(payload)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlsplit(self.path).path
+        if path not in {"/api/settings/agents", "/api/design-approval"}:
+            self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
+            return
+        if not self._same_origin_allowed():
+            self._json_response(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Same-origin dashboard request required"})
+            return
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self._json_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"ok": False, "error": "Content-Type must be application/json"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        if length < 1:
+            self._json_response(HTTPStatus.LENGTH_REQUIRED, {"ok": False, "error": "A settings request body is required"})
+            return
+        if length > MAX_SETTINGS_BODY:
+            self._json_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "Settings request is too large"})
+            return
+        try:
+            requested = _strict_json_object(self.rfile.read(length))
+            if path == "/api/design-approval":
+                if requested:
+                    raise lib.HandsoffError("design approval payload must be empty")
+                snapshot = build_snapshot(self.server.project_root)
+                input_request = snapshot.get("input_required") or {}
+                review = (snapshot.get("status") or {}).get("design_review") or {}
+                architect = review.get("architect")
+                if input_request.get("kind") != "design_approval" or not architect:
+                    self._json_response(
+                        HTTPStatus.CONFLICT,
+                        {"ok": False, "error": "The current mission is not awaiting design authorization"},
+                    )
+                    return
+                command = argparse.Namespace(
+                    root=str(self.server.project_root),
+                    by="Mission Control Pilot",
+                    architect=architect,
+                    summary="Pilot authorized the independently reviewed design in Mission Control.",
+                    redesigns_settled_work=None,
+                )
+                if supervisor.cmd_design_approve(command) != 0:
+                    self._json_response(
+                        HTTPStatus.CONFLICT,
+                        {"ok": False, "error": "The design approval gate rejected this authorization"},
+                    )
+                    return
+                approved = lib.load_unique_json(lib.status_path(
+                    self.server.project_root, lib.load_config(self.server.project_root)
+                )).get("design_approved")
+                self._json_response(HTTPStatus.OK, {"ok": True, "design_approved": approved})
+                return
+            lib.update_agent_config(self.server.project_root, requested)
+            effective_cfg = lib.load_config(self.server.project_root)
+        except lib.HandsoffError as exc:
+            self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        except OSError:
+            self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": "Agent settings could not be saved"})
+            return
+        response = _settings_view(effective_cfg)
+        response["agents"] = {role: effective_cfg["agents"][role] for role in requested}
+        self._json_response(HTTPStatus.OK, {"ok": True, **response})
 
 
 def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> int:
