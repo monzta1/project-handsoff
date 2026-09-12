@@ -62,7 +62,9 @@ function renderProviderStatus(providers) {
     const meta = PROVIDER_STATE_META[info?.state] || { text: String(info?.state || "UNKNOWN").toUpperCase(), cssClass: "" };
     const item = document.createElement("li");
     const label = document.createElement("span");
-    label.textContent = info?.label || id;
+    label.textContent = Array.isArray(info?.models) && info.models.length
+      ? `${info?.label || id} (${info.models.join(", ")})`
+      : (info?.label || id);
     const badge = document.createElement("span");
     badge.className = `provider-state ${meta.cssClass}`;
     badge.textContent = meta.text;

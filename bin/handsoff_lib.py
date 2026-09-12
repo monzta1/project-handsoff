@@ -28,6 +28,7 @@ import re
 import shutil
 import sys
 import time
+import urllib.request
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -292,47 +293,88 @@ def adapter_availability() -> dict:
 #: Providers surfaced read-only in the Agent Settings UI so a user can see
 #: what's actually usable before picking an adapter, distinct from
 #: SELECTABLE_AGENT_ADAPTERS (the values `update_agent_config` accepts).
-#: Each entry is either "cli" (detected by executable presence on PATH) or
+#: Each entry is "cli" (detected by executable presence on PATH),
 #: "credential" (detected by presence of an environment variable name only
-#: -- never its value, per the "no credential handling" requirement).
+#: -- never its value), or "endpoint" (detected by presence of either an
+#: endpoint URL or credential env var name, since a self-hosted
+#: OpenAI-compatible server commonly needs no real credential).
 PROVIDER_SPECS = (
     {"id": "codex", "label": "Codex CLI", "kind": "cli", "executable": "codex"},
     {"id": "claude", "label": "Claude Code", "kind": "cli", "executable": "claude"},
-    {"id": "ollama", "label": "Ollama (local models)", "kind": "cli", "executable": "ollama"},
+    {"id": "ollama", "label": "Ollama (local models)", "kind": "cli", "executable": "ollama", "list_models": True},
     {"id": "grok", "label": "Grok", "kind": "credential", "credential_env_var": "XAI_API_KEY"},
     {
-        "id": "openai_compatible", "label": "OpenAI-compatible endpoint", "kind": "credential",
-        "credential_env_var": "OPENAI_API_KEY",
+        "id": "openai_compatible", "label": "OpenAI-compatible endpoint", "kind": "endpoint",
+        "endpoint_env_var": "OPENAI_BASE_URL", "credential_env_var": "OPENAI_API_KEY",
     },
 )
+
+#: Ollama's own default local server address; Handsoff does not manage the
+#: Ollama service, it only asks this fixed, well-known loopback address
+#: whether it's running, the same way `ollama list` would.
+OLLAMA_API_URL = "http://127.0.0.1:11434/api/tags"
+OLLAMA_API_TIMEOUT_SECONDS = 1.5
+
+
+def _detect_ollama_models() -> list[str]:
+    """Best-effort local model listing via Ollama's own local REST API.
+
+    Returns an empty list whenever the server isn't reachable (Ollama
+    installed but not running) or answers unexpectedly -- absence of
+    models is not an error, since Handsoff never starts or manages the
+    Ollama service itself.
+    """
+    try:
+        with urllib.request.urlopen(OLLAMA_API_URL, timeout=OLLAMA_API_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        return []
+    return sorted({
+        entry["name"] for entry in payload["models"]
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"]
+    })
 
 
 def provider_status() -> dict:
     """Read-only provider discovery for the Agent Settings UI.
 
-    Two states only, plus "detected": a CLI-kind provider is "detected" if
-    its executable is on PATH, else "unavailable" (nothing to configure --
-    it just isn't installed). A credential-kind provider is "detected" if
-    its expected environment variable name is present, else
-    "requires_setup", since the user can make it work by supplying their
-    own credentials. Only the variable's presence is ever checked -- its
-    value is never read, displayed, stored, or otherwise touched.
+    A CLI-kind provider is "detected" if its executable is on PATH, else
+    "unavailable" (nothing to configure -- it just isn't installed). A
+    credential- or endpoint-kind provider is "detected" if the relevant
+    environment variable NAME is present, else "requires_setup", since the
+    user can make it work by supplying their own configuration. Only a
+    variable's presence is ever checked -- its value is never read,
+    displayed, stored, or otherwise touched.
     """
     result = {}
     for spec in PROVIDER_SPECS:
         if spec["kind"] == "cli":
             discovered = shutil.which(spec["executable"])
             executable = str(Path(discovered).resolve()) if discovered else None
-            result[spec["id"]] = {
+            entry = {
                 "label": spec["label"],
                 "state": "detected" if executable else "unavailable",
                 "executable": executable,
             }
-        else:
+            if spec.get("list_models"):
+                entry["models"] = _detect_ollama_models() if executable else []
+            result[spec["id"]] = entry
+        elif spec["kind"] == "credential":
             configured = spec["credential_env_var"] in os.environ
             result[spec["id"]] = {
                 "label": spec["label"],
                 "state": "detected" if configured else "requires_setup",
+                "credential_env_var": spec["credential_env_var"],
+            }
+        else:  # "endpoint"
+            endpoint_configured = spec["endpoint_env_var"] in os.environ
+            credential_configured = spec["credential_env_var"] in os.environ
+            result[spec["id"]] = {
+                "label": spec["label"],
+                "state": "detected" if (endpoint_configured or credential_configured) else "requires_setup",
+                "endpoint_env_var": spec["endpoint_env_var"],
                 "credential_env_var": spec["credential_env_var"],
             }
     return result

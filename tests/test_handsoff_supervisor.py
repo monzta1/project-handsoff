@@ -509,6 +509,7 @@ class TestEveMissionControl(HandsoffTestCase):
         with mock.patch.object(lib.shutil, "which", side_effect=fake_which), \
              mock.patch.dict(os.environ, {"XAI_API_KEY": "sk-should-never-be-read"}, clear=False):
             os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("OPENAI_BASE_URL", None)
             status = lib.provider_status()
 
         self.assertEqual(status["codex"]["state"], "detected")
@@ -516,8 +517,10 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertEqual(status["claude"]["state"], "unavailable")
         self.assertIsNone(status["claude"]["executable"])
         self.assertEqual(status["ollama"]["state"], "unavailable")
+        self.assertEqual(status["ollama"]["models"], [])
         self.assertEqual(status["grok"]["state"], "detected")
         self.assertEqual(status["openai_compatible"]["state"], "requires_setup")
+        self.assertIn("endpoint_env_var", status["openai_compatible"])
 
         # The credential's value must never appear anywhere in the result.
         serialized = json.dumps(status)
@@ -528,9 +531,51 @@ class TestEveMissionControl(HandsoffTestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("XAI_API_KEY", None)
             os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop("OPENAI_BASE_URL", None)
             cleared = lib.provider_status()
         self.assertEqual(cleared["grok"]["state"], "requires_setup")
         self.assertEqual(cleared["openai_compatible"]["state"], "requires_setup")
+
+        # A self-hosted OpenAI-compatible endpoint commonly has no real
+        # credential -- a configured base URL alone must count as detected.
+        with mock.patch.dict(os.environ, {"OPENAI_BASE_URL": "http://127.0.0.1:1234/v1"}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            endpoint_only = lib.provider_status()
+        self.assertEqual(endpoint_only["openai_compatible"]["state"], "detected")
+
+    def test_ollama_provider_lists_locally_installed_models(self):
+        """AG2 fix: Ollama detection must surface actual local model names,
+        not just executable presence, and must degrade gracefully (empty
+        list, no error) when the local server isn't running."""
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        import io
+
+        def fake_which(name):
+            return "/usr/local/bin/ollama" if name == "ollama" else None
+
+        fake_response = io.BytesIO(json.dumps({
+            "models": [{"name": "llama3:8b"}, {"name": "qwen3-coder:30b"}],
+        }).encode("utf-8"))
+
+        class _FakeContext:
+            def __enter__(self):
+                return fake_response
+
+            def __exit__(self, *exc_info):
+                return False
+
+        with mock.patch.object(lib.shutil, "which", side_effect=fake_which), \
+             mock.patch.object(lib.urllib.request, "urlopen", return_value=_FakeContext()):
+            status = lib.provider_status()
+        self.assertEqual(status["ollama"]["state"], "detected")
+        self.assertEqual(status["ollama"]["models"], ["llama3:8b", "qwen3-coder:30b"])
+
+        with mock.patch.object(lib.shutil, "which", side_effect=fake_which), \
+             mock.patch.object(lib.urllib.request, "urlopen", side_effect=OSError("connection refused")):
+            unreachable = lib.provider_status()
+        self.assertEqual(unreachable["ollama"]["state"], "detected")
+        self.assertEqual(unreachable["ollama"]["models"], [])
 
     def test_agent_settings_view_and_ui_surface_provider_detection(self):
         """AG2: the Agent Settings config surface lists detected providers
