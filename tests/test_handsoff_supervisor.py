@@ -496,6 +496,67 @@ class TestEveMissionControl(HandsoffTestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_provider_status_detects_cli_and_credential_providers_without_reading_values(self):
+        """AG2: provider discovery must distinguish detected / requires-setup /
+        unavailable, and must never read a credential's actual value -- only
+        whether its environment variable name is present."""
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+
+        def fake_which(name):
+            return "/usr/local/bin/codex" if name == "codex" else None
+
+        with mock.patch.object(lib.shutil, "which", side_effect=fake_which), \
+             mock.patch.dict(os.environ, {"XAI_API_KEY": "sk-should-never-be-read"}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            status = lib.provider_status()
+
+        self.assertEqual(status["codex"]["state"], "detected")
+        self.assertIsNotNone(status["codex"]["executable"])
+        self.assertEqual(status["claude"]["state"], "unavailable")
+        self.assertIsNone(status["claude"]["executable"])
+        self.assertEqual(status["ollama"]["state"], "unavailable")
+        self.assertEqual(status["grok"]["state"], "detected")
+        self.assertEqual(status["openai_compatible"]["state"], "requires_setup")
+
+        # The credential's value must never appear anywhere in the result.
+        serialized = json.dumps(status)
+        self.assertNotIn("sk-should-never-be-read", serialized)
+        self.assertIn("credential_env_var", status["grok"])
+        self.assertNotIn("value", status["grok"])
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("XAI_API_KEY", None)
+            os.environ.pop("OPENAI_API_KEY", None)
+            cleared = lib.provider_status()
+        self.assertEqual(cleared["grok"]["state"], "requires_setup")
+        self.assertEqual(cleared["openai_compatible"]["state"], "requires_setup")
+
+    def test_agent_settings_view_and_ui_surface_provider_detection(self):
+        """AG2: the Agent Settings config surface lists detected providers
+        alongside the existing role/adapter/model behavior, unchanged."""
+        dashboard = self._dashboard()
+        import handsoff_lib as lib
+
+        with mock.patch.object(lib.shutil, "which", return_value=None):
+            view = dashboard._settings_view(lib.load_config(self.tmp))
+        self.assertIn("providers", view)
+        for provider_id in ("codex", "claude", "ollama", "grok", "openai_compatible"):
+            self.assertIn(provider_id, view["providers"])
+            self.assertIn(view["providers"][provider_id]["state"], ("detected", "unavailable", "requires_setup"))
+        self.assertIn("never reads, displays, or stores credential values", view["providers_scope"])
+
+        # Existing role/model settings behavior is untouched by this addition.
+        self.assertEqual(view["allowed_adapters"], list(lib.SELECTABLE_AGENT_ADAPTERS))
+        self.assertIn("profiles", view)
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        script = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertIn('id="provider-status"', html)
+        self.assertIn("DETECTED PROVIDERS", html)
+        self.assertIn("function renderProviderStatus", script)
+        self.assertIn("requires_setup", script)
+
     def test_background_review_start_clears_stale_authorization_state(self):
         dashboard = self._dashboard()
         self.init("Instant review transition")

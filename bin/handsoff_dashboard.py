@@ -44,6 +44,12 @@ def _settings_view(cfg: dict) -> dict:
             "Executable discovery only; it does not prove authentication, account entitlement, "
             "network access, or model validity."
         ),
+        "providers": lib.provider_status(),
+        "providers_scope": (
+            "Detection only, shown for information: CLI providers are checked for an executable on "
+            "PATH, credentialed providers for the presence of an environment variable name. Handsoff "
+            "never reads, displays, or stores credential values -- you supply them yourself."
+        ),
     }
 
 

@@ -48,6 +48,29 @@ function stateClass(element, value) {
   if (value) element.classList.add(value);
 }
 
+const PROVIDER_STATE_META = {
+  detected: { text: "DETECTED", cssClass: "is-good" },
+  requires_setup: { text: "REQUIRES SETUP", cssClass: "is-warning" },
+  unavailable: { text: "UNAVAILABLE", cssClass: "is-bad" },
+};
+
+function renderProviderStatus(providers) {
+  const list = $("provider-status");
+  if (!list) return;
+  list.replaceChildren();
+  for (const [id, info] of Object.entries(providers)) {
+    const meta = PROVIDER_STATE_META[info?.state] || { text: String(info?.state || "UNKNOWN").toUpperCase(), cssClass: "" };
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = info?.label || id;
+    const badge = document.createElement("span");
+    badge.className = `provider-state ${meta.cssClass}`;
+    badge.textContent = meta.text;
+    item.append(label, badge);
+    list.append(item);
+  }
+}
+
 function populateAgentSettings() {
   if (!state.settings) return;
   for (const role of AGENT_ROLES) {
@@ -75,6 +98,7 @@ function populateAgentSettings() {
   $("adapter-availability").textContent = ALLOWED_ADAPTERS.map((adapter) =>
     `${adapter === "claude" ? "Claude Code" : "Codex"}: ${availability[adapter]?.available ? "DETECTED" : "NOT DETECTED"}`
   ).join(" · ");
+  renderProviderStatus(state.settings.providers || {});
   updateSettingsSaveState();
 }
 

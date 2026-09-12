@@ -289,6 +289,55 @@ def adapter_availability() -> dict:
     return result
 
 
+#: Providers surfaced read-only in the Agent Settings UI so a user can see
+#: what's actually usable before picking an adapter, distinct from
+#: SELECTABLE_AGENT_ADAPTERS (the values `update_agent_config` accepts).
+#: Each entry is either "cli" (detected by executable presence on PATH) or
+#: "credential" (detected by presence of an environment variable name only
+#: -- never its value, per the "no credential handling" requirement).
+PROVIDER_SPECS = (
+    {"id": "codex", "label": "Codex CLI", "kind": "cli", "executable": "codex"},
+    {"id": "claude", "label": "Claude Code", "kind": "cli", "executable": "claude"},
+    {"id": "ollama", "label": "Ollama (local models)", "kind": "cli", "executable": "ollama"},
+    {"id": "grok", "label": "Grok", "kind": "credential", "credential_env_var": "XAI_API_KEY"},
+    {
+        "id": "openai_compatible", "label": "OpenAI-compatible endpoint", "kind": "credential",
+        "credential_env_var": "OPENAI_API_KEY",
+    },
+)
+
+
+def provider_status() -> dict:
+    """Read-only provider discovery for the Agent Settings UI.
+
+    Two states only, plus "detected": a CLI-kind provider is "detected" if
+    its executable is on PATH, else "unavailable" (nothing to configure --
+    it just isn't installed). A credential-kind provider is "detected" if
+    its expected environment variable name is present, else
+    "requires_setup", since the user can make it work by supplying their
+    own credentials. Only the variable's presence is ever checked -- its
+    value is never read, displayed, stored, or otherwise touched.
+    """
+    result = {}
+    for spec in PROVIDER_SPECS:
+        if spec["kind"] == "cli":
+            discovered = shutil.which(spec["executable"])
+            executable = str(Path(discovered).resolve()) if discovered else None
+            result[spec["id"]] = {
+                "label": spec["label"],
+                "state": "detected" if executable else "unavailable",
+                "executable": executable,
+            }
+        else:
+            configured = spec["credential_env_var"] in os.environ
+            result[spec["id"]] = {
+                "label": spec["label"],
+                "state": "detected" if configured else "requires_setup",
+                "credential_env_var": spec["credential_env_var"],
+            }
+    return result
+
+
 def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
                            assignments: dict[str, str]) -> list[str]:
     section_pattern = re.compile(rf"^\s*\[{re.escape(table)}\]\s*(?:#.*)?(?:\r?\n)?$")
