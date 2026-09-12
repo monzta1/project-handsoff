@@ -13,6 +13,7 @@ require_live_verification = true
 deployment_requires_explicit_approval = true
 
 [agents]
+architect = "configure-me"
 supervisor = "configure-me"
 implementer = "configure-me"
 reviewer = "configure-me"

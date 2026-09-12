@@ -209,6 +209,8 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .chiclet.is-active i { animation: chiclet-pulse 1.6s ease-in-out infinite; }
 .chiclet[data-role="supervisor"].is-active { color: var(--blue); border-color: rgba(143, 192, 255, .45); background: var(--green-soft); box-shadow: 0 0 16px rgba(143, 192, 255, .22); }
 .chiclet[data-role="supervisor"].is-active i { background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+.chiclet[data-role="architect"].is-active { color: var(--green); border-color: rgba(61, 220, 132, .45); background: var(--green-soft); box-shadow: 0 0 16px rgba(61, 220, 132, .22); }
+.chiclet[data-role="architect"].is-active i { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .chiclet[data-role="implementer"].is-active { color: var(--amber); border-color: rgba(255, 203, 122, .45); background: var(--amber-soft); box-shadow: 0 0 16px rgba(255, 203, 122, .22); }
 .chiclet[data-role="implementer"].is-active i { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
 .chiclet[data-role="reviewer"].is-active { color: var(--violet); border-color: rgba(200, 168, 255, .45); background: var(--violet-soft); box-shadow: 0 0 16px rgba(200, 168, 255, .22); }

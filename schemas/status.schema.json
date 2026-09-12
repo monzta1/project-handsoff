@@ -17,6 +17,19 @@
     "original_symptom_evidence_id": {"type": ["string", "null"]},
     "live_verification_id": {"type": ["string", "null"]},
     "verification_head": {"type": "string"},
+    "requires_design_review": {"type": "boolean"},
+    "design_review": {
+      "type": ["object", "null"],
+      "properties": {
+        "by": {"type": "string"},
+        "architect": {"type": "string"},
+        "at": {"type": "string", "format": "date-time"},
+        "decision": {"enum": ["approved", "changes_requested"]},
+        "summary": {"type": "string"},
+        "design_hash": {"type": "string"},
+        "config_hash": {"type": "string"}
+      }
+    },
     "review": {
       "type": ["object", "null"],
       "properties": {

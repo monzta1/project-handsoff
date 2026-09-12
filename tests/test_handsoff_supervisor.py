@@ -68,6 +68,11 @@ def run(args, cwd):
                           cwd=cwd, capture_output=True, text=True, timeout=30)
 
 
+def approve_design_review(cwd, architect="test-architect", reviewer="test-design-reviewer"):
+    return run(["record-design-review", "--by", reviewer, "--architect", architect,
+                "--approve", "--summary", "Test-fixture independent design review"], cwd=cwd)
+
+
 class HandsoffTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-test-"))
@@ -120,6 +125,11 @@ class HandsoffTestCase(unittest.TestCase):
         last = None
         reviewed_by = extra.pop("reviewed_by", None)
         for n in range(current + 1, phase + 1):
+            if n == 3 and self.read_status().get("requires_design_review") \
+                    and not self.read_status().get("design_review"):
+                design_review = approve_design_review(self.tmp)
+                if design_review.returncode:
+                    return design_review
             if n == 3 and self.read_status().get("requires_design_approval") and not self.read_status().get("design_approved"):
                 # The Architect gate: every run init flags going forward
                 # needs a recorded, non-self human design approval before
@@ -427,6 +437,8 @@ class TestDesignPhaseInstrumentation(HandsoffTestCase):
         self.init()
         self.advance_to(2)
         run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        self.set_criterion_state("not_tested", resolved=False)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-1").returncode, 0)
         blocked = run(["advance", "3", "30"], cwd=self.tmp)
         self.assertEqual(blocked.returncode, 1)
         self.assertIn("design gate", blocked.stdout)
@@ -439,6 +451,8 @@ class TestDesignPhaseInstrumentation(HandsoffTestCase):
         self.init()
         self.advance_to(2)
         run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        self.set_criterion_state("not_tested", resolved=False)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-1").returncode, 0)
         for _ in range(3):
             r = run(["advance", "3", "30"], cwd=self.tmp)
             self.assertEqual(r.returncode, 1)
@@ -850,6 +864,8 @@ class TestConcurrentAdvanceDoesNotCorruptState(HandsoffTestCase):
         self.init()
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(2)
+        review = approve_design_review(self.tmp)
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
         design = run(["design-approve", "--by", "test-approver", "--architect", "test-architect",
                      "--summary", "Test-fixture design approval"], cwd=self.tmp)
         self.assertEqual(design.returncode, 0, design.stdout + design.stderr)
@@ -2040,6 +2056,128 @@ class TestActivityAwareStallDetection(HandsoffTestCase):
                             "a malformed heartbeat must never be read as fresh")
 
 
+class TestArchitectDesignReview(HandsoffTestCase):
+    """AR7: Phase-2 design critique is independently recorded and bound
+    to the exact criteria specification before implementation can begin."""
+
+    def _prepare(self):
+        self.init("AR7 fixture")
+        criterion = run(["criterion-update", "REQ-001", "--requirement",
+                         "A real, independently reviewable design criterion"], cwd=self.tmp)
+        self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+        phase2 = run(["advance", "2", "20", "--new-design-round"], cwd=self.tmp)
+        self.assertEqual(phase2.returncode, 0, phase2.stdout + phase2.stderr)
+
+    def _design_review(self, *decision, by="design-reviewer", architect="architect-1", summary="Design is sound"):
+        return run(["record-design-review", "--by", by, "--architect", architect,
+                    "--summary", summary, *decision], cwd=self.tmp)
+
+    def _human_approve(self, architect="architect-1"):
+        return run(["design-approve", "--by", "moncy", "--architect", architect,
+                    "--summary", "Approved AR7 fixture design"], cwd=self.tmp)
+
+    def _write_status(self, status):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        with lib.project_lock(self.tmp):
+            lib.atomic_write_json(lib.status_path(self.tmp, cfg), status)
+            lib.append_event(self.tmp, cfg, "test_backdate", "test harness adjusted status fields directly")
+
+    def test_phase_3_requires_current_approved_independent_design_review(self):
+        self._prepare()
+        self.assertTrue(self.read_status()["requires_design_review"])
+        self.assertEqual(self._human_approve().returncode, 0)
+
+        blocked = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
+        self.assertIn("design review gate", blocked.stdout)
+        self.assertEqual(self.read_status()["phase_number"], 2)
+
+        reviewed = self._design_review("--approve")
+        self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
+        self.assertEqual(self.read_status()["status"], "in_progress",
+                         "a current earlier human approval must not leave the run falsely blocked")
+        advanced = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+
+    def test_design_reviewer_must_differ_from_architect(self):
+        self._prepare()
+        for reviewer in ("architect-1", " Architect-1 ", "ARCHITECT-1"):
+            refused = self._design_review("--approve", by=reviewer)
+            self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+            self.assertIn("self-review", refused.stdout)
+        self.assertIsNone(self.read_status()["design_review"])
+
+    def test_changes_requested_sends_design_back_for_revision(self):
+        self._prepare()
+        self.assertEqual(self._human_approve().returncode, 0)
+        finding = self._design_review("--request-changes", summary="Missing failure-mode criterion")
+        self.assertEqual(finding.returncode, 0, finding.stdout + finding.stderr)
+        status = self.read_status()
+        self.assertEqual(status["phase_number"], 2)
+        self.assertEqual(status["design_review"]["decision"], "changes_requested")
+        self.assertIsNone(status["design_approved"])
+        self.assertIn("revises", status["next_action"])
+        self.assertIn('"kind":"design_review_changes_requested"',
+                      (self.tmp / "handsoff-events.jsonl").read_text())
+
+    def test_criteria_mutation_invalidates_design_review(self):
+        self._prepare()
+        self.assertEqual(self._design_review("--approve").returncode, 0)
+        self.assertEqual(self._human_approve().returncode, 0)
+        self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
+
+        changed = run(["criterion-update", "REQ-001", "--requirement",
+                       "A revised independently reviewable criterion"], cwd=self.tmp)
+        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        status = self.read_status()
+        self.assertEqual(status["phase_number"], 2)
+        self.assertIsNone(status["design_review"])
+        self.assertIsNone(status["design_approved"])
+
+    def test_legacy_run_without_review_flag_is_unaffected(self):
+        self._prepare()
+        status = self.read_status()
+        status.pop("requires_design_review")
+        status.pop("design_review")
+        self._write_status(status)
+        self.assertEqual(self._human_approve().returncode, 0)
+        advanced = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+
+    def test_design_review_is_schema_validated_and_hash_chained(self):
+        self._prepare()
+        reviewed = self._design_review("--approve", summary="Independent critique completed")
+        self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
+        record = self.read_status()["design_review"]
+        self.assertEqual(record["by"], "design-reviewer")
+        self.assertEqual(record["architect"], "architect-1")
+        self.assertEqual(record["decision"], "approved")
+        self.assertTrue(record["design_hash"])
+        self.assertTrue(record["config_hash"])
+        self.assertIn('"kind":"design_review_approved"',
+                      (self.tmp / "handsoff-events.jsonl").read_text())
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+
+        sys.path.insert(0, str(BIN))
+        import handsoff_dashboard as dashboard
+        snapshot = dashboard.build_snapshot(self.tmp)
+        self.assertEqual(snapshot["actors"]["architect"], "architect-1")
+        self.assertEqual(snapshot["actors"]["design_reviewed_by"], "design-reviewer")
+        self.assertIn('data-role="architect"', (ROOT / "dashboard" / "index.html").read_text())
+        self.assertIn('["DESIGN REVIEWER", actors.design_reviewed_by]',
+                      (ROOT / "dashboard" / "app.js").read_text())
+
+        status = self.read_status()
+        status["design_review"]["by"] = ""
+        self._write_status(status)
+        invalid = run(["validate"], cwd=self.tmp)
+        self.assertEqual(invalid.returncode, 1)
+        self.assertIn("design_review.by", invalid.stdout)
+        self.assertNotIn("Traceback", invalid.stdout + invalid.stderr)
+
+
 class TestArchitectDesignApprovalGate(HandsoffTestCase):
     """The Architect role's core (AR1-AR3): /ship-feature opens with an
     Architect that collaboratively authors design + testable criteria,
@@ -2117,6 +2255,8 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         approve = run(["design-approve", "--by", "moncy", "--architect", "arch-1",
                       "--summary", "Approach and tradeoffs"], cwd=self.tmp)
         self.assertEqual(approve.returncode, 0, approve.stdout + approve.stderr)
+        review = approve_design_review(self.tmp, architect="arch-1")
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
         ok = run(["advance", "3", "30"], cwd=self.tmp)
         self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
         self.assertEqual(self.read_status()["phase_number"], 3)
@@ -2191,6 +2331,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
             self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
                                   "--summary", "s"], cwd=root).returncode, 0)
             self.assertEqual(run(["advance", "2", "20"], cwd=root).returncode, 0)
+            self.assertEqual(approve_design_review(root, architect="arch-1").returncode, 0)
             self.assertEqual(run(["advance", "3", "30"], cwd=root).returncode, 0)
             if phase >= 4:
                 self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=root).returncode, 0)
@@ -2212,6 +2353,8 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self._author_real_criterion()
         status = self.read_status()
         del status["requires_design_approval"]
+        del status["requires_design_review"]
+        status.pop("design_review", None)
         self._write_status(status)
         self.assertNotIn("requires_design_approval", self.read_status())
 
@@ -2235,6 +2378,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
                               "--summary", "s"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-1").returncode, 0)
         self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
         verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
@@ -2277,6 +2421,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
 
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-1").returncode, 0)
         self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
         verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
@@ -2316,6 +2461,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
             self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
                                   "--summary", "s"], cwd=root).returncode, 0)
             self.assertEqual(run(["advance", "2", "20"], cwd=root).returncode, 0)
+            self.assertEqual(approve_design_review(root, architect="arch-1").returncode, 0)
             self.assertEqual(run(["advance", "3", "30"], cwd=root).returncode, 0)
             self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=root).returncode, 0)
             if phase == 5:
@@ -2324,6 +2470,8 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
             status = json.loads((root / "handsoff-status.json").read_text())
             self.assertEqual(status["phase_number"], phase)
             status.pop("requires_design_approval", None)
+            status.pop("requires_design_review", None)
+            status.pop("design_review", None)
             self._write_status(status, root=root)
 
             r = run(["criterion-update", "REQ-001", "--requirement", "A changed outcome"], cwd=root)
@@ -2337,6 +2485,8 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
             self.assertEqual(after["phase_number"], phase,
                             f"unflagged run starting at phase {phase} must be left exactly as before this "
                             "feature (unchanged), not force-rolled to phase 2")
+            self.assertNotIn("design_review", after,
+                             "mutating a legacy run must not inject AR7 state into its status shape")
 
     def test_malformed_design_approved_rejected_by_schema(self):
         self.init()
@@ -2367,6 +2517,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-1",
                               "--summary", "s"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-1").returncode, 0)
         self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
 
@@ -2520,6 +2671,7 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
         self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
 
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-ar5").returncode, 0)
         self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-ar5"], cwd=self.tmp).returncode, 0)
         verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-ar5"], cwd=self.tmp)
@@ -2536,9 +2688,11 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
         approver = status["design_approved"]["by"]
         implementer = status["implemented_by"]
         reviewer = status["reviewed_by"]
-        identities = {architect, approver, implementer, reviewer}
-        self.assertEqual(len(identities), 4, f"expected 4 distinct identities, got {identities}")
+        design_reviewer = status["design_review"]["by"]
+        identities = {architect, design_reviewer, approver, implementer, reviewer}
+        self.assertEqual(len(identities), 5, f"expected 5 distinct identities, got {identities}")
         self.assertEqual(architect, "arch-ar5")
+        self.assertEqual(design_reviewer, "test-design-reviewer")
         self.assertEqual(approver, "moncy")
         self.assertEqual(implementer, "impl-ar5")
         self.assertEqual(reviewer, "rev-ar5")
@@ -2566,6 +2720,7 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
         self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-h",
                              "--summary", "s"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-h").returncode, 0)
         self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-h"], cwd=self.tmp).returncode, 0)
 
@@ -2779,6 +2934,7 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
                         "stamping must not trip the evidence gate: " + validated.stdout + validated.stderr)
 
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-hs").returncode, 0)
         gate = run(["advance", "3", "30"], cwd=self.tmp)
         self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
         self.assertNotIn("design gate", gate.stdout)

@@ -131,6 +131,8 @@ function renderRoleChiclets(activeRole) {
 
 function renderCrew(actors) {
   const crew = [
+    ["ARCHITECT", actors.architect],
+    ["DESIGN REVIEWER", actors.design_reviewed_by],
     ["IMPLEMENTER", actors.implemented_by],
     ["REVIEWER", actors.reviewed_by],
     ["APPROVER", actors.approved_by],

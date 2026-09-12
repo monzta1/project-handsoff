@@ -705,8 +705,9 @@ def validate_status_schema(status: dict) -> list[str]:
     for field in ("implemented_by", "reviewed_by", "original_symptom_evidence_id", "live_verification_id"):
         if field in status and status[field] is not None and (not isinstance(status[field], str) or not status[field].strip()):
             errors.append(f"status: '{field}' must be a non-empty string or null")
-    if "requires_design_approval" in status and not isinstance(status["requires_design_approval"], bool):
-        errors.append("status: 'requires_design_approval' must be a boolean")
+    for field in ("requires_design_approval", "requires_design_review"):
+        if field in status and not isinstance(status[field], bool):
+            errors.append(f"status: '{field}' must be a boolean")
     for field, record_name in (("review", "review"), ("deployment_approved", "deployment_approved")):
         record = status.get(field)
         if record is None:
@@ -750,6 +751,24 @@ def validate_status_schema(status: dict) -> list[str]:
             if "summary" in design_approved and design_approved["summary"] is not None \
                     and (not isinstance(design_approved["summary"], str) or not design_approved["summary"].strip()):
                 errors.append("status: 'design_approved.summary' must be a non-empty string or null")
+    design_review = status.get("design_review")
+    if design_review is not None:
+        if not isinstance(design_review, dict):
+            errors.append("status: 'design_review' must be an object or null")
+        else:
+            for sub in ("by", "architect", "at", "decision", "summary", "design_hash", "config_hash"):
+                if sub not in design_review or not isinstance(design_review[sub], str) \
+                        or not design_review[sub].strip():
+                    errors.append(f"status: 'design_review.{sub}' must be a non-empty string")
+            if design_review.get("decision") not in {"approved", "changes_requested"}:
+                errors.append("status: 'design_review.decision' must be 'approved' or 'changes_requested'")
+            if "at" in design_review and isinstance(design_review["at"], str):
+                try:
+                    parsed = datetime.fromisoformat(design_review["at"])
+                    if parsed.tzinfo is None:
+                        errors.append("status: 'design_review.at' must include a timezone")
+                except ValueError:
+                    errors.append("status: 'design_review.at' must be an ISO-8601 timestamp")
     review = status.get("review")
     if isinstance(review, dict) and "checklist" in review and not isinstance(review["checklist"], dict):
         errors.append("status: 'review.checklist' must be an object")
@@ -914,6 +933,38 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
     return errors
 
 
+def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
+    """AR7 gate: new runs cannot leave Phase 2 until an independent
+    reviewer approved the exact current design. The opt-in status flag is
+    absent from pre-AR7 runs, preserving their in-flight behavior."""
+    if not status.get("requires_design_review"):
+        return []
+    review = status.get("design_review")
+    if not isinstance(review, dict):
+        return ["design review gate: Phase 3+ requires an approved independent design review"]
+    errors: list[str] = []
+    if review.get("decision") != "approved":
+        errors.append("design review gate: the current design review requested changes")
+    if review.get("design_hash") != design_hash(acceptance.get("criteria", [])):
+        errors.append("design review gate: criteria changed since design review; record a new design review")
+    if review.get("config_hash") != config_hash(cfg):
+        errors.append("design review gate: workflow policy changed since design review; record a new design review")
+    reviewer = review.get("by")
+    architect = review.get("architect")
+    if not reviewer:
+        errors.append("design review gate: design review must identify its reviewer")
+    if not architect:
+        errors.append("design review gate: design review must identify the architect")
+    if reviewer and architect and reviewer.strip().casefold() == architect.strip().casefold():
+        errors.append("design review gate: reviewer must differ from the architect, no self-review")
+    approval = status.get("design_approved")
+    approved_architect = approval.get("architect") if isinstance(approval, dict) else None
+    if approved_architect and architect \
+            and approved_architect.strip().casefold() != architect.strip().casefold():
+        errors.append("design review gate: reviewed architect differs from the architect named in human approval")
+    return errors
+
+
 def _valid_symptom_record(status: dict, criteria: list[dict], verifications: list[dict]) -> dict | None:
     evidence_id = status.get("original_symptom_evidence_id")
     primary = {c["id"]: c for c in criteria if c.get("type") == "primary_fix"}
@@ -964,6 +1015,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         errors.append("state gate: Phase 7 requires status 'awaiting_approval' or 'ready_to_deploy'")
 
     if phase >= 3:
+        errors.extend(_design_review_errors(status, acceptance, cfg))
         errors.extend(_design_errors(status, acceptance, cfg))
 
     if phase >= 6 and (not green or not resolved or not symptom_record or evidence_errors):

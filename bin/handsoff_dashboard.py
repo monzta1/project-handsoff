@@ -66,12 +66,10 @@ def _phase_view(current: int, run_complete: bool) -> list[dict]:
 
 
 #: Which crew role is doing the work during each phase, for the dashboard's
-#: chiclet row. The Supervisor (this session) drives phases 1-3 and 7-8
-#: directly; phases 4 and 6 are implementation work; phase 5 is handed to an
-#: independent reviewer, which record-review refuses to be the same identity
-#: as the implementer.
+#: chiclet row. Phase 2 is resolved dynamically below because a design
+#: finding hands work back from the reviewer to the Architect.
 ACTIVE_ROLE_BY_PHASE = {
-    1: "supervisor", 2: "supervisor", 3: "supervisor",
+    1: "architect", 3: "supervisor",
     4: "implementer", 5: "reviewer", 6: "implementer",
     7: "supervisor", 8: "supervisor",
 }
@@ -88,6 +86,9 @@ def _active_role(status: dict, input_request: dict) -> str | None:
     if input_request.get("required"):
         return None
     phase_number = int(status.get("phase_number", 1) or 1)
+    if phase_number == 2:
+        review = status.get("design_review") or {}
+        return "architect" if review.get("decision") == "changes_requested" else "reviewer"
     return ACTIVE_ROLE_BY_PHASE.get(phase_number)
 
 
@@ -274,6 +275,9 @@ def build_snapshot(root: Path) -> dict:
             "original_symptom_resolved": coverage.get("original_symptom_resolved") is True,
         },
         "actors": {
+            "architect": ((status.get("design_review") or {}).get("architect")
+                          or (status.get("design_approved") or {}).get("architect")),
+            "design_reviewed_by": (status.get("design_review") or {}).get("by"),
             "implemented_by": status.get("implemented_by"),
             "reviewed_by": status.get("reviewed_by"),
             "approved_by": (status.get("deployment_approved") or {}).get("by"),

@@ -70,8 +70,11 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
         status["status"] = "in_progress"
         status["progress"] = min(status.get("progress", 0), 40 if rollback_to == 4 else 50)
     if invalidate_design:
+        if "design_review" in status or status.get("requires_design_review"):
+            status["design_review"] = None
         status["design_approved"] = None
-        if status.get("requires_design_approval") and status.get("phase_number", 1) >= 3:
+        if (status.get("requires_design_approval") or status.get("requires_design_review")) \
+                and status.get("phase_number", 1) >= 3:
             status["phase_number"] = 2
             status["phase"] = lib.PHASES[2]
             status["status"] = "in_progress"
@@ -131,6 +134,7 @@ def cmd_init(args) -> int:
             "design_round": 0, "review_round": 0, "retry_count": 0, "summary": "", "reassurance": "",
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
             "requires_design_approval": True, "design_approved": None,
+            "requires_design_review": True, "design_review": None,
             "review": None, "live_verification_id": None, "original_symptom_evidence_id": None,
             "verification_head": "GENESIS",
             "requirement_coverage": {"passing": 0, "failing": 1, "not_tested": 0, "blocked": 0,
@@ -165,6 +169,7 @@ def cmd_status(args) -> int:
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
         "status": status.get("status"), "next_action": status.get("next_action"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
+        "design_review": status.get("design_review"),
         "reviewed_by": status.get("reviewed_by"),
         "live_verification_id": status.get("live_verification_id"),
         "verification_runs": len(verifications),
@@ -287,7 +292,9 @@ def cmd_advance(args) -> int:
             # nothing else is written. Deduped against the log itself (no
             # second field to keep in sync): skip if the most recent
             # design-lifecycle event is already an unresolved request.
-            if args.phase == 3 and any(e.startswith("design gate:") for e in errors):
+            if args.phase == 3 \
+                    and any(e.startswith("design gate:") for e in errors) \
+                    and not any(e.startswith("design review gate:") for e in errors):
                 pending = _most_recent_kind(lib.read_events(root, cfg),
                                             {"design_round_advanced", "design_approval_requested", "design_approved"})
                 if pending != "design_approval_requested":
@@ -604,6 +611,15 @@ def cmd_design_approve(args) -> int:
             "config_hash": lib.config_hash(cfg),
             "redesigns_settled_work": args.redesigns_settled_work,
         }
+        # In the natural AR7 flow, record-design-review left the run
+        # explicitly blocked on this human decision. Once both current
+        # design decisions exist, reflect that the Supervisor may advance
+        # instead of leaving Mission Control stuck on a stale approval ask.
+        if status.get("phase_number") == 2 and status.get("requires_design_review") \
+                and not lib._design_review_errors(status, acceptance, cfg):
+            status["status"] = "in_progress"
+            status["next_action"] = "Advance the independently reviewed and human-approved design to Phase 3."
+            status["updated_at"] = datetime.now(timezone.utc).isoformat()
         # Approval is round_end's other trigger (the first being the next
         # round starting, see cmd_advance): whatever round was open when
         # approval landed just ended, closing the episode a design-timing
@@ -624,6 +640,81 @@ def cmd_design_approve(args) -> int:
                   by=args.by, architect=args.architect,
                   redesigns_settled_work=args.redesigns_settled_work)
     print("DESIGN_APPROVAL_RECORDED")
+    return 0
+
+
+def cmd_record_design_review(args) -> int:
+    """Record an independent Phase-2 critique of the current design.
+
+    The record is bound to design_hash, so any later criteria mutation
+    makes it unusable even before the mutation command clears it. An
+    approval opens the human-approval step; changes requested keep the run
+    in Phase 2 and invalidate any human approval that arrived too early.
+    """
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    if not args.architect or not args.architect.strip():
+        print("SHIP_FEATURE_BLOCKED: --architect must be a non-empty string")
+        return 1
+    if not args.summary or not args.summary.strip():
+        print("SHIP_FEATURE_BLOCKED: --summary must be a non-empty string")
+        return 1
+    if args.by.strip().casefold() == args.architect.strip().casefold():
+        print("SHIP_FEATURE_BLOCKED: design reviewer must differ from the architect, no self-review")
+        return 1
+
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, records, problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if status.get("phase_number") != 2:
+            print("SHIP_FEATURE_BLOCKED: independent design review can only be recorded in Phase 2")
+            return 1
+        criteria = acceptance.get("criteria", [])
+        if any(c.get("requirement") == lib.PLACEHOLDER_REQUIREMENT and c.get("tests") == lib.PLACEHOLDER_TESTS
+               for c in criteria):
+            print("SHIP_FEATURE_BLOCKED: acceptance registry still contains init's untouched placeholder "
+                  "criterion; author a real criterion before design review")
+            return 1
+
+        decision = "approved" if args.approve else "changes_requested"
+        status["design_review"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "by": args.by.strip(),
+            "architect": args.architect.strip(),
+            "decision": decision,
+            "summary": args.summary.strip(),
+            "design_hash": lib.design_hash(criteria),
+            "config_hash": lib.config_hash(cfg),
+        }
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if decision == "approved":
+            if not lib._design_errors(status, acceptance, cfg):
+                status["status"] = "in_progress"
+                status["next_action"] = "Advance the independently reviewed and human-approved design to Phase 3."
+            else:
+                status["status"] = "blocked"
+                status["next_action"] = "Get explicit human approval of the independently reviewed design."
+            event_kind = "design_review_approved"
+            message = f"Independent design review approved: {args.summary.strip()}"
+        else:
+            status["design_approved"] = None
+            status["status"] = "in_progress"
+            status["next_action"] = "Architect revises the design, starts a new design round, and requests review again."
+            event_kind = "design_review_changes_requested"
+            message = f"Independent design review requested changes: {args.summary.strip()}"
+        lib.commit(root, cfg, status=status, event_kind=event_kind, event_message=message,
+                  by=args.by.strip(), architect=args.architect.strip(), decision=decision,
+                  design_hash=status["design_review"]["design_hash"])
+    print("DESIGN_REVIEW_APPROVED" if args.approve else "DESIGN_CHANGES_REQUESTED")
     return 0
 
 
@@ -1222,6 +1313,15 @@ def main() -> int:
                                 "non-empty description ONLY when the human explicitly asked to redesign "
                                 "already-settled work, making that exception visible in the audit trail")
 
+    design_review = sub.add_parser("record-design-review",
+                                   help="record an independent Phase-2 review of the Architect's design")
+    design_review.add_argument("--by", required=True, help="independent design reviewer's identity")
+    design_review.add_argument("--architect", required=True, help="identity of the Architect being reviewed")
+    design_review.add_argument("--summary", required=True, help="review findings or approval rationale")
+    design_review_decision = design_review.add_mutually_exclusive_group(required=True)
+    design_review_decision.add_argument("--approve", action="store_true")
+    design_review_decision.add_argument("--request-changes", action="store_true")
+
     review = sub.add_parser("record-review")
     review.add_argument("--by", required=True)
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
@@ -1309,6 +1409,7 @@ def main() -> int:
         "record-evidence": cmd_record_evidence,
         "record-symptom-resolved": cmd_record_symptom,
         "design-approve": cmd_design_approve,
+        "record-design-review": cmd_record_design_review,
         "record-review": cmd_record_review,
         "verify-live": cmd_verify_live,
         "heartbeat": cmd_heartbeat,
