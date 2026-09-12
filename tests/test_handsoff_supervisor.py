@@ -2025,5 +2025,341 @@ class TestArchitectRespectsSettledDesigns(HandsoffTestCase):
                        f"({[f[0].id() for f in result.failures] + [e[0].id() for e in result.errors]})")
 
 
+class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
+    """AR5+AR6: the acceptance registry -- written exclusively via
+    criterion-add/criterion-update, exactly as AR1-3 already required --
+    hands off to the existing, unmodified Implementer/Reviewer/gate
+    pipeline with no special-casing (AR5-002); design-approve's own
+    --summary is retrievable straight from status.design_approved.summary,
+    not only the event log (AR5-003); and every criterion present at a
+    successful design-approve is stamped authored_by = the architect
+    identity, an existing non-null stamp never reassigned by a later
+    approval (AR6-004). authored_by is deliberately excluded from
+    criterion_spec_hash (and therefore design_hash), the same way
+    state/evidence already are: provenance about who proposed a criterion,
+    not part of the claim being verified, so stamping it can never
+    invalidate an already-recorded evidence binding or mismatch a freshly
+    recomputed design_hash (AR6-005)."""
+
+    def _enable_true_command(self):
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+
+    def _author_real_criterion(self, criterion_id="REQ-001",
+                               requirement="A real, specific, observable outcome",
+                               test="true", type_="primary_fix"):
+        if criterion_id == "REQ-001":
+            r = run(["criterion-update", "REQ-001", "--requirement", requirement, "--test", test], cwd=self.tmp)
+        else:
+            r = run(["criterion-add", criterion_id, "--type", type_, "--requirement", requirement,
+                    "--verification", "automated", "--test", test], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def _write_acceptance(self, acceptance):
+        """Write acceptance.json directly (simulating a hand-edited or
+        legacy registry) and re-anchor the event log to it, the same way
+        TestArchitectDesignApprovalGate._write_status re-anchors a
+        hand-crafted status -- so the write reads as a deliberate test
+        fixture, not as tamper the unrelated chain-freshness check would
+        otherwise (correctly) flag."""
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        with lib.project_lock(self.tmp):
+            lib.atomic_write_json(lib.acceptance_path(self.tmp, cfg), acceptance)
+            lib.append_event(self.tmp, cfg, "test_backdate", "test harness adjusted acceptance directly")
+
+    def test_audit_trail_shows_four_distinct_identities(self):
+        self.init()
+        self._enable_true_command()
+        self._author_real_criterion()
+
+        approved = run(["design-approve", "--by", "moncy", "--architect", "arch-ar5",
+                       "--summary", "Approach: X."], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-ar5"], cwd=self.tmp).returncode, 0)
+        verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-ar5"], cwd=self.tmp)
+        self.assertEqual(verify_r.returncode, 0, verify_r.stdout + verify_r.stderr)
+        run_id = json.loads(verify_r.stdout)["criteria"]["REQ-001"]["run_id"]
+        self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-ar5"],
+                             cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-ar5"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-ar5"], cwd=self.tmp).returncode, 0)
+
+        status = self.read_status()
+        acceptance = self.read_acceptance()
+        architect = status["design_approved"]["architect"]
+        approver = status["design_approved"]["by"]
+        implementer = status["implemented_by"]
+        reviewer = status["reviewed_by"]
+        identities = {architect, approver, implementer, reviewer}
+        self.assertEqual(len(identities), 4, f"expected 4 distinct identities, got {identities}")
+        self.assertEqual(architect, "arch-ar5")
+        self.assertEqual(approver, "moncy")
+        self.assertEqual(implementer, "impl-ar5")
+        self.assertEqual(reviewer, "rev-ar5")
+
+        # criterion.authored_by is retrievable straight from the acceptance
+        # file too, not only from status.design_approved.architect.
+        req001 = next(c for c in acceptance["criteria"] if c["id"] == "REQ-001")
+        self.assertEqual(req001["authored_by"], "arch-ar5")
+
+        # The design-authoring event is in the same tamper-evident chain as
+        # every other event, not a side channel.
+        events_text = (self.tmp / "handsoff-events.jsonl").read_text()
+        self.assertIn('"kind":"design_approved"', events_text)
+        log_r = run(["verify-log"], cwd=self.tmp)
+        self.assertEqual(log_r.returncode, 0, log_r.stdout + log_r.stderr)
+        self.assertIn("EVENT_LOG_INTACT", log_r.stdout)
+
+    def test_registry_handoff_drives_existing_pipeline_unchanged(self):
+        self.init()
+        self._enable_true_command()
+        self._author_real_criterion(requirement="The primary observable outcome happens.")
+        self._author_real_criterion(criterion_id="SUP-001", type_="supporting",
+                                    requirement="A supporting observable outcome happens.")
+
+        self.assertEqual(run(["design-approve", "--by", "moncy", "--architect", "arch-h",
+                             "--summary", "s"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-h"], cwd=self.tmp).returncode, 0)
+
+        verify_r = run(["verify", "--criterion", "REQ-001", "--criterion", "SUP-001", "--by", "impl-h"],
+                       cwd=self.tmp)
+        self.assertEqual(verify_r.returncode, 0, verify_r.stdout + verify_r.stderr)
+        run_id = json.loads(verify_r.stdout)["criteria"]["REQ-001"]["run_id"]
+        self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-h"],
+                             cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-h"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-h"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "6", "60", "--implemented-by", "impl-h"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "7", "70"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["verify-live", "--by", "monitor"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "8", "100", "--implemented-by", "impl-h"], cwd=self.tmp).returncode, 0)
+
+        validated = run(["validate"], cwd=self.tmp)
+        self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+        self.assertIn("SHIP_FEATURE_VALID", validated.stdout)
+        self.assertEqual(self.read_status()["status"], "complete")
+
+        # Both registry-written criteria (one via criterion-update, one via
+        # criterion-add) were carried through unmodified pipeline machinery,
+        # and both got authored_by stamped at approval.
+        acceptance = self.read_acceptance()
+        for cid in ("REQ-001", "SUP-001"):
+            c = next(x for x in acceptance["criteria"] if x["id"] == cid)
+            self.assertEqual(c["state"], "passing")
+            self.assertEqual(c["authored_by"], "arch-h")
+
+    def test_design_summary_stored_on_status_for_retrieval(self):
+        self.init()
+        self._author_real_criterion()
+        summary = "Approach: clean registry handoff. Tradeoffs: none new. Decision: proceed."
+        r = run(["design-approve", "--by", "moncy", "--architect", "arch-s",
+                "--summary", summary], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        status = self.read_status()
+        self.assertEqual(status["design_approved"]["summary"], summary,
+                        "design summary must be retrievable directly from status.json, not only the event log")
+
+        # Present in the hash-chained event too -- this adds a second,
+        # directly-retrievable location, it does not replace the existing one.
+        events_text = (self.tmp / "handsoff-events.jsonl").read_text()
+        self.assertIn(summary, events_text)
+
+        # Survives a fresh reload from disk, not just held in memory.
+        reread = json.loads((self.tmp / "handsoff-status.json").read_text())
+        self.assertEqual(reread["design_approved"]["summary"], summary)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_authored_by_stamped_at_approval_and_never_reassigned(self):
+        self.init()
+        self._enable_true_command()
+        self._author_real_criterion(requirement="Primary observable outcome.")
+        self._author_real_criterion(criterion_id="SUP-001", type_="supporting",
+                                    requirement="Supporting observable outcome.")
+
+        approve1 = run(["design-approve", "--by", "moncy", "--architect", "arch-1",
+                       "--summary", "s1"], cwd=self.tmp)
+        self.assertEqual(approve1.returncode, 0, approve1.stdout + approve1.stderr)
+
+        acceptance = self.read_acceptance()
+        for cid in ("REQ-001", "SUP-001"):
+            c = next(x for x in acceptance["criteria"] if x["id"] == cid)
+            self.assertEqual(c["authored_by"], "arch-1")
+
+        # Persists through a fresh reload from disk.
+        reread = json.loads((self.tmp / "handsoff-acceptance.json").read_text())
+        for cid in ("REQ-001", "SUP-001"):
+            c = next(x for x in reread["criteria"] if x["id"] == cid)
+            self.assertEqual(c["authored_by"], "arch-1")
+
+        # Adding a criterion post-approval forces the pre-existing Phase-2
+        # rollback (AR-003) and the new criterion starts unstamped.
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        added = run(["criterion-add", "SUP-002", "--type", "supporting",
+                    "--requirement", "A criterion added after approval.",
+                    "--verification", "automated", "--test", "true"], cwd=self.tmp)
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.assertIsNone(self.read_status()["design_approved"])
+        after_add = self.read_acceptance()
+        sup002 = next(x for x in after_add["criteria"] if x["id"] == "SUP-002")
+        self.assertNotIn("authored_by", sup002)
+        for cid in ("REQ-001", "SUP-001"):
+            c = next(x for x in after_add["criteria"] if x["id"] == cid)
+            self.assertEqual(c["authored_by"], "arch-1", "an earlier approval's authorship must never be reassigned")
+
+        # A different architect approves the re-opened design: only the
+        # newly-added, unstamped criterion picks up the new architect; the
+        # two already-authored criteria keep their original authorship.
+        approve2 = run(["design-approve", "--by", "moncy", "--architect", "arch-2",
+                       "--summary", "s2"], cwd=self.tmp)
+        self.assertEqual(approve2.returncode, 0, approve2.stdout + approve2.stderr)
+        after_approve2 = self.read_acceptance()
+        for cid in ("REQ-001", "SUP-001"):
+            c = next(x for x in after_approve2["criteria"] if x["id"] == cid)
+            self.assertEqual(c["authored_by"], "arch-1", "re-approval must never reassign existing authorship")
+        sup002_after = next(x for x in after_approve2["criteria"] if x["id"] == "SUP-002")
+        self.assertEqual(sup002_after["authored_by"], "arch-2")
+
+        # authored_by explicitly null is treated exactly like an absent key:
+        # eligible for stamping.
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        explicit_null = run(["criterion-add", "SUP-003", "--type", "supporting",
+                            "--requirement", "A criterion with authored_by forced null.",
+                            "--verification", "automated", "--test", "true"], cwd=self.tmp)
+        self.assertEqual(explicit_null.returncode, 0, explicit_null.stdout + explicit_null.stderr)
+        acc = self.read_acceptance()
+        for c in acc["criteria"]:
+            if c["id"] == "SUP-003":
+                c["authored_by"] = None
+        self._write_acceptance(acc)
+        approve3 = run(["design-approve", "--by", "moncy", "--architect", "arch-3",
+                       "--summary", "s3"], cwd=self.tmp)
+        self.assertEqual(approve3.returncode, 0, approve3.stdout + approve3.stderr)
+        final = self.read_acceptance()
+        sup003 = next(x for x in final["criteria"] if x["id"] == "SUP-003")
+        self.assertEqual(sup003["authored_by"], "arch-3")
+        for cid in ("REQ-001", "SUP-001", "SUP-002"):
+            c = next(x for x in final["criteria"] if x["id"] == cid)
+            self.assertNotEqual(c["authored_by"], "arch-3", "re-approval must never reassign existing authorship")
+
+        # An explicit empty string is NON-null (unlike an absent key or an
+        # explicit null), so the stamping guard must not treat it as
+        # eligible for stamping -- but "" is also schema-invalid, so the
+        # only way it could ever reach the registry is a hand-edit (already
+        # out of contract per AR5-002). design-approve's own post-stamp
+        # schema check catches that and refuses the whole approval rather
+        # than silently overwriting or silently accepting the invalid
+        # value. Round-1 review finding: the stamping guard originally used
+        # a falsy check (`not c.get("authored_by")`), which would have
+        # silently overwritten "" with the new architect instead of
+        # refusing -- this is the regression test for that.
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        acc2 = self.read_acceptance()
+        for c in acc2["criteria"]:
+            if c["id"] == "SUP-003":
+                c["authored_by"] = ""
+        self._write_acceptance(acc2)
+        approve4 = run(["design-approve", "--by", "moncy", "--architect", "arch-4",
+                       "--summary", "s4"], cwd=self.tmp)
+        self.assertEqual(approve4.returncode, 1, approve4.stdout + approve4.stderr)
+        self.assertIn("authored_by", approve4.stdout)
+        final2 = self.read_acceptance()
+        sup003_after = next(x for x in final2["criteria"] if x["id"] == "SUP-003")
+        self.assertEqual(sup003_after["authored_by"], "",
+                        "a refused design-approve must not have touched the on-disk registry")
+
+    def test_authored_by_schema_validated_and_stamping_is_hash_safe(self):
+        self.init()
+        self._enable_true_command()
+        self._author_real_criterion(requirement="Primary observable outcome.")
+
+        # -- Schema: optional, nullable, non-empty string when present.
+        acceptance = self.read_acceptance()
+        acceptance["criteria"][0]["authored_by"] = ""
+        self._write_acceptance(acceptance)
+        r = run(["validate"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("authored_by", r.stdout)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+
+        acceptance2 = self.read_acceptance()
+        acceptance2["criteria"][0]["authored_by"] = 42
+        self._write_acceptance(acceptance2)
+        r2 = run(["validate"], cwd=self.tmp)
+        self.assertEqual(r2.returncode, 1, r2.stdout + r2.stderr)
+        self.assertIn("authored_by", r2.stdout)
+
+        acceptance3 = self.read_acceptance()
+        acceptance3["criteria"][0]["authored_by"] = None
+        self._write_acceptance(acceptance3)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+        acceptance4 = self.read_acceptance()
+        del acceptance4["criteria"][0]["authored_by"]
+        self._write_acceptance(acceptance4)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+        acceptance5 = self.read_acceptance()
+        acceptance5["criteria"][0]["authored_by"] = "arch-real"
+        self._write_acceptance(acceptance5)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+        # -- Hash safety: real evidence recorded BEFORE authorship is
+        # stamped must remain valid/passing AFTER stamping, and a fresh
+        # Phase-3+ gate check right after approval must not see a stale
+        # design-hash mismatch.
+        acceptance6 = self.read_acceptance()
+        del acceptance6["criteria"][0]["authored_by"]
+        self._write_acceptance(acceptance6)
+
+        verify_r = run(["verify", "--criterion", "REQ-001", "--by", "impl-hs"], cwd=self.tmp)
+        self.assertEqual(verify_r.returncode, 0, verify_r.stdout + verify_r.stderr)
+        self.assertEqual(self.read_acceptance()["criteria"][0]["state"], "passing")
+
+        approved = run(["design-approve", "--by", "moncy", "--architect", "arch-hs",
+                       "--summary", "s"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+
+        stamped = self.read_acceptance()
+        self.assertEqual(stamped["criteria"][0]["authored_by"], "arch-hs")
+        self.assertEqual(stamped["criteria"][0]["state"], "passing",
+                        "stamping authored_by must not invalidate already-recorded evidence")
+
+        validated = run(["validate"], cwd=self.tmp)
+        self.assertEqual(validated.returncode, 0,
+                        "stamping must not trip the evidence gate: " + validated.stdout + validated.stderr)
+
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        gate = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        self.assertNotIn("design gate", gate.stdout)
+
+    def test_pre_existing_architect_and_settled_design_features_unregressed(self):
+        """AR9 guardrail: build on AR1-3's design-approve, don't
+        re-architect it. Programmatically runs the real, pre-existing
+        TestArchitectDesignApprovalGate (AR1-3) and
+        TestArchitectRespectsSettledDesigns (AR9) classes, bound to their
+        actual method counts so a renamed/deleted/shrunk class fails here."""
+        loader = unittest.TestLoader()
+        for cls, expected_count in ((TestArchitectDesignApprovalGate, 10),
+                                    (TestArchitectRespectsSettledDesigns, 2)):
+            suite = loader.loadTestsFromTestCase(cls)
+            self.assertEqual(suite.countTestCases(), expected_count,
+                            f"{cls.__name__} must still have exactly its known {expected_count} test methods")
+            runner = unittest.TextTestRunner(verbosity=0, stream=io.StringIO())
+            result = runner.run(suite)
+            self.assertTrue(result.wasSuccessful(),
+                           f"{cls.__name__} regressed: {len(result.failures)} failures, {len(result.errors)} errors "
+                           f"({[f[0].id() for f in result.failures] + [e[0].id() for e in result.errors]})")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

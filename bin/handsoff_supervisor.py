@@ -513,15 +513,30 @@ def cmd_design_approve(args) -> int:
             print("SHIP_FEATURE_BLOCKED: acceptance registry still contains init's untouched placeholder "
                   "criterion; author a real criterion before requesting design approval")
             return 1
+        # Stamp authored_by = the architect on every criterion that does not
+        # already carry one (absent key, or explicitly null/empty all count
+        # as unstamped) -- an earlier approval's authorship is never
+        # reassigned by a later one. Safe because criterion_spec_hash (and
+        # therefore design_hash) excludes authored_by entirely: this can
+        # never change a criterion's spec hash, invalidate already-recorded
+        # evidence, or mismatch a freshly recomputed design_hash.
+        for c in criteria:
+            if c.get("authored_by") is None:
+                c["authored_by"] = args.architect
+        errors = lib.validate_acceptance_schema(acceptance)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
+            return 1
         status["design_approved"] = {
             "at": datetime.now(timezone.utc).isoformat(),
             "by": args.by,
             "architect": args.architect,
+            "summary": args.summary,
             "design_hash": lib.design_hash(criteria),
             "config_hash": lib.config_hash(cfg),
             "redesigns_settled_work": args.redesigns_settled_work,
         }
-        lib.commit(root, cfg, status=status,
+        lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="design_approved", event_message=args.summary,
                   by=args.by, architect=args.architect,
                   redesigns_settled_work=args.redesigns_settled_work)

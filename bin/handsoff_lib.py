@@ -465,8 +465,13 @@ def verify_event_log(root: Path, cfg: dict) -> list[str]:
 # --------------------------------------------------------------------------
 
 def criterion_spec_hash(criterion: dict) -> str:
-    """Hash the claim being verified, excluding mutable outcome fields."""
-    spec = {k: v for k, v in criterion.items() if k not in {"state", "evidence"}}
+    """Hash the claim being verified, excluding mutable outcome fields and
+    authored_by -- the last is provenance metadata about who proposed the
+    criterion, not part of the claim being verified, so stamping it at
+    design-approve time can never change this hash, invalidate an
+    already-recorded evidence binding, or mismatch a freshly recomputed
+    design_hash (which is built from this same hash per criterion)."""
+    spec = {k: v for k, v in criterion.items() if k not in {"state", "evidence", "authored_by"}}
     return hashlib.sha256(_canonical(spec).encode("utf-8")).hexdigest()
 
 
@@ -606,6 +611,9 @@ def validate_acceptance_schema(acceptance: dict) -> list[str]:
             errors.append(f"acceptance: criterion {cid} 'evidence' must be an array of verification run ids")
         if not tests and not evidence:
             errors.append(f"acceptance: criterion {cid} has no linked tests or evidence")
+        if "authored_by" in c and c["authored_by"] is not None:
+            if not isinstance(c["authored_by"], str) or not c["authored_by"].strip():
+                errors.append(f"acceptance: criterion {cid} 'authored_by' must be a non-empty string or null")
     if not any(isinstance(c, dict) and c.get("type") == "primary_fix" for c in criteria):
         errors.append("acceptance: at least one primary_fix criterion is required")
     return errors
@@ -724,6 +732,12 @@ def validate_status_schema(status: dict) -> list[str]:
                     and (not isinstance(design_approved["redesigns_settled_work"], str)
                          or not design_approved["redesigns_settled_work"].strip()):
                 errors.append("status: 'design_approved.redesigns_settled_work' must be a non-empty string or null")
+            # Optional, like redesigns_settled_work: a run approved before
+            # this field existed (or a hand-crafted fixture) has none, and
+            # that stays valid -- only a present-but-malformed value refuses.
+            if "summary" in design_approved and design_approved["summary"] is not None \
+                    and (not isinstance(design_approved["summary"], str) or not design_approved["summary"].strip()):
+                errors.append("status: 'design_approved.summary' must be a non-empty string or null")
     review = status.get("review")
     if isinstance(review, dict) and "checklist" in review and not isinstance(review["checklist"], dict):
         errors.append("status: 'review.checklist' must be an object")
