@@ -130,6 +130,7 @@ def cmd_init(args) -> int:
                 "verification": "automated", "tests": list(lib.PLACEHOLDER_TESTS), "evidence": [], "state": "failing",
             }],
         }
+        acceptance["work_items"] = lib.derive_work_item_registry(acceptance, cfg, now=now)
         status = {
             "feature": args.feature, "phase_number": 1, "phase": lib.PHASES[1], "progress": 0,
             "status": "in_progress", "updated_at": now, "last_heartbeat_at": None,
@@ -139,6 +140,7 @@ def cmd_init(args) -> int:
             "review_cap_overrides": [], "escalation": None,
             "recovery_attempts": [], "recovery_lease": None,
             "regression_requests": [],
+            "active_work_item": None,
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
             "requires_design_approval": True, "design_approved": None,
             "requires_design_review": True, "design_review": None,
@@ -485,6 +487,116 @@ def _regression_request(status: dict, request_id: str | None = None) -> dict | N
 def _same_regression_bindings(item: dict, root: Path, cfg: dict, acceptance: dict) -> bool:
     current = _regression_bindings(root, cfg, acceptance)
     return all(item.get(key) == current[key] for key in current)
+
+
+def cmd_work_items_sync(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance = _load(root, cfg)
+        lib.ensure_no_launched_regression(status)
+        before_items, _ = lib.effective_work_items(acceptance, cfg)
+        before_scope = lib.work_item_scope_hash(before_items)
+        derived = lib.derive_work_item_registry(acceptance, cfg)
+        existing = acceptance.get("work_items")
+        if isinstance(existing, list):
+            by_id = {item["id"]: item for item in existing}
+            for item in derived:
+                current = by_id.get(item["id"])
+                if current is None:
+                    existing.append(item)
+                elif args.from_tickets:
+                    current["title"], current["url"] = item["title"], item["url"]
+                    current["updated_at"] = datetime.now(timezone.utc).isoformat()
+            persisted = existing
+        else:
+            persisted = derived
+        acceptance["work_items"] = persisted
+        after_scope = lib.work_item_scope_hash(persisted)
+        if before_scope == after_scope:
+            for field in ("design_review", "design_approved"):
+                if isinstance(status.get(field), dict):
+                    status[field]["scope_hash"] = after_scope
+        else:
+            status["design_review"] = None
+            status["design_approved"] = None
+            if status.get("phase_number", 1) >= 3:
+                status.update(phase_number=2, phase=lib.PHASES[2], progress=min(status.get("progress", 0), 20),
+                              status="in_progress", next_action="Review and approve the changed work-item scope.")
+        status.setdefault("active_work_item", None)
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        errors = lib.validate_acceptance_schema(acceptance) + lib.validate_status_schema(status)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {error}" for error in errors))
+            return 1
+        lib.commit(root, cfg, status=status, acceptance=acceptance,
+                   event_kind="work_items_synced", event_message="Canonical work-item registry synchronized",
+                   by=actor, count=len(persisted), scope_hash=after_scope,
+                   scope_binding_bootstrapped=before_scope == after_scope)
+    print(f"WORK_ITEMS_SYNCED: {len(persisted)}")
+    return 0
+
+
+def cmd_work_item_activate(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance = _load(root, cfg)
+        lib.ensure_no_launched_regression(status)
+        items, _ = lib.effective_work_items(acceptance, cfg)
+        if args.item not in {item["id"] for item in items}:
+            print(f"SHIP_FEATURE_BLOCKED: unknown work item {args.item}")
+            return 1
+        status["active_work_item"] = args.item
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        lib.commit(root, cfg, status=status, event_kind="work_item_activated",
+                   event_message=f"Activated work item {args.item}", by=actor, work_item=args.item)
+    print(f"WORK_ITEM_ACTIVATED: {args.item}")
+    return 0
+
+
+def cmd_work_item_update(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance = _load(root, cfg)
+        lib.ensure_no_launched_regression(status)
+        items = acceptance.get("work_items")
+        if not isinstance(items, list):
+            print("SHIP_FEATURE_BLOCKED: synchronize work items before updating them")
+            return 1
+        item = next((candidate for candidate in items if candidate.get("id") == args.item), None)
+        if item is None:
+            print(f"SHIP_FEATURE_BLOCKED: unknown work item {args.item}")
+            return 1
+        before_scope = lib.work_item_scope_hash(items)
+        for field in ("title", "url", "github_state", "notes"):
+            value = getattr(args, field)
+            if value is not None:
+                item[field] = value
+        if args.required:
+            item["required"] = True
+        elif args.optional:
+            item["required"] = False
+        if args.github_state is not None:
+            item["github_checked_at"] = datetime.now(timezone.utc).isoformat()
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        after_scope = lib.work_item_scope_hash(items)
+        if before_scope != after_scope:
+            _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        status["updated_at"] = item["updated_at"]
+        errors = lib.validate_acceptance_schema(acceptance)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {error}" for error in errors))
+            return 1
+        lib.commit(root, cfg, status=status, acceptance=acceptance,
+                   event_kind="work_item_updated", event_message=f"Updated work item {args.item}",
+                   by=actor, work_item=args.item, scope_changed=before_scope != after_scope)
+    print(f"WORK_ITEM_UPDATED: {args.item}")
+    return 0
 
 
 def cmd_regression_request(args) -> int:
@@ -861,6 +973,7 @@ def cmd_design_approve(args) -> int:
             "summary": args.summary,
             "design_hash": lib.design_hash(criteria),
             "config_hash": lib.config_hash(cfg),
+            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
             "redesigns_settled_work": args.redesigns_settled_work,
         }
         # In the natural AR7 flow, record-design-review left the run
@@ -946,6 +1059,7 @@ def cmd_record_design_review(args) -> int:
             "summary": args.summary.strip(),
             "design_hash": lib.design_hash(criteria),
             "config_hash": lib.config_hash(cfg),
+            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
         }
         status.pop("authorization_hold", None)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1173,6 +1287,7 @@ def cmd_record_review(args) -> int:
             "by": reviewer_id, "at": datetime.now(timezone.utc).isoformat(),
             "acceptance_hash": lib.acceptance_hash(acceptance["criteria"]),
             "config_hash": lib.config_hash(cfg),
+            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
             "implementer_profile": implementer_profile,
             "reviewer_profile": reviewer_profile,
             "profiles_distinct": profiles_distinct,
@@ -1845,6 +1960,25 @@ def main() -> int:
     regression_finalize.add_argument("--request-id", required=True)
     regression_finalize.add_argument("--by", required=True)
 
+    work_sync = sub.add_parser("work-items-sync")
+    work_sync.add_argument("--by", required=True)
+    work_sync.add_argument("--from-tickets", action="store_true")
+
+    work_activate = sub.add_parser("work-item-activate")
+    work_activate.add_argument("item")
+    work_activate.add_argument("--by", required=True)
+
+    work_update = sub.add_parser("work-item-update")
+    work_update.add_argument("item")
+    work_update.add_argument("--by", required=True)
+    work_update.add_argument("--title")
+    work_update.add_argument("--url")
+    work_update.add_argument("--github-state", choices=("open", "closed"))
+    work_update.add_argument("--notes")
+    required_choice = work_update.add_mutually_exclusive_group()
+    required_choice.add_argument("--required", action="store_true")
+    required_choice.add_argument("--optional", action="store_true")
+
     evidence = sub.add_parser("record-evidence")
     evidence.add_argument("criterion")
     evidence.add_argument("--kind", choices=("manual", "browser"), required=True)
@@ -2000,6 +2134,9 @@ def main() -> int:
         "regression-run": cmd_regression_run,
         "regression-cancel": cmd_regression_cancel,
         "regression-finalize": cmd_regression_finalize,
+        "work-items-sync": cmd_work_items_sync,
+        "work-item-activate": cmd_work_item_activate,
+        "work-item-update": cmd_work_item_update,
         "dashboard": cmd_dashboard,
         "record-evidence": cmd_record_evidence,
         "record-symptom-resolved": cmd_record_symptom,

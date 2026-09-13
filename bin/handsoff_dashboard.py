@@ -383,6 +383,7 @@ def build_snapshot(root: Path) -> dict:
         return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
     criteria = acceptance.get("criteria", [])
+    work_items = lib.derive_work_items(status, acceptance, cfg)
     latest_event = events[-1] if events else None
     coverage = status.get("requirement_coverage", {})
     audit_healthy = not gate_errors and not audit_errors
@@ -479,7 +480,8 @@ def build_snapshot(root: Path) -> dict:
             "total": len(criteria),
             "original_symptom_resolved": coverage.get("original_symptom_resolved") is True,
         },
-        "tickets": list(cfg.get("tickets", [])),
+        "tickets": [],
+        "work_items": work_items,
         "actors": actors,
         "crew": crew,
         "runtime": {

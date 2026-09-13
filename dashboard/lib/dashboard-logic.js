@@ -111,6 +111,22 @@ function reviewRoundLabel(policy = {}) {
   return `${round} / ${cap}${overrides ? ` (${overrides} override${overrides === 1 ? "" : "s"})` : ""}`;
 }
 
+function workItemStateLabel(state) {
+  return String(state || "unknown").replaceAll("_", " ").toUpperCase();
+}
+
+function workItemBlockerText(item = {}) {
+  return item.blocker || (item.status === "done" ? "Complete" : "No blocker recorded");
+}
+
+function discrepancyLabel(item = {}) {
+  return item.discrepancy ? `DISCREPANT: ${item.discrepancy}` : "";
+}
+
+function showWorkItemTable(workItems = {}) {
+  return Boolean(workItems.multi && (workItems.items || []).length > 1);
+}
+
 // REQ-002: the Auto-detect <option> label always names the live resolved
 // adapter, but the stored/selected value must stay "auto" -- never get
 // silently rewritten to that resolved adapter.
@@ -183,6 +199,10 @@ if (typeof module !== "undefined" && module.exports) {
     replacementDetail,
     eventDetail,
     reviewRoundLabel,
+    workItemStateLabel,
+    workItemBlockerText,
+    discrepancyLabel,
+    showWorkItemTable,
     autoDetectOptionLabel,
     resolveAgentSelectValue,
     ALLOWED_ADAPTERS,

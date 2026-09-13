@@ -247,6 +247,8 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .ticket-state.in_progress { color: var(--blue); border-color: rgba(143, 192, 255, .3); background: var(--green-soft); }
 .ticket-state.not_started { color: var(--faint); }
 .ticket-state.blocked { color: var(--red); border-color: rgba(255, 143, 136, .28); background: var(--red-soft); }
+.ticket-state.in_review { color: #c8a8ff; border-color: rgba(200,168,255,.3); background: rgba(120,70,180,.14); }
+.ticket-state.awaiting_approval, .ticket-state.recovering { color: var(--amber); border-color: rgba(255,194,92,.3); background: rgba(255,194,92,.1); }
 .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 .section-head h2 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
 .legend { display: flex; gap: 16px; color: var(--muted); font-size: 12px; }

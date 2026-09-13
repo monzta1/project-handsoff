@@ -87,31 +87,3 @@ commands = ["python3 tests/test_handsoff_supervisor.py"]
 [[regressions]]
 name = "dashboard-full"
 commands = ["node --test tests/dashboard/*.test.js"]
-
-# Temporary observation-only bootstrap for the self-hosted governance run
-# (issues #28-#31). This is NOT the implementation of #29; it exists so the
-# operator can watch all four issues on Mission Control while #29 replaces
-# manual ticket configuration with derived work-item state.
-[[tickets]]
-number = 31
-title = "Track review attempts structurally and enforce convergence limits"
-status = "in_progress"
-url = "https://github.com/monzta1/project-handsoff/issues/31"
-
-[[tickets]]
-number = 30
-title = "Supervisor leaves stalled runs without automatic remediation"
-status = "in_progress"
-url = "https://github.com/monzta1/project-handsoff/issues/30"
-
-[[tickets]]
-number = 28
-title = "Hard-gate full regressions behind Mission Control Accept/Decline"
-status = "in_progress"
-url = "https://github.com/monzta1/project-handsoff/issues/28"
-
-[[tickets]]
-number = 29
-title = "Automatically show per-ticket status table for multi-item runs"
-status = "not_started"
-url = "https://github.com/monzta1/project-handsoff/issues/29"

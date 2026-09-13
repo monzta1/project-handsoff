@@ -449,15 +449,21 @@ function renderCriteria(criteria) {
     </div>`).join("") : '<div class="empty-row">No acceptance criteria found.</div>';
 }
 
-function renderTickets(tickets) {
+function renderWorkItems(workItems) {
+  const items = workItems?.items || [];
+  const visible = Boolean(workItems?.multi);
   const panel = $("ticket-panel");
-  panel.classList.toggle("hidden", !tickets.length);
-  $("ticket-total").textContent = `${tickets.length} TICKET${tickets.length === 1 ? "" : "S"}`;
-  $("ticket-list").innerHTML = tickets.map((ticket) => `
-    <tr>
-      <td><a href="${escapeHtml(ticket.url || "#")}" ${ticket.url ? 'target="_blank" rel="noreferrer"' : ""}>#${escapeHtml(ticket.number)}</a></td>
-      <td>${escapeHtml(ticket.title)}</td>
-      <td><span class="ticket-state ${escapeHtml(ticket.status)}">${escapeHtml(String(ticket.status).replaceAll("_", " "))}</span></td>
+  panel.classList.toggle("hidden", !visible);
+  $("ticket-total").textContent = `${items.length} ITEM${items.length === 1 ? "" : "S"}`;
+  $("ticket-list").innerHTML = items.map((item) => `
+    <tr data-item-id="${escapeHtml(item.id)}">
+      <td><code>${escapeHtml(item.id)}</code></td>
+      <td>${item.number ? `#${escapeHtml(item.number)}` : "—"}</td>
+      <td>${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
+      <td><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
+      <td>${escapeHtml(item.phase_or_next || "—")}</td>
+      <td>${escapeHtml(item.blocker || "—")}</td>
+      <td>${escapeHtml(relativeTime(item.updated_at))}</td>
     </tr>`).join("");
 }
 
@@ -606,7 +612,7 @@ function render(snapshot) {
   stateClass($("approval-state"), status.deployment_approved ? "is-good" : "is-warning");
 
   renderCriteria(acceptance.criteria);
-  renderTickets(snapshot.tickets || []);
+  renderWorkItems(snapshot.work_items || { items: [], multi: false });
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
   renderReplacements(state.replacements, snapshot.recovery?.attempts || []);

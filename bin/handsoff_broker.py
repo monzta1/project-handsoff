@@ -103,6 +103,27 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "request_id"})
         base.extend(["--request-id", _text(request, "request_id"), "--by", _text(request, "by")])
         return base
+    if command == "work-items-sync":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"from_tickets"})
+        base.extend(["--by", _text(request, "by")])
+        if request.get("from_tickets") is True:
+            base.append("--from-tickets")
+        elif "from_tickets" in request and request["from_tickets"] is not False:
+            raise lib.HandsoffError("broker from_tickets must be boolean")
+        return base
+    if command == "work-item-activate":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "item"})
+        base.extend([_text(request, "item"), "--by", _text(request, "by")])
+        return base
+    if command == "work-item-update":
+        optional = {"title", "url", "github_state", "notes"}
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "item"}, optional)
+        base.extend([_text(request, "item"), "--by", _text(request, "by")])
+        for field, flag in (("title", "--title"), ("url", "--url"),
+                            ("github_state", "--github-state"), ("notes", "--notes")):
+            if field in request:
+                base.extend([flag, _text(request, field)])
+        return base
     if command in {"background-wait-start", "background-wait-end", "human-pause-start", "human-pause-end"}:
         optional = {"note"}
         if command == "background-wait-start":

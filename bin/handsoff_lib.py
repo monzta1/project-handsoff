@@ -82,6 +82,14 @@ PLACEHOLDER_TESTS = ["name_or_path_of_test"]
 MAX_FALLBACK_PROFILES = 8
 DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
 TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
+WORK_ITEM_KINDS = {"issue", "ask"}
+WORK_ITEM_STATES = {
+    "done", "blocked", "in_review", "awaiting_approval", "recovering",
+    "in_progress", "not_started",
+}
+WORK_ITEM_TAG_PATTERN = re.compile(r"^\[(#\d{1,9}|[a-z0-9][a-z0-9-]{0,39})\]\s")
+WORK_ITEM_ID_PATTERN = re.compile(r"^(?:issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$")
+MAX_WORK_ITEMS = 64
 
 DEFAULT_CONFIG = {
     "status_file": "handsoff-status.json",
@@ -2049,6 +2057,41 @@ def validate_acceptance_schema(acceptance: dict) -> list[str]:
                 errors.append(f"acceptance: criterion {cid} 'authored_by' must be a non-empty string or null")
     if not any(isinstance(c, dict) and c.get("type") == "primary_fix" for c in criteria):
         errors.append("acceptance: at least one primary_fix criterion is required")
+    work_items = acceptance.get("work_items")
+    if work_items is not None:
+        if not isinstance(work_items, list) or not work_items or len(work_items) > MAX_WORK_ITEMS:
+            errors.append(f"acceptance: 'work_items' must contain 1 to {MAX_WORK_ITEMS} entries")
+            work_items = []
+        seen_work_items = set()
+        required = {"id", "kind", "number", "title", "url", "required", "github_state",
+                    "github_checked_at", "created_at", "updated_at", "notes"}
+        for index, item in enumerate(work_items):
+            label = f"acceptance: work_items[{index}]"
+            if not isinstance(item, dict) or set(item) != required:
+                errors.append(f"{label} has invalid fields")
+                continue
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not WORK_ITEM_ID_PATTERN.fullmatch(item_id) or item_id in seen_work_items:
+                errors.append(f"{label}.id is invalid or duplicated")
+            seen_work_items.add(item_id)
+            if item.get("kind") not in WORK_ITEM_KINDS:
+                errors.append(f"{label}.kind is invalid")
+            number = item.get("number")
+            if (item.get("kind") == "issue") != (isinstance(number, int) and not isinstance(number, bool) and number > 0):
+                errors.append(f"{label}.number must match its kind")
+            if not isinstance(item.get("title"), str) or not item["title"].strip() or len(item["title"]) > 200:
+                errors.append(f"{label}.title is invalid")
+            if not isinstance(item.get("url"), str) or not isinstance(item.get("notes"), str) or len(item["notes"]) > 512:
+                errors.append(f"{label} display fields are invalid")
+            if not isinstance(item.get("required"), bool) or item.get("github_state") not in {None, "open", "closed"}:
+                errors.append(f"{label} state fields are invalid")
+            for field in ("created_at", "updated_at"):
+                try:
+                    parsed = datetime.fromisoformat(item.get(field))
+                    if parsed.tzinfo is None:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    errors.append(f"{label}.{field} must be a timezone-aware timestamp")
     return errors
 
 
@@ -2689,6 +2732,8 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("review gate: acceptance changed since review; record a new review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("review gate: workflow policy changed since review; record a new review")
+    if "work_items" in acceptance and review.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
+        errors.append("review gate: work-item scope changed since review; record a new review")
     reviewer = review.get("by")
     if not reviewer:
         errors.append("review gate: review must identify its reviewer")
@@ -2719,6 +2764,8 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
     if approval.get("config_hash") != config_hash(cfg):
         errors.append("design gate: workflow policy changed since design approval; record a new approval")
+    if "work_items" in acceptance and approval.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
+        errors.append("design gate: work-item scope changed since design approval; record a new approval")
     approver = approval.get("by")
     architect = approval.get("architect")
     if not approver:
@@ -2746,6 +2793,8 @@ def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str
         errors.append("design review gate: criteria changed since design review; record a new design review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("design review gate: workflow policy changed since design review; record a new design review")
+    if "work_items" in acceptance and review.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
+        errors.append("design review gate: work-item scope changed since design review; record a new design review")
     reviewer = review.get("by")
     architect = review.get("architect")
     if not reviewer:
@@ -2824,6 +2873,11 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         errors.append("progress gate: 95%+ requires verified acceptance and a resolved original symptom")
     if status.get("status") in ("ready_to_deploy", "awaiting_approval", "complete") and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("status gate: acceptance registry is not fully green")
+    if "work_items" in acceptance and (phase >= 8 or status.get("status") == "complete"):
+        unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
+                      if item.get("required") and item.get("status") != "done"]
+        for item in unfinished:
+            errors.append(f"work items gate: required work item {item['id']} is {item['status']}; a run cannot complete while it is unfinished")
 
     if phase >= 6:
         implemented_by = status.get("implemented_by")
@@ -3291,6 +3345,138 @@ def ensure_no_launched_regression(status: dict) -> None:
         raise HandsoffError(
             f"regression {item.get('request_id')} is running; workflow mutations are locked until it terminalizes"
         )
+
+
+def _work_item_slug(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")[:40].rstrip("-")
+    return slug or "item"
+
+
+def criterion_work_item_id(criterion: dict) -> str | None:
+    requirement = criterion.get("requirement") if isinstance(criterion, dict) else None
+    match = WORK_ITEM_TAG_PATTERN.match(requirement or "")
+    if not match:
+        return None
+    tag = match.group(1)
+    return f"issue-{tag[1:]}" if tag.startswith("#") else f"ask-{tag}"
+
+
+def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None) -> list[dict]:
+    """Derive stable scope from criterion tags, feature issue refs and legacy display metadata."""
+    now = now or datetime.now(timezone.utc).isoformat()
+    tickets = {int(item["number"]): item for item in cfg.get("tickets", [])}
+    identities: dict[str, tuple[str, int | None, str]] = {}
+    feature = str(acceptance.get("feature") or "")
+    for number_text in re.findall(r"(?<!\w)#([1-9][0-9]{0,8})\b", feature):
+        number = int(number_text)
+        identities[f"issue-{number}"] = ("issue", number, tickets.get(number, {}).get("title") or f"Issue #{number}")
+    for criterion in acceptance.get("criteria", []):
+        item_id = criterion_work_item_id(criterion)
+        if not item_id:
+            continue
+        if item_id.startswith("issue-"):
+            number = int(item_id[6:])
+            title = tickets.get(number, {}).get("title") or f"Issue #{number}"
+            identities[item_id] = ("issue", number, title)
+        else:
+            title = item_id[4:].replace("-", " ").title()
+            identities[item_id] = ("ask", None, title)
+    # Plain asks split only at explicit separators. Conjunctions are never
+    # guessed as separate promises.
+    if not identities:
+        parts = [part.strip(" -\t") for part in re.split(r"[;\n]+|(?:^|\s)\d+[.)]\s+", feature) if part.strip(" -\t")]
+        for part in parts[:MAX_WORK_ITEMS]:
+            slug = _work_item_slug(part)
+            identities.setdefault(f"ask-{slug}", ("ask", None, part[:200]))
+    items = []
+    for item_id, (kind, number, title) in identities.items():
+        ticket = tickets.get(number, {}) if number is not None else {}
+        items.append({
+            "id": item_id, "kind": kind, "number": number, "title": title[:200],
+            "url": str(ticket.get("url") or ""), "required": True,
+            "github_state": None, "github_checked_at": None,
+            "created_at": now, "updated_at": now, "notes": "",
+        })
+    return sorted(items, key=lambda item: (item["kind"] != "issue", item["number"] or 0, item["id"]))[:MAX_WORK_ITEMS]
+
+
+def effective_work_items(acceptance: dict, cfg: dict) -> tuple[list[dict], str]:
+    persisted = acceptance.get("work_items")
+    if isinstance(persisted, list):
+        return persisted, "persisted"
+    return derive_work_item_registry(acceptance, cfg), "derived"
+
+
+def work_item_scope_hash(items: list[dict]) -> str:
+    scope = sorted(({
+        "id": item.get("id"), "kind": item.get("kind"),
+        "number": item.get("number"), "required": item.get("required", True),
+    } for item in items), key=lambda item: item["id"] or "")
+    return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
+    registry, source = effective_work_items(acceptance, cfg)
+    criteria = acceptance.get("criteria", [])
+    multi = len(registry) > 1
+    mapping: dict[str, list[dict]] = {item["id"]: [] for item in registry}
+    for criterion in criteria:
+        item_id = criterion_work_item_id(criterion)
+        if item_id is None and len(registry) == 1:
+            item_id = registry[0]["id"]
+        if item_id in mapping:
+            mapping[item_id].append(criterion)
+        elif multi:
+            mapping.setdefault("unattributed", []).append(criterion)
+    rows = list(registry)
+    if "unattributed" in mapping and not any(item["id"] == "unattributed" for item in rows):
+        timestamp = status.get("updated_at") or datetime.now(timezone.utc).isoformat()
+        rows.append({"id": "unattributed", "kind": "ask", "number": None,
+                     "title": "Unattributed acceptance criteria", "url": "", "required": True,
+                     "github_state": None, "github_checked_at": None,
+                     "created_at": timestamp, "updated_at": timestamp, "notes": ""})
+    regression = active_regression_request(status)
+    recovering = any(item.get("state") in {"reserved", "launched"}
+                     for item in status.get("recovery_attempts", []))
+    reviewing = bool(current_review_attempt(status)) or int(status.get("phase_number", 1) or 1) == 5
+    escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
+    rendered = []
+    for item in rows:
+        own = mapping.get(item["id"], [])
+        blocker = ""
+        if escalation or status.get("status") == "blocked":
+            state = "blocked"
+            blocker = (escalation or {}).get("reason") or status.get("next_action", "Run blocked")
+        elif regression and regression.get("state") in {"awaiting_approval", "accepted"}:
+            state = "awaiting_approval"
+            blocker = f"Regression {regression.get('group')} awaits Pilot action"
+        elif recovering:
+            state = "recovering"
+            blocker = "Assigned worker recovery is active"
+        elif reviewing and any(c.get("state") != "passing" for c in own):
+            state = "in_review"
+        elif own and all(c.get("state") == "passing" for c in own):
+            state = "done"
+        elif any(c.get("state") == "blocked" for c in own):
+            state = "blocked"
+            blocker = "A mapped acceptance criterion is blocked"
+        elif status.get("active_work_item") == item["id"] or any(c.get("evidence") for c in own):
+            state = "in_progress"
+        else:
+            state = "not_started"
+        github_state = item.get("github_state")
+        discrepancy = None
+        if github_state == "closed" and state != "done":
+            discrepancy = "GitHub is closed but Handsoff work is unfinished"
+        elif github_state == "open" and state == "done":
+            discrepancy = "Handsoff is done but GitHub is still open"
+        rendered.append({**item, "status": state, "criteria": [c.get("id") for c in own],
+                         "phase_or_next": status.get("next_action") or status.get("phase"),
+                         "blocker": blocker, "discrepancy": discrepancy})
+    counts = {state: sum(item["status"] == state for item in rendered) for state in WORK_ITEM_STATES}
+    return {"multi": len(rendered) > 1, "registry": source,
+            "tickets_config_deprecated": bool(cfg.get("tickets")) and source == "persisted",
+            "items": rendered, "aggregate": {"total": len(rendered), "done": counts["done"], "counts": counts}}
 
 
 # --------------------------------------------------------------------------
