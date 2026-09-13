@@ -104,6 +104,13 @@ function eventDetail(event) {
   return parts.filter(Boolean).map((part) => String(part).replaceAll("_", " ")).join(" · ");
 }
 
+function reviewRoundLabel(policy = {}) {
+  const round = Number(policy.review_round) || 0;
+  const cap = Number(policy.effective_max_review_rounds ?? policy.max_review_rounds) || 0;
+  const overrides = Number(policy.review_cap_overrides) || 0;
+  return `${round} / ${cap}${overrides ? ` (${overrides} override${overrides === 1 ? "" : "s"})` : ""}`;
+}
+
 // REQ-002: the Auto-detect <option> label always names the live resolved
 // adapter, but the stored/selected value must stay "auto" -- never get
 // silently rewritten to that resolved adapter.
@@ -175,6 +182,7 @@ if (typeof module !== "undefined" && module.exports) {
     replacementHeadline,
     replacementDetail,
     eventDetail,
+    reviewRoundLabel,
     autoDetectOptionLabel,
     resolveAgentSelectValue,
     ALLOWED_ADAPTERS,

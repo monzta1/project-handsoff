@@ -73,7 +73,7 @@ timeout_seconds = 600
 [[tickets]]
 number = 31
 title = "Track review attempts structurally and enforce convergence limits"
-status = "not_started"
+status = "in_progress"
 url = "https://github.com/monzta1/project-handsoff/issues/31"
 
 [[tickets]]

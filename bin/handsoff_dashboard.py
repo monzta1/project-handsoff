@@ -223,7 +223,11 @@ def _input_request(status: dict, cfg: dict) -> dict:
         "need your approval", "provide credentials", "grant permission", "authorize",
     ))
     required = workflow_status == "blocked" or approval_missing or design_approval_missing or older_signal
-    if approval_missing:
+    escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
+    if escalation:
+        kind = "escalation"
+        message = f"{escalation.get('reason')}. {escalation.get('required_action')}"
+    elif approval_missing:
         kind = "deployment_approval"
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
     elif design_approval_missing:
@@ -482,6 +486,9 @@ def build_snapshot(root: Path) -> dict:
         "policy": {
             "review_round": status.get("review_round", 0),
             "max_review_rounds": cfg.get("max_review_rounds"),
+            "effective_max_review_rounds": lib.effective_review_cap(status, cfg)
+            if "review_attempts" in status else cfg.get("max_review_rounds"),
+            "review_cap_overrides": len(status.get("review_cap_overrides") or []),
             "design_round": status.get("design_round", 0),
             "max_design_rounds": cfg.get("max_design_rounds"),
             "explicit_approval": cfg.get("deployment_requires_explicit_approval", True),
@@ -489,6 +496,15 @@ def build_snapshot(root: Path) -> dict:
             "configured_checks": len(cfg.get("check_commands", [])),
             "configured_live_checks": len(cfg.get("live_check_commands", [])),
         },
+        "review": {
+            "attempts": [{
+                "attempt": item.get("attempt"), "attempt_id": item.get("attempt_id"),
+                "trigger": item.get("trigger"), "disposition": item.get("disposition"),
+                "reviewer": item.get("reviewer"), "opened_at": item.get("opened_at"),
+                "closed_at": item.get("closed_at"), "findings_count": len(item.get("findings") or []),
+            } for item in (status.get("review_attempts") or [])],
+        },
+        "escalation": status.get("escalation"),
         "settings": _settings_view(cfg),
         "input_required": input_request,
         "activity_note": activity,

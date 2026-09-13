@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -132,6 +133,8 @@ def cmd_init(args) -> int:
             "status": "in_progress", "updated_at": now, "last_heartbeat_at": None,
             "next_action": lib.NEXT_ACTION_DEFAULTS[1],
             "design_round": 0, "review_round": 0, "retry_count": 0, "summary": "", "reassurance": "",
+            "legacy_review_round_offset": 0, "review_attempts": [],
+            "review_cap_overrides": [], "escalation": None,
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
             "requires_design_approval": True, "design_approved": None,
             "requires_design_review": True, "design_review": None,
@@ -169,6 +172,11 @@ def cmd_status(args) -> int:
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
         "status": status.get("status"), "next_action": status.get("next_action"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
+        "review_attempts": [{k: item.get(k) for k in ("attempt", "attempt_id", "trigger", "disposition", "reviewer")}
+                            for item in (status.get("review_attempts") or [])],
+        "effective_max_review_rounds": lib.effective_review_cap(status, cfg)
+        if "review_attempts" in status else cfg.get("max_review_rounds"),
+        "escalation": status.get("escalation"),
         "design_review": status.get("design_review"),
         "reviewed_by": status.get("reviewed_by"),
         "live_verification_id": status.get("live_verification_id"),
@@ -289,7 +297,31 @@ def cmd_advance(args) -> int:
                 "reason": args.design_round_reason,
             }
         if args.review_round is not None:
-            proposed["review_round"] = args.review_round
+            lib.migrate_review_ledger(proposed)
+            current_review = int(proposed.get("review_round", 0) or 0)
+            if args.review_round < current_review:
+                print("SHIP_FEATURE_INVALID: review_round is monotonic")
+                return 1
+            if args.review_round > lib.effective_review_cap(proposed, cfg):
+                print(f"SHIP_FEATURE_INVALID: round cap: review_round {args.review_round} exceeds "
+                      f"effective max_review_rounds {lib.effective_review_cap(proposed, cfg)}")
+                return 1
+            now = datetime.now(timezone.utc).isoformat()
+            while proposed["review_round"] < args.review_round:
+                attempts = proposed["review_attempts"]
+                aid = lib._new_bounded_id(
+                    "ha", lib.REVIEW_ATTEMPT_ID_PATTERN,
+                    {item.get("attempt_id") for item in attempts}, None,
+                )
+                number = proposed["review_round"] + 1
+                attempts.append({
+                    "attempt_id": aid, "attempt": number, "opened_at": now, "closed_at": now,
+                    "opened_by": "advance", "reviewer": None, "session_ids": [],
+                    "trigger": "manual_override", "trigger_detail": "legacy advance --review-round",
+                    "acceptance_hash": lib.acceptance_hash(acceptance.get("criteria", [])),
+                    "phase_number": args.phase, "disposition": "unrecorded", "findings": [],
+                })
+                proposed["review_round"] = number
 
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems)
@@ -748,6 +780,158 @@ def cmd_record_design_review(args) -> int:
     return 0
 
 
+def cmd_review_attempt_start(args) -> int:
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if status.get("phase_number", 0) < 4:
+            print("SHIP_FEATURE_BLOCKED: review attempts require Phase 4 or later")
+            return 1
+        proposed = deepcopy(status)
+        try:
+            attempt = lib.open_review_attempt(
+                proposed, acceptance, cfg, by=args.by, trigger=args.trigger,
+                detail=args.note or "", reviewer=args.reviewer,
+            )
+        except lib.HandsoffError as exc:
+            if isinstance(proposed.get("escalation"), dict) \
+                    and proposed["escalation"].get("kind") == "review_cap_exhausted":
+                lib.commit(root, cfg, status=proposed, event_kind="review_attempt_refused",
+                           event_message=str(exc), by=args.by,
+                           review_round=proposed.get("review_round"),
+                           effective_max_review_rounds=lib.effective_review_cap(proposed, cfg))
+            print(f"REVIEW_ATTEMPT_REFUSED: {exc}")
+            return 1
+        errors = lib.compute_errors(proposed, acceptance, cfg, verifications=records,
+                                    verification_problems=problems)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {x}" for x in errors))
+            return 1
+        lib.commit(root, cfg, status=proposed, event_kind="review_attempt_opened",
+                   event_message=f"Implementation review attempt {attempt['attempt']} opened",
+                   by=args.by, attempt_id=attempt["attempt_id"], attempt=attempt["attempt"],
+                   trigger=attempt["trigger"], reviewer=attempt.get("reviewer"))
+    print(f"REVIEW_ATTEMPT_OPENED: {attempt['attempt_id']} "
+          f"(attempt {attempt['attempt']} of {lib.effective_review_cap(proposed, cfg)})")
+    return 0
+
+
+def _parse_review_findings(values: list[str]) -> list[dict]:
+    if not values or len(values) > 16:
+        raise lib.HandsoffError("record-review-findings requires 1 to 16 findings")
+    findings = []
+    for raw in values:
+        code, sep, summary = raw.partition(":")
+        code, summary = code.strip(), summary.strip()
+        if not sep or code not in lib.REVIEW_FINDING_CODES or not summary or len(summary) > 512:
+            raise lib.HandsoffError("findings must use 'CODE: summary' with a supported code")
+        findings.append({"code": code, "summary": summary})
+    if len({(item["code"], item["summary"]) for item in findings}) != len(findings):
+        raise lib.HandsoffError("duplicate review findings are not allowed")
+    return findings
+
+
+def cmd_record_review_findings(args) -> int:
+    reviewer = lib.validate_agent_actor(args.by)
+    findings = _parse_review_findings(args.finding)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        implementer = status.get("implemented_by")
+        if implementer and reviewer.casefold() == implementer.strip().casefold():
+            print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
+            return 1
+        proposed = deepcopy(status)
+        attempt = lib.current_review_attempt(proposed)
+        if attempt is None:
+            try:
+                attempt = lib.open_review_attempt(proposed, acceptance, cfg, by=reviewer, reviewer=reviewer)
+            except lib.HandsoffError as exc:
+                print(f"REVIEW_ATTEMPT_REFUSED: {exc}")
+                return 1
+        if attempt.get("acceptance_hash") != lib.acceptance_hash(acceptance.get("criteria", [])):
+            print("SHIP_FEATURE_BLOCKED: acceptance changed since this review attempt opened")
+            return 1
+        attempt["reviewer"] = reviewer
+        attempt["findings"] = findings
+        attempt["disposition"] = "changes_requested"
+        attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
+        if attempt["attempt"] >= lib.effective_review_cap(proposed, cfg):
+            lib._review_cap_escalation(proposed, cfg)
+            extra = [{"kind": "review_cap_escalated", "message": proposed["escalation"]["reason"],
+                      "attempt_id": attempt["attempt_id"], "attempt": attempt["attempt"]}]
+        else:
+            proposed["phase_number"] = 4
+            proposed["phase"] = lib.PHASES[4]
+            proposed["progress"] = min(float(proposed.get("progress", 0)), 40)
+            proposed["status"] = "in_progress"
+            proposed["next_action"] = (
+                f"Implementer addresses {len(findings)} findings from attempt {attempt['attempt']}; "
+                f"Supervisor then starts attempt {attempt['attempt'] + 1} of {lib.effective_review_cap(proposed, cfg)}"
+            )
+            extra = None
+        proposed["review"] = None
+        proposed["reviewed_by"] = None
+        lib.commit(root, cfg, status=proposed, extra_events=extra,
+                   event_kind="review_attempt_closed",
+                   event_message=f"Review attempt {attempt['attempt']} requested changes",
+                   by=reviewer, attempt_id=attempt["attempt_id"], attempt=attempt["attempt"],
+                   disposition="changes_requested", findings=findings)
+    print("REVIEW_CHANGES_RECORDED")
+    return 0
+
+
+def cmd_review_cap_override(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    if not args.reason or not args.reason.strip():
+        print("SHIP_FEATURE_BLOCKED: --reason must be non-empty")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        proposed = deepcopy(status)
+        lib.migrate_review_ledger(proposed)
+        overrides = proposed["review_cap_overrides"]
+        if len(overrides) >= lib.MAX_REVIEW_CAP_OVERRIDES:
+            print("SHIP_FEATURE_BLOCKED: review cap override history is full")
+            return 1
+        oid = lib._new_bounded_id(
+            "ho", lib.REVIEW_OVERRIDE_ID_PATTERN,
+            {item.get("override_id") for item in overrides}, None,
+        )
+        overrides.append({
+            "override_id": oid, "by": actor, "at": datetime.now(timezone.utc).isoformat(),
+            "reason": args.reason.strip(), "config_hash": lib.config_hash(cfg),
+            "review_round_at_grant": int(proposed.get("review_round", 0) or 0),
+        })
+        if isinstance(proposed.get("escalation"), dict) \
+                and proposed["escalation"].get("kind") == "review_cap_exhausted":
+            proposed["escalation"] = None
+            proposed["status"] = "in_progress"
+        proposed["next_action"] = (
+            f"Start review attempt {int(proposed.get('review_round', 0)) + 1} "
+            f"of {lib.effective_review_cap(proposed, cfg)}"
+        )
+        lib.commit(root, cfg, status=proposed, event_kind="review_cap_override_recorded",
+                   event_message="Human granted one additional review attempt",
+                   by=actor, reason=args.reason.strip(), override_id=oid,
+                   effective_max_review_rounds=lib.effective_review_cap(proposed, cfg))
+    print(f"REVIEW_CAP_OVERRIDE_RECORDED: {oid}")
+    return 0
+
+
 def cmd_record_review(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -766,6 +950,23 @@ def cmd_record_review(args) -> int:
         implementer = status.get("implemented_by")
         if implementer and reviewer_id.casefold() == implementer.strip().casefold():
             print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
+            return 1
+        lib.migrate_review_ledger(status)
+        attempt = lib.current_review_attempt(status)
+        if attempt is None:
+            try:
+                attempt = lib.open_review_attempt(
+                    status, acceptance, cfg, by=reviewer_id, reviewer=reviewer_id,
+                )
+            except lib.HandsoffError as exc:
+                if isinstance(status.get("escalation"), dict) \
+                        and status["escalation"].get("kind") == "review_cap_exhausted":
+                    lib.commit(root, cfg, status=status, event_kind="review_attempt_refused",
+                               event_message=str(exc), by=reviewer_id)
+                print(f"REVIEW_ATTEMPT_REFUSED: {exc}")
+                return 1
+        if attempt.get("acceptance_hash") != lib.acceptance_hash(acceptance.get("criteria", [])):
+            print("SHIP_FEATURE_BLOCKED: acceptance changed since this review attempt opened")
             return 1
         preflight = dict(status)
         preflight["phase_number"] = 6
@@ -798,8 +999,16 @@ def cmd_record_review(args) -> int:
         status["review"] = preflight["review"]
         status["reviewed_by"] = reviewer_id
         status["reviewer_checklist"] = preflight["review"]["checklist"]
+        attempt["reviewer"] = reviewer_id
+        attempt["disposition"] = "approved"
+        attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
-        lib.commit(root, cfg, status=status,
+        lib.commit(root, cfg, status=status, extra_events=[{
+                      "kind": "review_attempt_closed",
+                      "message": f"Review attempt {attempt['attempt']} approved",
+                      "attempt_id": attempt["attempt_id"], "attempt": attempt["attempt"],
+                      "disposition": "approved", "reviewer": reviewer_id,
+                  }],
                   event_kind="review_approved", event_message="Independent review approved current acceptance",
                   by=reviewer_id, acceptance_hash=status["review"]["acceptance_hash"],
                   implementer_profile=implementer_profile, reviewer_profile=reviewer_profile,
@@ -903,6 +1112,8 @@ def cmd_criterion_update(args) -> int:
         if spec_changed and (was_primary or criterion.get("type") == "primary_fix"):
             status["requirement_coverage"]["original_symptom_resolved"] = False
             status["original_symptom_evidence_id"] = None
+        lib.migrate_review_ledger(status)
+        abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
         _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -910,7 +1121,9 @@ def cmd_criterion_update(args) -> int:
         if errors:
             print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
             return 1
-        lib.commit(root, cfg, status=status, acceptance=acceptance,
+        extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
+                  "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
+        lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_updated", event_message="Acceptance criterion updated",
                   criterion=args.criterion)
     print("CRITERION_UPDATED")
@@ -940,10 +1153,14 @@ def cmd_criterion_add(args) -> int:
         if errors:
             print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
             return 1
+        lib.migrate_review_ledger(status)
+        abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
         _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
-        lib.commit(root, cfg, status=status, acceptance=acceptance,
+        extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
+                  "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
+        lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_added", event_message="Acceptance criterion added",
                   criterion=args.criterion)
     print("CRITERION_ADDED")
@@ -969,10 +1186,14 @@ def cmd_criterion_remove(args) -> int:
         if errors:
             print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
             return 1
+        lib.migrate_review_ledger(status)
+        abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
         _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
-        lib.commit(root, cfg, status=status, acceptance=acceptance,
+        extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
+                  "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
+        lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_removed", event_message="Acceptance criterion removed",
                   criterion=args.criterion)
     print("CRITERION_REMOVED")
@@ -1383,6 +1604,20 @@ def main() -> int:
     review.add_argument("--by", required=True)
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
 
+    review_start = sub.add_parser("review-attempt-start")
+    review_start.add_argument("--by", required=True)
+    review_start.add_argument("--reviewer", default=None)
+    review_start.add_argument("--trigger", choices=tuple(sorted(lib.REVIEW_ATTEMPT_TRIGGERS)), default=None)
+    review_start.add_argument("--note", default=None)
+
+    review_findings = sub.add_parser("record-review-findings")
+    review_findings.add_argument("--by", required=True)
+    review_findings.add_argument("--finding", action="append", required=True)
+
+    review_override = sub.add_parser("review-cap-override")
+    review_override.add_argument("--by", required=True)
+    review_override.add_argument("--reason", required=True)
+
     live = sub.add_parser("verify-live")
     live.add_argument("--by", required=True)
 
@@ -1474,6 +1709,9 @@ def main() -> int:
         "design-approve": cmd_design_approve,
         "record-design-review": cmd_record_design_review,
         "record-review": cmd_record_review,
+        "review-attempt-start": cmd_review_attempt_start,
+        "record-review-findings": cmd_record_review_findings,
+        "review-cap-override": cmd_review_cap_override,
         "verify-live": cmd_verify_live,
         "heartbeat": cmd_heartbeat,
         "background-wait-start": cmd_background_wait_start,

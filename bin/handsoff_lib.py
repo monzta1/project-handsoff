@@ -150,6 +150,22 @@ QUALITY_FINDING_CODES = {
 }
 REPLACEMENT_ID_PATTERN = re.compile(r"^hr-[0-9a-f]{32}$")
 QUALITY_FINDING_ID_PATTERN = re.compile(r"^hq-[0-9a-f]{32}$")
+MAX_REVIEW_ATTEMPTS = 64
+MAX_REVIEW_SESSION_IDS = 160
+MAX_REVIEW_CAP_OVERRIDES = 8
+REVIEW_ATTEMPT_ID_PATTERN = re.compile(r"^ha-[0-9a-f]{32}$")
+REVIEW_OVERRIDE_ID_PATTERN = re.compile(r"^ho-[0-9a-f]{32}$")
+REVIEW_ATTEMPT_TRIGGERS = {
+    "initial", "changes_requested", "acceptance_changed",
+    "implementation_changed", "supervisor_remediation", "manual_override",
+}
+REVIEW_ATTEMPT_DISPOSITIONS = {
+    "open", "approved", "changes_requested", "abandoned", "unrecorded",
+}
+REVIEW_FINDING_CODES = {
+    "acceptance_not_met", "incorrect_implementation", "review_changes_requested", "other",
+}
+ESCALATION_KINDS = {"review_cap_exhausted", "recovery_exhausted", "recovery_paused"}
 
 REQUIRED_STATUS_FIELDS = (
     "feature", "phase_number", "phase", "progress", "status", "updated_at",
@@ -319,9 +335,11 @@ def load_config(root: Path) -> dict:
             raise HandsoffError(
                 f"handsoff.toml: project.{key} resolves outside the project root "
                 f"(a parent directory may be a symlink)") from None
-    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes"):
+    for key in ("max_design_rounds", "stall_minutes"):
         if cfg[key] < 0:
             raise HandsoffError(f"handsoff.toml: {key} must not be negative")
+    if not 1 <= cfg["max_review_rounds"] <= 56:
+        raise HandsoffError("handsoff.toml: workflow.max_review_rounds must be an integer from 1 to 56")
     return cfg
 
 
@@ -999,6 +1017,121 @@ def _assert_agent_telemetry_integrity(root: Path, cfg: dict, status: dict) -> No
         raise HandsoffError(problems[0])
 
 
+def migrate_review_ledger(status: dict) -> None:
+    """Attach the structured ledger to a pre-#31 status without inventing
+    per-attempt facts that the old format never recorded."""
+    if "review_attempts" in status:
+        status.setdefault("legacy_review_round_offset", 0)
+        status.setdefault("review_cap_overrides", [])
+        status.setdefault("escalation", None)
+        return
+    legacy = status.get("review_round", 0)
+    if not isinstance(legacy, int) or isinstance(legacy, bool) or legacy < 0:
+        raise HandsoffError("trusted review round is invalid")
+    status["legacy_review_round_offset"] = legacy
+    status["review_attempts"] = []
+    status["review_cap_overrides"] = []
+    status.setdefault("escalation", None)
+
+
+def effective_review_cap(status: dict, cfg: dict) -> int:
+    offset = int(status.get("legacy_review_round_offset", 0) or 0)
+    digest = config_hash(cfg)
+    overrides = sum(
+        1 for item in (status.get("review_cap_overrides") or [])
+        if isinstance(item, dict) and item.get("config_hash") == digest
+    )
+    return max(int(cfg.get("max_review_rounds", 3)), offset) + overrides
+
+
+def current_review_attempt(status: dict) -> dict | None:
+    attempts = status.get("review_attempts") or []
+    return attempts[-1] if attempts and attempts[-1].get("disposition") == "open" else None
+
+
+def _review_cap_escalation(status: dict, cfg: dict) -> None:
+    cap = effective_review_cap(status, cfg)
+    used = int(status.get("review_round", 0) or 0)
+    source = ((status.get("review_attempts") or [{}])[-1].get("attempt_id")
+              if status.get("review_attempts") else "review-ledger")
+    status["status"] = "blocked"
+    status["escalation"] = {
+        "kind": "review_cap_exhausted",
+        "at": datetime.now(timezone.utc).isoformat(),
+        "reason": f"review budget exhausted ({used} of {cap} attempts used)",
+        "required_action": "Run review-cap-override --by OPERATOR --reason TEXT",
+        "source": source,
+    }
+    status["next_action"] = status["escalation"]["required_action"]
+
+
+def open_review_attempt(status: dict, acceptance: dict, cfg: dict, *, by: str,
+                        trigger: str | None = None, detail: str = "",
+                        reviewer: str | None = None, session_id: str | None = None,
+                        id_factory=None) -> dict:
+    migrate_review_ledger(status)
+    if status.get("status") == "complete" or status.get("phase_number") == 8:
+        raise HandsoffError("review attempt cannot open on a completed run")
+    existing = current_review_attempt(status)
+    if existing is not None:
+        if session_id and session_id not in existing["session_ids"]:
+            if len(existing["session_ids"]) >= MAX_REVIEW_SESSION_IDS:
+                raise HandsoffError("review attempt session history is full")
+            existing["session_ids"].append(session_id)
+        if reviewer:
+            existing["reviewer"] = reviewer
+        return existing
+    used = int(status.get("review_round", 0) or 0)
+    if used >= effective_review_cap(status, cfg):
+        _review_cap_escalation(status, cfg)
+        raise HandsoffError(
+            f"review budget exhausted ({used} of {effective_review_cap(status, cfg)} attempts used)"
+        )
+    attempts = status["review_attempts"]
+    if len(attempts) >= MAX_REVIEW_ATTEMPTS:
+        raise HandsoffError("review attempt history is full")
+    previous = attempts[-1] if attempts else None
+    digest = acceptance_hash(acceptance.get("criteria", []))
+    if trigger is None:
+        if not previous and status.get("legacy_review_round_offset", 0) == 0:
+            trigger = "initial"
+        elif previous and previous.get("disposition") == "changes_requested":
+            trigger = "changes_requested"
+        elif previous and previous.get("acceptance_hash") != digest:
+            trigger = "acceptance_changed"
+        else:
+            trigger = "implementation_changed"
+    if trigger not in REVIEW_ATTEMPT_TRIGGERS:
+        raise HandsoffError("review attempt trigger is invalid")
+    attempt_id = _new_bounded_id(
+        "ha", REVIEW_ATTEMPT_ID_PATTERN,
+        {item.get("attempt_id") for item in attempts if isinstance(item, dict)}, id_factory,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    attempt = {
+        "attempt_id": attempt_id, "attempt": used + 1,
+        "opened_at": now, "closed_at": None, "opened_by": validate_agent_actor(by),
+        "reviewer": validate_agent_actor(reviewer) if reviewer else None,
+        "session_ids": [session_id] if session_id else [],
+        "trigger": trigger, "trigger_detail": str(detail or "")[:512],
+        "acceptance_hash": digest, "phase_number": int(status.get("phase_number", 1)),
+        "disposition": "open", "findings": [],
+    }
+    attempts.append(attempt)
+    status["review_round"] = used + 1
+    return attempt
+
+
+def abandon_stale_review_attempt(status: dict, acceptance: dict) -> bool:
+    attempt = current_review_attempt(status)
+    if not attempt or attempt.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])):
+        return False
+    attempt["disposition"] = "abandoned"
+    attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
+    attempt["findings"] = [{"code": "other", "summary": "acceptance_changed"}]
+    return True
+
+
 def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          requested_model: str, resolution_source: str,
                          id_factory=None) -> dict:
@@ -1020,7 +1153,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
     with project_lock(root):
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
-        schema_errors = validate_status_schema(status)
+        acceptance = load_unique_json(acceptance_path(root, cfg))
+        schema_errors = validate_status_schema(status) or validate_acceptance_schema(acceptance)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
         _assert_agent_telemetry_integrity(root, cfg, status)
@@ -1054,6 +1188,26 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         proposed = deepcopy(status)
         proposed["agent_sessions"] = sessions
         proposed["current_agent_sessions"] = current
+        opened_attempt = None
+        if role == "reviewer" and int(proposed.get("phase_number", 0) or 0) >= 4:
+            migrate_review_ledger(proposed)
+            before_id = (current_review_attempt(proposed) or {}).get("attempt_id")
+            try:
+                opened_attempt = open_review_attempt(
+                    proposed, acceptance, cfg, by=actor, reviewer=actor, session_id=session_id,
+                )
+            except HandsoffError as exc:
+                if proposed.get("escalation", {}).get("kind") == "review_cap_exhausted":
+                    commit(
+                        root, cfg, status=proposed,
+                        event_kind="review_attempt_refused",
+                        event_message=str(exc), role=role, actor=actor,
+                        review_round=proposed.get("review_round"),
+                        effective_max_review_rounds=effective_review_cap(proposed, cfg),
+                    )
+                raise
+            if opened_attempt.get("attempt_id") == before_id:
+                opened_attempt = None
         failures = {
             sid: deepcopy(failure) for sid, failure in (status.get("agent_failures") or {}).items()
             if sid not in removed_session_ids
@@ -1076,8 +1230,19 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
+        extra_events = None
+        if opened_attempt:
+            extra_events = [{
+                "kind": "review_attempt_opened",
+                "message": f"Implementation review attempt {opened_attempt['attempt']} opened",
+                "attempt_id": opened_attempt["attempt_id"],
+                "attempt": opened_attempt["attempt"],
+                "trigger": opened_attempt["trigger"],
+                "reviewer": opened_attempt["reviewer"],
+            }]
         commit(
             root, cfg, status=proposed,
+            extra_events=extra_events,
             event_kind="agent_session_launching",
             event_message=f"Managed {role} agent session is launching",
             session_id=session_id, role=role, actor=actor, adapter=adapter,
@@ -1958,6 +2123,112 @@ def validate_status_schema(status: dict) -> list[str]:
                 errors.append(f"status: 'review.{field}.effective_adapter' must be a non-empty string or null")
         if "profiles_distinct" in review and not isinstance(review["profiles_distinct"], bool):
             errors.append("status: 'review.profiles_distinct' must be boolean")
+    attempts = status.get("review_attempts")
+    if attempts is not None:
+        offset = status.get("legacy_review_round_offset")
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            errors.append("status: 'legacy_review_round_offset' must be a non-negative integer")
+            offset = 0
+        if not isinstance(attempts, list) or len(attempts) > MAX_REVIEW_ATTEMPTS:
+            errors.append(f"status: 'review_attempts' must contain at most {MAX_REVIEW_ATTEMPTS} entries")
+            attempts = []
+        open_count = 0
+        ids = set()
+        for index, attempt in enumerate(attempts):
+            label = f"status: review_attempts[{index}]"
+            required = {
+                "attempt_id", "attempt", "opened_at", "closed_at", "opened_by", "reviewer",
+                "session_ids", "trigger", "trigger_detail", "acceptance_hash", "phase_number",
+                "disposition", "findings",
+            }
+            if not isinstance(attempt, dict) or set(attempt) != required:
+                errors.append(f"{label} has invalid fields")
+                continue
+            aid = attempt.get("attempt_id")
+            if not isinstance(aid, str) or not REVIEW_ATTEMPT_ID_PATTERN.fullmatch(aid) or aid in ids:
+                errors.append(f"{label}.attempt_id is invalid or duplicated")
+            ids.add(aid)
+            if attempt.get("attempt") != offset + index + 1:
+                errors.append(f"{label}.attempt does not match its monotonic ledger position")
+            if attempt.get("trigger") not in REVIEW_ATTEMPT_TRIGGERS:
+                errors.append(f"{label}.trigger is invalid")
+            disposition = attempt.get("disposition")
+            if disposition not in REVIEW_ATTEMPT_DISPOSITIONS:
+                errors.append(f"{label}.disposition is invalid")
+            if disposition == "open":
+                open_count += 1
+                if index != len(attempts) - 1 or attempt.get("closed_at") is not None:
+                    errors.append(f"{label} open attempt must be last with null closed_at")
+            elif attempt.get("closed_at") is None:
+                errors.append(f"{label} closed attempt requires closed_at")
+            for key in ("opened_at", "closed_at"):
+                value = attempt.get(key)
+                if value is None and key == "closed_at":
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
+                    if parsed is None or parsed.tzinfo is None:
+                        raise ValueError
+                except ValueError:
+                    errors.append(f"{label}.{key} must be a timezone-aware timestamp or null")
+            try:
+                validate_agent_actor(attempt.get("opened_by"))
+                if attempt.get("reviewer") is not None:
+                    validate_agent_actor(attempt.get("reviewer"))
+            except HandsoffError as exc:
+                errors.append(f"{label}: {exc}")
+            session_ids = attempt.get("session_ids")
+            if not isinstance(session_ids, list) or len(session_ids) > MAX_REVIEW_SESSION_IDS \
+                    or len(session_ids) != len(set(session_ids)) \
+                    or any(not isinstance(sid, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(sid)
+                           for sid in session_ids):
+                errors.append(f"{label}.session_ids is invalid")
+            if not isinstance(attempt.get("trigger_detail"), str) or len(attempt["trigger_detail"]) > 512:
+                errors.append(f"{label}.trigger_detail is invalid")
+            if not isinstance(attempt.get("acceptance_hash"), str) \
+                    or not re.fullmatch(r"[0-9a-f]{64}", attempt["acceptance_hash"]):
+                errors.append(f"{label}.acceptance_hash is invalid")
+            if attempt.get("phase_number") not in PHASES:
+                errors.append(f"{label}.phase_number is invalid")
+            findings_value = attempt.get("findings")
+            if not isinstance(findings_value, list) or len(findings_value) > 16 \
+                    or any(not isinstance(item, dict) or set(item) != {"code", "summary"}
+                           or item.get("code") not in REVIEW_FINDING_CODES
+                           or not isinstance(item.get("summary"), str) or not item["summary"].strip()
+                           or len(item["summary"]) > 512 for item in findings_value):
+                errors.append(f"{label}.findings is invalid")
+        if open_count > 1:
+            errors.append("status: at most one review attempt may be open")
+        if isinstance(status.get("review_round"), int) \
+                and status.get("review_round") != offset + len(attempts):
+            errors.append("status: review_round must equal legacy offset plus review_attempts length")
+    overrides = status.get("review_cap_overrides")
+    if overrides is not None:
+        if not isinstance(overrides, list) or len(overrides) > MAX_REVIEW_CAP_OVERRIDES:
+            errors.append(f"status: 'review_cap_overrides' must contain at most {MAX_REVIEW_CAP_OVERRIDES} entries")
+        else:
+            seen_overrides = set()
+            for item in overrides:
+                oid = item.get("override_id") if isinstance(item, dict) else None
+                required = {"override_id", "by", "at", "reason", "config_hash", "review_round_at_grant"}
+                if not isinstance(item, dict) or set(item) != required \
+                        or not isinstance(oid, str) or not REVIEW_OVERRIDE_ID_PATTERN.fullmatch(oid) \
+                        or oid in seen_overrides:
+                    errors.append("status: review cap override is invalid")
+                    continue
+                seen_overrides.add(oid)
+                if not all(isinstance(item.get(k), str) and item[k].strip()
+                           for k in ("by", "at", "reason", "config_hash")) \
+                        or not isinstance(item.get("review_round_at_grant"), int):
+                    errors.append("status: review cap override fields are invalid")
+    escalation = status.get("escalation")
+    if escalation is not None:
+        required = {"kind", "at", "reason", "required_action", "source"}
+        if not isinstance(escalation, dict) or set(escalation) != required \
+                or escalation.get("kind") not in ESCALATION_KINDS \
+                or not all(isinstance(escalation.get(k), str) and escalation[k].strip()
+                           for k in required - {"kind"}):
+            errors.append("status: 'escalation' is invalid")
     sessions = status.get("agent_sessions")
     pointers = status.get("current_agent_sessions")
     if sessions is not None:
@@ -2420,11 +2691,19 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     design_round = int(status.get("design_round", 0) or 0)
     review_round = int(status.get("review_round", 0) or 0)
     max_design = int(cfg.get("max_design_rounds", 3))
-    max_review = int(cfg.get("max_review_rounds", 3))
+    max_review = effective_review_cap(status, cfg) if "review_attempts" in status else int(cfg.get("max_review_rounds", 3))
     if design_round > max_design:
         errors.append(f"round cap: design_round {design_round} exceeds max_design_rounds {max_design}, escalate to the user")
     if review_round > max_review:
-        errors.append(f"round cap: review_round {review_round} exceeds max_review_rounds {max_review}, escalate to the user")
+        errors.append(f"round cap: review_round {review_round} exceeds effective max_review_rounds {max_review}, escalate to the user")
+    escalation = status.get("escalation")
+    if escalation is not None and status.get("status") != "blocked":
+        errors.append(
+            f"escalation gate: run is escalated ({escalation.get('kind')}); status must stay blocked "
+            f"until the escalation is cleared by {escalation.get('required_action')}"
+        )
+    if current_review_attempt(status) is not None and status.get("status") == "complete":
+        errors.append("review attempt gate: an open review attempt exists but status is complete")
 
     return errors
 

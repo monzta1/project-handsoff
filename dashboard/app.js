@@ -453,6 +453,17 @@ function renderReplacements(replacements) {
     </div>`).join("") : '<div class="attention-clear">No agent replacements recorded.</div>';
 }
 
+function renderReviewAttempts(attempts = []) {
+  const panel = $("review-attempts-panel");
+  panel.classList.toggle("hidden", attempts.length === 0);
+  $("review-attempt-count").textContent = `${attempts.length} ATTEMPT${attempts.length === 1 ? "" : "S"}`;
+  $("review-attempt-list").innerHTML = attempts.length ? attempts.slice().reverse().map((attempt) => `
+    <div class="replacement-item" data-review-attempt="${escapeHtml(attempt.attempt_id)}">
+      <strong>ATTEMPT ${escapeHtml(attempt.attempt)} · ${escapeHtml(String(attempt.disposition || "unknown").replaceAll("_", " ").toUpperCase())}</strong>
+      <p>${escapeHtml(String(attempt.trigger || "unknown").replaceAll("_", " "))} · ${escapeHtml(attempt.reviewer || "reviewer pending")} · ${escapeHtml(attempt.findings_count || 0)} finding(s)</p>
+    </div>`).join("") : "";
+}
+
 function renderEvents(events, total) {
   $("event-total").textContent = `${total} EVENT${total === 1 ? "" : "S"}`;
   $("event-list").innerHTML = events.length ? events.map((event) => `
@@ -523,7 +534,7 @@ function render(snapshot) {
   $("phase-name").textContent = status.phase;
   $("status-updated").textContent = `State updated ${relativeTime(status.updated_at)}`;
   $("design-rounds").textContent = `${policy.design_round} / ${policy.max_design_rounds}`;
-  $("review-rounds").textContent = `${policy.review_round} / ${policy.max_review_rounds}`;
+  $("review-rounds").textContent = reviewRoundLabel(policy);
   $("evidence-runs").textContent = snapshot.audit.verification_runs;
 
   renderPhases(snapshot.phases);
@@ -552,6 +563,7 @@ function render(snapshot) {
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
   renderReplacements(state.replacements);
+  renderReviewAttempts(snapshot.review?.attempts || []);
   renderRoleChiclets(snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);
