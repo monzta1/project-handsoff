@@ -46,6 +46,39 @@
         "source": {"type": "string", "minLength": 1}
       }
     },
+    "recovery_attempts": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["recovery_id", "role", "trigger", "from_session_id", "to_session_id", "attempt", "cap", "holder", "state", "reason", "at", "launched_at", "ended_at"],
+        "properties": {
+          "recovery_id": {"type": "string", "pattern": "^hv-[0-9a-f]{32}$"},
+          "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
+          "trigger": {"enum": ["worker_terminal", "worker_silent", "silent_run"]},
+          "from_session_id": {"type": ["string", "null"]},
+          "to_session_id": {"type": ["string", "null"]},
+          "attempt": {"type": "integer", "minimum": 1},
+          "cap": {"type": "integer", "minimum": 0, "maximum": 16},
+          "holder": {"type": "string", "minLength": 1},
+          "state": {"enum": ["reserved", "launched", "recovered", "failed", "escalated"]},
+          "reason": {"type": "string", "minLength": 1},
+          "at": {"type": "string", "format": "date-time"},
+          "launched_at": {"type": ["string", "null"], "format": "date-time"},
+          "ended_at": {"type": ["string", "null"], "format": "date-time"}
+        }
+      }
+    },
+    "recovery_lease": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["lease_id", "holder", "acquired_at", "expires_at", "recovery_id"],
+      "properties": {
+        "lease_id": {"type": "string", "pattern": "^hl-[0-9a-f]{32}$"},
+        "holder": {"type": "string", "minLength": 1},
+        "acquired_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "recovery_id": {"type": "string", "pattern": "^hv-[0-9a-f]{32}$"}
+      }
+    },
     "retry_count": {"type": "integer", "minimum": 0},
     "implemented_by": {"type": ["string", "null"]},
     "reviewed_by": {"type": ["string", "null"]},

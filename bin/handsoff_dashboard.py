@@ -368,6 +368,9 @@ def build_snapshot(root: Path) -> dict:
                 audit_errors.append("Verification ledger tail does not match its anchored head.")
             stall = lib.stall_warning(status, cfg)
             activity = lib.activity_note(status, cfg)
+            recovery_assessment = lib.recovery_assessment(
+                status, cfg, lib.read_session_liveness(root), events,
+            )
     except (lib.HandsoffError, OSError) as exc:
         return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
@@ -504,6 +507,13 @@ def build_snapshot(root: Path) -> dict:
                 "closed_at": item.get("closed_at"), "findings_count": len(item.get("findings") or []),
             } for item in (status.get("review_attempts") or [])],
         },
+        "recovery": {
+            "assessment": recovery_assessment,
+            "lease": status.get("recovery_lease"),
+            "attempts": list((status.get("recovery_attempts") or [])[-8:]),
+            "cap": cfg.get("recovery", {}).get("max_attempts", 0),
+            "watchdog_enabled": cfg.get("recovery", {}).get("dashboard_watchdog", False),
+        },
         "escalation": status.get("escalation"),
         "settings": _settings_view(cfg),
         "input_required": input_request,
@@ -520,7 +530,31 @@ class DashboardServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], root: Path):
         self.project_root = root
+        self._watchdog_stop = threading.Event()
         super().__init__(address, DashboardHandler)
+        cfg = lib.load_config(root)
+        recovery = cfg.get("recovery", {})
+        if recovery.get("enabled") and recovery.get("dashboard_watchdog"):
+            threading.Thread(target=self._watchdog_loop, daemon=True).start()
+
+    def _watchdog_loop(self):
+        cfg = lib.load_config(self.project_root)
+        interval = cfg.get("recovery", {}).get("poll_seconds", 30)
+        while not self._watchdog_stop.wait(interval):
+            try:
+                def launcher(role):
+                    import handsoff_agent
+                    task = (f"Resume trusted Handsoff state as {role}; read status, acceptance, and event log "
+                            "and continue without repeating evidenced work.")
+                    spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
+                    return handsoff_agent.execute_with_recovery(spec)
+                lib.recover_run(self.project_root, actor="Mission Control Watchdog", launcher=launcher)
+            except Exception as exc:
+                print(f"HANDSOFF_WATCHDOG_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def server_close(self):
+        self._watchdog_stop.set()
+        super().server_close()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):

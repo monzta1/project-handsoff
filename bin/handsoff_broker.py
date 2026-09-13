@@ -21,7 +21,7 @@ import handsoff_lib as lib  # noqa: E402
 
 SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("handsoff_supervisor.py")
 MAX_REQUEST_BYTES = 65536
-HUMAN_ONLY_COMMANDS = {"design-approve", "deployment-gate", "review-cap-override"}
+HUMAN_ONLY_COMMANDS = {"design-approve", "deployment-gate", "review-cap-override", "recovery-acknowledge"}
 _SUPERVISOR_HOST_CAPABILITY = object()
 
 
@@ -83,6 +83,14 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         base.extend(["--by", _text(request, "by")])
         if "note" in request:
             base.extend(["--note", _text(request, "note")])
+        return base
+    if command == "recover":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"dry_run"})
+        base.extend(["--by", _text(request, "by")])
+        if request.get("dry_run") is True:
+            base.append("--dry-run")
+        elif "dry_run" in request and request["dry_run"] is not False:
+            raise lib.HandsoffError("broker recover.dry_run must be boolean")
         return base
     if command in {"background-wait-start", "background-wait-end", "human-pause-start", "human-pause-end"}:
         optional = {"note"}

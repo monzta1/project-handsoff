@@ -135,6 +135,7 @@ def cmd_init(args) -> int:
             "design_round": 0, "review_round": 0, "retry_count": 0, "summary": "", "reassurance": "",
             "legacy_review_round_offset": 0, "review_attempts": [],
             "review_cap_overrides": [], "escalation": None,
+            "recovery_attempts": [], "recovery_lease": None,
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
             "requires_design_approval": True, "design_approved": None,
             "requires_design_review": True, "design_review": None,
@@ -1200,6 +1201,68 @@ def cmd_criterion_remove(args) -> int:
     return 0
 
 
+def cmd_recover(args) -> int:
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    if args.dry_run:
+        with lib.project_lock(root):
+            status = lib.load_unique_json(lib.status_path(root, cfg))
+            assessment = lib.recovery_assessment(
+                status, cfg, lib.read_session_liveness(root), lib.read_events(root, cfg),
+            )
+        print(__import__("json").dumps(assessment, indent=2))
+        return 0
+
+    def launcher(role):
+        import handsoff_agent
+        task = (f"Resume Phase from trusted Handsoff state as {role}: read handsoff-status.json, "
+                "handsoff-acceptance.json and the event log; do not repeat evidenced work.")
+        spec = handsoff_agent.build_launch_spec(root, role, task)
+        return handsoff_agent.execute_with_recovery(spec, timeout=args.timeout)
+
+    result = lib.recover_run(root, actor=args.by, launcher=launcher)
+    label = {
+        "skipped": "RECOVERY_SKIPPED", "recovered": "RECOVERY_RECOVERED",
+        "failed": "RECOVERY_FAILED", "escalated": "RECOVERY_ESCALATED",
+    }[result["action"]]
+    print(f"{label}: {result.get('recovery_id') or result['assessment']['reason']}")
+    return 1 if result["action"] in {"failed", "escalated"} else 0
+
+
+def cmd_watch(args) -> int:
+    import time
+    while True:
+        code = cmd_recover(args)
+        if code and args.once:
+            return code
+        if args.once:
+            return 0
+        time.sleep(args.interval)
+
+
+def cmd_recovery_acknowledge(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    if not args.reason or not args.reason.strip():
+        print("SHIP_FEATURE_BLOCKED: --reason must be non-empty")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, problems = _load_all(root, cfg)
+        escalation = status.get("escalation")
+        if not isinstance(escalation, dict) or escalation.get("kind") not in {
+                "recovery_exhausted", "recovery_paused"}:
+            print("SHIP_FEATURE_BLOCKED: no recovery escalation is awaiting acknowledgement")
+            return 1
+        status["escalation"] = None
+        status["status"] = "in_progress"
+        status["next_action"] = "Relaunch the assigned role manually or allow the watchdog to reassess."
+        lib.commit(root, cfg, status=status, event_kind="recovery_acknowledged",
+                   event_message=args.reason.strip(), by=actor)
+    print("RECOVERY_ACKNOWLEDGED")
+    return 0
+
+
 def _record_heartbeat(status: dict) -> None:
     """The exact liveness update `heartbeat` performs, factored out so
     background-wait-start/end can feed the SAME signal stall_warning/
@@ -1618,6 +1681,22 @@ def main() -> int:
     review_override.add_argument("--by", required=True)
     review_override.add_argument("--reason", required=True)
 
+    recover = sub.add_parser("recover")
+    recover.add_argument("--by", required=True)
+    recover.add_argument("--dry-run", action="store_true")
+    recover.add_argument("--timeout", type=int, default=3600)
+
+    watch = sub.add_parser("watch")
+    watch.add_argument("--by", required=True)
+    watch.add_argument("--interval", type=int, default=30)
+    watch.add_argument("--timeout", type=int, default=3600)
+    watch.add_argument("--dry-run", action="store_true")
+    watch.add_argument("--once", action="store_true")
+
+    recovery_ack = sub.add_parser("recovery-acknowledge")
+    recovery_ack.add_argument("--by", required=True)
+    recovery_ack.add_argument("--reason", required=True)
+
     live = sub.add_parser("verify-live")
     live.add_argument("--by", required=True)
 
@@ -1712,6 +1791,9 @@ def main() -> int:
         "review-attempt-start": cmd_review_attempt_start,
         "record-review-findings": cmd_record_review_findings,
         "review-cap-override": cmd_review_cap_override,
+        "recover": cmd_recover,
+        "watch": cmd_watch,
+        "recovery-acknowledge": cmd_recovery_acknowledge,
         "verify-live": cmd_verify_live,
         "heartbeat": cmd_heartbeat,
         "background-wait-start": cmd_background_wait_start,

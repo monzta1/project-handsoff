@@ -444,13 +444,22 @@ function renderCrew(crew) {
     </div>`).join("");
 }
 
-function renderReplacements(replacements) {
-  $("replacement-count").textContent = `${replacements.length} EVENT${replacements.length === 1 ? "" : "S"}`;
-  $("replacement-list").innerHTML = replacements.length ? replacements.slice().reverse().map((replacement) => `
+function renderReplacements(replacements, recoveries = []) {
+  const total = replacements.length + recoveries.length;
+  $("replacement-count").textContent = `${total} EVENT${total === 1 ? "" : "S"}`;
+  const recoveryRows = recoveries.slice().reverse().map((item) => `
+    <div class="replacement-item recovery-item" data-recovery-id="${escapeHtml(item.recovery_id)}">
+      <strong>RECOVERY · ${escapeHtml(String(item.role || "agent").toUpperCase())} · ${escapeHtml(String(item.state || "unknown").replaceAll("_", " ").toUpperCase())} · ATTEMPT ${escapeHtml(item.attempt)}/${escapeHtml(item.cap)}</strong>
+      <p>${escapeHtml(item.reason || "Continuity protocol")}</p>
+    </div>`);
+  const replacementRows = replacements.slice().reverse().map((replacement) => `
     <div class="replacement-item">
       <strong>${escapeHtml(replacementHeadline(replacement))}</strong>
       <p>${escapeHtml(replacementDetail(replacement))}</p>
-    </div>`).join("") : '<div class="attention-clear">No agent replacements recorded.</div>';
+    </div>`);
+  $("replacement-list").innerHTML = total
+    ? [...recoveryRows, ...replacementRows].join("")
+    : '<div class="attention-clear">No agent replacements or recoveries recorded.</div>';
 }
 
 function renderReviewAttempts(attempts = []) {
@@ -562,7 +571,7 @@ function render(snapshot) {
   renderTickets(snapshot.tickets || []);
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
-  renderReplacements(state.replacements);
+  renderReplacements(state.replacements, snapshot.recovery?.attempts || []);
   renderReviewAttempts(snapshot.review?.attempts || []);
   renderRoleChiclets(snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);

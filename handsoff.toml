@@ -37,6 +37,16 @@ supervisor = []
 implementer = []
 reviewer = []
 
+[recovery]
+enabled = true
+max_attempts = 3
+lease_minutes = 15
+worker_loss_grace_minutes = 2
+live_session_silence_minutes = 10
+liveness_seconds = 60
+dashboard_watchdog = true
+poll_seconds = 30
+
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a
@@ -79,7 +89,7 @@ url = "https://github.com/monzta1/project-handsoff/issues/31"
 [[tickets]]
 number = 30
 title = "Supervisor leaves stalled runs without automatic remediation"
-status = "not_started"
+status = "in_progress"
 url = "https://github.com/monzta1/project-handsoff/issues/30"
 
 [[tickets]]

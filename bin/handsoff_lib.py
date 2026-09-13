@@ -115,6 +115,11 @@ DEFAULT_CONFIG = {
         "reviewer": [],
     },
     "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
+    "recovery": {
+        "enabled": True, "max_attempts": 3, "lease_minutes": 15,
+        "worker_loss_grace_minutes": 2, "live_session_silence_minutes": 10,
+        "liveness_seconds": 60, "dashboard_watchdog": True, "poll_seconds": 30,
+    },
 }
 
 AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
@@ -150,6 +155,11 @@ QUALITY_FINDING_CODES = {
 }
 REPLACEMENT_ID_PATTERN = re.compile(r"^hr-[0-9a-f]{32}$")
 QUALITY_FINDING_ID_PATTERN = re.compile(r"^hq-[0-9a-f]{32}$")
+MAX_RECOVERY_ATTEMPTS = 16
+RECOVERY_ID_PATTERN = re.compile(r"^hv-[0-9a-f]{32}$")
+RECOVERY_LEASE_ID_PATTERN = re.compile(r"^hl-[0-9a-f]{32}$")
+RECOVERY_STATES = {"reserved", "launched", "recovered", "failed", "escalated"}
+RECOVERY_TRIGGERS = {"worker_terminal", "worker_silent", "silent_run"}
 MAX_REVIEW_ATTEMPTS = 64
 MAX_REVIEW_SESSION_IDS = 160
 MAX_REVIEW_CAP_OVERRIDES = 8
@@ -225,6 +235,7 @@ def load_config(root: Path) -> dict:
     cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
+    cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -240,10 +251,11 @@ def load_config(root: Path) -> dict:
     models = raw.get("models", {})
     fallback_policy = raw.get("fallback_policy", {})
     checks = raw.get("checks", {})
+    recovery = raw.get("recovery", {})
     tickets = raw.get("tickets", [])
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks, recovery)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, and checks must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, checks, and recovery must be tables"
         )
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
@@ -289,6 +301,29 @@ def load_config(root: Path) -> dict:
     if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
         raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
     cfg["check_timeout_seconds"] = timeout_value
+    allowed_recovery = set(DEFAULT_CONFIG["recovery"])
+    unknown_recovery = set(recovery) - allowed_recovery
+    if unknown_recovery:
+        raise HandsoffError(
+            f"handsoff.toml: recovery has unknown keys: {', '.join(sorted(unknown_recovery))}"
+        )
+    for key in ("enabled", "dashboard_watchdog"):
+        value = recovery.get(key, cfg["recovery"][key])
+        if not isinstance(value, bool):
+            raise HandsoffError(f"handsoff.toml: recovery.{key} must be boolean")
+        cfg["recovery"][key] = value
+    bounds = {
+        "max_attempts": (0, 16), "lease_minutes": (1, 1440),
+        "worker_loss_grace_minutes": (1, 1440), "live_session_silence_minutes": (1, 1440),
+        "liveness_seconds": (1, 3600), "poll_seconds": (1, 3600),
+    }
+    for key, (minimum, maximum) in bounds.items():
+        value = recovery.get(key, cfg["recovery"][key])
+        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+            raise HandsoffError(
+                f"handsoff.toml: recovery.{key} must be an integer from {minimum} to {maximum}"
+            )
+        cfg["recovery"][key] = value
     if not isinstance(tickets, list):
         raise HandsoffError("handsoff.toml: tickets must be an array of tables")
     normalized_tickets = []
@@ -1350,7 +1385,10 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             replacement_id=replacement.get("replacement_id") if replacement else None,
             replacement_state=replacement.get("state") if replacement else None,
         )
-        return deepcopy(updated)
+        result = deepcopy(updated)
+    if terminal:
+        update_session_liveness(root, session_id, remove=True)
+    return result
 
 
 def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
@@ -2229,6 +2267,43 @@ def validate_status_schema(status: dict) -> list[str]:
                 or not all(isinstance(escalation.get(k), str) and escalation[k].strip()
                            for k in required - {"kind"}):
             errors.append("status: 'escalation' is invalid")
+    recovery_attempts = status.get("recovery_attempts")
+    if recovery_attempts is not None:
+        if not isinstance(recovery_attempts, list) or len(recovery_attempts) > MAX_RECOVERY_ATTEMPTS:
+            errors.append(f"status: 'recovery_attempts' must contain at most {MAX_RECOVERY_ATTEMPTS} entries")
+            recovery_attempts = []
+        recovery_ids = set()
+        for index, item in enumerate(recovery_attempts):
+            required = {"recovery_id", "role", "trigger", "from_session_id", "to_session_id",
+                        "attempt", "cap", "holder", "state", "reason", "at", "launched_at", "ended_at"}
+            rid = item.get("recovery_id") if isinstance(item, dict) else None
+            if not isinstance(item, dict) or set(item) != required \
+                    or not isinstance(rid, str) or not RECOVERY_ID_PATTERN.fullmatch(rid) \
+                    or rid in recovery_ids or item.get("role") not in SELECTABLE_AGENT_ROLES \
+                    or item.get("trigger") not in RECOVERY_TRIGGERS \
+                    or item.get("state") not in RECOVERY_STATES \
+                    or item.get("attempt") != index + 1 \
+                    or not isinstance(item.get("cap"), int) \
+                    or not all(isinstance(item.get(k), str) and item[k].strip()
+                               for k in ("holder", "reason", "at")):
+                errors.append(f"status: recovery_attempts[{index}] is invalid")
+                continue
+            recovery_ids.add(rid)
+            if item.get("state") in {"reserved", "launched"} and index != len(recovery_attempts) - 1:
+                errors.append("status: only the last recovery attempt may be live")
+    lease = status.get("recovery_lease")
+    if lease is not None:
+        required = {"lease_id", "holder", "acquired_at", "expires_at", "recovery_id"}
+        if not isinstance(lease, dict) or set(lease) != required \
+                or not isinstance(lease.get("lease_id"), str) \
+                or not RECOVERY_LEASE_ID_PATTERN.fullmatch(lease["lease_id"]) \
+                or not all(isinstance(lease.get(k), str) and lease[k].strip()
+                           for k in ("holder", "acquired_at", "expires_at", "recovery_id")):
+            errors.append("status: 'recovery_lease' is invalid")
+        elif not isinstance(recovery_attempts, list) or not recovery_attempts \
+                or recovery_attempts[-1].get("recovery_id") != lease.get("recovery_id") \
+                or recovery_attempts[-1].get("state") not in {"reserved", "launched"}:
+            errors.append("status: recovery_lease must reference the live final recovery attempt")
     sessions = status.get("agent_sessions")
     pointers = status.get("current_agent_sessions")
     if sessions is not None:
@@ -2722,6 +2797,272 @@ def _minutes_since(timestamp: str | None, now: datetime) -> float | None:
     return (now - last).total_seconds() / 60
 
 
+def assigned_role(status: dict) -> str | None:
+    if status.get("status") == "complete":
+        return None
+    phase = int(status.get("phase_number", 1) or 1)
+    if phase == 1:
+        return "architect"
+    if phase == 2:
+        review = status.get("design_review") or {}
+        return "architect" if review.get("decision") == "changes_requested" else "reviewer"
+    return {3: "supervisor", 4: "implementer", 5: "reviewer", 6: "implementer",
+            7: "supervisor", 8: "supervisor"}.get(phase)
+
+
+def session_liveness_path(root: Path) -> Path:
+    return root / ".handsoff-session-liveness.json"
+
+
+def read_session_liveness(root: Path) -> dict:
+    path = session_liveness_path(root)
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def update_session_liveness(root: Path, session_id: str, *, at: str | None = None,
+                            remove: bool = False) -> None:
+    if not AGENT_SESSION_ID_PATTERN.fullmatch(str(session_id)):
+        raise HandsoffError("agent session id is invalid")
+    root = root.resolve()
+    with project_lock(root):
+        mapping = read_session_liveness(root)
+        if remove:
+            mapping.pop(session_id, None)
+        else:
+            mapping[session_id] = at or datetime.now(timezone.utc).isoformat()
+        path = session_liveness_path(root)
+        text = json.dumps(mapping, sort_keys=True, separators=(",", ":")) + "\n"
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _latest_event_kind(events: list[dict], kinds: set[str]) -> str | None:
+    for event in reversed(events):
+        if event.get("kind") in kinds:
+            return event.get("kind")
+    return None
+
+
+def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
+                        events: list[dict] | None = None,
+                        now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    recovery = cfg.get("recovery") or DEFAULT_CONFIG["recovery"]
+    role = assigned_role(status)
+    result = {"state": "not_applicable", "reason": "disabled", "assigned_role": role,
+              "silent_minutes": None, "threshold_minutes": None, "lost_session_id": None}
+    if not recovery.get("enabled", True):
+        return result
+    open_regression = next((item for item in status.get("regression_requests", [])
+                            if item.get("state") in {"awaiting_approval", "accepted", "launched"}), None)
+    exclusions = [
+        (status.get("status") in {"complete", "blocked", "awaiting_approval", "ready_to_deploy"}, "run_state"),
+        (int(status.get("phase_number", 1) or 1) == 8, "complete"),
+        (status.get("escalation") is not None, "escalated"),
+        (status.get("authorization_hold") is not None, "authorization_hold"),
+        (open_regression is not None, "regression_pending"),
+        (any(item.get("state") in {"reserved", "launched"}
+             for item in status.get("recovery_attempts", [])), "recovery_in_progress"),
+        (_latest_event_kind(events or [], {"human_pause_started", "human_pause_ended"}) ==
+         "human_pause_started", "human_pause"),
+        (_latest_event_kind(events or [], {"background_wait_started", "background_wait_ended"}) ==
+         "background_wait_started", "background_wait"),
+    ]
+    for applies, reason in exclusions:
+        if applies:
+            result["reason"] = reason
+            return result
+    if role is None:
+        result["reason"] = "no_assigned_role"
+        return result
+    sessions = status.get("agent_sessions") or {}
+    current = status.get("current_agent_sessions") or {}
+    session_id = current.get(role)
+    session = sessions.get(session_id) if isinstance(session_id, str) else None
+    if not isinstance(session, dict):
+        timestamps = [status.get("updated_at"), status.get("last_heartbeat_at")]
+        ages = [_minutes_since(value, now) for value in timestamps]
+        ages = [age for age in ages if age is not None]
+        silent = min(ages) if ages else float("inf")
+        threshold = float(cfg.get("stall_minutes", 10))
+        result.update(silent_minutes=silent, threshold_minutes=threshold)
+        if silent >= threshold:
+            result.update(state="silent_run", reason="assigned role has no session")
+        else:
+            result.update(state="active", reason="recent unassigned-run activity")
+        return result
+    state = session.get("state")
+    result["lost_session_id"] = session_id
+    if state in AGENT_SESSION_TERMINAL_STATES:
+        silent = _minutes_since(session.get("ended_at"), now)
+        threshold = float(recovery["worker_loss_grace_minutes"])
+        result.update(silent_minutes=silent, threshold_minutes=threshold)
+        if silent is not None and silent >= threshold:
+            result.update(state="worker_terminal", reason="assigned session is terminal")
+        else:
+            result.update(state="active", reason="terminal grace period")
+        return result
+    ping = (liveness or {}).get(session_id) or session.get("running_at") or session.get("started_at")
+    silent = _minutes_since(ping, now)
+    threshold = float(recovery["live_session_silence_minutes"])
+    result.update(silent_minutes=silent, threshold_minutes=threshold)
+    if silent is not None and silent >= threshold:
+        result.update(state="worker_silent", reason="assigned session liveness expired")
+    else:
+        result.update(state="active", reason="assigned session is live")
+    return result
+
+
+def _expire_recovery_lease(status: dict, now: datetime) -> bool:
+    lease = status.get("recovery_lease")
+    if not isinstance(lease, dict):
+        return False
+    try:
+        expired = datetime.fromisoformat(lease["expires_at"]) <= now
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not expired:
+        return False
+    attempts = status.get("recovery_attempts") or []
+    match = next((item for item in attempts if item.get("recovery_id") == lease.get("recovery_id")), None)
+    if match and match.get("state") in {"reserved", "launched"}:
+        match["state"] = "failed"
+        match["reason"] = "lease_expired"
+        match["ended_at"] = now.isoformat()
+    status["recovery_lease"] = None
+    return True
+
+
+def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None,
+                id_factory=None) -> dict:
+    """Perform one lease-protected recovery episode. `launcher(role)` is
+    injected so tests can stay process-free; production passes the managed
+    Handsoff agent launcher."""
+    root = root.resolve()
+    actor = validate_agent_actor(actor)
+    now = now or datetime.now(timezone.utc)
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        acceptance = load_unique_json(acceptance_path(root, cfg))
+        _assert_agent_telemetry_integrity(root, cfg, status)
+        if _expire_recovery_lease(status, now):
+            commit(root, cfg, status=status, event_kind="recovery_lease_expired",
+                   event_message="Expired recovery lease was closed fail-safe", by=actor)
+            status = load_unique_json(status_path(root, cfg))
+        assessment = recovery_assessment(
+            status, cfg, read_session_liveness(root), read_events(root, cfg), now,
+        )
+        if assessment["state"] in {"not_applicable", "active"}:
+            return {"action": "skipped", "assessment": assessment}
+        attempts = list(status.get("recovery_attempts") or [])
+        cap = cfg["recovery"]["max_attempts"]
+        if len(attempts) >= cap:
+            proposed = deepcopy(status)
+            proposed["status"] = "blocked"
+            proposed["escalation"] = {
+                "kind": "recovery_exhausted", "at": now.isoformat(),
+                "reason": f"automatic recovery exhausted ({len(attempts)} of {cap})",
+                "required_action": "Run recovery-acknowledge --by OPERATOR --reason TEXT",
+                "source": attempts[-1]["recovery_id"] if attempts else "recovery-ledger",
+            }
+            proposed["next_action"] = proposed["escalation"]["required_action"]
+            commit(root, cfg, status=proposed, event_kind="recovery_escalated",
+                   event_message=proposed["escalation"]["reason"], by=actor)
+            return {"action": "escalated", "assessment": assessment}
+        role = assessment["assigned_role"]
+        if role == "reviewer" and current_review_attempt(status) is None:
+            migrated = deepcopy(status)
+            migrate_review_ledger(migrated)
+            if int(migrated.get("review_round", 0)) >= effective_review_cap(migrated, cfg):
+                _review_cap_escalation(migrated, cfg)
+                migrated["escalation"]["kind"] = "recovery_paused"
+                migrated["escalation"]["reason"] = "review_cap_reached"
+                commit(root, cfg, status=migrated, event_kind="recovery_escalated",
+                       event_message="Recovery paused at review cap", by=actor)
+                return {"action": "escalated", "assessment": assessment}
+        rid = _new_bounded_id(
+            "hv", RECOVERY_ID_PATTERN,
+            {item.get("recovery_id") for item in attempts}, id_factory,
+        )
+        lid = _new_bounded_id("hl", RECOVERY_LEASE_ID_PATTERN, set(), id_factory)
+        from datetime import timedelta
+        proposed = deepcopy(status)
+        if assessment["state"] == "worker_silent" and assessment.get("lost_session_id"):
+            sid = assessment["lost_session_id"]
+            session = (proposed.get("agent_sessions") or {}).get(sid)
+            if isinstance(session, dict) and session.get("state") in AGENT_SESSION_LIVE_STATES:
+                session["state"] = "failed"
+                session["ended_at"] = now.isoformat()
+                session["exit_code"] = -1
+                proposed.setdefault("agent_failures", {})[sid] = {
+                    "session_id": sid, "category": "presumed_lost",
+                    "reason": _FAILURE_REASON_LABELS["presumed_lost"],
+                    "tail_sha256": hashlib.sha256(b"").hexdigest(), "at": now.isoformat(),
+                }
+        record = {
+            "recovery_id": rid, "role": role, "trigger": assessment["state"],
+            "from_session_id": assessment.get("lost_session_id"), "to_session_id": None,
+            "attempt": len(attempts) + 1, "cap": cap, "holder": actor,
+            "state": "reserved", "reason": assessment["reason"], "at": now.isoformat(),
+            "launched_at": None, "ended_at": None,
+        }
+        proposed["recovery_attempts"] = [*attempts, record]
+        proposed["recovery_lease"] = {
+            "lease_id": lid, "holder": actor, "acquired_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=cfg["recovery"]["lease_minutes"])).isoformat(),
+            "recovery_id": rid,
+        }
+        commit(root, cfg, status=proposed, event_kind="recovery_attempt_started",
+               event_message=f"Recovery attempt {record['attempt']} reserved for {role}",
+               by=actor, recovery_id=rid, role=role, attempt=record["attempt"], cap=cap)
+    ok = False
+    launch_error = None
+    try:
+        outcome = launcher(role)
+        ok = outcome in (0, True, None)
+    except Exception as exc:  # the terminal state records only type, never untrusted output
+        launch_error = type(exc).__name__
+    ended = datetime.now(timezone.utc)
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        proposed = deepcopy(status)
+        item = next((entry for entry in proposed.get("recovery_attempts", [])
+                     if entry.get("recovery_id") == rid), None)
+        if not item or item.get("state") not in {"reserved", "launched"}:
+            raise HandsoffError("recovery attempt lost its terminal compare-and-set")
+        current = (proposed.get("current_agent_sessions") or {}).get(role)
+        item["to_session_id"] = current if isinstance(current, str) else None
+        item["launched_at"] = item.get("launched_at") or now.isoformat()
+        item["ended_at"] = ended.isoformat()
+        item["state"] = "recovered" if ok else "failed"
+        item["reason"] = "managed role completed" if ok else (launch_error or "managed role failed")
+        proposed["recovery_lease"] = None
+        commit(root, cfg, status=proposed,
+               event_kind="recovery_recovered" if ok else "recovery_failed",
+               event_message=f"Recovery attempt {item['attempt']} {item['state']}",
+               by=actor, recovery_id=rid, role=role, state=item["state"])
+    return {"action": "recovered" if ok else "failed", "assessment": assessment,
+            "recovery_id": rid, "attempt": record["attempt"], "cap": cap}
+
+
 def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None) -> str | None:
     """Advisory only, never blocks a call: a stalled run should surface for
     escalation, not lock the operator out of even reading status.
@@ -2820,7 +3161,7 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
 
 FAILURE_CATEGORIES = (
     "cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion",
-    "process_crash", "non_zero_exit", "unknown", "still_running",
+    "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
 )
 
 _FAILURE_REASON_LABELS = {
@@ -2833,6 +3174,7 @@ _FAILURE_REASON_LABELS = {
     "non_zero_exit": "process exited with a non-zero status",
     "unknown": "failure signal matched no known category",
     "still_running": "no failure signal reported yet",
+    "presumed_lost": "host watchdog found no liveness signal past the threshold",
 }
 
 # Order matters: tier 3 checks these in sequence and the first match wins,
@@ -2902,7 +3244,7 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
 
 RECOVERABLE_FAILURE_CATEGORIES = {
     "auth_failure", "rate_limit", "context_exhaustion", "timeout",
-    "process_crash", "non_zero_exit",
+    "process_crash", "non_zero_exit", "presumed_lost",
 }
 FALLBACK_SKIP_REASONS = {
     "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent",

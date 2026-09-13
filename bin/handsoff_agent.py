@@ -237,6 +237,20 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     except Exception:
         _stop_process_group(process)
         raise
+    lib.update_session_liveness(root, session_id)
+    liveness_interval = lib.load_config(root).get("recovery", {}).get("liveness_seconds", 60)
+
+    def publish_liveness() -> None:
+        while process.poll() is None:
+            if process.poll() is not None:
+                return
+            try:
+                lib.update_session_liveness(root, session_id)
+            except Exception:
+                pass  # liveness is conservative telemetry; lifecycle remains authoritative
+            threading.Event().wait(liveness_interval)
+
+    threading.Thread(target=publish_liveness, daemon=True).start()
     reader = None
     stderr_reader = None
     reader_errors: list[BaseException] = []
