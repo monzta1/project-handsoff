@@ -146,7 +146,7 @@
       </header>
       <p class="settings-intro">Select each mission adapter and model, Pilot.</p>
       <p class="default-model-explainer"><strong>DEFAULT MODEL PROTOCOL</strong><span><code>default</code> sends no model flag. Codex or Claude Code chooses from its own configuration, so the exact model is not guaranteed. Enter an exact model ID to pin it.</span></p>
-      <p class="default-model-explainer"><strong>CAPABILITY GUIDANCE</strong><span>Architect and Reviewer carry the most demanding work -- design rigor and catching subtle blind spots -- and benefit most from a more capable model. This is guidance only: every role stays freely selectable.</span></p>
+      <p class="default-model-explainer"><strong>CAPABILITY GUIDANCE</strong><span>Architect and Reviewer carry the most demanding work -- design rigor and catching subtle blind spots -- and benefit most from a more capable model. Assigning Reviewer a different provider or model than Implementer can strengthen independent review. This is guidance only: every role stays freely selectable, including matching profiles.</span></p>
       <div class="settings-grid">
         <label for="agent-architect"><span>ARCHITECT</span><small>Designs the approach and victory conditions.</small></label>
         <div class="agent-profile"><select id="agent-architect" name="architect"><option value="auto">Auto-detect</option><option value="codex">Codex</option><option value="claude">Claude Code</option></select><input id="agent-architect-model" name="architect-model" list="model-suggestions" maxlength="128" value="default" aria-label="Architect model ID"></div>

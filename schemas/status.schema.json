@@ -34,7 +34,9 @@
       "type": ["object", "null"],
       "properties": {
         "by": {"type": "string"}, "at": {"type": "string", "format": "date-time"},
-        "acceptance_hash": {"type": "string"}, "checklist": {"type": "object"}
+        "acceptance_hash": {"type": "string"}, "checklist": {"type": "object"},
+        "implementer_profile": {"type": "object"}, "reviewer_profile": {"type": "object"},
+        "profiles_distinct": {"type": "boolean"}
       }
     },
     "deployment_approved": {

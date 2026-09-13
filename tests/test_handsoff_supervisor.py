@@ -798,6 +798,63 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
                                         require_available=True)
 
 
+class TestReviewerProfileIndependence(HandsoffTestCase):
+    """AG4: implementation review records its selected agent profile."""
+
+    def _configure_profiles(self, implementer, reviewer):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        profiles = {
+            role: {"adapter": "auto", "model": "default"}
+            for role in lib.SELECTABLE_AGENT_ROLES
+        }
+        profiles["implementer"] = implementer
+        profiles["reviewer"] = reviewer
+        self.assertEqual(lib.update_agent_config(self.tmp, profiles), profiles)
+
+    def _record_completed_review(self):
+        self.init("AG4 reviewer independence")
+        self.set_criterion_state("passing", resolved=True)
+        self.advance_to(5, implemented_by="implementer-1")
+        review = run(["record-review", "--by", "reviewer-1"], cwd=self.tmp)
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
+        return self.read_status()["review"]
+
+    def test_distinct_reviewer_provider_and_model_are_snapshotted_in_audit(self):
+        self._configure_profiles(
+            {"adapter": "claude", "model": "implementer-model"},
+            {"adapter": "codex", "model": "reviewer-model"},
+        )
+        review = self._record_completed_review()
+        self.assertEqual(review["implementer_profile"], {
+            "adapter": "claude", "model": "implementer-model", "effective_adapter": "claude",
+        })
+        self.assertEqual(review["reviewer_profile"], {
+            "adapter": "codex", "model": "reviewer-model", "effective_adapter": "codex",
+        })
+        self.assertTrue(review["profiles_distinct"])
+
+        events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+        audit_event = next(event for event in reversed(events) if event["kind"] == "review_approved")
+        self.assertEqual(audit_event["implementer_profile"], review["implementer_profile"])
+        self.assertEqual(audit_event["reviewer_profile"], review["reviewer_profile"])
+        self.assertTrue(audit_event["profiles_distinct"])
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        self.assertIn("different provider or model than Implementer", html)
+        self.assertIn("strengthen independent review", html)
+        self.assertIn("guidance only", html)
+        self.assertIn("including matching profiles", html)
+
+    def test_matching_profiles_remain_allowed_and_are_recorded_honestly(self):
+        matching = {"adapter": "codex", "model": "same-model"}
+        self._configure_profiles(matching, matching)
+        review = self._record_completed_review()
+        self.assertFalse(review["profiles_distinct"])
+        self.assertEqual(review["implementer_profile"], review["reviewer_profile"])
+
+
 class TestAgentRuntimeAdapter(HandsoffTestCase):
     def setUp(self):
         super().setUp()

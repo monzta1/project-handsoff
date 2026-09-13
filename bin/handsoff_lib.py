@@ -308,6 +308,17 @@ def resolved_agent_profiles(cfg: dict, *, which=None, require_available: bool = 
     return resolved
 
 
+def audited_agent_profile(cfg: dict, role: str) -> dict:
+    """Snapshot configured and currently effective role selection for audit records."""
+    configured = agent_profiles(cfg)[role]
+    effective = resolved_agent_profiles(cfg)[role]
+    return {
+        "adapter": configured["adapter"],
+        "model": configured["model"],
+        "effective_adapter": effective["adapter"],
+    }
+
+
 def adapter_availability() -> dict:
     """Executable discovery only; callers must not imply runtime readiness."""
     result = {}
@@ -1093,6 +1104,22 @@ def validate_status_schema(status: dict) -> list[str]:
     review = status.get("review")
     if isinstance(review, dict) and "checklist" in review and not isinstance(review["checklist"], dict):
         errors.append("status: 'review.checklist' must be an object")
+    if isinstance(review, dict):
+        for field in ("implementer_profile", "reviewer_profile"):
+            profile = review.get(field)
+            if profile is None:
+                continue
+            if not isinstance(profile, dict):
+                errors.append(f"status: 'review.{field}' must be an object")
+                continue
+            for key in ("adapter", "model"):
+                if not isinstance(profile.get(key), str) or not profile[key].strip():
+                    errors.append(f"status: 'review.{field}.{key}' must be a non-empty string")
+            effective = profile.get("effective_adapter")
+            if effective is not None and (not isinstance(effective, str) or not effective.strip()):
+                errors.append(f"status: 'review.{field}.effective_adapter' must be a non-empty string or null")
+        if "profiles_distinct" in review and not isinstance(review["profiles_distinct"], bool):
+            errors.append("status: 'review.profiles_distinct' must be boolean")
     return errors
 
 

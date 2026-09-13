@@ -750,10 +750,20 @@ def cmd_record_review(args) -> int:
         preflight = dict(status)
         preflight["phase_number"] = 6
         preflight["phase"] = lib.PHASES[6]
+        implementer_profile = lib.audited_agent_profile(cfg, "implementer")
+        reviewer_profile = lib.audited_agent_profile(cfg, "reviewer")
+        profiles_distinct = (
+            implementer_profile["effective_adapter"], implementer_profile["model"]
+        ) != (
+            reviewer_profile["effective_adapter"], reviewer_profile["model"]
+        )
         preflight["review"] = {
             "by": reviewer_id, "at": datetime.now(timezone.utc).isoformat(),
             "acceptance_hash": lib.acceptance_hash(acceptance["criteria"]),
             "config_hash": lib.config_hash(cfg),
+            "implementer_profile": implementer_profile,
+            "reviewer_profile": reviewer_profile,
+            "profiles_distinct": profiles_distinct,
             "checklist": {"symptom_reproduced": args.symptom_reproduced,
                           "symptom_resolved": "yes", "all_criteria_verified": "yes",
                           "evidence_attached": "yes"},
@@ -771,7 +781,9 @@ def cmd_record_review(args) -> int:
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status,
                   event_kind="review_approved", event_message="Independent review approved current acceptance",
-                  by=reviewer_id, acceptance_hash=status["review"]["acceptance_hash"])
+                  by=reviewer_id, acceptance_hash=status["review"]["acceptance_hash"],
+                  implementer_profile=implementer_profile, reviewer_profile=reviewer_profile,
+                  profiles_distinct=profiles_distinct)
     print("INDEPENDENT_REVIEW_RECORDED")
     return 0
 
