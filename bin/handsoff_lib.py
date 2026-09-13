@@ -1218,7 +1218,9 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
     reviewer = review.get("by")
     if not reviewer:
         errors.append("review gate: review must identify its reviewer")
-    if reviewer and reviewer == status.get("implemented_by"):
+    implementer = status.get("implemented_by")
+    if reviewer and implementer \
+            and reviewer.strip().casefold() == implementer.strip().casefold():
         errors.append("review gate: reviewer must differ from implementer, no self-approval")
     checklist = review.get("checklist", {})
     for field, allowed in CHECKLIST_VALUES.items():

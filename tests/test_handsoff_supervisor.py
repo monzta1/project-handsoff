@@ -1111,6 +1111,110 @@ class TestSelfApprovalBlocked(HandsoffTestCase):
         r = run(["advance", "6", "80", "--implemented-by", "agent-x"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_case_and_whitespace_cannot_disguise_implementation_self_review(self):
+        self.init()
+        self.set_criterion_state("passing", resolved=True)
+        self.advance_to(5, implemented_by="Weak-Agent")
+        for disguised_identity in ("weak-agent", " Weak-Agent", "WEAK-AGENT "):
+            with self.subTest(identity=disguised_identity):
+                review = run(["record-review", "--by", disguised_identity], cwd=self.tmp)
+                self.assertEqual(review.returncode, 1, review.stdout + review.stderr)
+                self.assertIn("reviewer must differ", review.stdout)
+
+
+class TestAgentAgnosticSafetyGates(HandsoffTestCase):
+    """AG5: degraded role agents cannot weaken host-enforced gates."""
+
+    PROFILE_MATRICES = {
+        "automatic": {role: {"adapter": "auto", "model": "default"}
+                      for role in ("architect", "supervisor", "implementer", "reviewer")},
+        "all_codex": {role: {"adapter": "codex", "model": "weak-model"}
+                      for role in ("architect", "supervisor", "implementer", "reviewer")},
+        "all_claude": {role: {"adapter": "claude", "model": "weak-model"}
+                       for role in ("architect", "supervisor", "implementer", "reviewer")},
+        "mixed": {
+            "architect": {"adapter": "claude", "model": "weak-architect"},
+            "supervisor": {"adapter": "codex", "model": "weak-supervisor"},
+            "implementer": {"adapter": "claude", "model": "weak-implementer"},
+            "reviewer": {"adapter": "codex", "model": "weak-reviewer"},
+        },
+    }
+
+    def _fresh_profiled_root(self, profiles):
+        root = Path(tempfile.mkdtemp(prefix="handsoff-test-ag5-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        shutil.copy(ROOT / "handsoff.toml", root / "handsoff.toml")
+        shutil.copytree(ROOT / "schemas", root / "schemas")
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        lib.update_agent_config(root, profiles)
+        config = root / "handsoff.toml"
+        config.write_text(config.read_text().replace("commands = []", 'commands = ["false"]', 1))
+        return root
+
+    def test_degraded_agents_cannot_skip_or_forge_any_gate(self):
+        for profile_name, profiles in self.PROFILE_MATRICES.items():
+            with self.subTest(profile=profile_name):
+                root = self._fresh_profiled_root(profiles)
+                self.assertEqual(run(["init", "AG5 degraded-agent fixture"], cwd=root).returncode, 0)
+                criterion = run(["criterion-update", "REQ-001", "--requirement",
+                                 "A deliberately failing check must not be accepted", "--test", "false"], cwd=root)
+                self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+                self.assertEqual(run(["advance", "2", "20"], cwd=root).returncode, 0)
+
+                self_review = run([
+                    "record-design-review", "--by", " weak-agent ", "--architect", "WEAK-AGENT",
+                    "--approve", "--summary", "Trust the degraded architect",
+                ], cwd=root)
+                self.assertEqual(self_review.returncode, 1)
+                self.assertIn("self-review", self_review.stdout)
+                self_approval = run([
+                    "design-approve", "--by", "Weak-Agent", "--architect", " weak-agent ",
+                    "--summary", "Trust the degraded architect",
+                ], cwd=root)
+                self.assertEqual(self_approval.returncode, 1)
+                self.assertIn("self-approval", self_approval.stdout)
+
+                design_review = approve_design_review(
+                    root, architect="architect-1", reviewer="design-reviewer-1")
+                self.assertEqual(design_review.returncode, 0, design_review.stdout + design_review.stderr)
+                human = run(["design-approve", "--by", "human-owner", "--architect", "architect-1",
+                             "--summary", "Independent human approval"], cwd=root)
+                self.assertEqual(human.returncode, 0, human.stdout + human.stderr)
+                self.assertEqual(run(["advance", "3", "30"], cwd=root).returncode, 0)
+                implementation = run(["advance", "4", "40", "--implemented-by", "Weak-Agent"], cwd=root)
+                self.assertEqual(implementation.returncode, 0, implementation.stdout + implementation.stderr)
+
+                failed_check = run(["verify", "--criterion", "REQ-001", "--by", "Weak-Agent"], cwd=root)
+                self.assertEqual(failed_check.returncode, 1)
+                acceptance = json.loads((root / "handsoff-acceptance.json").read_text())
+                self.assertNotEqual(acceptance["criteria"][0]["state"], "passing")
+                evidence_ids = acceptance["criteria"][0]["evidence"]
+                self.assertEqual(len(evidence_ids), 1)
+                verification = json.loads((root / "handsoff-verifications.jsonl").read_text().splitlines()[-1])
+                self.assertEqual(verification["run_id"], evidence_ids[0])
+                self.assertFalse(verification["ok"], "failed evidence may be recorded but must never satisfy a gate")
+
+                forged = run(["record-evidence", "REQ-001", "--kind", "manual",
+                              "--description", "The weak agent claims success", "--by", "Weak-Agent"], cwd=root)
+                self.assertEqual(forged.returncode, 1)
+                self.assertIn("does not accept manual", forged.stdout)
+
+                self.assertEqual(run(["advance", "5", "50"], cwd=root).returncode, 0)
+                disguised_review = run(["record-review", "--by", " weak-agent "], cwd=root)
+                self.assertEqual(disguised_review.returncode, 1)
+                self.assertIn("reviewer must differ", disguised_review.stdout)
+                unevidenced = run(["record-review", "--by", "other-weak-reviewer"], cwd=root)
+                self.assertEqual(unevidenced.returncode, 1)
+                self.assertIn("verified evidence", unevidenced.stdout)
+
+                early_deployment = run(["deployment-gate", "--approve", "--by", "Weak-Agent"], cwd=root)
+                self.assertEqual(early_deployment.returncode, 1)
+                self.assertIn("Phase 7", early_deployment.stdout)
+                bypass = run(["advance", "6", "60"], cwd=root)
+                self.assertEqual(bypass.returncode, 1)
+                self.assertIn("phase gate", bypass.stdout)
+
 
 class TestDeploymentApproval(HandsoffTestCase):
     """The third bug: `advance` to Phase 8 had no idea `deployment-gate`

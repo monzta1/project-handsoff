@@ -734,6 +734,7 @@ def cmd_record_review(args) -> int:
     if not args.by or not args.by.strip():
         print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
         return 1
+    reviewer_id = args.by.strip()
     with lib.project_lock(root):
         status, acceptance, records, problems = _load_all(root, cfg)
         audit_errors = _audit_errors(root, cfg, status, records, problems)
@@ -742,21 +743,22 @@ def cmd_record_review(args) -> int:
         if status.get("phase_number", 0) < 5:
             print("SHIP_FEATURE_BLOCKED: independent review can only be recorded in Phase 5 or later")
             return 1
-        if args.by == status.get("implemented_by"):
+        implementer = status.get("implemented_by")
+        if implementer and reviewer_id.casefold() == implementer.strip().casefold():
             print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
             return 1
         preflight = dict(status)
         preflight["phase_number"] = 6
         preflight["phase"] = lib.PHASES[6]
         preflight["review"] = {
-            "by": args.by, "at": datetime.now(timezone.utc).isoformat(),
+            "by": reviewer_id, "at": datetime.now(timezone.utc).isoformat(),
             "acceptance_hash": lib.acceptance_hash(acceptance["criteria"]),
             "config_hash": lib.config_hash(cfg),
             "checklist": {"symptom_reproduced": args.symptom_reproduced,
                           "symptom_resolved": "yes", "all_criteria_verified": "yes",
                           "evidence_attached": "yes"},
         }
-        preflight["reviewed_by"] = args.by
+        preflight["reviewed_by"] = reviewer_id
         errors = lib.compute_errors(preflight, acceptance, cfg, verifications=records,
                                     verification_problems=problems)
         if errors:
@@ -764,12 +766,12 @@ def cmd_record_review(args) -> int:
             print("\n".join(f"- {x}" for x in errors))
             return 1
         status["review"] = preflight["review"]
-        status["reviewed_by"] = args.by
+        status["reviewed_by"] = reviewer_id
         status["reviewer_checklist"] = preflight["review"]["checklist"]
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status,
                   event_kind="review_approved", event_message="Independent review approved current acceptance",
-                  by=args.by, acceptance_hash=status["review"]["acceptance_hash"])
+                  by=reviewer_id, acceptance_hash=status["review"]["acceptance_hash"])
     print("INDEPENDENT_REVIEW_RECORDED")
     return 0
 
