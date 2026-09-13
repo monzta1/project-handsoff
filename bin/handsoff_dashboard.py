@@ -162,6 +162,16 @@ ACTIVE_ROLE_BY_PHASE = {
 }
 
 
+def _live_managed_role(status: dict) -> str | None:
+    """The role whose current managed agent session is launching or running."""
+    current = lib.current_agent_sessions(status)
+    for role in ("architect", "implementer", "reviewer", "supervisor"):
+        session = current.get(role)
+        if isinstance(session, dict) and session.get("state") in lib.AGENT_SESSION_LIVE_STATES:
+            return role
+    return None
+
+
 def _active_role(status: dict, input_request: dict) -> str | None:
     """The crew role currently doing the work, or None when nobody is: the
     run is complete, or it is paused waiting on a human decision (the
@@ -172,6 +182,12 @@ def _active_role(status: dict, input_request: dict) -> str | None:
         return None
     if input_request.get("required"):
         return None
+    # A live managed session is the ground truth for who is working right
+    # now: a Phase-2 Architect drafting the design must light up as the
+    # Architect, not be assumed to be the reviewer.
+    live = _live_managed_role(status)
+    if live:
+        return live
     phase_number = int(status.get("phase_number", 1) or 1)
     if phase_number == 2:
         review = status.get("design_review") or {}
@@ -188,6 +204,8 @@ def _input_request(status: dict, cfg: dict) -> dict:
     A narrow phrase check supports older state written before that convention.
     """
     workflow_status = str(status.get("status") or "")
+    regression = next((item for item in reversed(status.get("regression_requests") or [])
+                       if item.get("state") == "awaiting_approval"), None)
     phase = int(status.get("phase_number", 1) or 1)
     next_action = str(status.get("next_action") or "Pilot authorization is required before the mission can continue.")
     approval_missing = (
@@ -206,8 +224,16 @@ def _input_request(status: dict, cfg: dict) -> dict:
         "waiting for user", "waiting on user", "your input", "need your decision",
         "need your approval", "provide credentials", "grant permission", "authorize",
     ))
-    required = workflow_status == "blocked" or approval_missing or design_approval_missing or older_signal
-    if approval_missing:
+    required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing or older_signal
+    escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
+    if regression:
+        kind = "regression_approval"
+        message = (f"Full regression '{regression.get('group')}' requested. Review its exact commands "
+                   "and choose Accept or Decline; it will not run until accepted.")
+    elif escalation:
+        kind = "escalation"
+        message = f"{escalation.get('reason')}. {escalation.get('required_action')}"
+    elif approval_missing:
         kind = "deployment_approval"
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
     elif design_approval_missing:
@@ -219,7 +245,9 @@ def _input_request(status: dict, cfg: dict) -> dict:
     else:
         kind = "decision"
         message = next_action
-    return {"required": required, "kind": kind if required else None, "message": message if required else None}
+    return {"required": required, "kind": kind if required else None,
+            "message": message if required else None,
+            "request_id": regression.get("request_id") if regression else None}
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
@@ -348,10 +376,14 @@ def build_snapshot(root: Path) -> dict:
                 audit_errors.append("Verification ledger tail does not match its anchored head.")
             stall = lib.stall_warning(status, cfg)
             activity = lib.activity_note(status, cfg)
+            recovery_assessment = lib.recovery_assessment(
+                status, cfg, lib.read_session_liveness(root), events,
+            )
     except (lib.HandsoffError, OSError) as exc:
         return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
     criteria = acceptance.get("criteria", [])
+    work_items = lib.derive_work_items(status, acceptance, cfg)
     latest_event = events[-1] if events else None
     coverage = status.get("requirement_coverage", {})
     audit_healthy = not gate_errors and not audit_errors
@@ -389,18 +421,32 @@ def build_snapshot(root: Path) -> dict:
 
     current_sessions = lib.current_agent_sessions(status)
     supervisor_session = current_sessions.get("supervisor")
+
+    def crew_entry(key, label, actor, live_session=None):
+        # A recorded decision names the actor once it lands; until then the
+        # role's current managed session (an Architect mid-design, an
+        # Implementer mid-build) is the truthful occupant of the station.
+        session = session_for_actor(actor)
+        if actor is None and isinstance(live_session, dict):
+            actor = live_session.get("actor")
+            session = session_view(live_session)
+        return {"key": key, "label": label, "actor": actor, "session": session}
+
+    # One managed "reviewer" role serves two stations: in Phase 2 a live
+    # reviewer session is critiquing the design, from Phase 5 on it is
+    # reviewing the implementation. Route it to the matching row only.
+    phase_number = int(status.get("phase_number", 1) or 1)
+    live_reviewer = current_sessions.get("reviewer")
+    design_reviewer_live = live_reviewer if phase_number <= 2 else None
+    implementation_reviewer_live = live_reviewer if phase_number >= 5 else None
     crew = [
-        {"key": "architect", "label": "ARCHITECT", "actor": actors["architect"],
-         "session": session_for_actor(actors["architect"])},
-        {"key": "design_reviewer", "label": "DESIGN REVIEWER", "actor": actors["design_reviewed_by"],
-         "session": session_for_actor(actors["design_reviewed_by"])},
+        crew_entry("architect", "ARCHITECT", actors["architect"], current_sessions.get("architect")),
+        crew_entry("design_reviewer", "DESIGN REVIEWER", actors["design_reviewed_by"], design_reviewer_live),
         {"key": "supervisor", "label": "SUPERVISOR",
          "actor": supervisor_session.get("actor") if isinstance(supervisor_session, dict) else None,
          "session": session_view(supervisor_session)},
-        {"key": "implementer", "label": "IMPLEMENTER", "actor": actors["implemented_by"],
-         "session": session_for_actor(actors["implemented_by"])},
-        {"key": "reviewer", "label": "REVIEWER", "actor": actors["reviewed_by"],
-         "session": session_for_actor(actors["reviewed_by"])},
+        crew_entry("implementer", "IMPLEMENTER", actors["implemented_by"], current_sessions.get("implementer")),
+        crew_entry("reviewer", "REVIEWER", actors["reviewed_by"], implementation_reviewer_live),
         {"key": "approver", "label": "APPROVER", "actor": actors["approved_by"], "session": None},
     ]
     replacements = []
@@ -434,6 +480,8 @@ def build_snapshot(root: Path) -> dict:
             "total": len(criteria),
             "original_symptom_resolved": coverage.get("original_symptom_resolved") is True,
         },
+        "tickets": [],
+        "work_items": work_items,
         "actors": actors,
         "crew": crew,
         "runtime": {
@@ -451,6 +499,9 @@ def build_snapshot(root: Path) -> dict:
         "policy": {
             "review_round": status.get("review_round", 0),
             "max_review_rounds": cfg.get("max_review_rounds"),
+            "effective_max_review_rounds": lib.effective_review_cap(status, cfg)
+            if "review_attempts" in status else cfg.get("max_review_rounds"),
+            "review_cap_overrides": len(status.get("review_cap_overrides") or []),
             "design_round": status.get("design_round", 0),
             "max_design_rounds": cfg.get("max_design_rounds"),
             "explicit_approval": cfg.get("deployment_requires_explicit_approval", True),
@@ -458,6 +509,30 @@ def build_snapshot(root: Path) -> dict:
             "configured_checks": len(cfg.get("check_commands", [])),
             "configured_live_checks": len(cfg.get("live_check_commands", [])),
         },
+        "review": {
+            "attempts": [{
+                "attempt": item.get("attempt"), "attempt_id": item.get("attempt_id"),
+                "trigger": item.get("trigger"), "disposition": item.get("disposition"),
+                "reviewer": item.get("reviewer"), "opened_at": item.get("opened_at"),
+                "closed_at": item.get("closed_at"), "findings_count": len(item.get("findings") or []),
+            } for item in (status.get("review_attempts") or [])],
+        },
+        "recovery": {
+            "assessment": recovery_assessment,
+            "lease": status.get("recovery_lease"),
+            "attempts": list((status.get("recovery_attempts") or [])[-8:]),
+            "cap": cfg.get("recovery", {}).get("max_attempts", 0),
+            "watchdog_enabled": cfg.get("recovery", {}).get("dashboard_watchdog", False),
+        },
+        "regression": {
+            "pending": next((item for item in reversed(status.get("regression_requests") or [])
+                             if item.get("state") == "awaiting_approval"), None),
+            "current": lib.active_regression_request(status),
+            "last": next((item for item in reversed(status.get("regression_requests") or [])
+                          if item.get("state") not in {"awaiting_approval", "accepted", "launched"}), None),
+            "history": list(reversed((status.get("regression_requests") or [])[-8:])),
+        },
+        "escalation": status.get("escalation"),
         "settings": _settings_view(cfg),
         "input_required": input_request,
         "activity_note": activity,
@@ -473,7 +548,31 @@ class DashboardServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], root: Path):
         self.project_root = root
+        self._watchdog_stop = threading.Event()
         super().__init__(address, DashboardHandler)
+        cfg = lib.load_config(root)
+        recovery = cfg.get("recovery", {})
+        if recovery.get("enabled") and recovery.get("dashboard_watchdog"):
+            threading.Thread(target=self._watchdog_loop, daemon=True).start()
+
+    def _watchdog_loop(self):
+        cfg = lib.load_config(self.project_root)
+        interval = cfg.get("recovery", {}).get("poll_seconds", 30)
+        while not self._watchdog_stop.wait(interval):
+            try:
+                def launcher(role):
+                    import handsoff_agent
+                    task = (f"Resume trusted Handsoff state as {role}; read status, acceptance, and event log "
+                            "and continue without repeating evidenced work.")
+                    spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
+                    return handsoff_agent.execute_with_recovery(spec)
+                lib.recover_run(self.project_root, actor="Mission Control Watchdog", launcher=launcher)
+            except Exception as exc:
+                print(f"HANDSOFF_WATCHDOG_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def server_close(self):
+        self._watchdog_stop.set()
+        super().server_close()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -588,7 +687,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval"}:
+        if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
+                        "/api/regression-decision"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
         if not self._same_origin_allowed():
@@ -610,6 +710,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             requested = _strict_json_object(self.rfile.read(length))
+            if path == "/api/regression-decision":
+                if set(requested) != {"request_id", "decision", "command_hash"} \
+                        or requested.get("decision") not in {"accept", "decline"} \
+                        or not isinstance(requested.get("request_id"), str) \
+                        or not isinstance(requested.get("command_hash"), str):
+                    raise lib.HandsoffError("regression decision requires request_id, command_hash, and accept/decline")
+                snapshot = build_snapshot(self.server.project_root)
+                pending = (snapshot.get("regression") or {}).get("pending") or {}
+                if pending.get("request_id") != requested["request_id"] \
+                        or pending.get("command_sha256") != requested["command_hash"]:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The displayed regression request is stale"})
+                    return
+                command = argparse.Namespace(
+                    root=str(self.server.project_root), request_id=requested["request_id"],
+                    by="Mission Control Pilot", accept=requested["decision"] == "accept",
+                    decline=requested["decision"] == "decline",
+                )
+                if supervisor.cmd_regression_decide(command) != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The regression gate rejected this decision"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True, "decision": requested["decision"]})
+                return
             if path == "/api/design-approval":
                 if requested:
                     raise lib.HandsoffError("design approval payload must be empty")

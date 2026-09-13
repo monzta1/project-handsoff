@@ -11,7 +11,107 @@
     "next_action": {"type": "string"},
     "design_round": {"type": "integer", "minimum": 0},
     "review_round": {"type": "integer", "minimum": 0},
+    "legacy_review_round_offset": {"type": "integer", "minimum": 0},
+    "review_attempts": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["attempt_id", "attempt", "opened_at", "closed_at", "opened_by", "reviewer", "session_ids", "trigger", "trigger_detail", "acceptance_hash", "phase_number", "disposition", "findings"],
+        "properties": {
+          "attempt_id": {"type": "string", "pattern": "^ha-[0-9a-f]{32}$"},
+          "attempt": {"type": "integer", "minimum": 1},
+          "opened_at": {"type": "string", "format": "date-time"},
+          "closed_at": {"type": ["string", "null"], "format": "date-time"},
+          "opened_by": {"type": "string", "minLength": 1, "maxLength": 128},
+          "reviewer": {"type": ["string", "null"], "maxLength": 128},
+          "session_ids": {"type": "array", "maxItems": 160, "uniqueItems": true, "items": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"}},
+          "trigger": {"enum": ["initial", "changes_requested", "acceptance_changed", "implementation_changed", "supervisor_remediation", "manual_override"]},
+          "trigger_detail": {"type": "string", "maxLength": 512},
+          "acceptance_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "phase_number": {"type": "integer", "minimum": 1, "maximum": 8},
+          "disposition": {"enum": ["open", "approved", "changes_requested", "abandoned", "unrecorded"]},
+          "findings": {"type": "array", "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["code", "summary"], "properties": {"code": {"enum": ["acceptance_not_met", "incorrect_implementation", "review_changes_requested", "other"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 512}}}}
+        }
+      }
+    },
+    "review_cap_overrides": {"type": "array", "maxItems": 8},
+    "escalation": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["kind", "at", "reason", "required_action", "source"],
+      "properties": {
+        "kind": {"enum": ["review_cap_exhausted", "recovery_exhausted", "recovery_paused"]},
+        "at": {"type": "string", "format": "date-time"},
+        "reason": {"type": "string", "minLength": 1},
+        "required_action": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1}
+      }
+    },
+    "recovery_attempts": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["recovery_id", "role", "trigger", "from_session_id", "to_session_id", "attempt", "cap", "holder", "state", "reason", "at", "launched_at", "ended_at"],
+        "properties": {
+          "recovery_id": {"type": "string", "pattern": "^hv-[0-9a-f]{32}$"},
+          "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
+          "trigger": {"enum": ["worker_terminal", "worker_silent", "silent_run"]},
+          "from_session_id": {"type": ["string", "null"]},
+          "to_session_id": {"type": ["string", "null"]},
+          "attempt": {"type": "integer", "minimum": 1},
+          "cap": {"type": "integer", "minimum": 0, "maximum": 16},
+          "holder": {"type": "string", "minLength": 1},
+          "state": {"enum": ["reserved", "launched", "recovered", "failed", "escalated"]},
+          "reason": {"type": "string", "minLength": 1},
+          "at": {"type": "string", "format": "date-time"},
+          "launched_at": {"type": ["string", "null"], "format": "date-time"},
+          "ended_at": {"type": ["string", "null"], "format": "date-time"}
+        }
+      }
+    },
+    "recovery_lease": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["lease_id", "holder", "acquired_at", "expires_at", "recovery_id"],
+      "properties": {
+        "lease_id": {"type": "string", "pattern": "^hl-[0-9a-f]{32}$"},
+        "holder": {"type": "string", "minLength": 1},
+        "acquired_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "recovery_id": {"type": "string", "pattern": "^hv-[0-9a-f]{32}$"}
+      }
+    },
+    "regression_requests": {
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["request_id", "group", "commands", "command_sha256", "state", "requested_by", "requested_at", "expires_at", "decided_by", "decided_at", "launched_at", "completed_at", "launch_nonce_sha256", "repository", "acceptance_hash", "config_hash", "scope_hash", "run_id", "epoch_sha256", "reason", "requester_session_id", "results"],
+        "properties": {
+          "request_id": {"type": "string", "pattern": "^rg-[0-9a-f]{32}$"},
+          "group": {"type": "string", "minLength": 1, "maxLength": 64},
+          "commands": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "command_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "state": {"enum": ["awaiting_approval", "accepted", "declined", "expired", "invalidated", "launched", "completed", "failed", "cancelled"]},
+          "requested_by": {"type": "string", "minLength": 1},
+          "requested_at": {"type": "string", "format": "date-time"},
+          "expires_at": {"type": "string", "format": "date-time"},
+          "decided_by": {"type": ["string", "null"]},
+          "decided_at": {"type": ["string", "null"], "format": "date-time"},
+          "launched_at": {"type": ["string", "null"], "format": "date-time"},
+          "completed_at": {"type": ["string", "null"], "format": "date-time"},
+          "launch_nonce_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "repository": {"type": "object"},
+          "acceptance_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "scope_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "run_id": {"type": "string", "minLength": 1},
+          "epoch_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "reason": {"type": "string", "minLength": 1},
+          "requester_session_id": {"type": ["string", "null"], "pattern": "^hs-[0-9a-f]{32}$"},
+          "results": {"type": "array"}
+        }
+      }
+    },
     "retry_count": {"type": "integer", "minimum": 0},
+    "active_work_item": {"type": ["string", "null"], "pattern": "^(issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$"},
     "implemented_by": {"type": ["string", "null"]},
     "reviewed_by": {"type": ["string", "null"]},
     "original_symptom_evidence_id": {"type": ["string", "null"]},
@@ -64,7 +164,7 @@
           "required": ["session_id", "category", "reason", "tail_sha256", "at"],
           "properties": {
             "session_id": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
-            "category": {"enum": ["cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion", "process_crash", "non_zero_exit", "unknown"]},
+            "category": {"enum": ["cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion", "process_crash", "non_zero_exit", "unknown", "presumed_lost"]},
             "reason": {"type": "string"},
             "tail_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "at": {"type": "string", "format": "date-time"}

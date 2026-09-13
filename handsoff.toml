@@ -15,10 +15,10 @@ deployment_requires_explicit_approval = true
 [agents]
 # "auto" selects the first installed adapter in this order: Codex, then
 # Claude Code. Set any role explicitly to override its automatic choice.
-architect = "auto"
-supervisor = "auto"
-implementer = "auto"
-reviewer = "auto"
+architect = "codex"
+supervisor = "codex"
+implementer = "codex"
+reviewer = "codex"
 
 [models]
 # Use "default" to inherit the runner's configured model, or enter an exact
@@ -37,14 +37,53 @@ supervisor = []
 implementer = []
 reviewer = []
 
+[recovery]
+enabled = true
+max_attempts = 3
+lease_minutes = 15
+worker_loss_grace_minutes = 2
+live_session_silence_minutes = 10
+liveness_seconds = 60
+dashboard_watchdog = true
+poll_seconds = 30
+
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a
 # free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
-commands = []
+# Focused checks for the self-hosted governance run (issues #31, #30, #28,
+# #29 and the cross-feature cases). One narrow file per ticket area; none of
+# these runs the whole suite. Full regressions belong under [[regressions]]
+# (issue #28) and are gated behind Mission Control Accept/Decline.
+commands = [
+  "python3 tests/test_review_attempts.py",
+  "python3 tests/test_supervisor_recovery.py",
+  "python3 tests/test_regression_gate.py",
+  "python3 tests/test_work_items.py",
+  "python3 tests/test_governance_cross.py",
+  "python3 tests/test_governance_docs.py",
+  "node --test tests/dashboard/review_round.test.js",
+  "node --test tests/dashboard/work_items.test.js",
+  "node --test tests/dashboard/regression_gate.test.js",
+  "node --test tests/browser/regression_gate.browser.test.js",
+  "node --test tests/browser/work_items.browser.test.js",
+  "node --test tests/browser/escalation.browser.test.js",
+]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = []
+live_commands = ["python3 tests/live_dashboard_smoke.py"]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600
+
+[regression_gate]
+approval_timeout_minutes = 30
+launch_window_minutes = 10
+
+[[regressions]]
+name = "python-full"
+commands = ["python3 tests/test_handsoff_supervisor.py"]
+
+[[regressions]]
+name = "dashboard-full"
+commands = ["node --test tests/dashboard/*.test.js"]

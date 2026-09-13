@@ -53,12 +53,21 @@
             <span>MISSION HOLD ENGAGED</span>
             <h2>PILOT AUTHORIZATION REQUIRED</h2>
             <p id="input-alert-message">Holding position. Awaiting your command, Pilot.</p>
+            <pre id="regression-details" class="regression-details hidden"></pre>
           </div>
           <div class="input-alert-actions">
             <button id="design-approve" class="authorize-button hidden" type="button">AUTHORIZE DESIGN</button>
             <button id="deployment-approve" class="authorize-button hidden" type="button">AUTHORIZE DEPLOYMENT</button>
+            <button id="regression-accept" class="authorize-button hidden" type="button">ACCEPT REGRESSION</button>
+            <button id="regression-decline" class="alert-button hidden" type="button">DECLINE</button>
             <button id="enable-alerts" class="alert-button" type="button">Enable tactical alerts</button>
           </div>
+        </section>
+
+        <section id="regression-alert" class="regression-card panel hidden" aria-live="polite">
+          <div class="panel-label">REGRESSION AUTHORIZATION</div>
+          <pre id="regression-status-details" class="regression-details"></pre>
+          <p id="regression-last" class="regression-last"></p>
         </section>
 
         <section class="phase-rail-wrap" aria-label="Mission flight plan and delivery phases">
@@ -108,6 +117,16 @@
           <article class="signal-card"><span>Launch authority</span><strong id="approval-state">PENDING</strong><small id="approval-detail">Pilot authorization required</small></article>
         </section>
 
+        <section id="ticket-panel" class="panel ticket-panel hidden">
+          <div class="section-head"><div><p class="panel-label">DELIVERY QUEUE</p><h2>Work-item status</h2></div><span id="ticket-total" class="section-meta">0 ITEMS</span></div>
+          <div class="ticket-table-wrap">
+            <table class="ticket-table">
+              <thead><tr><th>Item</th><th>Issue</th><th>Title</th><th>Status</th><th>Phase / next</th><th>Blocker</th><th>Updated</th></tr></thead>
+              <tbody id="ticket-list"></tbody>
+            </table>
+          </div>
+        </section>
+
         <section class="content-grid">
           <article class="panel acceptance-panel">
             <div class="section-head"><div><p class="panel-label">MISSION OBJECTIVES</p><h2>Victory conditions</h2></div><div class="legend"><span class="pass-dot">Neutralized</span><span class="open-dot">Active</span></div></div>
@@ -115,6 +134,10 @@
           </article>
 
           <aside class="right-stack">
+            <article id="review-attempts-panel" class="panel review-attempts-panel hidden">
+              <div class="section-head"><div><p class="panel-label">REVIEW CONVERGENCE</p><h2>Implementation review attempts</h2></div><span id="review-attempt-count" class="section-meta">0 ATTEMPTS</span></div>
+              <div id="review-attempt-list" class="replacement-list"></div>
+            </article>
             <article class="panel attention-panel">
               <div class="section-head"><div><p class="panel-label">INCOMING TRANSMISSIONS</p><h2>Tactical alerts</h2></div><span class="count-badge" id="attention-count">0</span></div>
               <div id="attention-list" class="attention-list"></div>
