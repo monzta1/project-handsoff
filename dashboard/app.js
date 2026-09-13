@@ -16,6 +16,7 @@ const state = {
   activeRole: null,
   latestEvent: null,
   runSessions: {},
+  fallbackDraft: {},
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 const ALLOWED_ADAPTERS = ["auto", "codex", "claude"];
@@ -123,8 +124,88 @@ function renderProviderStatus(providers) {
   }
 }
 
+function markSettingsDirty() {
+  state.settingsDirty = true;
+  $("settings-result").textContent = "";
+  updateSettingsSaveState();
+}
+
+function renderFallbackRole(role) {
+  const container = $(`fallback-${role}`);
+  const entries = state.fallbackDraft[role] || [];
+  container.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "fallback-role-head";
+  const label = document.createElement("span");
+  label.textContent = `${role.toUpperCase()} · ${entries.length}/8`;
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "fallback-add";
+  add.textContent = "+ ADD FALLBACK";
+  add.disabled = entries.length >= 8;
+  add.addEventListener("click", () => {
+    entries.push({ adapter: "codex", model: "default" });
+    renderFallbackRole(role);
+    markSettingsDirty();
+  });
+  head.append(label, add);
+  container.append(head);
+  entries.forEach((profile, index) => {
+    const row = document.createElement("div");
+    row.className = "fallback-row";
+    const order = document.createElement("span");
+    order.textContent = String(index + 1);
+    const adapter = document.createElement("select");
+    adapter.setAttribute("aria-label", `${role} fallback ${index + 1} adapter`);
+    for (const value of ["codex", "claude"]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = adapterLabel(value);
+      adapter.append(option);
+    }
+    adapter.value = profile.adapter;
+    const model = document.createElement("input");
+    model.setAttribute("aria-label", `${role} fallback ${index + 1} model`);
+    model.setAttribute("list", "model-suggestions");
+    model.maxLength = 128;
+    model.value = profile.model;
+    adapter.addEventListener("input", () => { profile.adapter = adapter.value; markSettingsDirty(); });
+    model.addEventListener("input", () => { profile.model = model.value; markSettingsDirty(); });
+    const control = (text, title, disabled, action) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = text;
+      button.title = title;
+      button.setAttribute("aria-label", title);
+      button.disabled = disabled;
+      button.addEventListener("click", action);
+      return button;
+    };
+    const move = (offset) => () => {
+      const [item] = entries.splice(index, 1);
+      entries.splice(index + offset, 0, item);
+      renderFallbackRole(role);
+      markSettingsDirty();
+    };
+    const remove = () => {
+      entries.splice(index, 1);
+      renderFallbackRole(role);
+      markSettingsDirty();
+    };
+    row.append(order, adapter, model,
+      control("↑", `Move ${role} fallback ${index + 1} up`, index === 0, move(-1)),
+      control("↓", `Move ${role} fallback ${index + 1} down`, index === entries.length - 1, move(1)),
+      control("×", `Remove ${role} fallback ${index + 1}`, false, remove));
+    container.append(row);
+  });
+}
+
 function populateAgentSettings() {
   if (!state.settings) return;
+  state.fallbackDraft = Object.fromEntries(AGENT_ROLES.map((role) => [
+    role, (state.settings.fallbacks?.[role] || []).map((profile) => ({ ...profile })),
+  ]));
+  $("max-failovers").value = String(state.settings.max_failovers_per_role ?? 2);
   for (const role of AGENT_ROLES) {
     const select = $(`agent-${role}`);
     select.querySelectorAll("option[data-custom]").forEach((option) => option.remove());
@@ -157,6 +238,7 @@ function populateAgentSettings() {
     const runNode = $(`agent-${role}-run`);
     runNode.textContent = runProfileLabel(role);
     runNode.title = runNode.textContent;
+    renderFallbackRole(role);
   }
   const availability = state.settings.availability || {};
   $("adapter-availability").textContent = ALLOWED_ADAPTERS.filter((adapter) => adapter !== "auto").map((adapter) =>
@@ -167,12 +249,23 @@ function populateAgentSettings() {
 }
 
 function updateSettingsSaveState() {
-  $("settings-save").disabled = AGENT_ROLES.some((role) => {
+  const cap = Number($("max-failovers").value);
+  const invalidPrimary = AGENT_ROLES.some((role) => {
     const model = $(`agent-${role}-model`).value;
     return !ALLOWED_ADAPTERS.includes($(`agent-${role}`).value)
       || !model || model.trim() !== model || model.length > 128 || model.startsWith("-")
       || [...model].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
   });
+  const invalidFallback = AGENT_ROLES.some((role) =>
+    !Array.isArray(state.fallbackDraft[role]) || state.fallbackDraft[role].length > 8
+    || state.fallbackDraft[role].some((profile) =>
+      !["codex", "claude"].includes(profile.adapter)
+      || !profile.model || profile.model.trim() !== profile.model || profile.model.length > 128
+      || profile.model.startsWith("-")
+      || [...profile.model].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127))
+  );
+  $("settings-save").disabled = invalidPrimary || invalidFallback
+    || !Number.isInteger(cap) || cap < 0 || cap > 8;
 }
 
 function closeSettings() {
@@ -193,6 +286,13 @@ async function saveAgentSettings(event) {
     adapter: $(`agent-${role}`).value,
     model: $(`agent-${role}-model`).value,
   }]));
+  const payload = {
+    profiles,
+    fallbacks: Object.fromEntries(AGENT_ROLES.map((role) => [
+      role, state.fallbackDraft[role].map((profile) => ({ ...profile })),
+    ])),
+    max_failovers_per_role: Number($("max-failovers").value),
+  };
   updateSettingsSaveState();
   if ($("settings-save").disabled) {
     $("settings-result").textContent = "Select a valid adapter and model for every station, Pilot.";
@@ -205,7 +305,7 @@ async function saveAgentSettings(event) {
     const response = await fetch("/api/settings/agents", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(profiles),
+      body: JSON.stringify(payload),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Settings returned ${response.status}`);
@@ -587,12 +687,11 @@ $("settings-dialog").addEventListener("cancel", () => {
 for (const role of AGENT_ROLES) {
   for (const id of [`agent-${role}`, `agent-${role}-model`]) {
     $(id).addEventListener("input", () => {
-      state.settingsDirty = true;
-      $("settings-result").textContent = "";
-      updateSettingsSaveState();
+      markSettingsDirty();
     });
   }
 }
+$("max-failovers").addEventListener("input", markSettingsDirty);
 window.setInterval(refresh, 5000);
 window.addEventListener("focus", refresh);
 window.addEventListener("pageshow", refresh);

@@ -158,6 +158,13 @@
         <label for="agent-reviewer"><span>REVIEWER</span><small>Independently inspects design and implementation.</small></label>
         <div class="agent-profile"><select id="agent-reviewer" name="reviewer" aria-label="Reviewer adapter"><option value="auto">Auto-detect</option><option value="codex">Codex</option><option value="claude">Claude Code</option></select><input id="agent-reviewer-model" name="reviewer-model" list="model-suggestions" maxlength="128" value="default" aria-label="Reviewer model ID"><small id="agent-reviewer-run" class="run-profile"></small><small id="agent-reviewer-effective" class="effective-profile"></small></div>
       </div>
+      <section class="fallback-settings" aria-labelledby="fallback-title">
+        <div class="fallback-head"><div><p class="panel-label" id="fallback-title">FALLBACK SEQUENCE</p><small>Future replacement choices only. Current sessions remain unchanged.</small></div><label for="max-failovers"><span>MAX REPLACEMENTS PER ROLE</span><input id="max-failovers" type="number" min="0" max="8" step="1" value="2"></label></div>
+        <div id="fallback-architect" class="fallback-role" data-role="architect"></div>
+        <div id="fallback-supervisor" class="fallback-role" data-role="supervisor"></div>
+        <div id="fallback-implementer" class="fallback-role" data-role="implementer"></div>
+        <div id="fallback-reviewer" class="fallback-role" data-role="reviewer"></div>
+      </section>
       <datalist id="model-suggestions"><option value="default"></option><option value="gpt-5.4"></option><option value="sonnet"></option><option value="opus"></option><option value="haiku"></option></datalist>
       <p id="adapter-availability" class="adapter-availability"></p>
       <p class="availability-scope">Executable detection does not prove authentication, entitlement, network access, or model validity. Those checks occur at launch.</p>

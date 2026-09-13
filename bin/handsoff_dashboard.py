@@ -31,7 +31,7 @@ ASSETS = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
-MAX_SETTINGS_BODY = 4096
+MAX_SETTINGS_BODY = 16 * 1024
 
 
 def _settings_view(cfg: dict) -> dict:
@@ -40,6 +40,11 @@ def _settings_view(cfg: dict) -> dict:
         "agents": dict(cfg.get("agents", {})),
         "profiles": lib.agent_profiles(cfg),
         "effective_profiles": effective_profiles,
+        "fallbacks": lib.fallback_profiles(cfg),
+        "max_failovers_per_role": cfg.get(
+            "max_failovers_per_role", lib.DEFAULT_MAX_FAILOVERS_PER_ROLE,
+        ),
+        "max_fallback_profiles": lib.MAX_FALLBACK_PROFILES,
         "default_adapter": lib.default_agent_adapter(),
         "default_order": list(lib.DEFAULT_AGENT_PREFERENCE),
         "allowed_adapters": list(lib.AGENT_SETTING_ADAPTERS),
@@ -596,7 +601,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )).get("deployment_approved")
                 self._json_response(HTTPStatus.OK, {"ok": True, "deployment_approved": approved})
                 return
-            lib.update_agent_config(self.server.project_root, requested)
+            wrapped = set(requested) == {"profiles", "fallbacks", "max_failovers_per_role"}
+            if wrapped:
+                lib.update_agent_settings(self.server.project_root, requested)
+            else:
+                lib.update_agent_config(self.server.project_root, requested)
             effective_cfg = lib.load_config(self.server.project_root)
         except lib.HandsoffError as exc:
             self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -605,7 +614,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": "Agent settings could not be saved"})
             return
         response = _settings_view(effective_cfg)
-        response["agents"] = {role: effective_cfg["agents"][role] for role in requested}
+        if not wrapped:
+            response["agents"] = {role: effective_cfg["agents"][role] for role in requested}
         self._json_response(HTTPStatus.OK, {"ok": True, **response})
 
 

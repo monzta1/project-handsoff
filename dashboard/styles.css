@@ -55,7 +55,7 @@ button, input { font: inherit; }
 @keyframes pulse { 50% { opacity: .45; box-shadow: 0 0 3px var(--green); } }
 
 .hidden { display: none !important; }
-.settings-dialog { width: min(800px, calc(100% - 32px)); padding: 0; border: 1px solid rgba(111, 179, 245, .38); border-radius: 14px; color: var(--ink); background: #0d151b; box-shadow: 0 28px 100px rgba(0, 0, 0, .72), 0 0 48px rgba(111, 179, 245, .12); }
+.settings-dialog { width: min(900px, calc(100% - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid rgba(111, 179, 245, .38); border-radius: 14px; color: var(--ink); background: #0d151b; box-shadow: 0 28px 100px rgba(0, 0, 0, .72), 0 0 48px rgba(111, 179, 245, .12); overflow: auto; }
 .settings-dialog::backdrop { background: rgba(2, 6, 9, .78); backdrop-filter: blur(5px); }
 .settings-dialog form { padding: 26px; }
 .settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
@@ -77,6 +77,18 @@ button, input { font: inherit; }
 .settings-grid select, .settings-grid input { width: 100%; min-height: 42px; padding: 0 12px; border: 1px solid rgba(111, 179, 245, .28); border-radius: 8px; color: var(--ink); background: #111d24; }
 .settings-grid select { padding-right: 34px; cursor: pointer; }
 .settings-grid select:focus, .settings-grid input:focus, .settings-toggle:focus-visible, .settings-close:focus-visible, .settings-actions button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.fallback-settings { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.fallback-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 10px; }
+.fallback-head small { color: var(--muted); font-size: 12px; }
+.fallback-head label { display: grid; gap: 6px; color: var(--muted); font: 700 10px/1.2 var(--sans); letter-spacing: .04em; }
+.fallback-head input { width: 110px; min-height: 38px; padding: 0 10px; border: 1px solid rgba(111, 179, 245, .28); border-radius: 8px; color: var(--ink); background: #111d24; }
+.fallback-role { display: grid; gap: 7px; padding: 10px 0; }
+.fallback-role-head { display: flex; align-items: center; justify-content: space-between; color: var(--ink); font: 750 11px/1 var(--sans); letter-spacing: .04em; }
+.fallback-row { display: grid; grid-template-columns: 30px minmax(130px, .65fr) minmax(180px, 1fr) repeat(3, 34px); gap: 7px; align-items: center; }
+.fallback-row > span { color: var(--faint); font: 700 11px/1 var(--mono); text-align: center; }
+.fallback-row select, .fallback-row input { min-width: 0; min-height: 36px; padding: 0 9px; border: 1px solid rgba(111, 179, 245, .24); border-radius: 7px; color: var(--ink); background: #111d24; }
+.fallback-row button, .fallback-add { min-height: 34px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; }
+.fallback-row button:disabled, .fallback-add:disabled { opacity: .35; cursor: not-allowed; }
 .adapter-availability { margin: 18px 0 4px; color: var(--green); font: 700 12px/1.5 var(--mono); }
 .availability-scope { margin: 0; color: var(--faint); font-size: 11px; line-height: 1.5; }
 .provider-status-label { margin: 16px 0 6px; }
@@ -299,6 +311,9 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
   .settings-grid { grid-template-columns: 1fr; gap: 2px; }
   .agent-profile { margin-bottom: 10px; grid-template-columns: 1fr; }
   .run-profile, .effective-profile { grid-column: 1; }
+  .fallback-head { align-items: flex-start; flex-direction: column; }
+  .fallback-row { grid-template-columns: 26px 1fr repeat(3, 32px); }
+  .fallback-row input { grid-column: 2 / -1; grid-row: 2; }
   .mission-header { align-items: flex-start; flex-direction: column; padding-top: 28px; }
   .input-alert { position: relative; top: 0; grid-template-columns: auto minmax(0, 1fr); gap: 14px; padding: 16px; }
   .input-alert-actions { grid-column: 1 / -1; flex-wrap: wrap; }

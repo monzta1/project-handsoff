@@ -77,6 +77,8 @@ NEXT_ACTION_DEFAULTS = {
 #: drift apart into checking different text.
 PLACEHOLDER_REQUIREMENT = "State the exact observable outcome."
 PLACEHOLDER_TESTS = ["name_or_path_of_test"]
+MAX_FALLBACK_PROFILES = 8
+DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
 
 DEFAULT_CONFIG = {
     "status_file": "handsoff-status.json",
@@ -103,6 +105,13 @@ DEFAULT_CONFIG = {
         "implementer": "default",
         "reviewer": "default",
     },
+    "fallbacks": {
+        "architect": [],
+        "supervisor": [],
+        "implementer": [],
+        "reviewer": [],
+    },
+    "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
 }
 
 AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
@@ -187,6 +196,7 @@ def load_config(root: Path) -> dict:
     cfg = dict(DEFAULT_CONFIG)
     cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
+    cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -200,9 +210,12 @@ def load_config(root: Path) -> dict:
     workflow = raw.get("workflow", {})
     agents = raw.get("agents", {})
     models = raw.get("models", {})
+    fallback_policy = raw.get("fallback_policy", {})
     checks = raw.get("checks", {})
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, checks)):
-        raise HandsoffError("handsoff.toml: project, workflow, agents, models, and checks must be tables")
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks)):
+        raise HandsoffError(
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, and checks must be tables"
+        )
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
@@ -225,6 +238,19 @@ def load_config(root: Path) -> dict:
     for role in SELECTABLE_AGENT_ROLES:
         value = models.get(role, cfg["models"][role])
         cfg["models"][role] = validate_agent_model(value)
+    allowed_fallback_keys = {*SELECTABLE_AGENT_ROLES, "max_failovers_per_role"}
+    unknown_fallback_keys = set(fallback_policy) - allowed_fallback_keys
+    if unknown_fallback_keys:
+        raise HandsoffError(
+            f"handsoff.toml: fallback_policy has unknown keys: {', '.join(sorted(unknown_fallback_keys))}"
+        )
+    for role in SELECTABLE_AGENT_ROLES:
+        cfg["fallbacks"][role] = validate_fallback_entries(
+            fallback_policy.get(role, []), field=f"fallback_policy.{role}",
+        )
+    cfg["max_failovers_per_role"] = validate_max_failovers(
+        fallback_policy.get("max_failovers_per_role", DEFAULT_MAX_FAILOVERS_PER_ROLE)
+    )
     for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
         value = checks.get(toml_key, cfg[config_key])
         if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
@@ -292,6 +318,31 @@ def validate_agent_model(value: object) -> str:
     return value
 
 
+def validate_fallback_entries(value: object, *, field: str = "fallbacks") -> list[dict]:
+    """Validate and copy one role's bounded, ordered fallback profiles."""
+    if not isinstance(value, list):
+        raise HandsoffError(f"{field} must be an array")
+    if len(value) > MAX_FALLBACK_PROFILES:
+        raise HandsoffError(f"{field} must contain at most {MAX_FALLBACK_PROFILES} profiles")
+    result = []
+    for index, profile in enumerate(value):
+        if not isinstance(profile, dict) or set(profile) != {"adapter", "model"}:
+            raise HandsoffError(f"{field}[{index}] must contain exactly adapter and model")
+        adapter = profile.get("adapter")
+        if adapter not in SELECTABLE_AGENT_ADAPTERS:
+            raise HandsoffError(f"{field}[{index}].adapter must be exactly 'codex' or 'claude'")
+        result.append({"adapter": adapter, "model": validate_agent_model(profile.get("model"))})
+    return result
+
+
+def validate_max_failovers(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= MAX_FALLBACK_PROFILES:
+        raise HandsoffError(
+            f"fallback_policy.max_failovers_per_role must be an integer from 0 to {MAX_FALLBACK_PROFILES}"
+        )
+    return value
+
+
 def validate_agent_actor(value: object) -> str:
     """Validate a display/audit identity without interpreting it."""
     if not isinstance(value, str) or not value or value != value.strip():
@@ -308,6 +359,10 @@ def agent_profiles(cfg: dict) -> dict:
         role: {"adapter": cfg["agents"][role], "model": cfg["models"][role]}
         for role in SELECTABLE_AGENT_ROLES
     }
+
+
+def fallback_profiles(cfg: dict) -> dict:
+    return {role: deepcopy(cfg.get("fallbacks", {}).get(role, [])) for role in SELECTABLE_AGENT_ROLES}
 
 
 def default_agent_adapter(*, which=None) -> str | None:
@@ -493,6 +548,38 @@ def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
     return lines
 
 
+def _fallback_profile_toml(profile: dict) -> str:
+    return f'{{ adapter = {json.dumps(profile["adapter"])}, model = {json.dumps(profile["model"])} }}'
+
+
+def _replace_fallback_policy_table(lines: list[str], parsed: dict, fallbacks: dict, cap: int) -> list[str]:
+    """Replace the framework-owned fallback table with canonical one-line values."""
+    header_pattern = re.compile(r"^\s*\[fallback_policy\]\s*(?:#.*)?(?:\r?\n)?$")
+    section_starts = [index for index, line in enumerate(lines)
+                      if re.match(r"^\s*\[[^\]]+\]\s*(?:#.*)?(?:\r?\n)?$", line)]
+    headers = [index for index in section_starts if header_pattern.match(lines[index])]
+    if len(headers) > 1:
+        raise HandsoffError("handsoff.toml: ambiguous duplicate [fallback_policy] tables")
+    body = ["[fallback_policy]\n", f"max_failovers_per_role = {cap}\n"]
+    body.extend(
+        f"{role} = [{', '.join(_fallback_profile_toml(profile) for profile in fallbacks[role])}]\n"
+        for role in SELECTABLE_AGENT_ROLES
+    )
+    if headers:
+        start = headers[0]
+        end = next((index for index in section_starts if index > start), len(lines))
+        lines[start:end] = body + (["\n"] if end < len(lines) else [])
+    elif "fallback_policy" in parsed:
+        raise HandsoffError("handsoff.toml: unsupported [fallback_policy] table syntax")
+    else:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += "\n"
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        lines.extend(body)
+    return lines
+
+
 def update_agent_config(root: Path, assignments: dict) -> dict:
     """Patch dashboard-selectable role profiles in TOML.
 
@@ -536,6 +623,7 @@ def update_agent_config(root: Path, assignments: dict) -> dict:
             raise HandsoffError(f"cannot update {path}: {exc}") from exc
         if "agents" in parsed and not isinstance(parsed["agents"], dict):
             raise HandsoffError("handsoff.toml: agents must be a table")
+        load_config(root)  # Refuse any malformed existing fallback policy atomically.
         if legacy and submitted == legacy_shape:
             raw_models = parsed.get("models", {})
             supervisor_model = raw_models.get("supervisor", DEFAULT_AGENT_MODEL)
@@ -559,6 +647,71 @@ def update_agent_config(root: Path, assignments: dict) -> dict:
         return {role: adapters[role] for role in assignments}
     return {role: {"adapter": adapters[role], "model": models[role]}
             for role in SELECTABLE_AGENT_ROLES}
+
+
+def update_agent_settings(root: Path, payload: object) -> dict:
+    """Atomically persist wrapped primary profiles, fallbacks, and the cap."""
+    if not isinstance(payload, dict) or set(payload) != {
+            "profiles", "fallbacks", "max_failovers_per_role"}:
+        raise HandsoffError(
+            "wrapped agent settings must contain exactly profiles, fallbacks, and max_failovers_per_role"
+        )
+    profiles = payload["profiles"]
+    if not isinstance(profiles, dict) or set(profiles) != set(SELECTABLE_AGENT_ROLES):
+        raise HandsoffError("profiles must contain exactly all four agent roles")
+    normalized_profiles = {}
+    for role, profile in profiles.items():
+        if not isinstance(profile, dict) or set(profile) != {"adapter", "model"}:
+            raise HandsoffError(f"profiles.{role} must contain exactly adapter and model")
+        adapter = profile.get("adapter")
+        if adapter not in AGENT_SETTING_ADAPTERS:
+            raise HandsoffError(f"profiles.{role}.adapter must be auto, codex, or claude")
+        normalized_profiles[role] = {
+            "adapter": adapter, "model": validate_agent_model(profile.get("model")),
+        }
+    fallbacks = payload["fallbacks"]
+    if not isinstance(fallbacks, dict) or set(fallbacks) != set(SELECTABLE_AGENT_ROLES):
+        raise HandsoffError("fallbacks must contain exactly all four agent roles")
+    normalized_fallbacks = {
+        role: validate_fallback_entries(fallbacks[role], field=f"fallbacks.{role}")
+        for role in SELECTABLE_AGENT_ROLES
+    }
+    cap = validate_max_failovers(payload["max_failovers_per_role"])
+    root = root.resolve()
+    path = root / "handsoff.toml"
+    if tomllib is None:
+        raise HandsoffError("agent settings require Python 3.11+ TOML support")
+    with project_lock(root):
+        try:
+            original = path.read_text(encoding="utf-8")
+            parsed = tomllib.loads(original)
+            load_config(root)
+        except (OSError, ValueError) as exc:
+            raise HandsoffError(f"cannot update {path}: {exc}") from exc
+        adapters = {role: normalized_profiles[role]["adapter"] for role in SELECTABLE_AGENT_ROLES}
+        models = {role: normalized_profiles[role]["model"] for role in SELECTABLE_AGENT_ROLES}
+        lines = _patch_toml_role_table(original.splitlines(keepends=True), parsed, "agents", adapters)
+        lines = _patch_toml_role_table(lines, parsed, "models", models)
+        lines = _replace_fallback_policy_table(lines, parsed, normalized_fallbacks, cap)
+        proposed = "".join(lines)
+        try:
+            proposed_raw = tomllib.loads(proposed)
+        except ValueError as exc:
+            raise HandsoffError(f"refusing invalid proposed handsoff.toml: {exc}") from exc
+        proposed_policy = proposed_raw.get("fallback_policy", {})
+        if proposed_raw.get("agents") != adapters or proposed_raw.get("models") != models:
+            raise HandsoffError("refusing ambiguous primary agent profile update")
+        if proposed_policy.get("max_failovers_per_role") != cap:
+            raise HandsoffError("refusing ambiguous fallback cap update")
+        for role in SELECTABLE_AGENT_ROLES:
+            if proposed_policy.get(role) != normalized_fallbacks[role]:
+                raise HandsoffError("refusing ambiguous fallback profile update")
+        _atomic_write_text(path, proposed)
+    return {
+        "profiles": normalized_profiles,
+        "fallbacks": normalized_fallbacks,
+        "max_failovers_per_role": cap,
+    }
 
 
 def status_path(root: Path, cfg: dict) -> Path:
@@ -1914,6 +2067,102 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
     refuse."""
     has_finding = isinstance(finding_id, str) and finding_id.strip() != ""
     return retry_count >= retry_limit and has_finding
+
+
+RECOVERABLE_FAILURE_CATEGORIES = {
+    "auth_failure", "rate_limit", "context_exhaustion", "timeout",
+    "process_crash", "non_zero_exit",
+}
+FALLBACK_SKIP_REASONS = {
+    "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent",
+}
+
+
+def _fallback_decision(action: str, reason: str, *, profile: dict | None = None,
+                       skipped: list[dict] | None = None) -> dict:
+    return {"action": action, "reason": reason, "profile": profile, "skipped": skipped or []}
+
+
+def _canonical_implementer_identity(profile: object) -> tuple[str, str] | None:
+    """Accept immutable runtime-session or implementation-review snapshots."""
+    if not isinstance(profile, dict):
+        return None
+    if "requested_model" in profile:
+        adapter = profile.get("resolved_adapter", profile.get("adapter"))
+        model = profile.get("requested_model")
+    else:
+        adapter = profile.get("effective_adapter", profile.get("adapter"))
+        model = profile.get("model")
+    if adapter not in SELECTABLE_AGENT_ADAPTERS:
+        return None
+    try:
+        model = validate_agent_model(model)
+    except HandsoffError:
+        return None
+    return adapter, model
+
+
+def plan_agent_fallback(role: str, failure_category: str, fallback_entries: object,
+                        adapter_availability: object, attempted_identities: object,
+                        failover_count: object, max_failovers_per_role: object,
+                        implementer_profile: object = None) -> dict:
+    """Purely choose the next eligible fallback; never launch or mutate state."""
+    if not isinstance(failure_category, str) or failure_category not in FAILURE_CATEGORIES:
+        return _fallback_decision("pilot_pause", "non_recoverable_failure")
+    if failure_category == "still_running":
+        return _fallback_decision("no_action", "agent_still_running")
+    if failure_category not in RECOVERABLE_FAILURE_CATEGORIES:
+        return _fallback_decision("pilot_pause", "non_recoverable_failure")
+
+    if role not in SELECTABLE_AGENT_ROLES:
+        raise HandsoffError("fallback planner role is invalid")
+    if not isinstance(fallback_entries, list) or len(fallback_entries) > MAX_FALLBACK_PROFILES:
+        raise HandsoffError(f"fallback planner entries must be an array of at most {MAX_FALLBACK_PROFILES}")
+    if not isinstance(adapter_availability, dict) or set(adapter_availability) != set(SELECTABLE_AGENT_ADAPTERS) \
+            or not all(isinstance(value, bool) for value in adapter_availability.values()):
+        raise HandsoffError("fallback planner availability must map codex and claude to booleans")
+    if not isinstance(attempted_identities, (list, tuple)):
+        raise HandsoffError("fallback planner attempted identities must be a sequence")
+    attempted = set()
+    for identity in attempted_identities:
+        if not isinstance(identity, (list, tuple)) or len(identity) != 2 \
+                or identity[0] not in SELECTABLE_AGENT_ADAPTERS:
+            raise HandsoffError("fallback planner attempted identity is invalid")
+        try:
+            model = validate_agent_model(identity[1])
+        except HandsoffError as exc:
+            raise HandsoffError("fallback planner attempted identity is invalid") from exc
+        attempted.add((identity[0], model))
+    cap = validate_max_failovers(max_failovers_per_role)
+    if not isinstance(failover_count, int) or isinstance(failover_count, bool) \
+            or not 0 <= failover_count <= MAX_FALLBACK_PROFILES:
+        raise HandsoffError(f"fallback planner failover_count must be an integer from 0 to {MAX_FALLBACK_PROFILES}")
+
+    implementer_identity = None
+    if role == "reviewer":
+        implementer_identity = _canonical_implementer_identity(implementer_profile)
+        if implementer_identity is None:
+            return _fallback_decision("pilot_pause", "missing_independence_reference")
+    if failover_count >= cap:
+        return _fallback_decision("pilot_pause", "cap_exhausted")
+
+    skipped = []
+    for index, raw_profile in enumerate(fallback_entries):
+        try:
+            profile = validate_fallback_entries([raw_profile], field="fallback planner entry")[0]
+        except HandsoffError:
+            skipped.append({"index": index, "reason": "invalid_profile"})
+            continue
+        identity = (profile["adapter"], profile["model"])
+        if not adapter_availability[profile["adapter"]]:
+            skipped.append({"index": index, "reason": "adapter_unavailable"})
+        elif identity in attempted:
+            skipped.append({"index": index, "reason": "already_attempted"})
+        elif role == "reviewer" and identity == implementer_identity:
+            skipped.append({"index": index, "reason": "reviewer_not_independent"})
+        else:
+            return _fallback_decision("select", "eligible_fallback", profile=profile, skipped=skipped)
+    return _fallback_decision("pilot_pause", "fallback_exhausted", skipped=skipped)
 
 
 # --------------------------------------------------------------------------

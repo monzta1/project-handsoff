@@ -28,13 +28,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
 
-ISSUE27_TARGETED_COMMANDS = [
-    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_managed_launch_records_runtime_profile_and_lifecycle",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_pinned_and_runner_default_models_are_reported_honestly",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_concurrency_stale_completion_and_midrun_settings_are_safe",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_dashboard_distinguishes_managed_legacy_and_next_launch_profiles",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_runtime_telemetry_excludes_sensitive_payloads",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_telemetry_is_optional_non_gating_and_failure_safe",
+ISSUE24_TARGETED_COMMANDS = [
+    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_config_round_trip_preserves_order_and_legacy_defaults",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_selection_orders_and_skips_unavailable_profiles_with_audit",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_invalid_profiles_are_skipped_with_safe_audit_reasons",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_recovery_categories_caps_and_exhaustion_pause",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_reviewer_independence_survives_fallback",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_dashboard_edits_fallbacks_without_mutating_current_session",
 ]
 
 
@@ -50,12 +50,12 @@ def set_fixture_check_commands(path, commands):
 
 
 def setUpModule():
-    """Keep issue #27 dogfood checks exact; fixtures are normalized below."""
+    """Keep issue #24 dogfood checks exact; fixtures are normalized below."""
     text = (ROOT / "handsoff.toml").read_text()
-    expected = f"commands = {json.dumps(ISSUE27_TARGETED_COMMANDS)}"
+    expected = f"commands = {json.dumps(ISSUE24_TARGETED_COMMANDS)}"
     if expected not in text:
         raise SystemExit(
-            "This repo's handsoff.toml must list exactly the six issue #27 targeted checks."
+            "This repo's handsoff.toml must list exactly the six issue #24 targeted checks."
         )
     # Any test that lands Phase 8 with status complete now triggers a real
     # archive write (see handsoff_lib.archive_run). Sandboxed here at module
@@ -476,14 +476,14 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertIn("Executable detection does not prove", html)
         self.assertIn("default</code> sends no model flag", html)
         self.assertIn("exact model ID to pin it", html)
-        self.assertIn("JSON.stringify(profiles)", script)
+        self.assertIn("JSON.stringify(payload)", script)
         self.assertIn("THIS RUN:", script)
         self.assertIn("NEXT LAUNCH:", script)
         self.assertIn("state.actors?.implemented_by", script)
-        self.assertIn('value.startsWith("claude")', script)
+        self.assertIn("snapshot.runtime?.current_sessions", script)
         self.assertIn("model not recorded", script)
         self.assertIn("exact model not exposed", script)
-        self.assertIn("width: min(800px", styles)
+        self.assertIn("width: min(900px", styles)
         self.assertIn("minmax(280px", styles)
 
         self.assertEqual(lib.load_config(self.tmp)["models"], {
@@ -4534,6 +4534,205 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
             self.assertTrue(result.wasSuccessful(),
                            f"{cls.__name__} regressed: {len(result.failures)} failures, {len(result.errors)} errors "
                            f"({[f[0].id() for f in result.failures] + [e[0].id() for e in result.errors]})")
+
+
+class TestFallbackPolicy(HandsoffTestCase):
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        self.init("Issue 24 fallback policy")
+        sys.path.insert(0, str(BIN))
+        global lib
+        import handsoff_lib as lib
+
+    def _profiles(self):
+        return {
+            role: {"adapter": "codex", "model": f"primary-{role}"}
+            for role in lib.SELECTABLE_AGENT_ROLES
+        }
+
+    def _fallbacks(self):
+        return {
+            "architect": [{"adapter": "claude", "model": "opus"},
+                          {"adapter": "codex", "model": "gpt-5.4"}],
+            "supervisor": [{"adapter": "claude", "model": "default"}],
+            "implementer": [{"adapter": "codex", "model": "fast"}],
+            "reviewer": [{"adapter": "claude", "model": "sonnet"}],
+        }
+
+    def test_config_round_trip_preserves_order_and_legacy_defaults(self):
+        legacy_text = re.sub(
+            r"\n\[fallback_policy\]\n.*?(?=\n\[checks\])", "",
+            (self.tmp / "handsoff.toml").read_text(), flags=re.DOTALL,
+        )
+        legacy_root = Path(tempfile.mkdtemp(prefix="handsoff-fallback-legacy-"))
+        self.addCleanup(shutil.rmtree, legacy_root, ignore_errors=True)
+        (legacy_root / "handsoff.toml").write_text(legacy_text)
+        legacy = lib.load_config(legacy_root)
+        self.assertEqual(legacy["fallbacks"], {role: [] for role in lib.SELECTABLE_AGENT_ROLES})
+        self.assertEqual(legacy["max_failovers_per_role"], 2)
+
+        payload = {"profiles": self._profiles(), "fallbacks": self._fallbacks(),
+                   "max_failovers_per_role": 3}
+        self.assertEqual(lib.update_agent_settings(self.tmp, payload), payload)
+        loaded = lib.load_config(self.tmp)
+        self.assertEqual(lib.agent_profiles(loaded), payload["profiles"])
+        self.assertEqual(lib.fallback_profiles(loaded), payload["fallbacks"])
+        self.assertEqual(loaded["max_failovers_per_role"], 3)
+        self.assertEqual(loaded["fallbacks"]["architect"][0]["model"], "opus")
+
+        stable = (self.tmp / "handsoff.toml").read_bytes()
+        invalid_payloads = [
+            {**payload, "max_failovers_per_role": True},
+            {**payload, "max_failovers_per_role": 9},
+            {**payload, "fallbacks": {**payload["fallbacks"], "architect": [
+                {"adapter": "auto", "model": "default"}]}},
+            {**payload, "fallbacks": {**payload["fallbacks"], "architect": [
+                {"adapter": "codex", "model": "m"} for _ in range(9)]}},
+            {**payload, "profiles": {**payload["profiles"], "reviewer": {
+                "adapter": "codex", "model": "-bad"}}},
+            {"profiles": payload["profiles"], "fallbacks": payload["fallbacks"]},
+        ]
+        for invalid in invalid_payloads:
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(lib.HandsoffError):
+                    lib.update_agent_settings(self.tmp, invalid)
+                self.assertEqual((self.tmp / "handsoff.toml").read_bytes(), stable)
+
+        duplicate = (self.tmp / "handsoff.toml").read_text() + "\n[fallback_policy]\nmax_failovers_per_role = 1\n"
+        (self.tmp / "handsoff.toml").write_text(duplicate)
+        with self.assertRaises(lib.HandsoffError):
+            lib.load_config(self.tmp)
+
+    def test_selection_orders_and_skips_unavailable_profiles_with_audit(self):
+        entries = [
+            {"adapter": "claude", "model": "first"},
+            {"adapter": "codex", "model": "second"},
+            {"adapter": "codex", "model": "third"},
+        ]
+        with mock.patch.object(lib.shutil, "which", side_effect=AssertionError("planner discovered executables")), \
+                mock.patch.object(lib, "load_config", side_effect=AssertionError("planner read settings")):
+            decision = lib.plan_agent_fallback(
+                "implementer", "rate_limit", entries,
+                {"codex": True, "claude": False}, [], 0, 2,
+            )
+        self.assertEqual(decision, {
+            "action": "select", "reason": "eligible_fallback",
+            "profile": {"adapter": "codex", "model": "second"},
+            "skipped": [{"index": 0, "reason": "adapter_unavailable"}],
+        })
+
+    def test_invalid_profiles_are_skipped_with_safe_audit_reasons(self):
+        secret = "sk-never-return-this"
+        decision = lib.plan_agent_fallback(
+            "implementer", "process_crash", [
+                {"adapter": "auto", "model": secret},
+                {"adapter": "claude", "model": "offline"},
+                {"adapter": "codex", "model": "used"},
+                {"adapter": "codex", "model": "eligible"},
+            ], {"codex": True, "claude": False}, [("codex", "used")], 0, 2,
+        )
+        self.assertEqual(decision["profile"], {"adapter": "codex", "model": "eligible"})
+        self.assertEqual(decision["skipped"], [
+            {"index": 0, "reason": "invalid_profile"},
+            {"index": 1, "reason": "adapter_unavailable"},
+            {"index": 2, "reason": "already_attempted"},
+        ])
+        serialized = json.dumps(decision)
+        self.assertNotIn(secret, serialized)
+        self.assertTrue(all(set(item) == {"index", "reason"} for item in decision["skipped"]))
+        self.assertTrue(all(item["reason"] in lib.FALLBACK_SKIP_REASONS for item in decision["skipped"]))
+
+    def test_recovery_categories_caps_and_exhaustion_pause(self):
+        invalid_inputs = ("bad-role", [], {"codex": True}, "not-a-list", -1, 9)
+        self.assertEqual(lib.plan_agent_fallback(*invalid_inputs[:1], "still_running", *invalid_inputs[1:]), {
+            "action": "no_action", "reason": "agent_still_running", "profile": None, "skipped": [],
+        })
+        for category in ("cancelled", "unknown", "future_category"):
+            self.assertEqual(lib.plan_agent_fallback(
+                "bad-role", category, [], {}, "bad", -1, 9,
+            )["reason"], "non_recoverable_failure")
+        with self.assertRaises(lib.HandsoffError):
+            lib.plan_agent_fallback("bad-role", "timeout", [], {"codex": True, "claude": True}, [], 0, 2)
+        for category in lib.RECOVERABLE_FAILURE_CATEGORIES:
+            decision = lib.plan_agent_fallback(
+                "implementer", category, [], {"codex": True, "claude": True}, [], 2, 2,
+            )
+            self.assertEqual((decision["action"], decision["reason"]), ("pilot_pause", "cap_exhausted"))
+        missing_reference = lib.plan_agent_fallback(
+            "reviewer", "timeout", [], {"codex": True, "claude": True}, [], 2, 2, None,
+        )
+        self.assertEqual(missing_reference["reason"], "missing_independence_reference")
+        exhausted = lib.plan_agent_fallback(
+            "implementer", "timeout", [], {"codex": True, "claude": True}, [], 0, 2,
+        )
+        self.assertEqual(exhausted["reason"], "fallback_exhausted")
+
+    def test_reviewer_independence_survives_fallback(self):
+        immutable_session = {"adapter": "codex", "requested_model": "impl-model"}
+        decision = lib.plan_agent_fallback(
+            "reviewer", "context_exhaustion", [
+                {"adapter": "codex", "model": "impl-model"},
+                {"adapter": "codex", "model": "review-model"},
+            ], {"codex": True, "claude": True}, [], 0, 2, immutable_session,
+        )
+        self.assertEqual(decision["skipped"], [{"index": 0, "reason": "reviewer_not_independent"}])
+        self.assertEqual(decision["profile"], {"adapter": "codex", "model": "review-model"})
+        audit_reference = {"effective_adapter": "claude", "model": "same"}
+        different_adapter = lib.plan_agent_fallback(
+            "reviewer", "timeout", [{"adapter": "codex", "model": "same"}],
+            {"codex": True, "claude": True}, [], 0, 2, audit_reference,
+        )
+        self.assertEqual(different_adapter["action"], "select")
+        for malformed in (None, {}, {"adapter": "auto", "requested_model": "x"},
+                          {"adapter": "codex", "requested_model": "-bad"}):
+            self.assertEqual(lib.plan_agent_fallback(
+                "reviewer", "timeout", [], {"codex": True, "claude": True}, [], 0, 2, malformed,
+            )["reason"], "missing_independence_reference")
+
+    def test_dashboard_edits_fallbacks_without_mutating_current_session(self):
+        session = lib.create_agent_session(
+            self.tmp, role="implementer", actor="impl-live", adapter="codex",
+            requested_model="primary-implementer", resolution_source="configured",
+        )
+        before_status = (self.tmp / "handsoff-status.json").read_bytes()
+        payload = {"profiles": self._profiles(), "fallbacks": self._fallbacks(),
+                   "max_failovers_per_role": 4}
+        import handsoff_dashboard as dashboard
+        raw = json.dumps(payload).encode()
+        handler = object.__new__(dashboard.DashboardHandler)
+        handler.path = "/api/settings/agents"
+        handler.server = mock.Mock(project_root=self.tmp)
+        handler.headers = {"Content-Type": "application/json", "Content-Length": str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        handler._same_origin_allowed = lambda: True
+        responses = []
+        handler._json_response = lambda status, value: responses.append((status, value))
+        handler.do_POST()
+        self.assertEqual(responses[0][0], 200, responses)
+        result = responses[0][1]
+        self.assertEqual(result["fallbacks"], payload["fallbacks"])
+        self.assertEqual(result["max_failovers_per_role"], 4)
+        self.assertEqual((self.tmp / "handsoff-status.json").read_bytes(), before_status)
+        self.assertEqual(self.read_status()["agent_sessions"][session["session_id"]]["requested_model"],
+                         "primary-implementer")
+
+        stable_fallbacks = lib.fallback_profiles(lib.load_config(self.tmp))
+        stable_cap = lib.load_config(self.tmp)["max_failovers_per_role"]
+        lib.update_agent_config(self.tmp, self._profiles())
+        lib.update_agent_config(self.tmp, {
+            "architect": "claude", "implementer": "codex", "reviewer": "claude",
+        })
+        compatible = lib.load_config(self.tmp)
+        self.assertEqual(lib.fallback_profiles(compatible), stable_fallbacks)
+        self.assertEqual(compatible["max_failovers_per_role"], stable_cap)
+        script = (ROOT / "dashboard" / "app.js").read_text()
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        for phrase in ("+ ADD FALLBACK", "Move ${role} fallback", "Remove ${role} fallback",
+                       "max-failovers", "max_failovers_per_role"):
+            self.assertIn(phrase, script + html)
+        self.assertIn("JSON.stringify(payload)", script)
+        self.assertEqual(dashboard.MAX_SETTINGS_BODY, 16 * 1024)
 
 
 class TestFailureClassification(unittest.TestCase):

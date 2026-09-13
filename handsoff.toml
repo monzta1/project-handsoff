@@ -28,11 +28,20 @@ supervisor = "default"
 implementer = "default"
 reviewer = "default"
 
+[fallback_policy]
+# Ordered replacement profiles used only by the pure fallback planner.
+# "auto" is intentionally not valid here: every fallback is explicit.
+max_failovers_per_role = 2
+architect = []
+supervisor = []
+implementer = []
+reviewer = []
+
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a
 # free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
-commands = ["python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_managed_launch_records_runtime_profile_and_lifecycle", "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_pinned_and_runner_default_models_are_reported_honestly", "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_concurrency_stale_completion_and_midrun_settings_are_safe", "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_dashboard_distinguishes_managed_legacy_and_next_launch_profiles", "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_runtime_telemetry_excludes_sensitive_payloads", "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_telemetry_is_optional_non_gating_and_failure_safe"]
+commands = ["python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_config_round_trip_preserves_order_and_legacy_defaults", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_selection_orders_and_skips_unavailable_profiles_with_audit", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_invalid_profiles_are_skipped_with_safe_audit_reasons", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_recovery_categories_caps_and_exhaustion_pause", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_reviewer_independence_survives_fallback", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_dashboard_edits_fallbacks_without_mutating_current_session"]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
 live_commands = ["python3 -c \"import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8765/api/dashboard')); assert data['initialized'] and data['status']['deployment_approved'] and data['status']['status'] == 'ready_to_deploy'\""]
