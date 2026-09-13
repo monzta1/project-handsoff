@@ -204,6 +204,8 @@ def _input_request(status: dict, cfg: dict) -> dict:
     A narrow phrase check supports older state written before that convention.
     """
     workflow_status = str(status.get("status") or "")
+    regression = next((item for item in reversed(status.get("regression_requests") or [])
+                       if item.get("state") == "awaiting_approval"), None)
     phase = int(status.get("phase_number", 1) or 1)
     next_action = str(status.get("next_action") or "Pilot authorization is required before the mission can continue.")
     approval_missing = (
@@ -222,9 +224,13 @@ def _input_request(status: dict, cfg: dict) -> dict:
         "waiting for user", "waiting on user", "your input", "need your decision",
         "need your approval", "provide credentials", "grant permission", "authorize",
     ))
-    required = workflow_status == "blocked" or approval_missing or design_approval_missing or older_signal
+    required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing or older_signal
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
-    if escalation:
+    if regression:
+        kind = "regression_approval"
+        message = (f"Full regression '{regression.get('group')}' requested. Review its exact commands "
+                   "and choose Accept or Decline; it will not run until accepted.")
+    elif escalation:
         kind = "escalation"
         message = f"{escalation.get('reason')}. {escalation.get('required_action')}"
     elif approval_missing:
@@ -239,7 +245,9 @@ def _input_request(status: dict, cfg: dict) -> dict:
     else:
         kind = "decision"
         message = next_action
-    return {"required": required, "kind": kind if required else None, "message": message if required else None}
+    return {"required": required, "kind": kind if required else None,
+            "message": message if required else None,
+            "request_id": regression.get("request_id") if regression else None}
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
@@ -514,6 +522,11 @@ def build_snapshot(root: Path) -> dict:
             "cap": cfg.get("recovery", {}).get("max_attempts", 0),
             "watchdog_enabled": cfg.get("recovery", {}).get("dashboard_watchdog", False),
         },
+        "regression": {
+            "pending": next((item for item in reversed(status.get("regression_requests") or [])
+                             if item.get("state") == "awaiting_approval"), None),
+            "history": list(reversed((status.get("regression_requests") or [])[-8:])),
+        },
         "escalation": status.get("escalation"),
         "settings": _settings_view(cfg),
         "input_required": input_request,
@@ -669,7 +682,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval"}:
+        if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
+                        "/api/regression-decision"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
         if not self._same_origin_allowed():
@@ -691,6 +705,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             requested = _strict_json_object(self.rfile.read(length))
+            if path == "/api/regression-decision":
+                if set(requested) != {"request_id", "decision"} \
+                        or requested.get("decision") not in {"accept", "decline"} \
+                        or not isinstance(requested.get("request_id"), str):
+                    raise lib.HandsoffError("regression decision requires request_id and accept/decline")
+                command = argparse.Namespace(
+                    root=str(self.server.project_root), request_id=requested["request_id"],
+                    by="Mission Control Pilot", accept=requested["decision"] == "accept",
+                    decline=requested["decision"] == "decline",
+                )
+                if supervisor.cmd_regression_decide(command) != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The regression gate rejected this decision"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True, "decision": requested["decision"]})
+                return
             if path == "/api/design-approval":
                 if requested:
                     raise lib.HandsoffError("design approval payload must be empty")

@@ -21,7 +21,10 @@ import handsoff_lib as lib  # noqa: E402
 
 SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("handsoff_supervisor.py")
 MAX_REQUEST_BYTES = 65536
-HUMAN_ONLY_COMMANDS = {"design-approve", "deployment-gate", "review-cap-override", "recovery-acknowledge"}
+HUMAN_ONLY_COMMANDS = {
+    "design-approve", "deployment-gate", "review-cap-override", "recovery-acknowledge",
+    "regression-decide", "regression-finalize",
+}
 _SUPERVISOR_HOST_CAPABILITY = object()
 
 
@@ -91,6 +94,14 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             base.append("--dry-run")
         elif "dry_run" in request and request["dry_run"] is not False:
             raise lib.HandsoffError("broker recover.dry_run must be boolean")
+        return base
+    if command == "regression-request":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "group"})
+        base.extend(["--group", _text(request, "group"), "--by", _text(request, "by")])
+        return base
+    if command in {"regression-run", "regression-cancel"}:
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "request_id"})
+        base.extend(["--request-id", _text(request, "request_id"), "--by", _text(request, "by")])
         return base
     if command in {"background-wait-start", "background-wait-end", "human-pause-start", "human-pause-end"}:
         optional = {"note"}

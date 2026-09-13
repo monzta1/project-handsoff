@@ -18,6 +18,7 @@ const state = {
   runSessions: {},
   crew: [],
   replacements: [],
+  regressionRequest: null,
   fallbackDraft: {},
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
@@ -311,7 +312,7 @@ async function enableDesktopAlerts() {
   }
 }
 
-function renderInputAlert(inputRequest, feature) {
+function renderInputAlert(inputRequest, feature, regression) {
   const required = Boolean(inputRequest?.required);
   const message = inputRequest?.message || "Pilot authorization is required before the mission can continue.";
   const signature = required ? `${inputRequest.kind}:${message}` : null;
@@ -323,8 +324,18 @@ function renderInputAlert(inputRequest, feature) {
   $("input-alert-message").textContent = message;
   const approvalButton = $("design-approve");
   const deploymentButton = $("deployment-approve");
+  const regressionAccept = $("regression-accept");
+  const regressionDecline = $("regression-decline");
   approvalButton.classList.toggle("hidden", state.inputKind !== "design_approval");
   deploymentButton.classList.toggle("hidden", state.inputKind !== "deployment_approval");
+  regressionAccept.classList.toggle("hidden", state.inputKind !== "regression_approval");
+  regressionDecline.classList.toggle("hidden", state.inputKind !== "regression_approval");
+  state.regressionRequest = regression?.pending || null;
+  const regressionDetails = $("regression-details");
+  regressionDetails.classList.toggle("hidden", state.inputKind !== "regression_approval");
+  regressionDetails.textContent = state.regressionRequest
+    ? `Group: ${state.regressionRequest.group}\nCommand hash: ${state.regressionRequest.command_sha256}\nRepository: ${state.regressionRequest.repository?.head || "unknown"}\n\n${state.regressionRequest.commands.join("\n")}`
+    : "";
   if (state.inputKind === "design_approval" && signature !== state.alertSignature) {
     approvalButton.disabled = false;
     approvalButton.textContent = "AUTHORIZE DESIGN";
@@ -332,6 +343,10 @@ function renderInputAlert(inputRequest, feature) {
   if (state.inputKind === "deployment_approval" && signature !== state.alertSignature) {
     deploymentButton.disabled = false;
     deploymentButton.textContent = "AUTHORIZE DEPLOYMENT";
+  }
+  if (state.inputKind === "regression_approval" && signature !== state.alertSignature) {
+    regressionAccept.disabled = false;
+    regressionDecline.disabled = false;
   }
   updateAlertButton();
 
@@ -342,6 +357,29 @@ function renderInputAlert(inputRequest, feature) {
     });
   }
   state.alertSignature = signature;
+}
+
+async function decideRegression(decision) {
+  const request = state.regressionRequest;
+  if (!request) return;
+  const accept = $("regression-accept");
+  const decline = $("regression-decline");
+  accept.disabled = true;
+  decline.disabled = true;
+  try {
+    const response = await fetch("/api/regression-decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: request.request_id, decision }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Decision returned ${response.status}`);
+    await refresh();
+  } catch (error) {
+    accept.disabled = false;
+    decline.disabled = false;
+    showError(`Regression decision rejected: ${error.message}`);
+  }
 }
 
 async function authorizeDesign() {
@@ -527,7 +565,7 @@ function render(snapshot) {
   const policy = snapshot.policy;
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
-  renderInputAlert(snapshot.input_required, snapshot.project.feature);
+  renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   setFaviconState(status.status === "complete" ? "complete"
     : state.inputRequired ? "blocked" : "in_progress");
@@ -677,6 +715,8 @@ connectEventStream();
 $("enable-alerts").addEventListener("click", enableDesktopAlerts);
 $("design-approve").addEventListener("click", authorizeDesign);
 $("deployment-approve").addEventListener("click", authorizeDeployment);
+$("regression-accept").addEventListener("click", () => decideRegression("accept"));
+$("regression-decline").addEventListener("click", () => decideRegression("decline"));
 $("settings-toggle").addEventListener("click", openSettings);
 $("settings-close").addEventListener("click", closeSettings);
 $("settings-cancel").addEventListener("click", closeSettings);

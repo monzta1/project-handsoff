@@ -76,6 +76,18 @@ live_commands = []
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600
 
+[regression_gate]
+approval_timeout_minutes = 30
+launch_window_minutes = 10
+
+[[regressions]]
+name = "python-full"
+commands = ["python3 tests/test_handsoff_supervisor.py"]
+
+[[regressions]]
+name = "dashboard-full"
+commands = ["node --test tests/dashboard/*.test.js"]
+
 # Temporary observation-only bootstrap for the self-hosted governance run
 # (issues #28-#31). This is NOT the implementation of #29; it exists so the
 # operator can watch all four issues on Mission Control while #29 replaces
@@ -95,7 +107,7 @@ url = "https://github.com/monzta1/project-handsoff/issues/30"
 [[tickets]]
 number = 28
 title = "Hard-gate full regressions behind Mission Control Accept/Decline"
-status = "not_started"
+status = "in_progress"
 url = "https://github.com/monzta1/project-handsoff/issues/28"
 
 [[tickets]]

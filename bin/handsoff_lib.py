@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -96,6 +97,8 @@ DEFAULT_CONFIG = {
     "live_check_commands": [],
     "check_timeout_seconds": 600,
     "tickets": [],
+    "regressions": [],
+    "regression_gate": {"approval_timeout_minutes": 30, "launch_window_minutes": 10},
     "agents": {
         "architect": "auto",
         "supervisor": "auto",
@@ -175,6 +178,12 @@ REVIEW_ATTEMPT_DISPOSITIONS = {
 REVIEW_FINDING_CODES = {
     "acceptance_not_met", "incorrect_implementation", "review_changes_requested", "other",
 }
+REGRESSION_STATES = {
+    "awaiting_approval", "accepted", "declined", "expired", "invalidated",
+    "launched", "completed", "failed", "cancelled",
+}
+REGRESSION_REQUEST_ID_PATTERN = re.compile(r"^rg-[0-9a-f]{32}$")
+MAX_REGRESSION_REQUESTS = 16
 ESCALATION_KINDS = {"review_cap_exhausted", "recovery_exhausted", "recovery_paused"}
 
 REQUIRED_STATUS_FIELDS = (
@@ -236,6 +245,7 @@ def load_config(root: Path) -> dict:
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
     cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
+    cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -252,10 +262,12 @@ def load_config(root: Path) -> dict:
     fallback_policy = raw.get("fallback_policy", {})
     checks = raw.get("checks", {})
     recovery = raw.get("recovery", {})
+    regression_gate = raw.get("regression_gate", {})
+    regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks, recovery)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks, recovery, regression_gate)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, checks, and recovery must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, checks, recovery, and regression_gate must be tables"
         )
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
@@ -301,6 +313,29 @@ def load_config(root: Path) -> dict:
     if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
         raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
     cfg["check_timeout_seconds"] = timeout_value
+    unknown_gate = set(regression_gate) - set(DEFAULT_CONFIG["regression_gate"])
+    if unknown_gate:
+        raise HandsoffError(f"handsoff.toml: regression_gate has unknown keys: {', '.join(sorted(unknown_gate))}")
+    for key in DEFAULT_CONFIG["regression_gate"]:
+        value = regression_gate.get(key, cfg["regression_gate"][key])
+        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 1440:
+            raise HandsoffError(f"handsoff.toml: regression_gate.{key} must be an integer from 1 to 1440")
+        cfg["regression_gate"][key] = value
+    if not isinstance(regressions, list):
+        raise HandsoffError("handsoff.toml: regressions must be an array of tables")
+    normalized_regressions = []
+    for index, item in enumerate(regressions):
+        if not isinstance(item, dict) or set(item) != {"name", "commands"}:
+            raise HandsoffError(f"handsoff.toml: regressions[{index}] must contain exactly name and commands")
+        name, commands = item.get("name"), item.get("commands")
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
+            raise HandsoffError(f"handsoff.toml: regressions[{index}].name is invalid")
+        if not isinstance(commands, list) or not commands or not all(isinstance(cmd, str) and cmd.strip() for cmd in commands):
+            raise HandsoffError(f"handsoff.toml: regressions[{index}].commands must be non-empty strings")
+        normalized_regressions.append({"name": name, "commands": list(commands)})
+    if len({item["name"] for item in normalized_regressions}) != len(normalized_regressions):
+        raise HandsoffError("handsoff.toml: regression names must be unique")
+    cfg["regressions"] = normalized_regressions
     allowed_recovery = set(DEFAULT_CONFIG["recovery"])
     unknown_recovery = set(recovery) - allowed_recovery
     if unknown_recovery:
@@ -375,6 +410,7 @@ def load_config(root: Path) -> dict:
             raise HandsoffError(f"handsoff.toml: {key} must not be negative")
     if not 1 <= cfg["max_review_rounds"] <= 56:
         raise HandsoffError("handsoff.toml: workflow.max_review_rounds must be an integer from 1 to 56")
+    ensure_regression_config_is_disjoint(cfg, root)
     return cfg
 
 
@@ -1405,11 +1441,23 @@ def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
     head = git("rev-parse", "HEAD").strip()
     branch = git("branch", "--show-current").strip() or "(detached)"
     porcelain = git("status", "--porcelain=v1")
+    tracked_diff = git("diff", "--binary", "HEAD")
+    untracked = [line for line in git("ls-files", "--others", "--exclude-standard").splitlines() if line]
+    content = bytearray(tracked_diff.encode("utf-8", "replace"))
+    for relative in sorted(untracked):
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root.resolve())
+            if path.is_file():
+                content.extend(relative.encode("utf-8", "replace") + b"\0" + path.read_bytes())
+        except (OSError, ValueError):
+            raise HandsoffError("cannot establish repository content identity") from None
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head) or len(branch) > 256:
         raise HandsoffError("cannot establish bounded repository identity")
     return {
         "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
         "status_sha256": hashlib.sha256(porcelain.encode("utf-8", "replace")).hexdigest(),
+        "content_sha256": hashlib.sha256(content).hexdigest(),
     }
 
 
@@ -2304,6 +2352,51 @@ def validate_status_schema(status: dict) -> list[str]:
                 or recovery_attempts[-1].get("recovery_id") != lease.get("recovery_id") \
                 or recovery_attempts[-1].get("state") not in {"reserved", "launched"}:
             errors.append("status: recovery_lease must reference the live final recovery attempt")
+    regression_requests = status.get("regression_requests")
+    if regression_requests is not None:
+        if not isinstance(regression_requests, list) or len(regression_requests) > MAX_REGRESSION_REQUESTS:
+            errors.append(f"status: 'regression_requests' must contain at most {MAX_REGRESSION_REQUESTS} entries")
+            regression_requests = []
+        seen_request_ids = set()
+        live_requests = 0
+        for index, item in enumerate(regression_requests):
+            required = {
+                "request_id", "group", "commands", "command_sha256", "state", "requested_by",
+                "requested_at", "expires_at", "decided_by", "decided_at", "launched_at",
+                "completed_at", "launch_nonce_sha256", "repository", "acceptance_hash",
+                "config_hash", "results",
+            }
+            label = f"status: regression_requests[{index}]"
+            rid = item.get("request_id") if isinstance(item, dict) else None
+            if not isinstance(item, dict) or set(item) != required:
+                errors.append(f"{label} has invalid fields")
+                continue
+            if not isinstance(rid, str) or not REGRESSION_REQUEST_ID_PATTERN.fullmatch(rid) or rid in seen_request_ids:
+                errors.append(f"{label}.request_id is invalid or duplicated")
+            seen_request_ids.add(rid)
+            if item.get("state") not in REGRESSION_STATES:
+                errors.append(f"{label}.state is invalid")
+            if item.get("state") in {"awaiting_approval", "accepted", "launched"}:
+                live_requests += 1
+                if index != len(regression_requests) - 1:
+                    errors.append(f"{label} live request must be last")
+            if not isinstance(item.get("commands"), list) or not item["commands"] \
+                    or not all(isinstance(cmd, str) and cmd.strip() for cmd in item["commands"]):
+                errors.append(f"{label}.commands is invalid")
+            for key in ("command_sha256", "acceptance_hash", "config_hash"):
+                if not isinstance(item.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", item[key]):
+                    errors.append(f"{label}.{key} is invalid")
+            nonce = item.get("launch_nonce_sha256")
+            if nonce is not None and (not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{64}", nonce)):
+                errors.append(f"{label}.launch_nonce_sha256 is invalid")
+            if item.get("state") in {"launched", "completed", "failed"} and nonce is None:
+                errors.append(f"{label} launched/terminal execution requires a nonce digest")
+            if not isinstance(item.get("repository"), dict):
+                errors.append(f"{label}.repository is invalid")
+            if not isinstance(item.get("results"), list):
+                errors.append(f"{label}.results must be an array")
+        if live_requests > 1:
+            errors.append("status: at most one regression request may be live")
     sessions = status.get("agent_sessions")
     pointers = status.get("current_agent_sessions")
     if sessions is not None:
@@ -3114,12 +3207,98 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None) -> st
     return None
 
 
+def normalized_test_footprint(command: str, root: Path) -> frozenset[str]:
+    """Return the repository-relative tests a command can execute.
+
+    This is intentionally conservative: a command that names a tests directory,
+    wildcard, discovery mode, or an unrecognised test runner is treated as broad.
+    Handsoff only needs to distinguish configured focused checks from configured
+    regression groups; it is not a general shell parser.
+    """
+    if not isinstance(command, str) or not command.strip():
+        raise HandsoffError("test command must be a non-empty string")
+    try:
+        words = shlex.split(command)
+    except ValueError as exc:
+        raise HandsoffError(f"invalid test command: {exc}") from exc
+    if any(token in {"|", "||", "&&", ";", ">", ">>", "<"} for token in words):
+        raise HandsoffError("test commands may not contain shell control operators")
+    lowered = [Path(word).name.lower() for word in words]
+    footprint: set[str] = set()
+    for word in words:
+        candidate = word.split("::", 1)[0]
+        while candidate.startswith("./"):
+            candidate = candidate[2:]
+        if candidate.startswith("tests.") and "/" not in candidate:
+            candidate = candidate.replace(".", "/") + ".py"
+        if not (candidate.startswith("tests/") or candidate == "tests"):
+            continue
+        if candidate == "tests" or candidate.endswith("/"):
+            return frozenset({"*"})
+        if any(ch in candidate for ch in "*?["):
+            matches = sorted(root.glob(candidate))
+            if not matches:
+                return frozenset({"*"})
+            footprint.update(path.resolve().relative_to(root.resolve()).as_posix() for path in matches if path.is_file())
+        else:
+            footprint.add(Path(candidate).as_posix())
+    if "unittest" in lowered and "discover" in lowered:
+        return frozenset({"*"})
+    if not footprint:
+        return frozenset({"*"})
+    return frozenset(footprint)
+
+
+def regression_group(cfg: dict, name: str) -> dict:
+    item = next((entry for entry in cfg.get("regressions", []) if entry.get("name") == name), None)
+    if item is None:
+        raise HandsoffError(f"unknown regression group: {name}")
+    return item
+
+
+def configured_regression_commands(cfg: dict) -> set[str]:
+    return {command for group in cfg.get("regressions", []) for command in group.get("commands", [])}
+
+
+def command_sha256(commands: list[str]) -> str:
+    return hashlib.sha256(json.dumps(commands, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+
+
+def ensure_regression_config_is_disjoint(cfg: dict, root: Path) -> None:
+    regression_footprints = []
+    for group in cfg.get("regressions", []):
+        footprint = set().union(*(normalized_test_footprint(cmd, root) for cmd in group["commands"]))
+        regression_footprints.append((group["name"], footprint))
+    for command in cfg.get("check_commands", []):
+        focused = normalized_test_footprint(command, root)
+        for name, regression in regression_footprints:
+            captures_group = "*" in focused or ("*" not in regression and regression <= set(focused))
+            if captures_group:
+                raise HandsoffError(
+                    f"focused check overlaps gated regression group {name}: {command}"
+                )
+
+
+def active_regression_request(status: dict) -> dict | None:
+    requests = status.get("regression_requests") or []
+    return next((item for item in reversed(requests)
+                 if item.get("state") in {"awaiting_approval", "accepted", "launched"}), None)
+
+
+def ensure_no_launched_regression(status: dict) -> None:
+    item = active_regression_request(status)
+    if item and item.get("state") == "launched":
+        raise HandsoffError(
+            f"regression {item.get('request_id')} is running; workflow mutations are locked until it terminalizes"
+        )
+
+
 # --------------------------------------------------------------------------
 # check execution: close the loop between a claimed state and reality
 # --------------------------------------------------------------------------
 
 def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
-               timeout: int | None = None) -> list[dict]:
+               timeout: int | None = None, *, allow_regression: bool = False) -> list[dict]:
     """Actually execute the given commands (default: [checks].commands), in
     the project root. Each result is real evidence a criterion's evidence
     list can reference, not a sentence someone typed. Timeout comes from
@@ -3127,7 +3306,18 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
     import subprocess
     timeout = timeout if timeout is not None else cfg.get("check_timeout_seconds", 600)
     results = []
-    for cmd in (commands if commands is not None else cfg.get("check_commands", [])):
+    selected = list(commands if commands is not None else cfg.get("check_commands", []))
+    if not allow_regression:
+        regression_commands = configured_regression_commands(cfg)
+        for command in selected:
+            command_footprint = normalized_test_footprint(command, root)
+            for gated in regression_commands:
+                gated_footprint = normalized_test_footprint(gated, root)
+                captures_group = "*" in command_footprint \
+                    or ("*" not in gated_footprint and gated_footprint <= set(command_footprint))
+                if captures_group:
+                    raise HandsoffError("full regression blocked: create and accept a Mission Control regression request")
+    for cmd in selected:
         started = time.time()
         try:
             proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=timeout)

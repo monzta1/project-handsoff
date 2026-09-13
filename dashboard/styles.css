@@ -139,6 +139,7 @@ button, input { font: inherit; }
 .input-alert-copy > span { color: #ffb7b2; font: 800 11px/1 var(--sans); letter-spacing: .12em; }
 .input-alert-copy h2 { margin: 4px 0 3px; color: #fff5f4; font-size: clamp(20px, 2.2vw, 29px); line-height: 1.1; letter-spacing: .04em; }
 .input-alert-copy p { margin: 0; color: #ffd2cf; font-size: 14px; line-height: 1.45; }
+.regression-details { margin: 10px 0 0; max-width: 760px; white-space: pre-wrap; color: #ffe7e5; font: 12px/1.45 var(--mono); }
 .input-alert-actions { position: relative; z-index: 1; display: flex; align-items: center; gap: 9px; }
 .alert-button { position: relative; z-index: 1; min-height: 40px; padding: 0 14px; border: 1px solid rgba(255, 255, 255, .42); border-radius: 8px; background: #fff4f3; color: #46100e; font-size: 12px; font-weight: 750; cursor: pointer; }
 .alert-button:hover { background: white; transform: translateY(-1px); }
