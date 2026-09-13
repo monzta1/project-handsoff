@@ -4536,5 +4536,165 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
                            f"({[f[0].id() for f in result.failures] + [e[0].id() for e in result.errors]})")
 
 
+class TestFailureClassification(unittest.TestCase):
+    """Unit tests against lib.classify_runtime_failure and
+    lib.should_failover_for_quality directly: pure functions, no CLI or
+    filesystem involved, matching TestSummarizeDesignTiming's style below.
+    Issue #26 -- built and tested standalone; deliberately NOT wired into
+    handsoff_agent.py/handsoff_broker.py yet (see CRIT-005; the launcher
+    wiring is deferred to a follow-up issue once #27 freezes the
+    session/lifecycle schema)."""
+
+    def setUp(self):
+        sys.path.insert(0, str(BIN))
+        global lib
+        import handsoff_lib as lib
+
+    def test_classifies_explicit_runner_outcomes(self):
+        # (kwargs, expected_category) -- one clean-signature and one
+        # adversarial/near-miss fixture per category, proving each
+        # category is reached on its real signal and NOT on a near-miss.
+        cases = [
+            # cancelled: clean, then a near-miss (tail merely mentions
+            # cancellation but the flag itself is false -- must not fire).
+            ("cancelled/clean", dict(cancelled=True, exit_code=-15), "cancelled"),
+            ("cancelled/near-miss", dict(cancelled=False, timed_out=False, exit_code=None,
+                                         stderr_tail="the operator asked to cancel this run"), "unknown"),
+
+            # timeout: clean, then a near-miss (tail says "timed out" but
+            # the flag is false -- must not fire; falls through to unknown
+            # since nothing else matches and the tail is non-empty).
+            ("timeout/clean", dict(timed_out=True, exit_code=-1), "timeout"),
+            ("timeout/near-miss", dict(timed_out=False, cancelled=False, exit_code=None,
+                                       stdout_tail="the request timed out waiting for a response"), "unknown"),
+
+            # auth_failure: clean signature, then near-miss text that
+            # doesn't actually match any known pattern.
+            ("auth_failure/clean", dict(exit_code=None,
+                                        stderr_tail="401 Unauthorized: invalid api key provided"), "auth_failure"),
+            ("auth_failure/near-miss", dict(exit_code=None,
+                                            stderr_tail="please double-check your account configuration"), "unknown"),
+
+            # rate_limit: clean signature, then a near-miss.
+            ("rate_limit/clean", dict(exit_code=None,
+                                      stderr_tail="429: rate limit exceeded, retry after 30s"), "rate_limit"),
+            ("rate_limit/near-miss", dict(exit_code=None,
+                                          stderr_tail="please slow down and try again later"), "unknown"),
+
+            # context_exhaustion: clean signature, then a near-miss.
+            ("context_exhaustion/clean", dict(exit_code=None,
+                                              stderr_tail="context length exceeded for this model"), "context_exhaustion"),
+            ("context_exhaustion/near-miss", dict(exit_code=None,
+                                                  stderr_tail="the response was truncated unexpectedly"), "unknown"),
+
+            # process_crash: clean (negative/signal-terminated exit code),
+            # then a near-miss (a positive code that merely LOOKS like a
+            # shell-reported "killed" status -- must resolve by sign only).
+            ("process_crash/clean", dict(exit_code=-9), "process_crash"),
+            ("process_crash/near-miss", dict(exit_code=137), "non_zero_exit"),
+
+            # non_zero_exit: clean (a positive, non-signal exit code),
+            # then a near-miss (a negative code -- must resolve as a crash,
+            # never conflated with a plain non-zero exit).
+            ("non_zero_exit/clean", dict(exit_code=1), "non_zero_exit"),
+            ("non_zero_exit/near-miss", dict(exit_code=-2), "process_crash"),
+
+            # unknown: clean (unrecognized non-empty tail, no exit code),
+            # then a near-miss that must NOT be unknown -- an empty tail
+            # with no exit code is still_running, the still_running/unknown
+            # boundary itself.
+            ("unknown/clean", dict(exit_code=None,
+                                   stderr_tail="a completely unrelated diagnostic message"), "unknown"),
+            ("unknown/near-miss (boundary with still_running)", dict(exit_code=None, stderr_tail=""), "still_running"),
+        ]
+        for label, kwargs, expected in cases:
+            with self.subTest(case=label):
+                result = lib.classify_runtime_failure(**kwargs)
+                self.assertEqual(result["category"], expected)
+
+        # Tie-break fixtures: tier 1 over tier 4.
+        with self.subTest(case="tie-break: cancelled beats a signal-terminated exit_code"):
+            result = lib.classify_runtime_failure(cancelled=True, exit_code=-9,
+                                                   stderr_tail="irrelevant crash text")
+            self.assertEqual(result["category"], "cancelled")
+
+        # Tie-break: tier 3 (tail pattern) over tier 4 (exit-code sign).
+        with self.subTest(case="tie-break: a rate-limit tail beats a plain non-zero exit code"):
+            result = lib.classify_runtime_failure(exit_code=1, stderr_tail="429 rate limit exceeded")
+            self.assertEqual(result["category"], "rate_limit")
+
+        # Tie-break: fixed intra-tier-3 order -- auth_failure wins when a
+        # tail matches both an auth-failure-shaped and a rate-limit-shaped
+        # substring at once.
+        with self.subTest(case="tie-break: auth_failure wins over rate_limit in the same tail"):
+            result = lib.classify_runtime_failure(
+                exit_code=None,
+                stderr_tail="401 Unauthorized while refreshing token; rate limit exceeded on the retry")
+            self.assertEqual(result["category"], "auth_failure")
+
+    def test_absence_of_signal_returns_still_running_not_failure(self):
+        result = lib.classify_runtime_failure(exit_code=None, timed_out=False, cancelled=False,
+                                              stderr_tail="", stdout_tail="")
+        self.assertEqual(result["category"], "still_running")
+        self.assertNotIn(result["category"], (
+            "rate_limit", "auth_failure", "context_exhaustion", "timeout",
+            "process_crash", "cancelled", "non_zero_exit", "unknown",
+        ))
+
+        # The function has no call path to heartbeat/elapsed-time data at
+        # all -- it cannot consult stall_warning()/stall_minutes, so it
+        # cannot race or duplicate that pre-existing, unmodified authority.
+        import inspect
+        params = set(inspect.signature(lib.classify_runtime_failure).parameters)
+        self.assertEqual(params, {"exit_code", "timed_out", "cancelled", "stderr_tail", "stdout_tail"})
+        self.assertTrue(callable(lib.stall_warning))  # still exists, untouched, sole authority on silence
+
+    def test_quality_failover_requires_bounded_retries_and_recorded_finding(self):
+        # Boundary pair, finding_id present throughout.
+        self.assertFalse(lib.should_failover_for_quality(retry_count=2, retry_limit=3, finding_id="finding-1"))
+        self.assertTrue(lib.should_failover_for_quality(retry_count=3, retry_limit=3, finding_id="finding-1"))
+
+        # Retry count past the limit, but no recorded finding -- refused.
+        self.assertFalse(lib.should_failover_for_quality(retry_count=5, retry_limit=3, finding_id=None))
+        self.assertFalse(lib.should_failover_for_quality(retry_count=5, retry_limit=3, finding_id=""))
+
+        # Whitespace-only finding_id counts as absent -- refused.
+        self.assertFalse(lib.should_failover_for_quality(retry_count=5, retry_limit=3, finding_id="   "))
+
+        # A finding alone, with retries still available, is also refused
+        # (AND, not OR -- one subjective result never causes failover).
+        self.assertFalse(lib.should_failover_for_quality(retry_count=0, retry_limit=3, finding_id="finding-1"))
+
+    def test_classification_never_persists_raw_secret_bearing_output(self):
+        secret = "Authorization: Bearer sk-FAKE-SECRET-DO-NOT-LEAK-1234567890"
+        result = lib.classify_runtime_failure(exit_code=None, stderr_tail=secret)
+
+        serialized = json.dumps(result)
+        self.assertNotIn("sk-FAKE-SECRET-DO-NOT-LEAK-1234567890", serialized)
+        self.assertNotIn("Bearer", serialized)
+        self.assertNotIn(secret, serialized)
+
+        # Only a category (from the closed set), a closed-set reason label,
+        # and a digest -- nothing else.
+        self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
+        self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 9)  # 8 from CRIT-001 + still_running from CRIT-002
+        closed_set_reasons = {
+            "cancelled": "run was cancelled",
+            "timeout": "runner exceeded its timeout",
+            "auth_failure": "authentication or authorization failed",
+            "rate_limit": "rate limit or quota exhausted",
+            "context_exhaustion": "context window exhausted",
+            "process_crash": "process was terminated by a signal",
+            "non_zero_exit": "process exited with a non-zero status",
+            "unknown": "failure signal matched no known category",
+            "still_running": "no failure signal reported yet",
+        }
+        self.assertEqual(set(lib.FAILURE_CATEGORIES), set(closed_set_reasons))
+        self.assertEqual(result["reason"], closed_set_reasons[result["category"]])
+        self.assertRegex(result["tail_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(result["tail_sha256"], __import__("hashlib").sha256(secret.encode()).hexdigest())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -8,3 +8,4 @@ handsoff-acceptance.json
 handsoff-events.jsonl
 handsoff-verifications.jsonl
 .handsoff-selfcheck/
+.handsoff-archive/
