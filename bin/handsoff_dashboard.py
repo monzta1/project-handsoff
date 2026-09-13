@@ -434,6 +434,7 @@ def build_snapshot(root: Path) -> dict:
             "total": len(criteria),
             "original_symptom_resolved": coverage.get("original_symptom_resolved") is True,
         },
+        "tickets": list(cfg.get("tickets", [])),
         "actors": actors,
         "crew": crew,
         "runtime": {

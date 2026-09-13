@@ -411,6 +411,18 @@ function renderCriteria(criteria) {
     </div>`).join("") : '<div class="empty-row">No acceptance criteria found.</div>';
 }
 
+function renderTickets(tickets) {
+  const panel = $("ticket-panel");
+  panel.classList.toggle("hidden", !tickets.length);
+  $("ticket-total").textContent = `${tickets.length} TICKET${tickets.length === 1 ? "" : "S"}`;
+  $("ticket-list").innerHTML = tickets.map((ticket) => `
+    <tr>
+      <td><a href="${escapeHtml(ticket.url || "#")}" ${ticket.url ? 'target="_blank" rel="noreferrer"' : ""}>#${escapeHtml(ticket.number)}</a></td>
+      <td>${escapeHtml(ticket.title)}</td>
+      <td><span class="ticket-state ${escapeHtml(ticket.status)}">${escapeHtml(String(ticket.status).replaceAll("_", " "))}</span></td>
+    </tr>`).join("");
+}
+
 function renderAttention(items) {
   $("attention-count").textContent = items.length;
   $("attention-list").innerHTML = items.length
@@ -536,6 +548,7 @@ function render(snapshot) {
   stateClass($("approval-state"), status.deployment_approved ? "is-good" : "is-warning");
 
   renderCriteria(acceptance.criteria);
+  renderTickets(snapshot.tickets || []);
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
   renderReplacements(state.replacements);

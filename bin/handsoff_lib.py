@@ -80,6 +80,7 @@ PLACEHOLDER_REQUIREMENT = "State the exact observable outcome."
 PLACEHOLDER_TESTS = ["name_or_path_of_test"]
 MAX_FALLBACK_PROFILES = 8
 DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
+TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
 
 DEFAULT_CONFIG = {
     "status_file": "handsoff-status.json",
@@ -94,6 +95,7 @@ DEFAULT_CONFIG = {
     "check_commands": [],
     "live_check_commands": [],
     "check_timeout_seconds": 600,
+    "tickets": [],
     "agents": {
         "architect": "auto",
         "supervisor": "auto",
@@ -222,6 +224,7 @@ def load_config(root: Path) -> dict:
     models = raw.get("models", {})
     fallback_policy = raw.get("fallback_policy", {})
     checks = raw.get("checks", {})
+    tickets = raw.get("tickets", [])
     if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks)):
         raise HandsoffError(
             "handsoff.toml: project, workflow, agents, models, fallback_policy, and checks must be tables"
@@ -270,6 +273,36 @@ def load_config(root: Path) -> dict:
     if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
         raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
     cfg["check_timeout_seconds"] = timeout_value
+    if not isinstance(tickets, list):
+        raise HandsoffError("handsoff.toml: tickets must be an array of tables")
+    normalized_tickets = []
+    for index, ticket in enumerate(tickets):
+        if not isinstance(ticket, dict):
+            raise HandsoffError(f"handsoff.toml: tickets[{index}] must be a table")
+        unknown = set(ticket) - {"number", "title", "status", "url"}
+        if unknown:
+            raise HandsoffError(
+                f"handsoff.toml: tickets[{index}] has unknown keys: {', '.join(sorted(unknown))}"
+            )
+        number, title, state, url = (
+            ticket.get("number"), ticket.get("title"), ticket.get("status"), ticket.get("url", "")
+        )
+        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+            raise HandsoffError(f"handsoff.toml: tickets[{index}].number must be a positive integer")
+        if not isinstance(title, str) or not title.strip():
+            raise HandsoffError(f"handsoff.toml: tickets[{index}].title must be a non-empty string")
+        if state not in TICKET_STATES:
+            raise HandsoffError(
+                f"handsoff.toml: tickets[{index}].status must be one of {', '.join(sorted(TICKET_STATES))}"
+            )
+        if not isinstance(url, str):
+            raise HandsoffError(f"handsoff.toml: tickets[{index}].url must be a string")
+        normalized_tickets.append({
+            "number": number, "title": title.strip(), "status": state, "url": url.strip(),
+        })
+    if len({ticket["number"] for ticket in normalized_tickets}) != len(normalized_tickets):
+        raise HandsoffError("handsoff.toml: ticket numbers must be unique")
+    cfg["tickets"] = normalized_tickets
     resolved_root = root.resolve()
     for key in ("status_file", "acceptance_file", "event_log", "verification_log"):
         value = cfg[key]
