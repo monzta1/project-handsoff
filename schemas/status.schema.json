@@ -18,6 +18,42 @@
     "live_verification_id": {"type": ["string", "null"]},
     "verification_head": {"type": "string"},
     "requires_design_review": {"type": "boolean"},
+    "agent_sessions": {
+      "type": "object",
+      "maxProperties": 64,
+      "patternProperties": {
+        "^hs-[0-9a-f]{32}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session_id", "role", "actor", "adapter", "requested_model", "reported_model", "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code"],
+          "properties": {
+            "session_id": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$", "maxLength": 64},
+            "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
+            "actor": {"type": "string", "minLength": 1, "maxLength": 128},
+            "adapter": {"enum": ["codex", "claude"]},
+            "requested_model": {"type": "string", "minLength": 1, "maxLength": 128},
+            "reported_model": {"type": ["string", "null"], "maxLength": 128},
+            "resolution_source": {"enum": ["configured", "auto_detected", "legacy_auto_detected"]},
+            "started_at": {"type": "string", "format": "date-time"},
+            "running_at": {"type": ["string", "null"], "format": "date-time"},
+            "ended_at": {"type": ["string", "null"], "format": "date-time"},
+            "state": {"enum": ["launching", "running", "completed", "failed", "timed_out", "cancelled", "failed_to_start"]},
+            "exit_code": {"type": ["integer", "null"]}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "current_agent_sessions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "architect": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
+        "supervisor": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
+        "implementer": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
+        "reviewer": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"}
+      }
+    },
     "design_review": {
       "type": ["object", "null"],
       "properties": {

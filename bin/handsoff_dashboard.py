@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Local dashboard for Project Handsoff.
 
-Most workflow artifacts remain read-only. Two narrow same-origin endpoints
-exist: Agent Settings atomically persists allowlisted role profiles, and the
-design-approval action invokes the same guarded command as the supervisor CLI.
+Most workflow artifacts remain read-only. Narrow same-origin endpoints exist
+for allowlisted Agent Settings and the guarded design/deployment approval
+commands exposed by the supervisor CLI.
 """
 from __future__ import annotations
 
@@ -367,6 +367,9 @@ def build_snapshot(root: Path) -> dict:
             "approved_by": (status.get("deployment_approved") or {}).get("by"),
             "active_role": _active_role(status, input_request),
         },
+        "runtime": {
+            "current_sessions": lib.current_agent_sessions(status),
+        },
         "audit": {
             "healthy": audit_healthy,
             "gate_errors": gate_errors,
@@ -515,7 +518,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path not in {"/api/settings/agents", "/api/design-approval"}:
+        if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
         if not self._same_origin_allowed():
@@ -567,6 +570,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.server.project_root, lib.load_config(self.server.project_root)
                 )).get("design_approved")
                 self._json_response(HTTPStatus.OK, {"ok": True, "design_approved": approved})
+                return
+            if path == "/api/deployment-approval":
+                if requested:
+                    raise lib.HandsoffError("deployment approval payload must be empty")
+                snapshot = build_snapshot(self.server.project_root)
+                input_request = snapshot.get("input_required") or {}
+                if input_request.get("kind") != "deployment_approval":
+                    self._json_response(
+                        HTTPStatus.CONFLICT,
+                        {"ok": False, "error": "The current mission is not awaiting deployment authorization"},
+                    )
+                    return
+                command = argparse.Namespace(
+                    root=str(self.server.project_root), approve=True, by="Mission Control Pilot",
+                )
+                if supervisor.cmd_deployment_gate(command) != 0:
+                    self._json_response(
+                        HTTPStatus.CONFLICT,
+                        {"ok": False, "error": "The deployment gate rejected this authorization"},
+                    )
+                    return
+                approved = lib.load_unique_json(lib.status_path(
+                    self.server.project_root, lib.load_config(self.server.project_root)
+                )).get("deployment_approved")
+                self._json_response(HTTPStatus.OK, {"ok": True, "deployment_approved": approved})
                 return
             lib.update_agent_config(self.server.project_root, requested)
             effective_cfg = lib.load_config(self.server.project_root)

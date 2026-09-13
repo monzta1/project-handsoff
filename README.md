@@ -56,10 +56,12 @@ Launch a configured role in a fresh session with the active project as its worki
 
 ```bash
 python3 bin/handsoff_agent.py inspect architect --task "Design the requested feature"
-python3 bin/handsoff_agent.py launch implementer --task "Implement the approved criteria"
+python3 bin/handsoff_agent.py launch implementer --task "Implement the approved criteria" --by implementer-1
 ```
 
 `handsoff_agent.py` resolves the executable to an absolute path and never uses a shell. The role prompt and task travel on standard input, not in command arguments. Codex uses an ephemeral `codex exec` session; Claude Code uses headless `claude -p`. `default` omits the model flag. Reviewer and Supervisor launches enforce read-only/plan mode at the runner boundary; Architect and Implementer use explicit workspace-write/accept-edits modes. No bypass-permission flags are generated. Runner output streams directly rather than accumulating in memory; nonzero exits, cancellation, timeouts, missing prompts, and missing executables fail visibly, with timeout/cancellation terminating the fresh process group.
+
+Each managed launch records a bounded, host-generated session ID and an immutable snapshot of its role, actor, resolved adapter, requested model, resolution source, and lifecycle. `--by` is optional; when omitted the documented identity is `<resolved-adapter>-<role>`. The launch snapshot is committed under the project lock before the process starts, and a second live session for the same role is refused. Telemetry writes fail closed if the event or verification ledger no longer authenticates the current status; they never re-anchor an unlogged edit. Once a child reaches `running`, completion and every handled error path record exactly one terminal lifecycle transition, including early stream closure. Mission Control uses this telemetry for **THIS RUN** while Agent Settings remains **NEXT LAUNCH**. A requested model is not presented as the model actually used: `reported_model` stays null unless a future trusted runner protocol supplies it, and ordinary runner output is never parsed for that purpose. Prompts, task text, stdout/stderr, environment values, credentials, API keys, and token values are never stored in runtime telemetry.
 
 Supervisor mutations must cross the typed host dispatcher in `bin/handsoff_broker.py`. The host process that launches the read-only Supervisor captures `HANDSOFF_BROKER_REQUEST:` protocol lines from that exact child and dispatches them in-process; there is no caller-supplied trust flag or standalone broker entry point. The actual authority boundary is the OS-enforced read-only/plan sandbox inherited by the Supervisor child and anything it starts. The module's in-process token prevents accidental cross-role dispatch inside the owning host; it is not authentication against arbitrary local Python code, which already runs with the invoking user's filesystem authority. The broker accepts typed JSON tied to the exact active project root, builds only allowlisted `handsoff_supervisor.py` arguments, and always uses `shell=False` in a fresh process group. It may launch Architect, Implementer, or Reviewer but never another Supervisor. It rejects unknown fields/actions, arbitrary commands, path/root substitution, direct product-file mutation, and the human-only `design-approve` and `deployment-gate` commands. Timeout or cancellation terminates the entire brokered process group.
 
@@ -178,9 +180,9 @@ No project-specific work, credentials, hostnames, or tracker assumptions are inc
 
 ## Self-hosting
 
-Using Handsoff to ship a change to Handsoff itself works, with one rule: never configure this repo's own root `handsoff.toml` with real `[checks].commands`/`live_commands`. That file is exactly what step 1 above copies into every target project verbatim; baking this repo's own dogfooding commands into it would ship them to everyone who imports it, and this repo's own test suite (`tests/test_handsoff_supervisor.py`) depends on it staying the pristine `commands = []` template too -- it fails loudly and explains why if that invariant is ever violated.
+Handsoff can track work on itself from the repository root. During an active self-hosting run, root `[checks].commands` may contain only that run's explicitly approved targeted checks; fixture tests normalize copied configs so those dogfood commands are never executed accidentally. Anyone importing the framework must replace `[checks].commands` and `[checks].live_commands` with the target project's own checks as step 3 above requires.
 
-Instead, track a self-hosting run from a separate, gitignored root with its own `handsoff.toml` (absolute paths in its `[checks]` commands, since it is not the repo root):
+A separate, gitignored root remains useful when isolation is preferred (use absolute paths in its `[checks]` commands, since it is not the repo root):
 
 ```bash
 mkdir -p .handsoff-selfcheck

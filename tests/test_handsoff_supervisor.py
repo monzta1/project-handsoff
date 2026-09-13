@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+import re
 from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,26 +28,34 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
 
+ISSUE27_TARGETED_COMMANDS = [
+    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_managed_launch_records_runtime_profile_and_lifecycle",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_pinned_and_runner_default_models_are_reported_honestly",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_concurrency_stale_completion_and_midrun_settings_are_safe",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_dashboard_distinguishes_managed_legacy_and_next_launch_profiles",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_runtime_telemetry_excludes_sensitive_payloads",
+    "python3 -m unittest tests.test_handsoff_supervisor.TestAgentRuntimeTelemetry.test_telemetry_is_optional_non_gating_and_failure_safe",
+]
+
+
+def set_fixture_check_commands(path, commands):
+    """Give copied fixtures their own checks without inheriting dogfood checks."""
+    text, count = re.subn(
+        r"^commands\s*=\s*\[.*\]$", f"commands = {json.dumps(commands)}",
+        path.read_text(), count=1, flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise AssertionError("could not locate [checks].commands in fixture")
+    path.write_text(text)
+
 
 def setUpModule():
-    """Most tests below copy this repo's OWN handsoff.toml into a tmp dir
-    and string-replace its "commands = []" line to inject a throwaway
-    check -- that silently no-ops (not a loud failure) if this repo's own
-    template ever legitimately has real commands configured, since real
-    users copy this exact file verbatim per the README's Quick Start.
-    Fail loudly and explain, rather than let dozens of tests fail
-    mysteriously downstream. If you need real check commands to dogfood
-    THIS repo, configure a separate, gitignored root instead of the
-    shipped template (see "Self-hosting" in README.md).
-    """
+    """Keep issue #27 dogfood checks exact; fixtures are normalized below."""
     text = (ROOT / "handsoff.toml").read_text()
-    if "commands = []" not in text:
+    expected = f"commands = {json.dumps(ISSUE27_TARGETED_COMMANDS)}"
+    if expected not in text:
         raise SystemExit(
-            "This repo's own handsoff.toml no longer has 'commands = []'. "
-            "It must stay a pristine, generic template -- these tests "
-            "depend on that, and so does every real user who copies it "
-            "verbatim. Revert it, and track any real dogfooding check "
-            "commands in a separate, gitignored root instead."
+            "This repo's handsoff.toml must list exactly the six issue #27 targeted checks."
         )
     # Any test that lands Phase 8 with status complete now triggers a real
     # archive write (see handsoff_lib.archive_run). Sandboxed here at module
@@ -82,6 +91,7 @@ class HandsoffTestCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-test-"))
         for name in ("handsoff.toml",):
             shutil.copy(ROOT / name, self.tmp / name)
+        set_fixture_check_commands(self.tmp / "handsoff.toml", [])
         shutil.copytree(ROOT / "schemas", self.tmp / "schemas")
 
     def tearDown(self):
@@ -232,7 +242,9 @@ class TestEveMissionControl(HandsoffTestCase):
         script = (ROOT / "dashboard" / "app.js").read_text()
         self.assertIn("PILOT AUTHORIZATION REQUIRED", html)
         self.assertIn('id="design-approve"', html)
+        self.assertIn('id="deployment-approve"', html)
         self.assertIn('fetch("/api/design-approval"', script)
+        self.assertIn('fetch("/api/deployment-approval"', script)
         self.assertIn('signature !== state.alertSignature', script)
         self.assertIn("python3 bin/handsoff_supervisor.py init", html)
 
@@ -267,6 +279,32 @@ class TestEveMissionControl(HandsoffTestCase):
             self.assertEqual(approved["by"], "Mission Control Pilot")
             self.assertEqual(approved["architect"], "arch-ui")
             self.assertEqual(self.read_status()["status"], "in_progress")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            with mock.patch.object(
+                dashboard, "build_snapshot",
+                return_value={"input_required": {"kind": "deployment_approval"}},
+            ), mock.patch.object(dashboard.supervisor, "cmd_deployment_gate", return_value=0) as approve:
+                connection = http.client.HTTPConnection(host, port, timeout=3)
+                connection.request(
+                    "POST", "/api/deployment-approval", body="{}",
+                    headers={"Content-Type": "application/json", "Origin": f"http://{host}:{port}"},
+                )
+                response = connection.getresponse()
+                body = response.read()
+                connection.close()
+                self.assertEqual(response.status, 200, body)
+                command = approve.call_args.args[0]
+                self.assertTrue(command.approve)
+                self.assertEqual(command.by, "Mission Control Pilot")
         finally:
             server.shutdown()
             server.server_close()
@@ -929,6 +967,7 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
         with self.assertRaisesRegex(lib.HandsoffError, "prompt is missing"):
             runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: "/bin/reviewer")
 
+        self.init("Managed agent runtime adapter")
         spec = runtime.LaunchSpec("reviewer", "codex", "default", ("/bin/codex", "exec", "-"),
                                   str(self.tmp), "prompt and task")
         calls = []
@@ -993,7 +1032,6 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
         cancel_group.assert_called_once_with(515151, runtime.signal.SIGTERM)
 
         import handsoff_broker as broker
-        self.init("Trusted Supervisor broker")
         root_text = str(self.tmp.resolve())
         class WorkflowProcess:
             pid = None
@@ -1141,6 +1179,382 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
         self.assertEqual(self.read_status()["status"], "in_progress")
         self.assertNotIn("authorization_hold", self.read_status())
 
+
+class TestAgentRuntimeTelemetry(HandsoffTestCase):
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        self.init("Issue 27 runtime telemetry")
+        sys.path.insert(0, str(BIN))
+        import handsoff_agent
+        import handsoff_dashboard
+        import handsoff_lib
+        self.runtime = handsoff_agent
+        self.dashboard = handsoff_dashboard
+        self.lib = handsoff_lib
+
+    @staticmethod
+    def _sid(number):
+        return f"hs-{number:032x}"
+
+    def _spec(self, role="implementer", model="default", adapter="codex", stdin="private task"):
+        return self.runtime.LaunchSpec(
+            role, adapter, model, (f"/bin/{adapter}", "exec", "-"), str(self.tmp), stdin,
+            "configured",
+        )
+
+    @staticmethod
+    def _process(returncode=0):
+        class Process:
+            pid = None
+            def __init__(self):
+                self.returncode = returncode
+                self.stopped = False
+            def communicate(self, *, input, timeout):
+                return None
+            def terminate(self):
+                self.stopped = True
+            def wait(self, timeout=None):
+                return self.returncode
+            def kill(self):
+                self.stopped = True
+        return Process()
+
+    def test_managed_launch_records_runtime_profile_and_lifecycle(self):
+        process = self._process()
+        self.assertEqual(self.runtime.execute_launch(
+            self._spec(model="codex-exact"), actor="codex-issue27-implementer",
+            popen_factory=mock.Mock(return_value=process),
+            session_id_factory=lambda: self._sid(1),
+        ), 0)
+        status = self.read_status()
+        session = status["agent_sessions"][self._sid(1)]
+        self.assertEqual(session, {
+            "session_id": self._sid(1), "role": "implementer",
+            "actor": "codex-issue27-implementer", "adapter": "codex",
+            "requested_model": "codex-exact", "reported_model": None,
+            "resolution_source": "configured", "started_at": session["started_at"],
+            "running_at": session["running_at"], "ended_at": session["ended_at"],
+            "state": "completed", "exit_code": 0,
+        })
+        self.assertIsNotNone(session["running_at"])
+        self.assertIsNotNone(session["ended_at"])
+        self.assertEqual(status["current_agent_sessions"]["implementer"], self._sid(1))
+        events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+        lifecycle = [event["kind"] for event in events if event["kind"].startswith("agent_session_")]
+        self.assertEqual(lifecycle, [
+            "agent_session_launching", "agent_session_running", "agent_session_completed",
+        ])
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+
+        class Pipe:
+            def __init__(self, *, broken=False):
+                self.broken = broken
+            def write(self, _value):
+                if self.broken:
+                    raise BrokenPipeError("runner closed stdin")
+            def close(self):
+                return None
+
+        class SupervisorProcess:
+            pid = None
+            def __init__(self, number, *, broken=False, read_error=False):
+                self.returncode = number
+                self.stdin = Pipe(broken=broken)
+                if read_error:
+                    class BrokenOutput:
+                        def read(self, _size):
+                            raise OSError("output stream failed")
+                    self.stdout = BrokenOutput()
+                else:
+                    self.stdout = io.StringIO("")
+            def wait(self, timeout=None):
+                return self.returncode
+            def terminate(self):
+                return None
+            def kill(self):
+                return None
+
+        with self.assertRaisesRegex(self.lib.HandsoffError, "BrokenPipeError"):
+            self.runtime.execute_launch(
+                self._spec(role="supervisor"),
+                popen_factory=mock.Mock(return_value=SupervisorProcess(7, broken=True)),
+                session_id_factory=lambda: self._sid(10),
+            )
+        with self.assertRaisesRegex(self.lib.HandsoffError, "output stream failed"):
+            self.runtime.execute_launch(
+                self._spec(role="supervisor"),
+                popen_factory=mock.Mock(return_value=SupervisorProcess(9, read_error=True)),
+                session_id_factory=lambda: self._sid(11),
+            )
+
+        class HungThread:
+            def __init__(self, *args, **kwargs):
+                return None
+            def start(self):
+                return None
+            def join(self, timeout=None):
+                return None
+            def is_alive(self):
+                return True
+
+        with mock.patch.object(self.runtime.threading, "Thread", HungThread):
+            with self.assertRaisesRegex(self.lib.HandsoffError, "did not close"):
+                self.runtime.execute_launch(
+                    self._spec(role="supervisor"),
+                    popen_factory=mock.Mock(return_value=SupervisorProcess(0)),
+                    session_id_factory=lambda: self._sid(12),
+                )
+        status = self.read_status()
+        self.assertEqual(status["agent_sessions"][self._sid(10)]["exit_code"], 7)
+        self.assertEqual(status["agent_sessions"][self._sid(11)]["exit_code"], 9)
+        self.assertEqual(status["agent_sessions"][self._sid(12)]["exit_code"], 1)
+        events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+        for session_number in (10, 11, 12):
+            terminal_events = [event for event in events
+                               if event.get("session_id") == self._sid(session_number)
+                               and event.get("state") in self.lib.AGENT_SESSION_TERMINAL_STATES]
+            self.assertEqual(len(terminal_events), 1)
+
+    def test_pinned_and_runner_default_models_are_reported_honestly(self):
+        class InputPipe:
+            def write(self, _value):
+                return None
+            def close(self):
+                return None
+
+        class SupervisorProcess:
+            pid = None
+            returncode = 0
+            def __init__(self, output):
+                self.stdin = InputPipe()
+                self.stdout = io.StringIO(output)
+            def wait(self, timeout=None):
+                return 0
+            def terminate(self):
+                return None
+            def kill(self):
+                return None
+
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            self.runtime.execute_launch(
+                self._spec(role="supervisor", model="pinned-model"),
+                popen_factory=mock.Mock(return_value=SupervisorProcess("actual model: forged\n")),
+                session_id_factory=lambda: self._sid(2),
+            )
+            self.runtime.execute_launch(
+                self._spec(role="supervisor", model="default"),
+                popen_factory=mock.Mock(return_value=SupervisorProcess("model=also-forged\n")),
+                session_id_factory=lambda: self._sid(3),
+            )
+        sessions = self.read_status()["agent_sessions"]
+        self.assertEqual(sessions[self._sid(2)]["requested_model"], "pinned-model")
+        self.assertIsNone(sessions[self._sid(2)]["reported_model"])
+        self.assertEqual(sessions[self._sid(3)]["requested_model"], "default")
+        self.assertIsNone(sessions[self._sid(3)]["reported_model"])
+
+    def test_concurrency_stale_completion_and_midrun_settings_are_safe(self):
+        first = self.lib.create_agent_session(
+            self.tmp, role="reviewer", actor="reviewer-one", adapter="codex",
+            requested_model="model-one", resolution_source="configured",
+            id_factory=lambda: self._sid(4),
+        )
+        with self.assertRaisesRegex(self.lib.HandsoffError, "already has live"):
+            self.lib.create_agent_session(
+                self.tmp, role="reviewer", actor="reviewer-two", adapter="claude",
+                requested_model="model-two", resolution_source="configured",
+            )
+        profiles = self.lib.agent_profiles(self.lib.load_config(self.tmp))
+        profiles["reviewer"] = {"adapter": "claude", "model": "future-model"}
+        self.lib.update_agent_config(self.tmp, profiles)
+        self.assertEqual(self.read_status()["agent_sessions"][first["session_id"]]["adapter"], "codex")
+        self.lib.transition_agent_session(self.tmp, first["session_id"], "running")
+        self.lib.transition_agent_session(self.tmp, first["session_id"], "completed", exit_code=0)
+        second = self.lib.create_agent_session(
+            self.tmp, role="reviewer", actor="reviewer-two", adapter="claude",
+            requested_model="future-model", resolution_source="configured",
+            id_factory=lambda: self._sid(5),
+        )
+        with self.assertRaisesRegex(self.lib.HandsoffError, "stale agent session"):
+            self.lib.transition_agent_session(self.tmp, first["session_id"], "completed", exit_code=0)
+        status = self.read_status()
+        self.assertEqual(status["current_agent_sessions"]["reviewer"], second["session_id"])
+        self.assertEqual(status["agent_sessions"][second["session_id"]]["state"], "launching")
+        with self.assertRaisesRegex(self.lib.HandsoffError, "collision-free"):
+            self.lib.create_agent_session(
+                self.tmp, role="architect", actor="architect", adapter="codex",
+                requested_model="default", resolution_source="configured",
+                id_factory=lambda: self._sid(4),
+            )
+
+    def test_dashboard_distinguishes_managed_legacy_and_next_launch_profiles(self):
+        with self.lib.project_lock(self.tmp):
+            cfg = self.lib.load_config(self.tmp)
+            status = self.lib.load_unique_json(self.lib.status_path(self.tmp, cfg))
+            status["implemented_by"] = "manual-implementer"
+            self.lib.commit(
+                self.tmp, cfg, status=status, event_kind="manual_actor_recorded",
+                event_message="Manual implementer identity recorded",
+            )
+        managed = self.lib.create_agent_session(
+            self.tmp, role="reviewer", actor="managed-reviewer", adapter="codex",
+            requested_model="review-model", resolution_source="configured",
+            id_factory=lambda: self._sid(6),
+        )
+        profiles = self.lib.agent_profiles(self.lib.load_config(self.tmp))
+        profiles["reviewer"] = {"adapter": "claude", "model": "next-model"}
+        self.lib.update_agent_config(self.tmp, profiles)
+        snapshot = self.dashboard.build_snapshot(self.tmp)
+        self.assertEqual(snapshot["runtime"]["current_sessions"]["reviewer"]["session_id"], managed["session_id"])
+        self.assertIsNone(snapshot["runtime"]["current_sessions"]["implementer"])
+        self.assertEqual(snapshot["actors"]["implemented_by"], "manual-implementer")
+        self.assertEqual(snapshot["settings"]["effective_profiles"]["reviewer"], {
+            "adapter": "claude", "model": "next-model",
+        })
+        script = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertIn("snapshot.runtime?.current_sessions", script)
+        self.assertIn("THIS RUN:", script)
+        self.assertIn("profile not recorded", script)
+        self.assertIn("exact model not reported", script)
+        self.assertIn("NEXT LAUNCH:", script)
+
+    def test_runtime_telemetry_excludes_sensitive_payloads(self):
+        secret = "sk-secret-task-output-env-token"
+        spec = self._spec(role="supervisor", stdin=f"private prompt {secret}")
+
+        class InputPipe:
+            def write(self, _value):
+                return None
+            def close(self):
+                return None
+
+        class Process:
+            pid = None
+            returncode = 0
+            stdin = InputPipe()
+            stdout = io.StringIO(f"runner output {secret}\n")
+            def wait(self, timeout=None):
+                return 0
+            def terminate(self):
+                return None
+            def kill(self):
+                return None
+
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": secret}), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            self.runtime.execute_launch(
+                spec, actor="safe-supervisor", popen_factory=mock.Mock(return_value=Process()),
+                session_id_factory=lambda: self._sid(7),
+            )
+        persisted = "\n".join(
+            path.read_text() for path in (
+                self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
+            )
+        )
+        self.assertNotIn(secret, persisted)
+        session = self.read_status()["agent_sessions"][self._sid(7)]
+        self.assertEqual(set(session), self.lib.AGENT_SESSION_FIELDS)
+
+    def test_telemetry_is_optional_non_gating_and_failure_safe(self):
+        before = self.read_status()
+        self.assertEqual(self.lib.validate_status_schema(before), [])
+        cfg = self.lib.load_config(self.tmp)
+        acceptance = self.read_acceptance()
+        verifications, problems = self.lib.load_verifications(self.tmp, cfg)
+        gates_before = self.lib.compute_errors(
+            before, acceptance, cfg, verifications=verifications, verification_problems=problems,
+        )
+        self.runtime.build_launch_spec(
+            self.tmp, "architect", "inspect-only secret", which=lambda name: f"/bin/{name}",
+        )
+        self.assertEqual(self.read_status(), before)
+
+        factory = mock.Mock(return_value=self._process())
+        with mock.patch.object(self.lib, "commit", side_effect=OSError("write failed")):
+            with self.assertRaises(OSError):
+                self.runtime.execute_launch(self._spec(), popen_factory=factory)
+        factory.assert_not_called()
+        self.assertEqual(self.read_status(), before)
+
+        with self.assertRaisesRegex(self.lib.HandsoffError, "failed to start"):
+            self.runtime.execute_launch(
+                self._spec(), popen_factory=mock.Mock(side_effect=OSError("private path")),
+                session_id_factory=lambda: self._sid(8),
+            )
+        failed = self.read_status()["agent_sessions"][self._sid(8)]
+        self.assertEqual(failed["state"], "failed_to_start")
+        self.assertIsNone(failed["exit_code"])
+
+        process = self._process()
+        real_transition = self.lib.transition_agent_session
+        def fail_running(root, session_id, state, **kwargs):
+            if state == "running":
+                raise OSError("running commit failed")
+            return real_transition(root, session_id, state, **kwargs)
+        with mock.patch.object(self.lib, "transition_agent_session", side_effect=fail_running):
+            with self.assertRaises(OSError):
+                self.runtime.execute_launch(
+                    self._spec(role="architect"), popen_factory=mock.Mock(return_value=process),
+                    session_id_factory=lambda: self._sid(9),
+                )
+        self.assertTrue(process.stopped)
+
+        after = self.read_status()
+        for key in set(before) - {"agent_sessions", "current_agent_sessions"}:
+            self.assertEqual(after[key], before[key], key)
+        verifications, problems = self.lib.load_verifications(self.tmp, cfg)
+        gates_after = self.lib.compute_errors(
+            after, acceptance, cfg, verifications=verifications, verification_problems=problems,
+        )
+        self.assertEqual(gates_after, gates_before)
+
+        verification_path = self.lib.verification_log_path(self.tmp, cfg)
+        verification_path.write_text('{"not":"a valid verification record"}\n')
+        ledger_protected = {
+            path: path.read_bytes() for path in (
+                self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
+                self.tmp / ".handsoff-event-head.json", verification_path,
+            )
+        }
+        ledger_factory = mock.Mock(return_value=self._process())
+        with self.assertRaisesRegex(self.lib.HandsoffError, "verification ledger"):
+            self.runtime.execute_launch(
+                self._spec(role="supervisor"), popen_factory=ledger_factory,
+                session_id_factory=lambda: self._sid(13),
+            )
+        ledger_factory.assert_not_called()
+        self.assertEqual({path: path.read_bytes() for path in ledger_protected}, ledger_protected)
+        verification_path.unlink()
+
+        guarded = self.lib.create_agent_session(
+            self.tmp, role="reviewer", actor="integrity-reviewer", adapter="codex",
+            requested_model="default", resolution_source="configured",
+            id_factory=lambda: self._sid(14),
+        )
+        self.lib.transition_agent_session(self.tmp, guarded["session_id"], "running")
+        tampered = self.read_status()
+        tampered["summary"] = "schema-valid edit without an event"
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(tampered, indent=2, sort_keys=True) + "\n")
+        protected_paths = (
+            self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
+            self.tmp / ".handsoff-event-head.json",
+        )
+        protected = {path: path.read_bytes() for path in protected_paths}
+        with self.assertRaisesRegex(self.lib.HandsoffError, "status file does not match"):
+            self.lib.transition_agent_session(
+                self.tmp, guarded["session_id"], "completed", exit_code=0,
+            )
+        self.assertEqual({path: path.read_bytes() for path in protected_paths}, protected)
+
+        blocked_factory = mock.Mock(return_value=self._process())
+        with self.assertRaisesRegex(self.lib.HandsoffError, "status file does not match"):
+            self.runtime.execute_launch(
+                self._spec(role="supervisor"), popen_factory=blocked_factory,
+                session_id_factory=lambda: self._sid(15),
+            )
+        blocked_factory.assert_not_called()
+        self.assertEqual({path: path.read_bytes() for path in protected_paths}, protected)
+
 class TestQuickStartPaths(HandsoffTestCase):
     """The original bug: the README's own quick-start crashed on a fresh
     copy because paths resolved against bin/, not the project root."""
@@ -1242,6 +1656,7 @@ class TestAgentAgnosticSafetyGates(HandsoffTestCase):
         root = Path(tempfile.mkdtemp(prefix="handsoff-test-ag5-"))
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         shutil.copy(ROOT / "handsoff.toml", root / "handsoff.toml")
+        set_fixture_check_commands(root / "handsoff.toml", [])
         shutil.copytree(ROOT / "schemas", root / "schemas")
         sys.path.insert(0, str(BIN))
         import handsoff_lib as lib
@@ -1338,13 +1753,52 @@ class TestDeploymentApproval(HandsoffTestCase):
 
     def test_advance_to_phase_8_succeeds_after_approval(self):
         self._reach_phase_7()
-        approve = run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp)
-        self.assertEqual(approve.returncode, 0, approve.stdout)
+        barrier = threading.Barrier(3)
+        approvals = []
+        def approve():
+            barrier.wait()
+            approvals.append(run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp))
+        workers = [threading.Thread(target=approve) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=5)
+        self.assertEqual(len(approvals), 2)
+        self.assertTrue(all(result.returncode == 0 for result in approvals))
+        approved_status = self.read_status()
+        self.assertEqual(approved_status["status"], "ready_to_deploy")
+        self.assertNotIn("approval", approved_status["next_action"].lower())
+        approval_events = [
+            json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()
+            if json.loads(line).get("kind") == "deployment_approved"
+        ]
+        self.assertEqual(len(approval_events), 1)
+        before_duplicate = {
+            path: path.read_bytes() for path in (
+                self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
+                self.tmp / ".handsoff-event-head.json",
+            )
+        }
+        duplicate = run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(duplicate.returncode, 0, duplicate.stdout)
+        self.assertIn("ALREADY_APPROVED", duplicate.stdout)
+        self.assertEqual({path: path.read_bytes() for path in before_duplicate}, before_duplicate)
         live = run(["verify-live", "--by", "monitor"], cwd=self.tmp)
         self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
         r = run(["advance", "8", "100"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.read_status()["phase_number"], 8)
+        completed = {
+            path: path.read_bytes() for path in (
+                self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
+                self.tmp / ".handsoff-event-head.json",
+            )
+        }
+        late = run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(late.returncode, 1, late.stdout)
+        self.assertIn("requires Phase 7", late.stdout)
+        self.assertEqual({path: path.read_bytes() for path in completed}, completed)
 
 
 class TestRoundCaps(HandsoffTestCase):
@@ -3288,6 +3742,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
     def _new_project_root(self):
         root = Path(tempfile.mkdtemp(prefix="handsoff-test-architect-"))
         shutil.copy(ROOT / "handsoff.toml", root / "handsoff.toml")
+        set_fixture_check_commands(root / "handsoff.toml", [])
         shutil.copytree(ROOT / "schemas", root / "schemas")
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         return root

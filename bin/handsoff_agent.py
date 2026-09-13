@@ -26,6 +26,7 @@ class LaunchSpec:
     argv: tuple[str, ...]
     cwd: str
     stdin: str
+    resolution_source: str = "configured"
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -51,6 +52,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
+    configured_adapter = lib.agent_profiles(cfg)[role]["adapter"]
     profile = lib.resolved_agent_profiles(cfg, which=which, require_available=True)[role]
     adapter = profile["adapter"]
     if adapter not in lib.SELECTABLE_AGENT_ADAPTERS:
@@ -78,6 +80,11 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
             argv.extend(["--model", model])
 
     stdin = f"{prompt}\n\n# Assigned task\n\n{task}"
+    resolution_source = (
+        "auto_detected" if configured_adapter == lib.AUTO_AGENT_ADAPTER
+        else "legacy_auto_detected" if configured_adapter == lib.LEGACY_UNCONFIGURED_AGENT_ADAPTER
+        else "configured"
+    )
     return LaunchSpec(
         role=role,
         adapter=adapter,
@@ -85,6 +92,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
         argv=tuple(argv),
         cwd=str(root),
         stdin=stdin,
+        resolution_source=resolution_source,
     )
 
 
@@ -118,53 +126,102 @@ def _stop_process_group(process) -> None:
         raise lib.HandsoffError("agent process group did not stop after SIGKILL") from exc
 
 
-def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, popen_factory=subprocess.Popen) -> int:
-    """Stream runner output directly and propagate failures without capture."""
+def _failure_exit_code(process) -> int:
+    value = getattr(process, "returncode", None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value != 0 else 1
+
+
+def _terminalize_runner_io_failure(root: Path, session_id: str, process, *, stop_first: bool) -> None:
+    """Bound child cleanup and record exactly one failed terminal transition."""
+    try:
+        if stop_first:
+            _stop_process_group(process)
+        else:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _stop_process_group(process)
+    finally:
+        lib.transition_agent_session(
+            root, session_id, "failed", exit_code=_failure_exit_code(process),
+        )
+
+
+def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None = None,
+                   popen_factory=subprocess.Popen, session_id_factory=None) -> int:
+    """Run one managed session and record its lifecycle without payload data."""
     supervisor_requests: list[dict] = []
     protocol_errors: list[str] = []
     capture_supervisor = spec.role == "supervisor"
-    process = popen_factory(
-        list(spec.argv),
-        cwd=spec.cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE if capture_supervisor else None,
-        stderr=None,
-        text=True,
-        shell=False,
-        start_new_session=True,
+    root = Path(spec.cwd).resolve()
+    actor = lib.validate_agent_actor(actor or lib.default_agent_actor(spec.adapter, spec.role))
+    session = lib.create_agent_session(
+        root, role=spec.role, actor=actor, adapter=spec.adapter,
+        requested_model=spec.model, resolution_source=spec.resolution_source,
+        id_factory=session_id_factory,
     )
+    session_id = session["session_id"]
+    try:
+        process = popen_factory(
+            list(spec.argv),
+            cwd=spec.cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE if capture_supervisor else None,
+            stderr=None,
+            text=True,
+            shell=False,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        lib.transition_agent_session(root, session_id, "failed_to_start")
+        raise lib.HandsoffError(f"{spec.adapter} process failed to start: {type(exc).__name__}") from exc
+    try:
+        lib.transition_agent_session(root, session_id, "running")
+    except Exception:
+        _stop_process_group(process)
+        raise
     reader = None
+    reader_errors: list[BaseException] = []
     if capture_supervisor:
         def stream_and_parse() -> None:
-            pending = ""
-            discarding = False
-            while True:
-                chunk = process.stdout.read(4096)
-                if not chunk:
-                    break
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
-                if discarding:
-                    if "\n" in chunk:
-                        _, pending = chunk.split("\n", 1)
-                        discarding = False
+            try:
+                pending = ""
+                discarding = False
+                while True:
+                    chunk = process.stdout.read(4096)
+                    if not chunk:
+                        break
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    if discarding:
+                        if "\n" in chunk:
+                            _, pending = chunk.split("\n", 1)
+                            discarding = False
+                        else:
+                            continue
                     else:
-                        continue
-                else:
-                    pending += chunk
-                while "\n" in pending:
-                    line, pending = pending.split("\n", 1)
-                    _parse_supervisor_line(line, supervisor_requests, protocol_errors)
-                if len(pending.encode("utf-8")) > 65536:
-                    if pending.startswith(SUPERVISOR_REQUEST_PREFIX):
-                        protocol_errors.append("Supervisor broker request exceeded 65536 bytes")
-                    pending = ""
-                    discarding = True
-            if pending and not discarding:
-                _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
+                        pending += chunk
+                    while "\n" in pending:
+                        line, pending = pending.split("\n", 1)
+                        _parse_supervisor_line(line, supervisor_requests, protocol_errors)
+                    if len(pending.encode("utf-8")) > 65536:
+                        if pending.startswith(SUPERVISOR_REQUEST_PREFIX):
+                            protocol_errors.append("Supervisor broker request exceeded 65536 bytes")
+                        pending = ""
+                        discarding = True
+                if pending and not discarding:
+                    _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
+            except BaseException as exc:
+                reader_errors.append(exc)
 
-        reader = threading.Thread(target=stream_and_parse, daemon=True)
-        reader.start()
+        try:
+            reader = threading.Thread(target=stream_and_parse, daemon=True)
+            reader.start()
+        except Exception as exc:
+            _terminalize_runner_io_failure(root, session_id, process, stop_first=True)
+            raise lib.HandsoffError(
+                f"Supervisor output stream failed to start: {type(exc).__name__}"
+            ) from exc
     try:
         if capture_supervisor:
             process.stdin.write(spec.stdin)
@@ -173,27 +230,71 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, popen_factory=subpr
         else:
             process.communicate(input=spec.stdin, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        _stop_process_group(process)
-        if reader:
-            reader.join(timeout=5)
+        try:
+            _stop_process_group(process)
+        finally:
+            try:
+                if reader:
+                    reader.join(timeout=5)
+            finally:
+                lib.transition_agent_session(root, session_id, "timed_out", exit_code=124)
         raise lib.HandsoffError(f"agent launch timed out after {timeout} seconds") from exc
     except KeyboardInterrupt as exc:
-        _stop_process_group(process)
-        if reader:
-            reader.join(timeout=5)
+        try:
+            _stop_process_group(process)
+        finally:
+            try:
+                if reader:
+                    reader.join(timeout=5)
+            finally:
+                lib.transition_agent_session(root, session_id, "cancelled", exit_code=130)
         raise lib.HandsoffError("agent launch cancelled") from exc
+    except Exception as exc:
+        _terminalize_runner_io_failure(
+            root, session_id, process, stop_first=not isinstance(exc, BrokenPipeError),
+        )
+        raise lib.HandsoffError(f"agent runner I/O failed: {type(exc).__name__}") from exc
     if reader:
-        reader.join(timeout=5)
-        if reader.is_alive():
+        try:
+            reader.join(timeout=5)
+            reader_alive = reader.is_alive()
+        except KeyboardInterrupt as exc:
+            try:
+                _stop_process_group(process)
+            finally:
+                lib.transition_agent_session(root, session_id, "cancelled", exit_code=130)
+            raise lib.HandsoffError("agent launch cancelled") from exc
+        except Exception as exc:
+            _terminalize_runner_io_failure(root, session_id, process, stop_first=True)
+            raise lib.HandsoffError(
+                f"Supervisor output stream failed: {type(exc).__name__}"
+            ) from exc
+        if reader_alive:
+            _terminalize_runner_io_failure(root, session_id, process, stop_first=True)
             raise lib.HandsoffError("Supervisor output stream did not close")
+        if reader_errors:
+            _terminalize_runner_io_failure(root, session_id, process, stop_first=False)
+            raise lib.HandsoffError(
+                f"Supervisor output stream failed: {type(reader_errors[0]).__name__}"
+            ) from reader_errors[0]
     if process.returncode:
+        lib.transition_agent_session(root, session_id, "failed", exit_code=process.returncode)
         raise lib.HandsoffError(f"{spec.adapter} exited with status {process.returncode}")
     if protocol_errors:
+        lib.transition_agent_session(root, session_id, "failed", exit_code=1)
         raise lib.HandsoffError(protocol_errors[0])
     if supervisor_requests:
-        import handsoff_broker as broker
-        for request in supervisor_requests:
-            broker.dispatch_supervisor_request(Path(spec.cwd), request)
+        try:
+            import handsoff_broker as broker
+            for request in supervisor_requests:
+                broker.dispatch_supervisor_request(Path(spec.cwd), request)
+        except KeyboardInterrupt as exc:
+            lib.transition_agent_session(root, session_id, "cancelled", exit_code=130)
+            raise lib.HandsoffError("agent launch cancelled") from exc
+        except Exception:
+            lib.transition_agent_session(root, session_id, "failed", exit_code=1)
+            raise
+    lib.transition_agent_session(root, session_id, "completed", exit_code=0)
     return 0
 
 
@@ -217,6 +318,10 @@ def main() -> int:
         command.add_argument("--task", required=True)
         if name == "launch":
             command.add_argument("--timeout", type=int, default=3600)
+            command.add_argument(
+                "--by", default=None,
+                help="runtime actor identity (default: '<resolved-adapter>-<role>')",
+            )
     args = parser.parse_args()
     try:
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task)
@@ -234,7 +339,7 @@ def main() -> int:
             return 0
         if args.timeout <= 0:
             raise lib.HandsoffError("--timeout must be positive")
-        return execute_launch(spec, timeout=args.timeout)
+        return execute_launch(spec, timeout=args.timeout, actor=args.by)
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}", file=sys.stderr)
         return 1

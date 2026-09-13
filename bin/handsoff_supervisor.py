@@ -371,14 +371,12 @@ def cmd_deployment_gate(args) -> int:
             print("DEPLOYMENT_BLOCKED")
             print("\n".join(f"- {x}" for x in errors))
             return 1
-        # Approval is only meaningful once every earlier gate is already
-        # satisfied: Phase 7 ("Awaiting deployment approval") or later.
-        # Without this, approval could be granted at Phase 1, before an
-        # Implementer or Reviewer had touched anything, and would still
-        # satisfy the Phase 8 gate later.
+        # Approval is only meaningful in Phase 7. Refusing earlier phases
+        # prevents premature approval; refusing later phases prevents a
+        # delayed/double-click request from mutating a completed run.
         phase = int(status.get("phase_number", 0) or 0)
-        if phase < 7:
-            print(f"DEPLOYMENT_BLOCKED\n- deployment approval requires Phase 7 or later (currently Phase {phase})")
+        if phase != 7:
+            print(f"DEPLOYMENT_BLOCKED\n- deployment approval requires Phase 7 (currently Phase {phase})")
             return 1
         if not args.approve:
             print("DEPLOYMENT_AWAITING_EXPLICIT_APPROVAL")
@@ -386,17 +384,39 @@ def cmd_deployment_gate(args) -> int:
         if not args.by:
             print("DEPLOYMENT_BLOCKED\n- --by is required when recording approval")
             return 1
+        acceptance_digest = lib.acceptance_hash(acceptance.get("criteria", []))
+        config_digest = lib.config_hash(cfg)
+        existing = status.get("deployment_approved")
+        if isinstance(existing, dict):
+            if existing.get("acceptance_hash") == acceptance_digest \
+                    and existing.get("config_hash") == config_digest:
+                print("DEPLOYMENT_ALREADY_APPROVED")
+                return 0
+            print("DEPLOYMENT_BLOCKED\n- existing deployment approval is stale; workflow decisions must be refreshed")
+            return 1
         # The approval is bound to a hash of the acceptance criteria AT
         # THE MOMENT of approval. If the registry changes afterward (a
         # criterion reopened, added, or removed), the Phase 8 gate
         # recomputes this hash and refuses the now-stale approval.
-        status["deployment_approved"] = {
+        proposed = dict(status)
+        proposed["deployment_approved"] = {
             "at": datetime.now(timezone.utc).isoformat(),
             "by": args.by,
-            "acceptance_hash": lib.acceptance_hash(acceptance.get("criteria", [])),
-            "config_hash": lib.config_hash(cfg),
+            "acceptance_hash": acceptance_digest,
+            "config_hash": config_digest,
         }
-        lib.commit(root, cfg, status=status,
+        proposed["status"] = "ready_to_deploy"
+        proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
+        proposed["next_action"] = "Deploy the reviewed change and run live verification."
+        proposed_errors = lib.compute_errors(
+            proposed, acceptance, cfg, verifications=verifications,
+            verification_problems=verification_problems,
+        )
+        if proposed_errors:
+            print("DEPLOYMENT_BLOCKED")
+            print("\n".join(f"- {error}" for error in proposed_errors))
+            return 1
+        lib.commit(root, cfg, status=proposed,
                   event_kind="deployment_approved", event_message="Explicit deployment approval recorded",
                   by=args.by)
     print("DEPLOYMENT_APPROVED")

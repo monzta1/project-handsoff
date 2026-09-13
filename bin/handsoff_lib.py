@@ -30,6 +30,7 @@ import sys
 import time
 import urllib.request
 import uuid
+from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,6 +115,20 @@ AGENT_SETTING_ADAPTERS = (AUTO_AGENT_ADAPTER, *SELECTABLE_AGENT_ADAPTERS)
 DEFAULT_AGENT_PREFERENCE = SELECTABLE_AGENT_ADAPTERS
 DEFAULT_AGENT_MODEL = "default"
 MAX_AGENT_MODEL_LENGTH = 128
+MAX_AGENT_ACTOR_LENGTH = 128
+MAX_AGENT_SESSION_ID_LENGTH = 64
+MAX_AGENT_SESSIONS = 64
+AGENT_SESSION_ID_PATTERN = re.compile(r"^hs-[0-9a-f]{32}$")
+AGENT_SESSION_LIVE_STATES = {"launching", "running"}
+AGENT_SESSION_TERMINAL_STATES = {
+    "completed", "failed", "timed_out", "cancelled", "failed_to_start",
+}
+AGENT_SESSION_STATES = AGENT_SESSION_LIVE_STATES | AGENT_SESSION_TERMINAL_STATES
+AGENT_SESSION_RESOLUTION_SOURCES = {"configured", "auto_detected", "legacy_auto_detected"}
+AGENT_SESSION_FIELDS = {
+    "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
+    "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
+}
 
 REQUIRED_STATUS_FIELDS = (
     "feature", "phase_number", "phase", "progress", "status", "updated_at",
@@ -274,6 +289,17 @@ def validate_agent_model(value: object) -> str:
         raise HandsoffError("agent model must not begin with '-'")
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
         raise HandsoffError("agent model must not contain control characters")
+    return value
+
+
+def validate_agent_actor(value: object) -> str:
+    """Validate a display/audit identity without interpreting it."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise HandsoffError("agent actor must be a non-empty string without surrounding whitespace")
+    if len(value) > MAX_AGENT_ACTOR_LENGTH:
+        raise HandsoffError(f"agent actor must be at most {MAX_AGENT_ACTOR_LENGTH} characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise HandsoffError("agent actor must not contain control characters")
     return value
 
 
@@ -704,6 +730,196 @@ def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dic
 
 
 # --------------------------------------------------------------------------
+# managed-agent runtime telemetry
+# --------------------------------------------------------------------------
+
+def default_agent_actor(adapter: str, role: str) -> str:
+    """Stable documented identity used when ``handsoff_agent launch`` omits --by."""
+    if adapter not in SELECTABLE_AGENT_ADAPTERS or role not in SELECTABLE_AGENT_ROLES:
+        raise HandsoffError("cannot derive an actor for an unsupported agent adapter or role")
+    return f"{adapter}-{role}"
+
+
+def _new_agent_session_id(sessions: dict, *, id_factory=None) -> str:
+    factory = id_factory or (lambda: f"hs-{uuid.uuid4().hex}")
+    for _attempt in range(16):
+        candidate = factory()
+        if not isinstance(candidate, str) or len(candidate) > MAX_AGENT_SESSION_ID_LENGTH \
+                or not AGENT_SESSION_ID_PATTERN.fullmatch(candidate):
+            raise HandsoffError("generated agent session id is invalid")
+        if candidate not in sessions:
+            return candidate
+    raise HandsoffError("could not allocate a collision-free agent session id")
+
+
+def _prune_agent_sessions(sessions: dict, current: dict) -> None:
+    """Bound status growth while retaining every role's current snapshot."""
+    protected = {value for value in current.values() if isinstance(value, str)}
+    removable = sorted(
+        (session for sid, session in sessions.items()
+         if sid not in protected and session.get("state") in AGENT_SESSION_TERMINAL_STATES),
+        key=lambda session: (session.get("started_at", ""), session.get("session_id", "")),
+    )
+    while len(sessions) >= MAX_AGENT_SESSIONS and removable:
+        sessions.pop(removable.pop(0)["session_id"], None)
+    if len(sessions) >= MAX_AGENT_SESSIONS:
+        raise HandsoffError("agent session history is full; no terminal session can be retired safely")
+
+
+def _assert_agent_telemetry_integrity(root: Path, cfg: dict, status: dict) -> None:
+    """Refuse telemetry writes over stale or unauthenticated workflow state."""
+    problems = [f"event log: {problem}" for problem in verify_event_log(root, cfg)]
+    records, verification_problems = load_verifications(root, cfg)
+    problems.extend(f"verification ledger: {problem}" for problem in verification_problems)
+    actual_head = records[-1].get("hash") if records else "GENESIS"
+    if status.get("verification_head") != actual_head:
+        problems.append("verification ledger: tail does not match the anchored head")
+    if problems:
+        raise HandsoffError(problems[0])
+
+
+def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
+                         requested_model: str, resolution_source: str,
+                         id_factory=None) -> dict:
+    """Commit the immutable launch snapshot before a managed child starts.
+
+    The task/prompt, environment, runner output, credentials, and token data
+    are deliberately not accepted by this API, so callers cannot accidentally
+    persist them as telemetry.
+    """
+    root = root.resolve()
+    if role not in SELECTABLE_AGENT_ROLES:
+        raise HandsoffError("agent session role must be architect, supervisor, implementer, or reviewer")
+    actor = validate_agent_actor(actor)
+    if adapter not in SELECTABLE_AGENT_ADAPTERS:
+        raise HandsoffError("agent session adapter must be codex or claude")
+    requested_model = validate_agent_model(requested_model)
+    if resolution_source not in AGENT_SESSION_RESOLUTION_SOURCES:
+        raise HandsoffError("agent session resolution source is invalid")
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        schema_errors = validate_status_schema(status)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        _assert_agent_telemetry_integrity(root, cfg, status)
+        sessions = deepcopy(status.get("agent_sessions") or {})
+        current = deepcopy(status.get("current_agent_sessions") or {})
+        active_id = current.get(role)
+        active = sessions.get(active_id) if isinstance(active_id, str) else None
+        if active and active.get("state") in AGENT_SESSION_LIVE_STATES:
+            raise HandsoffError(
+                f"role {role} already has live agent session {active_id} ({active.get('state')})"
+            )
+        _prune_agent_sessions(sessions, current)
+        session_id = _new_agent_session_id(sessions, id_factory=id_factory)
+        now = datetime.now(timezone.utc).isoformat()
+        session = {
+            "session_id": session_id,
+            "role": role,
+            "actor": actor,
+            "adapter": adapter,
+            "requested_model": requested_model,
+            "reported_model": None,
+            "resolution_source": resolution_source,
+            "started_at": now,
+            "running_at": None,
+            "ended_at": None,
+            "state": "launching",
+            "exit_code": None,
+        }
+        sessions[session_id] = session
+        current[role] = session_id
+        proposed = deepcopy(status)
+        proposed["agent_sessions"] = sessions
+        proposed["current_agent_sessions"] = current
+        schema_errors = validate_status_schema(proposed)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        commit(
+            root, cfg, status=proposed,
+            event_kind="agent_session_launching",
+            event_message=f"Managed {role} agent session is launching",
+            session_id=session_id, role=role, actor=actor, adapter=adapter,
+            requested_model=requested_model, reported_model=None,
+            resolution_source=resolution_source, state="launching",
+        )
+        return deepcopy(session)
+
+
+def transition_agent_session(root: Path, session_id: str, state: str,
+                             *, exit_code: int | None = None) -> dict:
+    """Apply a session-ID-matched lifecycle-only update under the lock."""
+    if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
+        raise HandsoffError("agent session id is invalid")
+    if state not in AGENT_SESSION_STATES - {"launching"}:
+        raise HandsoffError("agent session lifecycle state is invalid")
+    if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
+        raise HandsoffError("agent session exit code must be an integer or null")
+    terminal = state in AGENT_SESSION_TERMINAL_STATES
+    if not terminal and exit_code is not None:
+        raise HandsoffError("a non-terminal agent session cannot have an exit code")
+    with project_lock(root.resolve()):
+        root = root.resolve()
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        schema_errors = validate_status_schema(status)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        _assert_agent_telemetry_integrity(root, cfg, status)
+        sessions = status.get("agent_sessions")
+        current = status.get("current_agent_sessions")
+        if not isinstance(sessions, dict) or not isinstance(current, dict):
+            raise HandsoffError("agent session telemetry is not present")
+        existing = sessions.get(session_id)
+        if not isinstance(existing, dict):
+            raise HandsoffError(f"agent session {session_id} was not found")
+        role = existing.get("role")
+        if current.get(role) != session_id:
+            raise HandsoffError(f"stale agent session {session_id} is no longer current for role {role}")
+        old_state = existing.get("state")
+        allowed = {
+            "launching": {"running", "failed_to_start"},
+            "running": {"completed", "failed", "timed_out", "cancelled"},
+        }
+        if state not in allowed.get(old_state, set()):
+            raise HandsoffError(f"agent session cannot transition from {old_state} to {state}")
+        proposed = deepcopy(status)
+        updated = proposed["agent_sessions"][session_id]
+        now = datetime.now(timezone.utc).isoformat()
+        updated["state"] = state
+        if state == "running":
+            updated["running_at"] = now
+        else:
+            updated["ended_at"] = now
+            updated["exit_code"] = exit_code
+        schema_errors = validate_status_schema(proposed)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        event_kind = f"agent_session_{state}"
+        commit(
+            root, cfg, status=proposed,
+            event_kind=event_kind,
+            event_message=f"Managed {role} agent session is {state.replace('_', ' ')}",
+            session_id=session_id, role=role, state=state, exit_code=exit_code,
+        )
+        return deepcopy(updated)
+
+
+def current_agent_sessions(status: dict) -> dict:
+    """Return each role's recorded current session, without inference."""
+    sessions = status.get("agent_sessions") if isinstance(status, dict) else None
+    pointers = status.get("current_agent_sessions") if isinstance(status, dict) else None
+    if not isinstance(sessions, dict) or not isinstance(pointers, dict):
+        return {role: None for role in SELECTABLE_AGENT_ROLES}
+    return {
+        role: deepcopy(sessions.get(pointers.get(role)))
+        if isinstance(sessions.get(pointers.get(role)), dict) else None
+        for role in SELECTABLE_AGENT_ROLES
+    }
+
+
+# --------------------------------------------------------------------------
 # tamper-evident event log
 # --------------------------------------------------------------------------
 
@@ -1120,6 +1336,93 @@ def validate_status_schema(status: dict) -> list[str]:
                 errors.append(f"status: 'review.{field}.effective_adapter' must be a non-empty string or null")
         if "profiles_distinct" in review and not isinstance(review["profiles_distinct"], bool):
             errors.append("status: 'review.profiles_distinct' must be boolean")
+    sessions = status.get("agent_sessions")
+    pointers = status.get("current_agent_sessions")
+    if sessions is not None:
+        if not isinstance(sessions, dict):
+            errors.append("status: 'agent_sessions' must be an object")
+            sessions = {}
+        elif len(sessions) > MAX_AGENT_SESSIONS:
+            errors.append(f"status: 'agent_sessions' must contain at most {MAX_AGENT_SESSIONS} sessions")
+        for session_id, session in sessions.items():
+            label = f"status: agent session {session_id!r}"
+            if not isinstance(session_id, str) or len(session_id) > MAX_AGENT_SESSION_ID_LENGTH \
+                    or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
+                errors.append(f"{label} has an invalid session id")
+            if not isinstance(session, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            missing = AGENT_SESSION_FIELDS - set(session)
+            if missing:
+                errors.append(f"{label} is missing fields: {', '.join(sorted(missing))}")
+            unexpected = set(session) - AGENT_SESSION_FIELDS
+            if unexpected:
+                errors.append(f"{label} contains unsupported fields: {', '.join(sorted(unexpected))}")
+            if session.get("session_id") != session_id:
+                errors.append(f"{label} session_id must match its object key")
+            if session.get("role") not in SELECTABLE_AGENT_ROLES:
+                errors.append(f"{label} has an invalid role")
+            try:
+                validate_agent_actor(session.get("actor"))
+            except HandsoffError as exc:
+                errors.append(f"{label}: {exc}")
+            if session.get("adapter") not in SELECTABLE_AGENT_ADAPTERS:
+                errors.append(f"{label} has an invalid adapter")
+            try:
+                validate_agent_model(session.get("requested_model"))
+            except HandsoffError as exc:
+                errors.append(f"{label}: requested_model: {exc}")
+            reported_model = session.get("reported_model")
+            if reported_model is not None:
+                try:
+                    validate_agent_model(reported_model)
+                except HandsoffError as exc:
+                    errors.append(f"{label}: reported_model: {exc}")
+            if session.get("resolution_source") not in AGENT_SESSION_RESOLUTION_SOURCES:
+                errors.append(f"{label} has an invalid resolution_source")
+            session_state = session.get("state")
+            if session_state not in AGENT_SESSION_STATES:
+                errors.append(f"{label} has an invalid state")
+            for time_field in ("started_at", "running_at", "ended_at"):
+                value = session.get(time_field)
+                if value is None and time_field != "started_at":
+                    continue
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{label}.{time_field} must be an ISO-8601 timestamp or null")
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(value)
+                    if parsed.tzinfo is None:
+                        errors.append(f"{label}.{time_field} must include a timezone")
+                except ValueError:
+                    errors.append(f"{label}.{time_field} must be an ISO-8601 timestamp or null")
+            exit_code = session.get("exit_code")
+            if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
+                errors.append(f"{label}.exit_code must be an integer or null")
+            if session_state in AGENT_SESSION_LIVE_STATES and session.get("ended_at") is not None:
+                errors.append(f"{label} cannot have ended_at while live")
+            if session_state in AGENT_SESSION_TERMINAL_STATES and session.get("ended_at") is None:
+                errors.append(f"{label} terminal state requires ended_at")
+            if session_state == "launching" and session.get("running_at") is not None:
+                errors.append(f"{label} launching state cannot have running_at")
+            if session_state not in {"launching", "failed_to_start"} and session.get("running_at") is None:
+                errors.append(f"{label} state {session_state!r} requires running_at")
+    if pointers is not None:
+        if not isinstance(pointers, dict):
+            errors.append("status: 'current_agent_sessions' must be an object")
+        else:
+            for role, session_id in pointers.items():
+                if role not in SELECTABLE_AGENT_ROLES:
+                    errors.append(f"status: current_agent_sessions has invalid role {role!r}")
+                    continue
+                if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
+                    errors.append(f"status: current_agent_sessions.{role} must be a valid session id")
+                elif not isinstance(sessions, dict) or session_id not in sessions:
+                    errors.append(f"status: current_agent_sessions.{role} points to a missing session")
+                elif not isinstance(sessions[session_id], dict) or sessions[session_id].get("role") != role:
+                    errors.append(f"status: current_agent_sessions.{role} points to a different role")
+    if (sessions is None) != (pointers is None):
+        errors.append("status: agent_sessions and current_agent_sessions must be present together")
     return errors
 
 

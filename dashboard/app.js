@@ -15,7 +15,7 @@ const state = {
   actors: {},
   activeRole: null,
   latestEvent: null,
-  runProfiles: {},
+  runSessions: {},
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 const ALLOWED_ADAPTERS = ["auto", "codex", "claude"];
@@ -36,6 +36,8 @@ function effectiveProfileLabel(profile) {
 }
 
 function actorForRole(role) {
+  const sessionActor = state.runSessions?.[role]?.actor;
+  if (sessionActor) return sessionActor;
   const recorded = {
     architect: state.actors?.architect,
     implementer: state.actors?.implemented_by,
@@ -48,20 +50,20 @@ function actorForRole(role) {
   return null;
 }
 
-function adapterFromActor(actor) {
-  const value = String(actor || "").toLowerCase();
-  if (value.startsWith("claude")) return "Claude Code";
-  if (value.startsWith("codex")) return "Codex";
-  return null;
-}
-
 function runProfileLabel(role) {
   const actor = actorForRole(role);
-  if (!actor) return "THIS RUN: station not assigned";
-  const profile = state.runProfiles?.[role];
-  if (profile) return `THIS RUN: ${effectiveProfileLabel({ adapter: profile.effective_adapter || profile.adapter, model: profile.model })} · ${actor}`;
-  const inferredAdapter = adapterFromActor(actor);
-  return `THIS RUN: ${inferredAdapter ? `${inferredAdapter} · ` : ""}model not recorded · ${actor}`;
+  const session = state.runSessions?.[role];
+  if (session) {
+    const requested = session.requested_model === "default"
+      ? "requested runner default"
+      : `requested ${session.requested_model}`;
+    const reported = session.reported_model
+      ? `reported ${session.reported_model}`
+      : "exact model not reported";
+    return `THIS RUN: ${adapterLabel(session.adapter)} · ${requested} · ${reported} · ${session.actor} · ${session.session_id} · ${String(session.state || "unknown").replaceAll("_", " ").toUpperCase()}`;
+  }
+  if (!actor) return "THIS RUN: station not assigned · profile not recorded";
+  return `THIS RUN: profile not recorded · ${actor}`;
 }
 
 function escapeHtml(value) {
@@ -261,10 +263,16 @@ function renderInputAlert(inputRequest, feature) {
   $("input-alert").classList.toggle("hidden", !required);
   $("input-alert-message").textContent = message;
   const approvalButton = $("design-approve");
+  const deploymentButton = $("deployment-approve");
   approvalButton.classList.toggle("hidden", state.inputKind !== "design_approval");
+  deploymentButton.classList.toggle("hidden", state.inputKind !== "deployment_approval");
   if (state.inputKind === "design_approval" && signature !== state.alertSignature) {
     approvalButton.disabled = false;
     approvalButton.textContent = "AUTHORIZE DESIGN";
+  }
+  if (state.inputKind === "deployment_approval" && signature !== state.alertSignature) {
+    deploymentButton.disabled = false;
+    deploymentButton.textContent = "AUTHORIZE DEPLOYMENT";
   }
   updateAlertButton();
 
@@ -294,6 +302,27 @@ async function authorizeDesign() {
   } catch (error) {
     button.disabled = false;
     button.textContent = "AUTHORIZE DESIGN";
+    showError(`Authorization rejected: ${error.message}`);
+  }
+}
+
+async function authorizeDeployment() {
+  const button = $("deployment-approve");
+  button.disabled = true;
+  button.textContent = "TRANSMITTING AUTHORIZATION…";
+  try {
+    const response = await fetch("/api/deployment-approval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Authorization returned ${response.status}`);
+    button.textContent = "DEPLOYMENT AUTHORIZED";
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "AUTHORIZE DEPLOYMENT";
     showError(`Authorization rejected: ${error.message}`);
   }
 }
@@ -375,10 +404,7 @@ function render(snapshot) {
   state.actors = snapshot.actors || {};
   state.activeRole = snapshot.actors?.active_role || null;
   state.latestEvent = snapshot.events?.[0] || null;
-  state.runProfiles = {
-    implementer: snapshot.status?.review?.implementer_profile,
-    reviewer: snapshot.status?.review?.reviewer_profile,
-  };
+  state.runSessions = snapshot.runtime?.current_sessions || {};
   if (snapshot.settings) {
     state.settings = snapshot.settings;
     if (!$("settings-dialog").open || !state.settingsDirty) populateAgentSettings();
@@ -549,6 +575,7 @@ refresh();
 connectEventStream();
 $("enable-alerts").addEventListener("click", enableDesktopAlerts);
 $("design-approve").addEventListener("click", authorizeDesign);
+$("deployment-approve").addEventListener("click", authorizeDeployment);
 $("settings-toggle").addEventListener("click", openSettings);
 $("settings-close").addEventListener("click", closeSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
