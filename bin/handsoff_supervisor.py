@@ -130,7 +130,9 @@ def cmd_init(args) -> int:
                 "verification": "automated", "tests": list(lib.PLACEHOLDER_TESTS), "evidence": [], "state": "failing",
             }],
         }
-        acceptance["work_items"] = lib.derive_work_item_registry(acceptance, cfg, now=now)
+        acceptance["work_items"] = lib.derive_work_item_registry(
+            acceptance, cfg, now=now, explicit_items=args.item,
+        )
         status = {
             "feature": args.feature, "phase_number": 1, "phase": lib.PHASES[1], "progress": 0,
             "status": "in_progress", "updated_at": now, "last_heartbeat_at": None,
@@ -500,6 +502,30 @@ def _same_regression_bindings(item: dict, root: Path, cfg: dict, acceptance: dic
     return all(item.get(key) == current[key] for key in current)
 
 
+def _legacy_scope_bootstrap_allowed(root: Path, cfg: dict, status: dict,
+                                    acceptance: dict, before_items: list[dict]) -> bool:
+    """Trust an old scope-less approval only when its full audit proof is current."""
+    review = status.get("design_review")
+    approval = status.get("design_approved")
+    if not isinstance(review, dict) or not isinstance(approval, dict):
+        return False
+    if review.get("decision") != "approved":
+        return False
+    current_design = lib.design_hash(acceptance.get("criteria", []))
+    current_config = lib.config_hash(cfg)
+    if any(record.get("design_hash") != current_design or record.get("config_hash") != current_config
+           for record in (review, approval)):
+        return False
+    approval_event = next((event for event in reversed(lib.read_events(root, cfg))
+                           if event.get("kind") == "design_approved"), None)
+    if not approval_event or approval_event.get("acceptance_sha256") != lib._file_sha256(
+            lib.acceptance_path(root, cfg)):
+        return False
+    tagged = {lib.criterion_work_item_id(item) for item in acceptance.get("criteria", [])}
+    tagged.discard(None)
+    return all(not item.get("required", True) or item.get("id") in tagged for item in before_items)
+
+
 def cmd_work_items_sync(args) -> int:
     actor = lib.validate_agent_actor(args.by)
     root = lib.resolve_root(args.root)
@@ -525,16 +551,29 @@ def cmd_work_items_sync(args) -> int:
             persisted = derived
         acceptance["work_items"] = persisted
         after_scope = lib.work_item_scope_hash(persisted)
-        if before_scope == after_scope:
-            for field in ("design_review", "design_approved"):
-                if isinstance(status.get(field), dict):
+        bootstrap = False
+        decisions = [status.get("design_review"), status.get("design_approved")]
+        scope_missing = any(isinstance(record, dict) and not record.get("scope_hash")
+                            for record in decisions)
+        scope_conflict = any(isinstance(record, dict) and record.get("scope_hash") not in {None, after_scope}
+                             for record in decisions)
+        if before_scope == after_scope and scope_missing:
+            bootstrap = not scope_conflict and all(isinstance(record, dict) and not record.get("scope_hash")
+                                                   for record in decisions) \
+                and _legacy_scope_bootstrap_allowed(root, cfg, status, acceptance, before_items)
+            if bootstrap:
+                for field in ("design_review", "design_approved"):
                     status[field]["scope_hash"] = after_scope
-        else:
+            else:
+                status["design_review"] = None
+                status["design_approved"] = None
+        elif before_scope != after_scope or scope_conflict:
             status["design_review"] = None
             status["design_approved"] = None
-            if status.get("phase_number", 1) >= 3:
-                status.update(phase_number=2, phase=lib.PHASES[2], progress=min(status.get("progress", 0), 20),
-                              status="in_progress", next_action="Review and approve the changed work-item scope.")
+        if (before_scope != after_scope or scope_conflict or (scope_missing and not bootstrap)) \
+                and status.get("phase_number", 1) >= 3:
+            status.update(phase_number=2, phase=lib.PHASES[2], progress=min(status.get("progress", 0), 20),
+                          status="in_progress", next_action="Review and approve the changed work-item scope.")
         status.setdefault("active_work_item", None)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         errors = lib.validate_acceptance_schema(acceptance) + lib.validate_status_schema(status)
@@ -544,7 +583,7 @@ def cmd_work_items_sync(args) -> int:
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                    event_kind="work_items_synced", event_message="Canonical work-item registry synchronized",
                    by=actor, count=len(persisted), scope_hash=after_scope,
-                   scope_binding_bootstrapped=before_scope == after_scope)
+                   scope_binding_bootstrapped=bootstrap)
     print(f"WORK_ITEMS_SYNCED: {len(persisted)}")
     return 0
 
@@ -733,6 +772,9 @@ def cmd_regression_run(args) -> int:
                    request_id=item["request_id"], by=actor)
     results = lib.run_checks(cfg, root, commands=commands, allow_regression=True)
     with lib.project_lock(root):
+        # Re-read policy after the command returns. Reusing the pre-launch
+        # object would let a concurrent policy edit pass its own comparison.
+        cfg = lib.load_config(root)
         status, acceptance = _load(root, cfg)
         item = _regression_request(status, args.request_id)
         if not item or item.get("state") != "launched" or item.get("launch_nonce_sha256") != nonce_digest:
@@ -1398,6 +1440,27 @@ def cmd_verify_live(args) -> int:
     return 0 if ok else 1
 
 
+def _sync_registry_from_criteria(acceptance: dict, cfg: dict) -> bool:
+    """Append newly declared criterion identities without deleting stable promises."""
+    existing = acceptance.get("work_items")
+    if not isinstance(existing, list):
+        return False
+    known = {item.get("id") for item in existing}
+    changed = False
+    for item in lib.derive_work_item_registry(acceptance, cfg):
+        if item["id"] not in known:
+            existing.append(item)
+            known.add(item["id"])
+            changed = True
+    existing.sort(key=lambda item: (item["kind"] != "issue", item.get("number") or 0, item["id"]))
+    return changed
+
+
+def _criterion_needs_item_warning(criterion: dict, acceptance: dict, cfg: dict) -> bool:
+    items, _ = lib.effective_work_items(acceptance, cfg)
+    return len(items) > 1 and lib.criterion_work_item_id(criterion) is None
+
+
 def cmd_criterion_update(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -1414,6 +1477,7 @@ def cmd_criterion_update(args) -> int:
             print("SHIP_FEATURE_BLOCKED: criterion-update requires at least one change")
             return 1
         was_primary = criterion.get("type") == "primary_fix"
+        before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
         spec_changed = False
         for field in ("requirement", "verification", "type"):
             value = getattr(args, field)
@@ -1432,6 +1496,8 @@ def cmd_criterion_update(args) -> int:
         if spec_changed and (was_primary or criterion.get("type") == "primary_fix"):
             status["requirement_coverage"]["original_symptom_resolved"] = False
             status["original_symptom_evidence_id"] = None
+        registry_changed = _sync_registry_from_criteria(acceptance, cfg)
+        warning = _criterion_needs_item_warning(criterion, acceptance, cfg)
         lib.migrate_review_ledger(status)
         abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
@@ -1445,7 +1511,10 @@ def cmd_criterion_update(args) -> int:
                   "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
         lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_updated", event_message="Acceptance criterion updated",
-                  criterion=args.criterion)
+                  criterion=args.criterion, work_item_scope_changed=registry_changed or
+                  before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]))
+    if warning:
+        print("WORK_ITEM_WARNING: untagged criterion in a multi-item run")
     print("CRITERION_UPDATED")
     return 0
 
@@ -1461,6 +1530,7 @@ def cmd_criterion_add(args) -> int:
         if _criterion(acceptance, args.criterion):
             print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} already exists")
             return 1
+        before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
         acceptance["criteria"].append({
             "id": args.criterion, "type": args.type, "requirement": args.requirement,
             "verification": args.verification, "tests": args.test or [],
@@ -1469,6 +1539,9 @@ def cmd_criterion_add(args) -> int:
         if args.type == "primary_fix":
             status["requirement_coverage"]["original_symptom_resolved"] = False
             status["original_symptom_evidence_id"] = None
+        criterion = acceptance["criteria"][-1]
+        registry_changed = _sync_registry_from_criteria(acceptance, cfg)
+        warning = _criterion_needs_item_warning(criterion, acceptance, cfg)
         errors = lib.validate_acceptance_schema(acceptance)
         if errors:
             print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
@@ -1482,7 +1555,10 @@ def cmd_criterion_add(args) -> int:
                   "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
         lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_added", event_message="Acceptance criterion added",
-                  criterion=args.criterion)
+                  criterion=args.criterion, work_item_scope_changed=registry_changed or
+                  before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]))
+    if warning:
+        print("WORK_ITEM_WARNING: untagged criterion in a multi-item run")
     print("CRITERION_ADDED")
     return 0
 
@@ -1933,6 +2009,8 @@ def main() -> int:
 
     init = sub.add_parser("init")
     init.add_argument("feature")
+    init.add_argument("--item", action="append", default=[],
+                      help="declare one issue (#31 or #31 Title) or plain ask; repeat for multiple items")
 
     sub.add_parser("status")
     sub.add_parser("validate")

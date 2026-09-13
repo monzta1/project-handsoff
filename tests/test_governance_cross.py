@@ -72,6 +72,57 @@ class GovernanceCrossTests(unittest.TestCase):
         self.assertEqual({row["status"] for row in rows["items"]}, {"blocked"})
         self.assertEqual(lib.verify_event_log(self.root, cfg), [])
 
+    def test_init_repeatable_items_and_criterion_mutations_keep_registry_in_sync(self):
+        other = Path(tempfile.mkdtemp(prefix="handsoff-items-init-"))
+        self.addCleanup(shutil.rmtree, other, True)
+        shutil.copy(ROOT / "handsoff.toml", other / "handsoff.toml")
+        shutil.copytree(ROOT / "schemas", other / "schemas")
+        init = subprocess.run(
+            [sys.executable, str(BIN / "handsoff_supervisor.py"), "--root", str(other),
+             "init", "ignored #99", "--item", "#31 Review convergence", "--item", "improve docs"],
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(init.returncode, 0, init.stdout + init.stderr)
+        initialized = json.loads((other / "handsoff-acceptance.json").read_text())
+        self.assertEqual([item["id"] for item in initialized["work_items"]],
+                         ["issue-31", "ask-improve-docs"])
+
+        untagged = self.cli("criterion-add", "REQ-UNTAGGED", "--type", "supporting",
+                            "--requirement", "No owner", "--verification", "automated",
+                            "--test", "python3 tests/test_work_items.py")
+        self.assertEqual(untagged.returncode, 0, untagged.stdout + untagged.stderr)
+        self.assertIn("WORK_ITEM_WARNING", untagged.stdout)
+        tagged = self.cli("criterion-add", "REQ-99", "--type", "supporting",
+                          "--requirement", "[#99] New promise", "--verification", "automated",
+                          "--test", "python3 tests/test_work_items.py")
+        self.assertEqual(tagged.returncode, 0, tagged.stdout + tagged.stderr)
+        self.assertIn("issue-99", {item["id"] for item in self.read("handsoff-acceptance.json")["work_items"]})
+
+    def test_scope_bootstrap_clears_decisions_without_authenticated_approval(self):
+        cfg = lib.load_config(self.root)
+        status = self.read("handsoff-status.json")
+        acceptance = self.read("handsoff-acceptance.json")
+        acceptance.pop("work_items")
+        digest = lib.design_hash(acceptance["criteria"])
+        config_digest = lib.config_hash(cfg)
+        now = datetime.now(timezone.utc).isoformat()
+        status["design_review"] = {
+            "at": now, "by": "reviewer", "architect": "architect", "summary": "approved",
+            "decision": "approved", "design_hash": digest, "config_hash": config_digest,
+        }
+        status["design_approved"] = {
+            "at": now, "by": "pilot", "architect": "architect", "summary": "approved",
+            "design_hash": digest, "config_hash": config_digest, "redesigns_settled_work": None,
+        }
+        with lib.project_lock(self.root):
+            lib.commit(self.root, cfg, status=status, acceptance=acceptance,
+                       event_kind="test_scope_legacy", event_message="legacy scope fixture")
+        synced = self.cli("work-items-sync", "--by", "supervisor")
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        final = self.read("handsoff-status.json")
+        self.assertIsNone(final["design_review"])
+        self.assertIsNone(final["design_approved"])
+
 
 if __name__ == "__main__":
     unittest.main()

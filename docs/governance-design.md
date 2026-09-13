@@ -354,7 +354,7 @@ Rows come from the persisted registry; when the key is absent (a legacy run, or 
 1. `blocked`: any criterion `blocked`, or `escalation` non-null, or `status == blocked` without an open regression request.
 2. `awaiting_approval`: an open regression request, Phase 7 without deployment approval, or Phase 2 awaiting human design approval.
 3. `recovering`: a recovery attempt in `reserved` or `launched`.
-4. `in_review`: an open review attempt, or Phase 5, when none of its criteria is `failing`.
+4. `in_review`: an open review attempt, or Phase 5. This global workflow state outranks item-local completion so rows cannot say done before the review closes.
 5. `done`: at least one criterion, all its criteria `passing`, and none of the global gates above applies.
 6. `in_progress`: `active_work_item == id`, or any verification record references one of its criteria.
 7. `not_started` otherwise.
@@ -463,6 +463,6 @@ Role prompts, exact wording added to `prompts/supervisor.md`, `prompts/implement
 19. **Ambiguous asks are not split.** Only `;`, newlines, and numbered prefixes split; "and" never does. Under-splitting produces one honest row; over-splitting produces phantom rows that block completion.
 20. **GitHub state is a recorded input, never fetched, never authoritative.** Discrepancies are displayed, not resolved.
 21. **The aggregate gate keys on required rows, including empty ones.** An item declared at init with no criteria is an unfinished promise and must block completion.
-22. **Browser tests are Node-only, dependency-free, driven through the real CLI and the real dashboard server.** They prove the interaction the operator will actually perform, and they fail loudly when no browser is found.
-23. **`automated_and_browser` for UI criteria.** `verify` executes the browser test command as the automated half; `record-evidence --kind browser` is the attestation half, matching the existing evidence model.
+22. **Browser-facing automated checks are Node-only and dependency-free.** They inspect the production dashboard/server wiring without pretending to launch Chrome. A real Mission Control interaction is recorded separately as browser evidence.
+23. **`automated_and_browser` for UI criteria.** `verify` executes the Node wiring check as the automated half; `record-evidence --kind browser` is the real-browser attestation half, matching the existing evidence model.
 24. **Legacy runs stay valid without gaining surprise blockers.** Every new field is optional; nonzero legacy review rounds backfill into structured history; derived legacy work items remain informational until explicitly persisted; `init` writes defaults; this live run migrates with one `work-items-sync` command and zero hand edits.

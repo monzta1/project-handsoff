@@ -527,6 +527,9 @@ def build_snapshot(root: Path) -> dict:
         "regression": {
             "pending": next((item for item in reversed(status.get("regression_requests") or [])
                              if item.get("state") == "awaiting_approval"), None),
+            "current": lib.active_regression_request(status),
+            "last": next((item for item in reversed(status.get("regression_requests") or [])
+                          if item.get("state") not in {"awaiting_approval", "accepted", "launched"}), None),
             "history": list(reversed((status.get("regression_requests") or [])[-8:])),
         },
         "escalation": status.get("escalation"),

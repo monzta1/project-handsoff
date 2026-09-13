@@ -1249,30 +1249,11 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         removed_session_ids = _prune_agent_sessions(sessions, current)
         session_id = _new_agent_session_id(sessions, id_factory=id_factory)
         now = datetime.now(timezone.utc).isoformat()
-        session = {
-            "session_id": session_id,
-            "role": role,
-            "actor": actor,
-            "adapter": adapter,
-            "requested_model": requested_model,
-            "reported_model": None,
-            "resolution_source": resolution_source,
-            "started_at": now,
-            "running_at": None,
-            "ended_at": None,
-            "state": "launching",
-            "exit_code": None,
-        }
-        sessions[session_id] = session
-        current[role] = session_id
         proposed = deepcopy(status)
-        accepted_regression = active_regression_request(proposed)
-        if accepted_regression and accepted_regression.get("state") == "accepted":
-            accepted_regression["state"] = "invalidated"
-            accepted_regression["completed_at"] = now
-        proposed["agent_sessions"] = sessions
-        proposed["current_agent_sessions"] = current
         opened_attempt = None
+        # The convergence gate must run before a not-yet-launched session is
+        # inserted into canonical state. A refused fourth attempt may persist
+        # its escalation, but never a ghost `launching` worker.
         if role == "reviewer" and int(proposed.get("phase_number", 0) or 0) >= 4:
             migrate_review_ledger(proposed)
             before_id = (current_review_attempt(proposed) or {}).get("attempt_id")
@@ -1293,6 +1274,28 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                 raise
             if opened_attempt.get("attempt_id") == before_id:
                 opened_attempt = None
+        session = {
+            "session_id": session_id,
+            "role": role,
+            "actor": actor,
+            "adapter": adapter,
+            "requested_model": requested_model,
+            "reported_model": None,
+            "resolution_source": resolution_source,
+            "started_at": now,
+            "running_at": None,
+            "ended_at": None,
+            "state": "launching",
+            "exit_code": None,
+        }
+        sessions[session_id] = session
+        current[role] = session_id
+        accepted_regression = active_regression_request(proposed)
+        if accepted_regression and accepted_regression.get("state") == "accepted":
+            accepted_regression["state"] = "invalidated"
+            accepted_regression["completed_at"] = now
+        proposed["agent_sessions"] = sessions
+        proposed["current_agent_sessions"] = current
         failures = {
             sid: deepcopy(failure) for sid, failure in (status.get("agent_failures") or {}).items()
             if sid not in removed_session_ids
@@ -1469,11 +1472,38 @@ def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
             raise HandsoffError("cannot establish repository content identity") from None
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head) or len(branch) > 256:
         raise HandsoffError("cannot establish bounded repository identity")
+    # Bind the reviewed change range, not merely HEAD's immediate parent.
+    # Prefer the remote's declared default branch, then conventional local
+    # names. Repositories without one retain the safe parent fallback.
+    base = None
+    candidates = []
+    try:
+        symbolic = runner(
+            ["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            cwd=str(root.resolve()), shell=False, text=True, capture_output=True,
+            timeout=3, check=False,
+        )
+        if symbolic.returncode == 0 and symbolic.stdout.strip():
+            candidates.append(symbolic.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    candidates.extend(["refs/remotes/origin/main", "main", "master"])
+    for candidate in dict.fromkeys(candidates):
+        try:
+            merged = runner(
+                ["git", "merge-base", "HEAD", candidate], cwd=str(root.resolve()),
+                shell=False, text=True, capture_output=True, timeout=3, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if merged.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{40,64}", merged.stdout.strip()):
+            base = merged.stdout.strip().lower()
+            break
     return {
-        "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
+        "path": str(root.resolve()), "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
         "status_sha256": hashlib.sha256(porcelain.encode("utf-8", "replace")).hexdigest(),
         "content_sha256": hashlib.sha256(content).hexdigest(),
-        "commit_pair": {"before": parents[1].lower() if len(parents) > 1 else head.lower(),
+        "commit_pair": {"before": base or (parents[1].lower() if len(parents) > 1 else head.lower()),
                         "after": head.lower()},
     }
 
@@ -3290,6 +3320,11 @@ def normalized_test_footprint(command: str, root: Path) -> frozenset[str]:
     """
     if not isinstance(command, str) or not command.strip():
         raise HandsoffError("test command must be a non-empty string")
+    # Commands use a shell so configured test-path globs continue to work.
+    # Refuse every construct that can manufacture a different command after
+    # validation; the allowed language is simple argv plus path globs.
+    if re.search(r"[\$`;&|<>(){}\r\n]", command):
+        raise HandsoffError("test commands may not contain shell expansion or control operators")
     try:
         words = shlex.split(command)
     except ValueError as exc:
@@ -3380,15 +3415,45 @@ def criterion_work_item_id(criterion: dict) -> str | None:
     return f"issue-{tag[1:]}" if tag.startswith("#") else f"ask-{tag}"
 
 
-def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None) -> list[dict]:
+def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None,
+                              explicit_items: list[str] | None = None) -> list[dict]:
     """Derive stable scope from criterion tags, feature issue refs and legacy display metadata."""
     now = now or datetime.now(timezone.utc).isoformat()
     tickets = {int(item["number"]): item for item in cfg.get("tickets", [])}
     identities: dict[str, tuple[str, int | None, str]] = {}
     feature = str(acceptance.get("feature") or "")
-    for number_text in re.findall(r"(?<!\w)#([1-9][0-9]{0,8})\b", feature):
-        number = int(number_text)
-        identities[f"issue-{number}"] = ("issue", number, tickets.get(number, {}).get("title") or f"Issue #{number}")
+
+    def add_text(text: str) -> None:
+        issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", text)
+        if issue:
+            number = int(issue.group(1))
+            supplied = (issue.group(2) or "").strip()
+            title = supplied or tickets.get(number, {}).get("title") or f"Issue #{number}"
+            identities[f"issue-{number}"] = ("issue", number, title)
+            return
+        slug = _work_item_slug(text)
+        identities.setdefault(f"ask-{slug}", ("ask", None, text.strip()[:200]))
+
+    if explicit_items:
+        for item in explicit_items[:MAX_WORK_ITEMS]:
+            add_text(item)
+    else:
+        # Explicit separators are promises. A segment containing issue refs
+        # contributes those issues; a segment without one remains a plain ask.
+        parts = [part.strip(" -\t") for part in
+                 re.split(r"[;\n]+|(?:^|\s)\d+[.)]\s+", feature)
+                 if part.strip(" -\t")]
+        for part in parts[:MAX_WORK_ITEMS]:
+            numbers = re.findall(r"(?<!\w)#([1-9][0-9]{0,8})\b", part)
+            if numbers:
+                for number_text in numbers:
+                    number = int(number_text)
+                    identities[f"issue-{number}"] = (
+                        "issue", number,
+                        tickets.get(number, {}).get("title") or f"Issue #{number}",
+                    )
+            else:
+                add_text(part)
     for criterion in acceptance.get("criteria", []):
         item_id = criterion_work_item_id(criterion)
         if not item_id:
@@ -3400,13 +3465,6 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
         else:
             title = item_id[4:].replace("-", " ").title()
             identities[item_id] = ("ask", None, title)
-    # Plain asks split only at explicit separators. Conjunctions are never
-    # guessed as separate promises.
-    if not identities:
-        parts = [part.strip(" -\t") for part in re.split(r"[;\n]+|(?:^|\s)\d+[.)]\s+", feature) if part.strip(" -\t")]
-        for part in parts[:MAX_WORK_ITEMS]:
-            slug = _work_item_slug(part)
-            identities.setdefault(f"ask-{slug}", ("ask", None, part[:200]))
     items = []
     for item_id, (kind, number, title) in identities.items():
         ticket = tickets.get(number, {}) if number is not None else {}
@@ -3472,7 +3530,7 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
         elif recovering:
             state = "recovering"
             blocker = "Assigned worker recovery is active"
-        elif reviewing and any(c.get("state") != "passing" for c in own):
+        elif reviewing:
             state = "in_review"
         elif own and all(c.get("state") == "passing" for c in own):
             state = "done"

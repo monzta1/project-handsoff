@@ -55,6 +55,14 @@ class RegressionGateTests(unittest.TestCase):
             lib.normalized_test_footprint("python ./tests/test_handsoff_supervisor.py -v", self.root),
             frozenset({"tests/test_handsoff_supervisor.py"}),
         )
+        for bypass in (
+            "python3 $(printf tests/test_handsoff_supervisor.py)",
+            "python3 `printf tests/test_handsoff_supervisor.py`",
+            "python3 tests/test_regression_gate.py; python3 tests/test_handsoff_supervisor.py",
+        ):
+            with self.subTest(bypass=bypass), self.assertRaisesRegex(
+                    lib.HandsoffError, "shell expansion or control operators"):
+                lib.normalized_test_footprint(bypass, self.root)
 
     def test_request_can_be_declined_without_launch(self):
         item = self.request()
@@ -94,6 +102,34 @@ class RegressionGateTests(unittest.TestCase):
                           "--accept", "--by", "Mission-Control-Pilot")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.status()["regression_requests"][-1]["state"], "invalidated")
+
+    def test_configuration_change_during_run_invalidates_completion(self):
+        item = self.request()
+        accepted = self.cli("regression-decide", "--request-id", item["request_id"],
+                            "--accept", "--by", "Mission-Control-Pilot")
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        args = argparse.Namespace(root=str(self.root), request_id=item["request_id"], by="runner")
+
+        def mutate_policy(*_args, **_kwargs):
+            path = self.root / "handsoff.toml"
+            path.write_text(path.read_text().replace("launch_window_minutes = 10",
+                                                     "launch_window_minutes = 11"))
+            return [{"command": item["commands"][0], "exit_code": 0,
+                     "output_sha256": "0" * 64, "duration_s": 0.01, "output_tail": "ok"}]
+
+        with mock.patch.object(lib, "run_checks", side_effect=mutate_policy):
+            self.assertEqual(supervisor.cmd_regression_run(args), 1)
+        self.assertEqual(self.status()["regression_requests"][-1]["state"], "invalidated")
+
+    def test_repository_snapshot_uses_default_branch_merge_base(self):
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "switch", "-qc", "feature-test"], cwd=self.root, check=True)
+        (self.root / "feature.txt").write_text("feature\n")
+        subprocess.run(["git", "add", "feature.txt"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "feature"], cwd=self.root, check=True)
+        snapshot = lib.repository_snapshot(self.root)
+        self.assertEqual(snapshot["commit_pair"]["before"], base)
 
 
 if __name__ == "__main__":

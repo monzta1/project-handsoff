@@ -45,6 +45,19 @@ class WorkItemTests(unittest.TestCase):
         self.assertEqual(len(one), 1)
         two = lib.derive_work_item_registry({"feature": "fix parser; improve copy", "criteria": []}, {"tickets": []}, now=self.now)
         self.assertEqual(len(two), 2)
+        mixed = lib.derive_work_item_registry(
+            {"feature": "#31 review convergence; improve docs", "criteria": []},
+            self.cfg, now=self.now,
+        )
+        self.assertEqual([item["id"] for item in mixed], ["issue-31", "ask-improve-docs"])
+
+    def test_explicit_items_override_feature_detection_and_support_mixed_kinds(self):
+        items = lib.derive_work_item_registry(
+            {"feature": "ignore #29", "criteria": []}, self.cfg, now=self.now,
+            explicit_items=["#31 Review convergence", "improve docs"],
+        )
+        self.assertEqual([item["id"] for item in items], ["issue-31", "ask-improve-docs"])
+        self.assertEqual(items[0]["title"], "Review convergence")
 
     def test_scope_identity_ignores_display_updates(self):
         acceptance = {"feature": "Ship #31", "criteria": [criterion("REQ-001", "[#31] Track reviews")]}
@@ -68,6 +81,12 @@ class WorkItemTests(unittest.TestCase):
         status["regression_requests"] = [{"state": "awaiting_approval", "group": "full"}]
         waiting = lib.derive_work_items(status, acceptance, self.cfg)
         self.assertEqual({item["status"] for item in waiting["items"]}, {"awaiting_approval"})
+        status = self.status()
+        status.update(phase_number=5, phase="Independent review", review_attempts=[{
+            "disposition": "open",
+        }])
+        reviewed = lib.derive_work_items(status, acceptance, self.cfg)
+        self.assertEqual({item["status"] for item in reviewed["items"]}, {"in_review"})
 
     def test_persisted_registry_exposes_unattributed_required_work(self):
         acceptance = {"feature": "Ship #31 and #29", "criteria": [

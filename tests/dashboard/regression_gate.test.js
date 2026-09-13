@@ -11,8 +11,13 @@ test("Mission Control renders an explicit regression Accept/Decline gate", () =>
   assert.match(html, /id="regression-accept"/);
   assert.match(html, /id="regression-decline"/);
   assert.match(html, /id="regression-details"/);
+  assert.match(html, /id="regression-alert"/);
+  assert.match(html, /id="regression-last"/);
   assert.match(app, /fetch\("\/api\/regression-decision"/);
   assert.match(app, /command_sha256/);
-  assert.match(app, /repository\?\.head/);
-  assert.match(app, /state\.regressionRequest\.commands\.join/);
+  for (const field of ["content_sha256", "commit_pair", "requested_by", "expires_at", "completed_at"]) {
+    assert.match(app, new RegExp(field));
+  }
+  assert.match(app, /regressionRecordText/);
+  assert.match(app, /regression\?\.last/);
 });

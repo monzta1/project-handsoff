@@ -312,6 +312,44 @@ async function enableDesktopAlerts() {
   }
 }
 
+function regressionRecordText(request) {
+  if (!request) return "";
+  const repo = request.repository || {};
+  const pair = repo.commit_pair || {};
+  const results = (request.results || []).map((result) =>
+    `  exit ${result.exit_code}: ${result.command}`).join("\n");
+  return [
+    `Group: ${request.group}`,
+    `State: ${String(request.state || "unknown").toUpperCase()}`,
+    `Command hash: ${request.command_sha256}`,
+    `Repository: ${repo.path || "unknown"}`,
+    `Branch / HEAD: ${repo.branch || "unknown"} @ ${repo.head || "unknown"}`,
+    `Dirty: ${Boolean(repo.dirty)} · Content digest: ${repo.content_sha256 || "unknown"}`,
+    `Commit pair: ${pair.before || "unknown"} → ${pair.after || "unknown"}`,
+    `Reason: ${request.reason || "not supplied"}`,
+    `Requested by: ${request.requested_by || "unknown"}${request.requester_session_id ? ` (${request.requester_session_id})` : ""}`,
+    `Requested: ${request.requested_at || "unknown"} · Expires: ${request.expires_at || "unknown"}${request.expires_at ? ` (${relativeTime(request.expires_at)})` : ""}`,
+    request.decided_at ? `Decision: ${request.decided_by || "unknown"} at ${request.decided_at}` : null,
+    request.launched_at ? `Launched: ${request.launched_at}` : null,
+    request.completed_at ? `Completed: ${request.completed_at}` : null,
+    `Scope: ${request.scope_hash || "unknown"} · Run: ${request.run_id || "unknown"}`,
+    "Commands:",
+    ...(request.commands || []).map((command) => `  ${command}`),
+    results ? `Results:\n${results}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function renderRegression(regression) {
+  const current = regression?.current || null;
+  const last = regression?.last || null;
+  const card = $("regression-alert");
+  card.classList.toggle("hidden", !current && !last);
+  $("regression-status-details").textContent = regressionRecordText(current || last);
+  $("regression-last").textContent = last
+    ? `Last closed request: ${last.group} · ${String(last.state || "unknown").toUpperCase()} · ${last.completed_at || last.decided_at || last.requested_at}`
+    : "";
+}
+
 function renderInputAlert(inputRequest, feature, regression) {
   const required = Boolean(inputRequest?.required);
   const message = inputRequest?.message || "Pilot authorization is required before the mission can continue.";
@@ -333,9 +371,7 @@ function renderInputAlert(inputRequest, feature, regression) {
   state.regressionRequest = regression?.pending || null;
   const regressionDetails = $("regression-details");
   regressionDetails.classList.toggle("hidden", state.inputKind !== "regression_approval");
-  regressionDetails.textContent = state.regressionRequest
-    ? `Group: ${state.regressionRequest.group}\nCommand hash: ${state.regressionRequest.command_sha256}\nRepository: ${state.regressionRequest.repository?.head || "unknown"}\n\n${state.regressionRequest.commands.join("\n")}`
-    : "";
+  regressionDetails.textContent = regressionRecordText(state.regressionRequest);
   if (state.inputKind === "design_approval" && signature !== state.alertSignature) {
     approvalButton.disabled = false;
     approvalButton.textContent = "AUTHORIZE DESIGN";
@@ -572,6 +608,7 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
+  renderRegression(snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   setFaviconState(status.status === "complete" ? "complete"
     : state.inputRequired ? "blocked" : "in_progress");

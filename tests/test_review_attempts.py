@@ -105,6 +105,36 @@ class ReviewAttemptTests(unittest.TestCase):
         self.assertEqual(attempt["disposition"], "abandoned")
         self.assertEqual(lib.validate_status_schema(status), [])
 
+    def test_managed_cap_refusal_does_not_create_a_ghost_session(self):
+        status = self.read("handsoff-status.json")
+        acceptance = self.read("handsoff-acceptance.json")
+        cfg = lib.load_config(self.root)
+        status.update(phase_number=4, phase=lib.PHASES[4], progress=40,
+                      requires_design_review=False, requires_design_approval=False)
+        for _ in range(3):
+            attempt = lib.open_review_attempt(status, acceptance, cfg, by="reviewer")
+            attempt["disposition"] = "changes_requested"
+            attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
+        self.commit_status(status)
+
+        with self.assertRaisesRegex(lib.HandsoffError, "budget exhausted"):
+            lib.create_agent_session(
+                self.root, role="reviewer", actor="codex-reviewer-r4", adapter="codex",
+                requested_model="default", resolution_source="configured",
+            )
+        refused = self.read("handsoff-status.json")
+        self.assertFalse(any(session.get("state") == "launching"
+                             for session in (refused.get("agent_sessions") or {}).values()))
+        self.assertNotIn("reviewer", refused.get("current_agent_sessions") or {})
+
+        override = self.run_cli("review-cap-override", "--by", "moncy", "--reason", "one final review")
+        self.assertEqual(override.returncode, 0, override.stdout + override.stderr)
+        session = lib.create_agent_session(
+            self.root, role="reviewer", actor="codex-reviewer-r4", adapter="codex",
+            requested_model="default", resolution_source="configured",
+        )
+        self.assertEqual(session["state"], "launching")
+
 
 if __name__ == "__main__":
     unittest.main()
