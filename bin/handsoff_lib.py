@@ -1211,6 +1211,31 @@ def abandon_stale_review_attempt(status: dict, acceptance: dict) -> bool:
     return True
 
 
+def refresh_review_attempt_after_evidence(status: dict, acceptance: dict) -> dict | None:
+    """Rebind an open review after an audited evidence-only mutation.
+
+    ``acceptance_hash`` deliberately includes outcome state and evidence IDs,
+    so attaching evidence while a reviewer is active changes that hash even
+    though the criterion specification did not change. Evidence-recording
+    commands call this helper in the same locked commit that writes the new
+    evidence. Criterion mutations continue to use
+    :func:`abandon_stale_review_attempt` instead.
+    """
+    attempt = current_review_attempt(status)
+    if attempt is None:
+        return None
+    current = acceptance_hash(acceptance.get("criteria", []))
+    previous = attempt.get("acceptance_hash")
+    if previous == current:
+        return None
+    attempt["acceptance_hash"] = current
+    return {
+        "attempt_id": attempt["attempt_id"],
+        "previous_acceptance_hash": previous,
+        "acceptance_hash": current,
+    }
+
+
 def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          requested_model: str, resolution_source: str,
                          id_factory=None) -> dict:

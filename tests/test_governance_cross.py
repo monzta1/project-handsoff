@@ -123,6 +123,74 @@ class GovernanceCrossTests(unittest.TestCase):
         self.assertIsNone(final["design_review"])
         self.assertIsNone(final["design_approved"])
 
+    def _legacy_scope_fixture(self):
+        cfg = lib.load_config(self.root)
+        status = self.read("handsoff-status.json")
+        acceptance = self.read("handsoff-acceptance.json")
+        acceptance.pop("work_items")
+        acceptance["criteria"][0]["requirement"] = "[#31] Review convergence"
+        acceptance["criteria"].append({
+            "id": "REQ-028", "type": "supporting", "requirement": "[#28] Regression gate",
+            "verification": "automated", "tests": ["python3 tests/test_governance_cross.py"],
+            "evidence": [], "state": "failing",
+        })
+        digest = lib.design_hash(acceptance["criteria"])
+        config_digest = lib.config_hash(cfg)
+        now = datetime.now(timezone.utc).isoformat()
+        status["design_review"] = {
+            "at": now, "by": "reviewer", "architect": "architect", "summary": "approved",
+            "decision": "approved", "design_hash": digest, "config_hash": config_digest,
+        }
+        status["design_approved"] = {
+            "at": now, "by": "pilot", "architect": "architect", "summary": "approved",
+            "design_hash": digest, "config_hash": config_digest, "redesigns_settled_work": None,
+        }
+        with lib.project_lock(self.root):
+            lib.commit(self.root, cfg, status=status, acceptance=acceptance,
+                       event_kind="design_approved", event_message="Authenticated legacy approval")
+        return cfg
+
+    def test_scope_bootstrap_accepts_an_intact_authenticated_legacy_approval(self):
+        self._legacy_scope_fixture()
+        synced = self.cli("work-items-sync", "--by", "supervisor")
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        final = self.read("handsoff-status.json")
+        expected = lib.work_item_scope_hash(self.read("handsoff-acceptance.json")["work_items"])
+        self.assertEqual(final["design_review"]["scope_hash"], expected)
+        self.assertEqual(final["design_approved"]["scope_hash"], expected)
+
+    def test_scope_bootstrap_refuses_tampered_status_or_event_chain(self):
+        cfg = self._legacy_scope_fixture()
+        status_path = self.root / "handsoff-status.json"
+        status = self.read("handsoff-status.json")
+        status["next_action"] = "unlogged edit"
+        status_path.write_text(json.dumps(status))
+        tampered_status = self.cli("work-items-sync", "--by", "supervisor")
+        self.assertNotEqual(tampered_status.returncode, 0)
+        self.assertIn("event log", tampered_status.stdout)
+
+        # Recreate the fixture in a separate project so no repair path can
+        # accidentally hide the first tamper from this second assertion.
+        other = Path(tempfile.mkdtemp(prefix="handsoff-cross-events-"))
+        self.addCleanup(shutil.rmtree, other, True)
+        for name in ("handsoff.toml", ".gitignore"):
+            shutil.copy(ROOT / name, other / name)
+        shutil.copytree(ROOT / "schemas", other / "schemas")
+        init = subprocess.run(
+            [sys.executable, str(BIN / "handsoff_supervisor.py"), "--root", str(other),
+             "init", "Cross governance #31 and #28"], capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(init.returncode, 0, init.stdout + init.stderr)
+        events = other / "handsoff-events.jsonl"
+        events.write_text(events.read_text().replace('"kind":"initialized"', '"kind":"tampered"', 1))
+        rejected = subprocess.run(
+            [sys.executable, str(BIN / "handsoff_supervisor.py"), "--root", str(other),
+             "work-items-sync", "--by", "supervisor"],
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("event log", rejected.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

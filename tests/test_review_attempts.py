@@ -135,6 +135,69 @@ class ReviewAttemptTests(unittest.TestCase):
         )
         self.assertEqual(session["state"], "launching")
 
+    def test_evidence_during_review_refreshes_attempt_and_remains_closable(self):
+        acceptance = self.read("handsoff-acceptance.json")
+        acceptance["criteria"][0].update(
+            verification="manual", tests=[], evidence=[], state="not_tested",
+        )
+        cfg = lib.load_config(self.root)
+        with lib.project_lock(self.root):
+            lib.commit(self.root, cfg, acceptance=acceptance,
+                       event_kind="criterion_fixture", event_message="Manual evidence fixture")
+        status = self.read("handsoff-status.json")
+        status.update(phase_number=4, phase=lib.PHASES[4], progress=40,
+                      requires_design_review=False, requires_design_approval=False)
+        with lib.project_lock(self.root):
+            attempt = lib.open_review_attempt(
+                status, acceptance, cfg, by="reviewer", reviewer="reviewer",
+            )
+            lib.commit(self.root, cfg, status=status, event_kind="review_attempt_opened",
+                       event_message="Test review opened", attempt_id=attempt["attempt_id"])
+        before = self.read("handsoff-status.json")["review_attempts"][-1]
+
+        evidence = self.run_cli(
+            "record-evidence", "REQ-001", "--kind", "manual",
+            "--description", "Reviewer observed the focused behavior", "--by", "observer",
+        )
+        self.assertEqual(evidence.returncode, 0, evidence.stdout + evidence.stderr)
+        status = self.read("handsoff-status.json")
+        acceptance = self.read("handsoff-acceptance.json")
+        attempt = status["review_attempts"][-1]
+        self.assertEqual(attempt["attempt_id"], before["attempt_id"])
+        self.assertEqual(attempt["disposition"], "open")
+        self.assertEqual(attempt["acceptance_hash"], lib.acceptance_hash(acceptance["criteria"]))
+
+        closed = self.run_cli(
+            "record-review-findings", "--by", "reviewer",
+            "--finding", "other: focused follow-up requested",
+        )
+        self.assertEqual(closed.returncode, 0, closed.stdout + closed.stderr)
+        self.assertEqual(self.read("handsoff-status.json")["review_attempts"][-1]["disposition"],
+                         "changes_requested")
+
+    def test_negative_review_can_close_a_stale_attempt_without_granting_approval(self):
+        status = self.read("handsoff-status.json")
+        acceptance = self.read("handsoff-acceptance.json")
+        status.update(phase_number=4, phase=lib.PHASES[4], progress=40,
+                      requires_design_review=False, requires_design_approval=False)
+        lib.open_review_attempt(status, acceptance, lib.load_config(self.root),
+                                by="reviewer", reviewer="reviewer")
+        self.commit_status(status)
+        acceptance["criteria"][0]["state"] = "not_tested"
+        cfg = lib.load_config(self.root)
+        with lib.project_lock(self.root):
+            lib.commit(self.root, cfg, acceptance=acceptance,
+                       event_kind="evidence_fixture", event_message="Evidence-only fixture")
+
+        closed = self.run_cli(
+            "record-review-findings", "--by", "reviewer",
+            "--finding", "incorrect_implementation: stale evidence state needs follow-up",
+        )
+        self.assertEqual(closed.returncode, 0, closed.stdout + closed.stderr)
+        final = self.read("handsoff-status.json")
+        self.assertEqual(final["review_attempts"][-1]["disposition"], "changes_requested")
+        self.assertIsNone(final.get("reviewed_by"))
+
 
 if __name__ == "__main__":
     unittest.main()

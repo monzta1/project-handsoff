@@ -505,6 +505,8 @@ def _same_regression_bindings(item: dict, root: Path, cfg: dict, acceptance: dic
 def _legacy_scope_bootstrap_allowed(root: Path, cfg: dict, status: dict,
                                     acceptance: dict, before_items: list[dict]) -> bool:
     """Trust an old scope-less approval only when its full audit proof is current."""
+    if lib.verify_event_log(root, cfg):
+        return False
     review = status.get("design_review")
     approval = status.get("design_approved")
     if not isinstance(review, dict) or not isinstance(approval, dict):
@@ -531,7 +533,10 @@ def cmd_work_items_sync(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     with lib.project_lock(root):
-        status, acceptance = _load(root, cfg)
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
         lib.ensure_no_launched_regression(status)
         before_items, _ = lib.effective_work_items(acceptance, cfg)
         before_scope = lib.work_item_scope_hash(before_items)
@@ -887,10 +892,12 @@ def cmd_verify(args) -> int:
             per_criterion[criterion["id"]] = {"run_id": record["run_id"], "ok": own_ok}
         lib.sync_coverage(status, acceptance)
         _invalidate_decisions(status)
+        review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="checks_run", event_message="Ran and attached configured checks",
                   criteria=per_criterion,
+                  review_attempt_refreshed=review_refresh,
                   results=[{"command": r["command"], "exit_code": r["exit_code"],
                             "output_sha256": r["output_sha256"]} for r in results])
     overall_ok = all(v["ok"] for v in per_criterion.values())
@@ -929,10 +936,12 @@ def cmd_record_evidence(args) -> int:
                               else "not_tested")
         lib.sync_coverage(status, acceptance)
         _invalidate_decisions(status)
+        review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="evidence_recorded", event_message="Attached criterion evidence",
-                  run_id=record["run_id"], criterion=args.criterion, by=args.by)
+                  run_id=record["run_id"], criterion=args.criterion, by=args.by,
+                  review_attempt_refreshed=review_refresh)
     print(f"EVIDENCE_RECORDED: {record['run_id']}")
     return 0
 
@@ -1218,9 +1227,8 @@ def cmd_record_review_findings(args) -> int:
             except lib.HandsoffError as exc:
                 print(f"REVIEW_ATTEMPT_REFUSED: {exc}")
                 return 1
-        if attempt.get("acceptance_hash") != lib.acceptance_hash(acceptance.get("criteria", [])):
-            print("SHIP_FEATURE_BLOCKED: acceptance changed since this review attempt opened")
-            return 1
+        current_acceptance_hash = lib.acceptance_hash(acceptance.get("criteria", []))
+        acceptance_changed = attempt.get("acceptance_hash") != current_acceptance_hash
         attempt["reviewer"] = reviewer
         attempt["findings"] = findings
         attempt["disposition"] = "changes_requested"
@@ -1245,7 +1253,10 @@ def cmd_record_review_findings(args) -> int:
                    event_kind="review_attempt_closed",
                    event_message=f"Review attempt {attempt['attempt']} requested changes",
                    by=reviewer, attempt_id=attempt["attempt_id"], attempt=attempt["attempt"],
-                   disposition="changes_requested", findings=findings)
+                   disposition="changes_requested", findings=findings,
+                   reviewed_acceptance_hash=attempt.get("acceptance_hash"),
+                   current_acceptance_hash=current_acceptance_hash,
+                   acceptance_changed=acceptance_changed)
     print("REVIEW_CHANGES_RECORDED")
     return 0
 

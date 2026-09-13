@@ -156,7 +156,7 @@ python3 tests/test_handsoff_supervisor.py -v
 
 ## Review attempts and the convergence cap
 
-Implementation reviews are persistent `review_attempts`, not chat claims. Starting a managed Reviewer opens an attempt automatically; findings close it as `changes_requested`, and approval closes it as `approved`. `review_round` is derived from the legacy offset plus that ledger. At `max_review_rounds`, Handsoff blocks before another Reviewer launches and Mission Control shows the required operator action. Only `review-cap-override --by OPERATOR --reason TEXT` grants one additional attempt.
+Implementation reviews are persistent `review_attempts`, not chat claims. Starting a managed Reviewer opens an attempt automatically; findings close it as `changes_requested`, and approval closes it as `approved`. Evidence attached while review is open refreshes that attempt's acceptance binding atomically, while changing a criterion specification abandons the attempt. A stale attempt can still be closed fail-closed with findings, but can never be approved. `review_round` is derived from the legacy offset plus that ledger. At `max_review_rounds`, Handsoff blocks before another Reviewer launches and Mission Control shows the required operator action. Only `review-cap-override --by OPERATOR --reason TEXT` grants one additional attempt.
 
 ## Automatic recovery of stalled runs
 
