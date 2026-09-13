@@ -430,12 +430,23 @@ class TestEveMissionControl(HandsoffTestCase):
 
         html = (ROOT / "dashboard" / "index.html").read_text()
         script = (ROOT / "dashboard" / "app.js").read_text()
+        styles = (ROOT / "dashboard" / "styles.css").read_text()
         for role in ("architect", "supervisor", "implementer", "reviewer"):
             self.assertIn(f'id="agent-{role}-model"', html)
+            self.assertIn(f'id="agent-{role}-run"', html)
+            self.assertIn(f'id="agent-{role}-effective"', html)
         self.assertIn("Executable detection does not prove", html)
         self.assertIn("default</code> sends no model flag", html)
         self.assertIn("exact model ID to pin it", html)
         self.assertIn("JSON.stringify(profiles)", script)
+        self.assertIn("THIS RUN:", script)
+        self.assertIn("NEXT LAUNCH:", script)
+        self.assertIn("state.actors?.implemented_by", script)
+        self.assertIn('value.startsWith("claude")', script)
+        self.assertIn("model not recorded", script)
+        self.assertIn("exact model not exposed", script)
+        self.assertIn("width: min(800px", styles)
+        self.assertIn("minmax(280px", styles)
 
         self.assertEqual(lib.load_config(self.tmp)["models"], {
             "architect": "default", "supervisor": "default",
@@ -472,6 +483,7 @@ class TestEveMissionControl(HandsoffTestCase):
             view = dashboard._settings_view(lib.load_config(self.tmp))
         self.assertTrue(view["availability"]["codex"]["available"])
         self.assertFalse(view["availability"]["claude"]["available"])
+        self.assertEqual(view["effective_profiles"], lib.agent_profiles(lib.load_config(self.tmp)))
         self.assertIn("does not prove", view["availability_scope"])
 
         server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
@@ -781,7 +793,8 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
         html = (ROOT / "dashboard" / "index.html").read_text()
         script = (ROOT / "dashboard" / "app.js").read_text()
         self.assertEqual(html.count('<option value="auto">Auto-detect</option>'), 4)
-        self.assertIn("Auto-detect →", script)
+        self.assertIn("Auto-detect (currently", script)
+        self.assertIn("effective_profiles", script)
         self.assertIn('profile.adapter === "configure-me" ? "auto"', script)
 
         legacy_path = self.tmp / "handsoff.toml"

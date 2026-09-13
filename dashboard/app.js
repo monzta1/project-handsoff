@@ -12,6 +12,10 @@ const state = {
   eventStream: null,
   settings: null,
   settingsDirty: false,
+  actors: {},
+  activeRole: null,
+  latestEvent: null,
+  runProfiles: {},
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 const ALLOWED_ADAPTERS = ["auto", "codex", "claude"];
@@ -20,6 +24,44 @@ function adapterLabel(adapter) {
   if (adapter === "codex") return "Codex";
   if (adapter === "claude") return "Claude Code";
   return adapter || "NONE DETECTED";
+}
+
+function effectiveProfileLabel(profile) {
+  const adapter = adapterLabel(profile?.adapter);
+  const model = profile?.model || "default";
+  if (model === "default") {
+    return `${adapter} · runner default (exact model not exposed)`;
+  }
+  return `${adapter} · ${model}`;
+}
+
+function actorForRole(role) {
+  const recorded = {
+    architect: state.actors?.architect,
+    implementer: state.actors?.implemented_by,
+    reviewer: state.actors?.reviewed_by,
+  }[role];
+  if (recorded) return recorded;
+  if (role === state.activeRole && state.latestEvent?.kind === "heartbeat") {
+    return state.latestEvent.by || null;
+  }
+  return null;
+}
+
+function adapterFromActor(actor) {
+  const value = String(actor || "").toLowerCase();
+  if (value.startsWith("claude")) return "Claude Code";
+  if (value.startsWith("codex")) return "Codex";
+  return null;
+}
+
+function runProfileLabel(role) {
+  const actor = actorForRole(role);
+  if (!actor) return "THIS RUN: station not assigned";
+  const profile = state.runProfiles?.[role];
+  if (profile) return `THIS RUN: ${effectiveProfileLabel({ adapter: profile.effective_adapter || profile.adapter, model: profile.model })} · ${actor}`;
+  const inferredAdapter = adapterFromActor(actor);
+  return `THIS RUN: ${inferredAdapter ? `${inferredAdapter} · ` : ""}model not recorded · ${actor}`;
 }
 
 function escapeHtml(value) {
@@ -101,8 +143,18 @@ function populateAgentSettings() {
       select.prepend(custom);
     }
     const autoOption = select.querySelector('option[value="auto"]');
-    if (autoOption) autoOption.textContent = `Auto-detect → ${adapterLabel(state.settings.default_adapter)}`;
+    if (autoOption) {
+      autoOption.textContent = `Auto-detect (currently ${adapterLabel(state.settings.default_adapter)})`;
+    }
+    select.title = select.options[select.selectedIndex]?.textContent || "";
     $(`agent-${role}-model`).value = profile.model || "default";
+    const effective = state.settings.effective_profiles?.[role] || profile;
+    const effectiveNode = $(`agent-${role}-effective`);
+    effectiveNode.textContent = `NEXT LAUNCH: ${effectiveProfileLabel(effective)}`;
+    effectiveNode.title = effectiveNode.textContent;
+    const runNode = $(`agent-${role}-run`);
+    runNode.textContent = runProfileLabel(role);
+    runNode.title = runNode.textContent;
   }
   const availability = state.settings.availability || {};
   $("adapter-availability").textContent = ALLOWED_ADAPTERS.filter((adapter) => adapter !== "auto").map((adapter) =>
@@ -320,6 +372,13 @@ function renderVerifications(records, total) {
 function render(snapshot) {
   state.lastGenerated = snapshot.generated_at;
   $("last-sync").textContent = `SYNCED ${relativeTime(snapshot.generated_at).toUpperCase()}`;
+  state.actors = snapshot.actors || {};
+  state.activeRole = snapshot.actors?.active_role || null;
+  state.latestEvent = snapshot.events?.[0] || null;
+  state.runProfiles = {
+    implementer: snapshot.status?.review?.implementer_profile,
+    reviewer: snapshot.status?.review?.reviewer_profile,
+  };
   if (snapshot.settings) {
     state.settings = snapshot.settings;
     if (!$("settings-dialog").open || !state.settingsDirty) populateAgentSettings();
