@@ -235,7 +235,7 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
     elif stall:
         tone = "warning"
         label = "Telemetry interruption"
-        headline = "Mission telemetry has gone silent, Pilot."
+        headline = "Mission telemetry stalled. Signal has gone silent, Pilot."
         summary = (f"No unsafe transition has occurred. Work remains at Phase {phase_number}, {phase}, "
                    f"with {passing} of {total} acceptance criteria verified.")
     elif activity:
