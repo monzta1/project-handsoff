@@ -1520,6 +1520,100 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
 
 
 # --------------------------------------------------------------------------
+# runtime failure classification: lets the Supervisor eventually distinguish
+# a launched agent that is working from one that failed, exhausted quota or
+# context, or was cancelled/timed out -- WITHOUT wiring into the launcher
+# yet (see handsoff_agent.py; that wiring is deferred to a follow-up issue).
+# Deliberately diverges from run_checks() above: that function keeps a raw
+# output_tail because check-command output is trusted, first-party text.
+# Third-party agent stderr/stdout is not -- it can be credential-bearing --
+# so nothing here ever returns raw text, only a digest and a label drawn
+# from a fixed, closed set.
+# --------------------------------------------------------------------------
+
+FAILURE_CATEGORIES = (
+    "cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion",
+    "process_crash", "non_zero_exit", "unknown", "still_running",
+)
+
+_FAILURE_REASON_LABELS = {
+    "cancelled": "run was cancelled",
+    "timeout": "runner exceeded its timeout",
+    "auth_failure": "authentication or authorization failed",
+    "rate_limit": "rate limit or quota exhausted",
+    "context_exhaustion": "context window exhausted",
+    "process_crash": "process was terminated by a signal",
+    "non_zero_exit": "process exited with a non-zero status",
+    "unknown": "failure signal matched no known category",
+    "still_running": "no failure signal reported yet",
+}
+
+# Order matters: tier 3 checks these in sequence and the first match wins,
+# even when a tail matches more than one (e.g. an auth error surfaced while
+# refreshing a rate-limited token) -- there is no such thing as an
+# ambiguous double-classification, only a fixed tie-break.
+_TAIL_PATTERNS = (
+    ("auth_failure", re.compile(r"unauthorized|authentication failed|invalid api key|401", re.IGNORECASE)),
+    ("rate_limit", re.compile(r"rate limit|too many requests|quota exceeded|429", re.IGNORECASE)),
+    ("context_exhaustion", re.compile(r"context length exceeded|context window|maximum context|prompt is too long", re.IGNORECASE)),
+)
+
+
+def classify_runtime_failure(*, exit_code: int | None = None, timed_out: bool = False,
+                              cancelled: bool = False, stderr_tail: str = "",
+                              stdout_tail: str = "") -> dict:
+    """Turn a launched agent's raw outcome into one of FAILURE_CATEGORIES.
+    Never returns the scanned text itself, only a category, a fixed-set
+    reason label, and a digest of it -- the tail can be credential-bearing
+    third-party output, unlike run_checks()'s trusted check-command output.
+
+    Five-tier precedence, first match wins: cancelled, then timed_out (both
+    override exit_code/tail entirely), then a known tail pattern (checked in
+    a fixed order so a tail matching more than one is never ambiguous), then
+    the exit code's sign (POSIX: a negative/signal-terminated code is a
+    crash, any other nonzero code is a plain non-zero exit), then unknown
+    (exit_code absent, tail present but unrecognized) or still_running
+    (exit_code absent, tail empty -- nothing has happened yet). exit_code is
+    never 0 here: a clean exit is not a failure signal in the first place.
+    """
+    tail = (stderr_tail or "") + (stdout_tail or "")
+    tail_sha256 = hashlib.sha256(tail.encode("utf-8", "replace")).hexdigest()
+    if cancelled:
+        category = "cancelled"
+    elif timed_out:
+        category = "timeout"
+    else:
+        category = None
+        for name, pattern in _TAIL_PATTERNS:
+            if pattern.search(tail):
+                category = name
+                break
+        if category is None:
+            if exit_code is not None:
+                category = "process_crash" if exit_code < 0 else "non_zero_exit"
+            elif tail.strip():
+                category = "unknown"
+            else:
+                category = "still_running"
+    return {
+        "category": category,
+        "reason": _FAILURE_REASON_LABELS[category],
+        "tail_sha256": tail_sha256,
+    }
+
+
+def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_id: str | None) -> bool:
+    """Bounds quality-based failover so one subjective judgment can never
+    trigger it: both a retry count at or past the configured limit AND a
+    non-empty (post-strip) recorded reviewer/Supervisor finding id are
+    required. Neither alone is sufficient -- an exhausted retry count with
+    no recorded finding, or a finding with retries still available, both
+    refuse."""
+    has_finding = isinstance(finding_id, str) and finding_id.strip() != ""
+    return retry_count >= retry_limit and has_finding
+
+
+# --------------------------------------------------------------------------
 # run archive: one self-contained JSON snapshot per completed run, written
 # outside any project repo so what Handsoff learns about ITSELF survives a
 # repo's own archive/cleanup and can be read across every project it has
