@@ -162,6 +162,16 @@ ACTIVE_ROLE_BY_PHASE = {
 }
 
 
+def _live_managed_role(status: dict) -> str | None:
+    """The role whose current managed agent session is launching or running."""
+    current = lib.current_agent_sessions(status)
+    for role in ("architect", "implementer", "reviewer", "supervisor"):
+        session = current.get(role)
+        if isinstance(session, dict) and session.get("state") in lib.AGENT_SESSION_LIVE_STATES:
+            return role
+    return None
+
+
 def _active_role(status: dict, input_request: dict) -> str | None:
     """The crew role currently doing the work, or None when nobody is: the
     run is complete, or it is paused waiting on a human decision (the
@@ -172,6 +182,12 @@ def _active_role(status: dict, input_request: dict) -> str | None:
         return None
     if input_request.get("required"):
         return None
+    # A live managed session is the ground truth for who is working right
+    # now: a Phase-2 Architect drafting the design must light up as the
+    # Architect, not be assumed to be the reviewer.
+    live = _live_managed_role(status)
+    if live:
+        return live
     phase_number = int(status.get("phase_number", 1) or 1)
     if phase_number == 2:
         review = status.get("design_review") or {}
@@ -389,18 +405,32 @@ def build_snapshot(root: Path) -> dict:
 
     current_sessions = lib.current_agent_sessions(status)
     supervisor_session = current_sessions.get("supervisor")
+
+    def crew_entry(key, label, actor, live_session=None):
+        # A recorded decision names the actor once it lands; until then the
+        # role's current managed session (an Architect mid-design, an
+        # Implementer mid-build) is the truthful occupant of the station.
+        session = session_for_actor(actor)
+        if actor is None and isinstance(live_session, dict):
+            actor = live_session.get("actor")
+            session = session_view(live_session)
+        return {"key": key, "label": label, "actor": actor, "session": session}
+
+    # One managed "reviewer" role serves two stations: in Phase 2 a live
+    # reviewer session is critiquing the design, from Phase 5 on it is
+    # reviewing the implementation. Route it to the matching row only.
+    phase_number = int(status.get("phase_number", 1) or 1)
+    live_reviewer = current_sessions.get("reviewer")
+    design_reviewer_live = live_reviewer if phase_number <= 2 else None
+    implementation_reviewer_live = live_reviewer if phase_number >= 5 else None
     crew = [
-        {"key": "architect", "label": "ARCHITECT", "actor": actors["architect"],
-         "session": session_for_actor(actors["architect"])},
-        {"key": "design_reviewer", "label": "DESIGN REVIEWER", "actor": actors["design_reviewed_by"],
-         "session": session_for_actor(actors["design_reviewed_by"])},
+        crew_entry("architect", "ARCHITECT", actors["architect"], current_sessions.get("architect")),
+        crew_entry("design_reviewer", "DESIGN REVIEWER", actors["design_reviewed_by"], design_reviewer_live),
         {"key": "supervisor", "label": "SUPERVISOR",
          "actor": supervisor_session.get("actor") if isinstance(supervisor_session, dict) else None,
          "session": session_view(supervisor_session)},
-        {"key": "implementer", "label": "IMPLEMENTER", "actor": actors["implemented_by"],
-         "session": session_for_actor(actors["implemented_by"])},
-        {"key": "reviewer", "label": "REVIEWER", "actor": actors["reviewed_by"],
-         "session": session_for_actor(actors["reviewed_by"])},
+        crew_entry("implementer", "IMPLEMENTER", actors["implemented_by"], current_sessions.get("implementer")),
+        crew_entry("reviewer", "REVIEWER", actors["reviewed_by"], implementation_reviewer_live),
         {"key": "approver", "label": "APPROVER", "actor": actors["approved_by"], "session": None},
     ]
     replacements = []

@@ -15,10 +15,10 @@ deployment_requires_explicit_approval = true
 [agents]
 # "auto" selects the first installed adapter in this order: Codex, then
 # Claude Code. Set any role explicitly to override its automatic choice.
-architect = "auto"
-supervisor = "auto"
-implementer = "auto"
-reviewer = "auto"
+architect = "claude"
+supervisor = "claude"
+implementer = "claude"
+reviewer = "claude"
 
 [models]
 # Use "default" to inherit the runner's configured model, or enter an exact
@@ -32,10 +32,10 @@ reviewer = "default"
 # Ordered replacement profiles used only by the pure fallback planner.
 # "auto" is intentionally not valid here: every fallback is explicit.
 max_failovers_per_role = 2
-architect = []
-supervisor = []
-implementer = []
-reviewer = []
+architect = [{ adapter = "claude", model = "opus" }]
+supervisor = [{ adapter = "claude", model = "opus" }]
+implementer = [{ adapter = "claude", model = "opus" }]
+reviewer = [{ adapter = "claude", model = "opus" }]
 
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
@@ -48,3 +48,31 @@ live_commands = []
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600
+
+# Temporary observation-only bootstrap for the self-hosted governance run
+# (issues #28-#31). This is NOT the implementation of #29; it exists so the
+# operator can watch all four issues on Mission Control while #29 replaces
+# manual ticket configuration with derived work-item state.
+[[tickets]]
+number = 31
+title = "Track review attempts structurally and enforce convergence limits"
+status = "not_started"
+url = "https://github.com/monzta1/project-handsoff/issues/31"
+
+[[tickets]]
+number = 30
+title = "Supervisor leaves stalled runs without automatic remediation"
+status = "not_started"
+url = "https://github.com/monzta1/project-handsoff/issues/30"
+
+[[tickets]]
+number = 28
+title = "Hard-gate full regressions behind Mission Control Accept/Decline"
+status = "not_started"
+url = "https://github.com/monzta1/project-handsoff/issues/28"
+
+[[tickets]]
+number = 29
+title = "Automatically show per-ticket status table for multi-item runs"
+status = "not_started"
+url = "https://github.com/monzta1/project-handsoff/issues/29"
