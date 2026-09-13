@@ -1233,6 +1233,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
         acceptance = load_unique_json(acceptance_path(root, cfg))
+        ensure_no_launched_regression(status)
         schema_errors = validate_status_schema(status) or validate_acceptance_schema(acceptance)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
@@ -1265,6 +1266,10 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         sessions[session_id] = session
         current[role] = session_id
         proposed = deepcopy(status)
+        accepted_regression = active_regression_request(proposed)
+        if accepted_regression and accepted_regression.get("state") == "accepted":
+            accepted_regression["state"] = "invalidated"
+            accepted_regression["completed_at"] = now
         proposed["agent_sessions"] = sessions
         proposed["current_agent_sessions"] = current
         opened_attempt = None
@@ -1276,7 +1281,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                     proposed, acceptance, cfg, by=actor, reviewer=actor, session_id=session_id,
                 )
             except HandsoffError as exc:
-                if proposed.get("escalation", {}).get("kind") == "review_cap_exhausted":
+                if isinstance(proposed.get("escalation"), dict) \
+                        and proposed["escalation"].get("kind") == "review_cap_exhausted":
                     commit(
                         root, cfg, status=proposed,
                         event_kind="review_attempt_refused",
@@ -1447,6 +1453,7 @@ def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
             raise HandsoffError(f"cannot establish repository identity: {type(exc).__name__}") from exc
         return result.stdout
     head = git("rev-parse", "HEAD").strip()
+    parents = git("rev-list", "--parents", "-n", "1", "HEAD").strip().split()
     branch = git("branch", "--show-current").strip() or "(detached)"
     porcelain = git("status", "--porcelain=v1")
     tracked_diff = git("diff", "--binary", "HEAD")
@@ -1466,6 +1473,8 @@ def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
         "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
         "status_sha256": hashlib.sha256(porcelain.encode("utf-8", "replace")).hexdigest(),
         "content_sha256": hashlib.sha256(content).hexdigest(),
+        "commit_pair": {"before": parents[1].lower() if len(parents) > 1 else head.lower(),
+                        "after": head.lower()},
     }
 
 
@@ -1603,6 +1612,7 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
         acceptance = load_unique_json(acceptance_path(root, cfg))
+        ensure_no_launched_regression(status)
         errors = validate_status_schema(status) or validate_acceptance_schema(acceptance)
         if errors:
             raise HandsoffError(errors[0])
@@ -2407,7 +2417,8 @@ def validate_status_schema(status: dict) -> list[str]:
                 "request_id", "group", "commands", "command_sha256", "state", "requested_by",
                 "requested_at", "expires_at", "decided_by", "decided_at", "launched_at",
                 "completed_at", "launch_nonce_sha256", "repository", "acceptance_hash",
-                "config_hash", "results",
+                "config_hash", "scope_hash", "run_id", "epoch_sha256", "reason",
+                "requester_session_id", "results",
             }
             label = f"status: regression_requests[{index}]"
             rid = item.get("request_id") if isinstance(item, dict) else None
@@ -2426,7 +2437,7 @@ def validate_status_schema(status: dict) -> list[str]:
             if not isinstance(item.get("commands"), list) or not item["commands"] \
                     or not all(isinstance(cmd, str) and cmd.strip() for cmd in item["commands"]):
                 errors.append(f"{label}.commands is invalid")
-            for key in ("command_sha256", "acceptance_hash", "config_hash"):
+            for key in ("command_sha256", "acceptance_hash", "config_hash", "scope_hash", "epoch_sha256"):
                 if not isinstance(item.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", item[key]):
                     errors.append(f"{label}.{key} is invalid")
             nonce = item.get("launch_nonce_sha256")
@@ -2436,6 +2447,13 @@ def validate_status_schema(status: dict) -> list[str]:
                 errors.append(f"{label} launched/terminal execution requires a nonce digest")
             if not isinstance(item.get("repository"), dict):
                 errors.append(f"{label}.repository is invalid")
+            if not isinstance(item.get("run_id"), str) or not item["run_id"].strip() \
+                    or not isinstance(item.get("reason"), str) or not item["reason"].strip():
+                errors.append(f"{label} identity fields are invalid")
+            requester_session = item.get("requester_session_id")
+            if requester_session is not None and (not isinstance(requester_session, str)
+                                                   or not AGENT_SESSION_ID_PATTERN.fullmatch(requester_session)):
+                errors.append(f"{label}.requester_session_id is invalid")
             if not isinstance(item.get("results"), list):
                 errors.append(f"{label}.results must be an array")
         if live_requests > 1:
@@ -3108,6 +3126,7 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
         acceptance = load_unique_json(acceptance_path(root, cfg))
+        ensure_no_launched_regression(status)
         _assert_agent_telemetry_integrity(root, cfg, status)
         if _expire_recovery_lease(status, now):
             commit(root, cfg, status=status, event_kind="recovery_lease_expired",

@@ -83,7 +83,7 @@
       "type": "array", "maxItems": 16,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["request_id", "group", "commands", "command_sha256", "state", "requested_by", "requested_at", "expires_at", "decided_by", "decided_at", "launched_at", "completed_at", "launch_nonce_sha256", "repository", "acceptance_hash", "config_hash", "results"],
+        "required": ["request_id", "group", "commands", "command_sha256", "state", "requested_by", "requested_at", "expires_at", "decided_by", "decided_at", "launched_at", "completed_at", "launch_nonce_sha256", "repository", "acceptance_hash", "config_hash", "scope_hash", "run_id", "epoch_sha256", "reason", "requester_session_id", "results"],
         "properties": {
           "request_id": {"type": "string", "pattern": "^rg-[0-9a-f]{32}$"},
           "group": {"type": "string", "minLength": 1, "maxLength": 64},
@@ -101,6 +101,11 @@
           "repository": {"type": "object"},
           "acceptance_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "scope_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "run_id": {"type": "string", "minLength": 1},
+          "epoch_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "reason": {"type": "string", "minLength": 1},
+          "requester_session_id": {"type": ["string", "null"], "pattern": "^hs-[0-9a-f]{32}$"},
           "results": {"type": "array"}
         }
       }

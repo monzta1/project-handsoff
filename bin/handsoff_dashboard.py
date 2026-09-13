@@ -708,10 +708,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             requested = _strict_json_object(self.rfile.read(length))
             if path == "/api/regression-decision":
-                if set(requested) != {"request_id", "decision"} \
+                if set(requested) != {"request_id", "decision", "command_hash"} \
                         or requested.get("decision") not in {"accept", "decline"} \
-                        or not isinstance(requested.get("request_id"), str):
-                    raise lib.HandsoffError("regression decision requires request_id and accept/decline")
+                        or not isinstance(requested.get("request_id"), str) \
+                        or not isinstance(requested.get("command_hash"), str):
+                    raise lib.HandsoffError("regression decision requires request_id, command_hash, and accept/decline")
+                snapshot = build_snapshot(self.server.project_root)
+                pending = (snapshot.get("regression") or {}).get("pending") or {}
+                if pending.get("request_id") != requested["request_id"] \
+                        or pending.get("command_sha256") != requested["command_hash"]:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The displayed regression request is stale"})
+                    return
                 command = argparse.Namespace(
                     root=str(self.server.project_root), request_id=requested["request_id"],
                     by="Mission Control Pilot", accept=requested["decision"] == "accept",

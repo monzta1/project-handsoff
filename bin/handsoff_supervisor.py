@@ -462,15 +462,26 @@ def cmd_deployment_gate(args) -> int:
     return 0
 
 
-def _regression_bindings(root: Path, cfg: dict, acceptance: dict) -> dict:
+def _regression_bindings(root: Path, cfg: dict, acceptance: dict, status: dict) -> dict:
     regression_policy = {
         "regressions": cfg.get("regressions", []),
         "regression_gate": cfg.get("regression_gate", {}),
         "check_timeout_seconds": cfg.get("check_timeout_seconds"),
     }
+    events = lib.read_events(root, cfg)
+    epoch = {
+        "sessions": sorted((status.get("agent_sessions") or {}).keys()),
+        "replacements": [item.get("replacement_id") for item in status.get("agent_replacements", [])],
+        "recoveries": [item.get("recovery_id") for item in status.get("recovery_attempts", [])],
+    }
     return {
         "repository": lib.repository_snapshot(root),
         "acceptance_hash": lib.acceptance_hash(acceptance.get("criteria", [])),
+        "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
+        "run_id": events[0].get("hash") if events else "GENESIS",
+        "epoch_sha256": hashlib.sha256(__import__("json").dumps(
+            epoch, sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest(),
         "config_hash": hashlib.sha256(__import__("json").dumps(
             regression_policy, sort_keys=True, separators=(",", ":")
         ).encode()).hexdigest(),
@@ -484,8 +495,8 @@ def _regression_request(status: dict, request_id: str | None = None) -> dict | N
     return lib.active_regression_request(status)
 
 
-def _same_regression_bindings(item: dict, root: Path, cfg: dict, acceptance: dict) -> bool:
-    current = _regression_bindings(root, cfg, acceptance)
+def _same_regression_bindings(item: dict, root: Path, cfg: dict, acceptance: dict, status: dict) -> bool:
+    current = _regression_bindings(root, cfg, acceptance, status)
     return all(item.get(key) == current[key] for key in current)
 
 
@@ -624,7 +635,10 @@ def cmd_regression_request(args) -> int:
             "state": "awaiting_approval", "requested_by": actor, "requested_at": now.isoformat(),
             "expires_at": (now + timedelta(minutes=cfg["regression_gate"]["approval_timeout_minutes"])).isoformat(),
             "decided_by": None, "decided_at": None, "launched_at": None, "completed_at": None,
-            "launch_nonce_sha256": None, **_regression_bindings(root, cfg, acceptance), "results": [],
+            "launch_nonce_sha256": None, "reason": args.reason.strip(),
+            "requester_session_id": next((sid for sid, session in (status.get("agent_sessions") or {}).items()
+                                          if session.get("actor") == actor), None),
+            **_regression_bindings(root, cfg, acceptance, status), "results": [],
         }
         status["regression_requests"] = [*requests, item]
         status["updated_at"] = now.isoformat()
@@ -651,7 +665,7 @@ def cmd_regression_decide(args) -> int:
             item["state"] = "expired"
             item["completed_at"] = now.isoformat()
             decision = "expired"
-        elif not _same_regression_bindings(item, root, cfg, acceptance):
+        elif not _same_regression_bindings(item, root, cfg, acceptance, status):
             item["state"] = "invalidated"
             item["completed_at"] = now.isoformat()
             decision = "invalidated"
@@ -701,7 +715,7 @@ def cmd_regression_run(args) -> int:
         now = datetime.now(timezone.utc)
         accepted_at = datetime.fromisoformat(item["decided_at"])
         launch_deadline = accepted_at + timedelta(minutes=cfg["regression_gate"]["launch_window_minutes"])
-        if now > launch_deadline or not _same_regression_bindings(item, root, cfg, acceptance):
+        if now > launch_deadline or not _same_regression_bindings(item, root, cfg, acceptance, status):
             item["state"] = "expired" if now > launch_deadline else "invalidated"
             item["completed_at"] = now.isoformat()
             status["updated_at"] = now.isoformat()
@@ -725,7 +739,7 @@ def cmd_regression_run(args) -> int:
             print("REGRESSION_LATE_RESULT_IGNORED")
             return 1
         now = datetime.now(timezone.utc).isoformat()
-        bindings_valid = _same_regression_bindings(item, root, cfg, acceptance)
+        bindings_valid = _same_regression_bindings(item, root, cfg, acceptance, status)
         item["state"] = ("completed" if all(result["exit_code"] == 0 for result in results) else "failed") \
             if bindings_valid else "invalidated"
         item["completed_at"] = now
@@ -1940,6 +1954,7 @@ def main() -> int:
     regression_request = sub.add_parser("regression-request")
     regression_request.add_argument("--group", required=True)
     regression_request.add_argument("--by", required=True)
+    regression_request.add_argument("--reason", default="Release confidence requested")
 
     regression_decide = sub.add_parser("regression-decide")
     regression_decide.add_argument("--request-id", required=True)

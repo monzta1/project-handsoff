@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+BIN = ROOT / "bin"
+sys.path.insert(0, str(BIN))
+import handsoff_lib as lib  # noqa: E402
+
+
+class GovernanceCrossTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="handsoff-cross-"))
+        for name in ("handsoff.toml", ".gitignore"):
+            shutil.copy(ROOT / name, self.root / name)
+        shutil.copytree(ROOT / "schemas", self.root / "schemas")
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "Cross Test"], cwd=self.root, check=True)
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture"], cwd=self.root, check=True)
+        result = self.cli("init", "Cross governance #31 and #28")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, str(BIN / "handsoff_supervisor.py"), "--root", str(self.root), *args],
+                              capture_output=True, text=True, timeout=20)
+
+    def read(self, name):
+        return json.loads((self.root / name).read_text())
+
+    def request(self):
+        result = self.cli("regression-request", "--group", "python-full", "--by", "codex-supervisor")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return self.read("handsoff-status.json")["regression_requests"][-1]
+
+    def test_recovery_skips_pending_regression_gate(self):
+        self.request()
+        status = self.read("handsoff-status.json")
+        cfg = lib.load_config(self.root)
+        assessment = lib.recovery_assessment(status, cfg, {}, lib.read_events(self.root, cfg))
+        self.assertEqual(assessment["state"], "not_applicable")
+        self.assertEqual(assessment["reason"], "regression_pending")
+
+    def test_new_managed_session_invalidates_accepted_regression(self):
+        item = self.request()
+        accepted = self.cli("regression-decide", "--request-id", item["request_id"],
+                            "--accept", "--by", "Mission-Control-Pilot")
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        lib.create_agent_session(self.root, role="implementer", actor="codex-implementer-r2",
+                                 adapter="codex", requested_model="default", resolution_source="configured")
+        final = self.read("handsoff-status.json")["regression_requests"][-1]
+        self.assertEqual(final["state"], "invalidated")
+        self.assertIsNotNone(final["completed_at"])
+
+    def test_table_global_states_and_audit_integrity(self):
+        status = self.read("handsoff-status.json")
+        acceptance = self.read("handsoff-acceptance.json")
+        cfg = lib.load_config(self.root)
+        status["status"] = "blocked"
+        status["next_action"] = "Operator acknowledgement required"
+        rows = lib.derive_work_items(status, acceptance, cfg)
+        self.assertEqual({row["status"] for row in rows["items"]}, {"blocked"})
+        self.assertEqual(lib.verify_event_log(self.root, cfg), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

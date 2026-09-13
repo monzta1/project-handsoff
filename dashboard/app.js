@@ -370,7 +370,7 @@ async function decideRegression(decision) {
     const response = await fetch("/api/regression-decision", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request_id: request.request_id, decision }),
+      body: JSON.stringify({ request_id: request.request_id, decision, command_hash: request.command_sha256 }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Decision returned ${response.status}`);

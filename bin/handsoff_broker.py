@@ -96,8 +96,10 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             raise lib.HandsoffError("broker recover.dry_run must be boolean")
         return base
     if command == "regression-request":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "group"})
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "group"}, {"reason"})
         base.extend(["--group", _text(request, "group"), "--by", _text(request, "by")])
+        if "reason" in request:
+            base.extend(["--reason", _text(request, "reason")])
         return base
     if command in {"regression-run", "regression-cancel"}:
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "request_id"})
