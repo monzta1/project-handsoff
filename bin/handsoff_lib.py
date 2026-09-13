@@ -1958,7 +1958,10 @@ def verify_event_log(root: Path, cfg: dict) -> list[str]:
     Combines chain integrity with the status/acceptance freshness check:
     the latest event must describe the files as they currently are."""
     problems, last_record = event_log_chain_errors(root, cfg)
-    if last_record is not None:
+    if last_record is None:
+        if status_path(root, cfg).exists() or acceptance_path(root, cfg).exists():
+            problems.append("event log is missing or empty while project state exists")
+    else:
         if last_record.get("status_sha256") != _file_sha256(status_path(root, cfg)):
             problems.append("status file does not match the state recorded by the latest event")
         if last_record.get("acceptance_sha256") != _file_sha256(acceptance_path(root, cfg)):

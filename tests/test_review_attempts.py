@@ -185,8 +185,10 @@ class ReviewAttemptTests(unittest.TestCase):
         self.commit_status(status)
         acceptance["criteria"][0]["state"] = "not_tested"
         cfg = lib.load_config(self.root)
+        status = self.read("handsoff-status.json")
+        lib.sync_coverage(status, acceptance)
         with lib.project_lock(self.root):
-            lib.commit(self.root, cfg, acceptance=acceptance,
+            lib.commit(self.root, cfg, status=status, acceptance=acceptance,
                        event_kind="evidence_fixture", event_message="Evidence-only fixture")
 
         closed = self.run_cli(
@@ -197,6 +199,26 @@ class ReviewAttemptTests(unittest.TestCase):
         final = self.read("handsoff-status.json")
         self.assertEqual(final["review_attempts"][-1]["disposition"], "changes_requested")
         self.assertIsNone(final.get("reviewed_by"))
+
+    def test_review_findings_cannot_bypass_phase_or_proposed_state_gates(self):
+        finding = (
+            "record-review-findings", "--by", "reviewer",
+            "--finding", "incorrect_implementation: must remain fail closed",
+        )
+        early = self.run_cli(*finding)
+        self.assertNotEqual(early.returncode, 0)
+        self.assertIn("Phase 4 or later", early.stdout)
+        self.assertEqual(self.read("handsoff-status.json")["review_round"], 0)
+
+        status = self.read("handsoff-status.json")
+        status.update(phase_number=4, phase=lib.PHASES[4], progress=40)
+        self.commit_status(status)
+        invalid = self.run_cli(*finding)
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn("design", invalid.stdout)
+        final = self.read("handsoff-status.json")
+        self.assertEqual(final["review_round"], 0)
+        self.assertEqual(final["phase_number"], 4)
 
 
 if __name__ == "__main__":

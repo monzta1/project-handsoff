@@ -191,6 +191,14 @@ class GovernanceCrossTests(unittest.TestCase):
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("event log", rejected.stdout)
 
+    def test_scope_sync_refuses_missing_event_log_and_head(self):
+        cfg = lib.load_config(self.root)
+        lib.event_log_path(self.root, cfg).unlink()
+        lib.event_head_path(self.root).unlink()
+        rejected = self.cli("work-items-sync", "--by", "supervisor")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("event log is missing or empty", rejected.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

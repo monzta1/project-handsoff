@@ -1215,6 +1215,9 @@ def cmd_record_review_findings(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if status.get("phase_number", 0) < 4:
+            print("SHIP_FEATURE_BLOCKED: review findings require Phase 4 or later")
+            return 1
         implementer = status.get("implemented_by")
         if implementer and reviewer.casefold() == implementer.strip().casefold():
             print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
@@ -1249,6 +1252,11 @@ def cmd_record_review_findings(args) -> int:
             extra = None
         proposed["review"] = None
         proposed["reviewed_by"] = None
+        errors = lib.compute_errors(proposed, acceptance, cfg, verifications=records,
+                                    verification_problems=problems)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {error}" for error in errors))
+            return 1
         lib.commit(root, cfg, status=proposed, extra_events=extra,
                    event_kind="review_attempt_closed",
                    event_message=f"Review attempt {attempt['attempt']} requested changes",
