@@ -15,10 +15,10 @@ deployment_requires_explicit_approval = true
 [agents]
 # "auto" selects the first installed adapter in this order: Codex, then
 # Claude Code. Set any role explicitly to override its automatic choice.
-architect = "claude"
-supervisor = "claude"
-implementer = "claude"
-reviewer = "claude"
+architect = "codex"
+supervisor = "codex"
+implementer = "codex"
+reviewer = "codex"
 
 [models]
 # Use "default" to inherit the runner's configured model, or enter an exact
@@ -32,16 +32,33 @@ reviewer = "default"
 # Ordered replacement profiles used only by the pure fallback planner.
 # "auto" is intentionally not valid here: every fallback is explicit.
 max_failovers_per_role = 2
-architect = [{ adapter = "claude", model = "opus" }]
-supervisor = [{ adapter = "claude", model = "opus" }]
-implementer = [{ adapter = "claude", model = "opus" }]
-reviewer = [{ adapter = "claude", model = "opus" }]
+architect = []
+supervisor = []
+implementer = []
+reviewer = []
 
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a
 # free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
-commands = []
+# Focused checks for the self-hosted governance run (issues #31, #30, #28,
+# #29 and the cross-feature cases). One narrow file per ticket area; none of
+# these runs the whole suite. Full regressions belong under [[regressions]]
+# (issue #28) and are gated behind Mission Control Accept/Decline.
+commands = [
+  "python3 tests/test_review_attempts.py",
+  "python3 tests/test_supervisor_recovery.py",
+  "python3 tests/test_regression_gate.py",
+  "python3 tests/test_work_items.py",
+  "python3 tests/test_governance_cross.py",
+  "python3 tests/test_governance_docs.py",
+  "node --test tests/dashboard/review_round.test.js",
+  "node --test tests/dashboard/work_items.test.js",
+  "node --test tests/dashboard/regression_gate.test.js",
+  "node --test tests/browser/regression_gate.browser.test.js",
+  "node --test tests/browser/work_items.browser.test.js",
+  "node --test tests/browser/escalation.browser.test.js",
+]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
 live_commands = []
