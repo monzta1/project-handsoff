@@ -7,6 +7,7 @@ const assert = require("node:assert/strict");
 const {
   cleanKind,
   eventMessage,
+  eventDetail,
 } = require("../../dashboard/lib/dashboard-logic.js");
 
 test("a synthetic failover-shaped event renders its kind and message verbatim, no special-casing needed", () => {
@@ -32,4 +33,21 @@ test("cleanKind falls back to 'event' when kind is missing, never crashes or sho
 
 test("eventMessage falls back to an honest placeholder when message is missing", () => {
   assert.equal(eventMessage({ kind: "heartbeat" }), "Recorded state transition");
+});
+
+test("a real replacement event exposes role, category, attempt, sessions, and state", () => {
+  const detail = eventDetail({
+    kind: "agent_replacement_reserved",
+    role: "implementer",
+    category: "rate_limited",
+    attempt: 2,
+    from_session_id: "hs-old",
+    to_session_id: "hs-new",
+    replacement_state: "reserved",
+  });
+  assert.equal(detail, "implementer · rate limited · attempt 2 · hs-old → hs-new · reserved");
+});
+
+test("ordinary events do not fabricate replacement telemetry", () => {
+  assert.equal(eventDetail({ kind: "heartbeat", role: "implementer" }), "");
 });

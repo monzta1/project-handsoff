@@ -45,8 +45,8 @@ function runProfileLabel(role, context = {}) {
       : "exact model not reported";
     return `THIS RUN: ${adapterLabel(session.adapter)} · ${requested} · ${reported} · ${session.actor} · ${session.session_id} · ${String(session.state || "unknown").replaceAll("_", " ").toUpperCase()}`;
   }
-  if (!actor) return "THIS RUN: station not assigned · profile not recorded";
-  return `THIS RUN: profile not recorded · ${actor}`;
+  if (!actor) return "THIS RUN: station not assigned · no managed session recorded";
+  return `THIS RUN: external/manual launch · provider, model, and session not recorded · ${actor}`;
 }
 
 function cleanKind(value) {
@@ -55,6 +55,53 @@ function cleanKind(value) {
 
 function eventMessage(event) {
   return event?.message || "Recorded state transition";
+}
+
+function runtimeProfileLabel(session) {
+  if (!session) return "External/manual launch · provider, model, and session not recorded";
+  const requested = session.requested_model === "default"
+    ? "runner default"
+    : (session.requested_model || "requested model not recorded");
+  const reported = session.reported_model || "exact model not reported";
+  return `${adapterLabel(session.adapter)} · ${requested} · ${reported} · ${session.session_id} · ${String(session.state || "unknown").replaceAll("_", " ").toUpperCase()}`;
+}
+
+function crewProfileLabel(member) {
+  if (member?.key === "approver") return member?.actor ? "Human authorization" : "Authorization not recorded";
+  if (!member?.actor) return "Station vacant · no managed session recorded";
+  return runtimeProfileLabel(member.session);
+}
+
+function replacementHeadline(replacement) {
+  const role = String(replacement?.role || "agent").toUpperCase();
+  const state = String(replacement?.state || "unknown").replaceAll("_", " ").toUpperCase();
+  return `${role} · ${state} · ATTEMPT ${replacement?.attempt ?? "?"}/${replacement?.cap ?? "?"}`;
+}
+
+function replacementDetail(replacement) {
+  const from = replacement?.from_profile
+    ? `${adapterLabel(replacement.from_profile.adapter)} ${replacement.from_profile.requested_model || "default"} (${replacement.from_session_id})`
+    : (replacement?.from_session_id || "source session not recorded");
+  const targetProfile = replacement?.to_profile || replacement?.selected_profile;
+  const to = targetProfile
+    ? `${adapterLabel(targetProfile.adapter)} ${targetProfile.requested_model || targetProfile.model || "default"}${replacement?.to_session_id ? ` (${replacement.to_session_id})` : ""}`
+    : "Pilot review";
+  const trigger = String(replacement?.trigger || "unknown trigger").replaceAll("_", " ");
+  const category = String(replacement?.category || "unknown category").replaceAll("_", " ");
+  return `${from} → ${to} · ${trigger} / ${category}`;
+}
+
+function eventDetail(event) {
+  if (!String(event?.kind || "").startsWith("agent_replacement_")) return "";
+  const transition = [event.from_session_id, event.to_session_id].filter(Boolean).join(" → ");
+  const parts = [
+    event.role,
+    event.category,
+    Number.isInteger(event.attempt) ? `attempt ${event.attempt}` : null,
+    transition || null,
+    event.replacement_state,
+  ];
+  return parts.filter(Boolean).map((part) => String(part).replaceAll("_", " ")).join(" · ");
 }
 
 // REQ-002: the Auto-detect <option> label always names the live resolved
@@ -123,6 +170,11 @@ if (typeof module !== "undefined" && module.exports) {
     runProfileLabel,
     cleanKind,
     eventMessage,
+    runtimeProfileLabel,
+    crewProfileLabel,
+    replacementHeadline,
+    replacementDetail,
+    eventDetail,
     autoDetectOptionLabel,
     resolveAgentSelectValue,
     ALLOWED_ADAPTERS,

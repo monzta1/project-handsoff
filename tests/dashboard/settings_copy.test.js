@@ -18,6 +18,11 @@ test("fallback settings panel states edits apply to future replacement choices o
   );
 });
 
+test("the settings dialog explicitly separates next-launch configuration from crew history", () => {
+  assert.match(indexHtml, /NEXT MANAGED LAUNCH CONFIGURATION/);
+  assert.match(indexHtml, /do not rewrite Command Crew history/);
+});
+
 test("the save-confirmation copy also frames the change as future launches, not the active run", () => {
   const appJs = fs.readFileSync(
     path.join(__dirname, "..", "..", "dashboard", "app.js"),

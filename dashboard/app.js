@@ -16,11 +16,14 @@ const state = {
   activeRole: null,
   latestEvent: null,
   runSessions: {},
+  crew: [],
+  replacements: [],
   fallbackDraft: {},
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 // adapterLabel, effectiveProfileLabel, actorForRole, runProfileLabel,
-// cleanKind, eventMessage, autoDetectOptionLabel, resolveAgentSelectValue,
+// cleanKind, eventMessage, runtime/crew/replacement labels, eventDetail,
+// autoDetectOptionLabel, resolveAgentSelectValue,
 // ALLOWED_ADAPTERS, and the fallback-list helpers come from
 // lib/dashboard-logic.js (loaded before this file) so they stay testable
 // with plain `node --test` and no DOM.
@@ -421,16 +424,21 @@ function renderRoleChiclets(activeRole) {
   });
 }
 
-function renderCrew(actors) {
-  const crew = [
-    ["ARCHITECT", actors.architect],
-    ["DESIGN REVIEWER", actors.design_reviewed_by],
-    ["IMPLEMENTER", actors.implemented_by],
-    ["REVIEWER", actors.reviewed_by],
-    ["APPROVER", actors.approved_by],
-  ];
-  $("crew-list").innerHTML = crew.map(([role, person]) => `
-    <div class="crew-member"><span>${role}</span><strong class="${person ? "" : "unassigned"}">${escapeHtml(person || "Station vacant")}</strong></div>`).join("");
+function renderCrew(crew) {
+  $("crew-list").innerHTML = crew.map((member) => `
+    <div class="crew-member">
+      <span>${escapeHtml(member.label)}</span>
+      <div><strong class="${member.actor ? "" : "unassigned"}">${escapeHtml(member.actor || "Station vacant")}</strong><small>${escapeHtml(crewProfileLabel(member))}</small></div>
+    </div>`).join("");
+}
+
+function renderReplacements(replacements) {
+  $("replacement-count").textContent = `${replacements.length} EVENT${replacements.length === 1 ? "" : "S"}`;
+  $("replacement-list").innerHTML = replacements.length ? replacements.slice().reverse().map((replacement) => `
+    <div class="replacement-item">
+      <strong>${escapeHtml(replacementHeadline(replacement))}</strong>
+      <p>${escapeHtml(replacementDetail(replacement))}</p>
+    </div>`).join("") : '<div class="attention-clear">No agent replacements recorded.</div>';
 }
 
 function renderEvents(events, total) {
@@ -438,7 +446,7 @@ function renderEvents(events, total) {
   $("event-list").innerHTML = events.length ? events.map((event) => `
     <div class="event">
       <time datetime="${escapeHtml(event.at)}">${escapeHtml(relativeTime(event.at))}</time>
-      <div><strong>${escapeHtml(cleanKind(event.kind))}</strong><p>${escapeHtml(eventMessage(event))}</p></div>
+      <div><strong>${escapeHtml(cleanKind(event.kind))}</strong><p>${escapeHtml(eventMessage(event))}</p>${eventDetail(event) ? `<small>${escapeHtml(eventDetail(event))}</small>` : ""}</div>
     </div>`).join("") : '<div class="empty-row">Flight Log clear. No events recorded.</div>';
 }
 
@@ -461,6 +469,8 @@ function render(snapshot) {
   state.activeRole = snapshot.actors?.active_role || null;
   state.latestEvent = snapshot.events?.[0] || null;
   state.runSessions = snapshot.runtime?.current_sessions || {};
+  state.crew = snapshot.crew || [];
+  state.replacements = snapshot.runtime?.replacements || [];
   if (snapshot.settings) {
     state.settings = snapshot.settings;
     if (!$("settings-dialog").open || !state.settingsDirty) populateAgentSettings();
@@ -527,7 +537,8 @@ function render(snapshot) {
 
   renderCriteria(acceptance.criteria);
   renderAttention(supervisor.attention);
-  renderCrew(snapshot.actors);
+  renderCrew(state.crew);
+  renderReplacements(state.replacements);
   renderRoleChiclets(snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);

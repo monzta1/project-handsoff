@@ -39,6 +39,35 @@ def set_fixture_check_commands(path, commands):
     path.write_text(text)
 
 
+def normalize_fixture_config(path):
+    """Detach test projects from mutable dogfood/runtime configuration."""
+    replacements = {
+        ("agents", role): f'{role} = "auto"'
+        for role in ("architect", "supervisor", "implementer", "reviewer")
+    }
+    replacements.update({
+        ("models", role): f'{role} = "default"'
+        for role in ("architect", "supervisor", "implementer", "reviewer")
+    })
+    replacements.update({
+        ("fallback_policy", "max_failovers_per_role"): "max_failovers_per_role = 2",
+        **{("fallback_policy", role): f"{role} = []"
+           for role in ("architect", "supervisor", "implementer", "reviewer")},
+        ("checks", "commands"): "commands = []",
+        ("checks", "live_commands"): "live_commands = []",
+    })
+    section = None
+    normalized = []
+    for line in path.read_text().splitlines(keepends=True):
+        section_match = re.match(r"^\[([^]]+)\]\s*$", line.strip())
+        if section_match:
+            section = section_match.group(1)
+        key_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        replacement = replacements.get((section, key_match.group(1))) if key_match else None
+        normalized.append(f"{replacement}\n" if replacement is not None else line)
+    path.write_text("".join(normalized))
+
+
 def setUpModule():
     """Keep completion archives inside a temporary test-only directory."""
     # Any test that lands Phase 8 with status complete now triggers a real
@@ -75,7 +104,7 @@ class HandsoffTestCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-test-"))
         for name in ("handsoff.toml",):
             shutil.copy(ROOT / name, self.tmp / name)
-        set_fixture_check_commands(self.tmp / "handsoff.toml", [])
+        normalize_fixture_config(self.tmp / "handsoff.toml")
         shutil.copytree(ROOT / "schemas", self.tmp / "schemas")
 
     def tearDown(self):
@@ -489,7 +518,7 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertIn("NEXT LAUNCH:", script)
         self.assertIn("actors?.implemented_by", logic_script)
         self.assertIn("snapshot.runtime?.current_sessions", script)
-        self.assertIn("model not recorded", script)
+        self.assertIn("provider, model, and session not recorded", logic_script)
         self.assertIn("exact model not exposed", logic_script)
         self.assertIn("width: min(900px", styles)
         self.assertIn("minmax(280px", styles)
@@ -1431,9 +1460,60 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
         logic_script = (ROOT / "dashboard" / "lib" / "dashboard-logic.js").read_text()
         self.assertIn("snapshot.runtime?.current_sessions", script)
         self.assertIn("THIS RUN:", logic_script)
-        self.assertIn("profile not recorded", logic_script)
+        self.assertIn("provider, model, and session not recorded", logic_script)
         self.assertIn("exact model not reported", logic_script)
         self.assertIn("NEXT LAUNCH:", script)
+
+    def test_dashboard_exposes_truthful_crew_and_replacement_telemetry(self):
+        profiles = self.lib.agent_profiles(self.lib.load_config(self.tmp))
+        profiles["implementer"] = {"adapter": "claude", "model": "sonnet"}
+        self.lib.update_agent_config(self.tmp, profiles)
+        source = self.lib.create_agent_session(
+            self.tmp, role="implementer", actor="codex-implementer",
+            adapter="codex", requested_model="default", resolution_source="configured",
+            id_factory=lambda: self._sid(20),
+        )
+        self.lib.transition_agent_session(self.tmp, source["session_id"], "running")
+        failure = self.lib.classify_runtime_failure(exit_code=1, stderr_tail="rate limit exceeded")
+        self.lib.transition_agent_session(
+            self.tmp, source["session_id"], "failed", exit_code=1, failure=failure,
+        )
+        cfg = self.lib.load_config(self.tmp)
+        payload = {
+            "profiles": self.lib.agent_profiles(cfg),
+            "fallbacks": self.lib.fallback_profiles(cfg),
+            "max_failovers_per_role": 2,
+        }
+        payload["fallbacks"]["implementer"] = [{"adapter": "claude", "model": "sonnet"}]
+        self.lib.update_agent_settings(self.tmp, payload)
+        replacement = self.lib.reserve_agent_replacement(
+            self.tmp, from_session_id=source["session_id"],
+            which=lambda adapter: f"/bin/{adapter}",
+            snapshotter=lambda root: {
+                "head": "a" * 40, "branch": "main", "dirty": False,
+                "status_sha256": "b" * 64,
+            },
+            session_id_factory=lambda: self._sid(21),
+        )
+        with self.lib.project_lock(self.tmp):
+            current_cfg = self.lib.load_config(self.tmp)
+            status = self.lib.load_unique_json(self.lib.status_path(self.tmp, current_cfg))
+            status["implemented_by"] = "codex-implementer"
+            self.lib.commit(
+                self.tmp, current_cfg, status=status, event_kind="test_actor_bound",
+                event_message="Bound the recorded Implementer identity",
+            )
+
+        snapshot = self.dashboard.build_snapshot(self.tmp)
+        implementer = next(member for member in snapshot["crew"] if member["key"] == "implementer")
+        self.assertEqual(implementer["session"]["adapter"], "codex")
+        self.assertEqual(implementer["session"]["requested_model"], "default")
+        self.assertNotIn("stderr_tail", json.dumps(snapshot["runtime"]))
+        shown = snapshot["runtime"]["replacements"][-1]
+        self.assertEqual(shown["replacement_id"], replacement["replacement_id"])
+        self.assertEqual(shown["from_profile"]["session_id"], source["session_id"])
+        self.assertEqual(shown["to_profile"]["session_id"], replacement["to_session_id"])
+        self.assertEqual(shown["selected_profile"], {"adapter": "claude", "model": "sonnet"})
 
     def test_runtime_telemetry_excludes_sensitive_payloads(self):
         secret = "sk-secret-task-output-env-token"
@@ -1673,7 +1753,7 @@ class TestAgentAgnosticSafetyGates(HandsoffTestCase):
         root = Path(tempfile.mkdtemp(prefix="handsoff-test-ag5-"))
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         shutil.copy(ROOT / "handsoff.toml", root / "handsoff.toml")
-        set_fixture_check_commands(root / "handsoff.toml", [])
+        normalize_fixture_config(root / "handsoff.toml")
         shutil.copytree(ROOT / "schemas", root / "schemas")
         sys.path.insert(0, str(BIN))
         import handsoff_lib as lib
@@ -3731,9 +3811,11 @@ class TestArchitectDesignReview(HandsoffTestCase):
         snapshot = dashboard.build_snapshot(self.tmp)
         self.assertEqual(snapshot["actors"]["architect"], "architect-1")
         self.assertEqual(snapshot["actors"]["design_reviewed_by"], "design-reviewer")
+        self.assertEqual(snapshot["crew"][0]["actor"], "architect-1")
+        self.assertIsNone(snapshot["crew"][0]["session"])
         self.assertIn('data-role="architect"', (ROOT / "dashboard" / "index.html").read_text())
-        self.assertIn('["DESIGN REVIEWER", actors.design_reviewed_by]',
-                      (ROOT / "dashboard" / "app.js").read_text())
+        self.assertIn('"label": "DESIGN REVIEWER"',
+                      (ROOT / "bin" / "handsoff_dashboard.py").read_text())
 
         status = self.read_status()
         status["design_review"]["by"] = ""
@@ -3759,7 +3841,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
     def _new_project_root(self):
         root = Path(tempfile.mkdtemp(prefix="handsoff-test-architect-"))
         shutil.copy(ROOT / "handsoff.toml", root / "handsoff.toml")
-        set_fixture_check_commands(root / "handsoff.toml", [])
+        normalize_fixture_config(root / "handsoff.toml")
         shutil.copytree(ROOT / "schemas", root / "schemas")
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         return root

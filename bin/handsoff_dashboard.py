@@ -358,6 +358,62 @@ def build_snapshot(root: Path) -> dict:
     input_request = _input_request(status, cfg)
     display_status = dict(status)
     display_status["phase"] = _display_phase_name(status)
+    actors = {
+        "architect": ((status.get("design_review") or {}).get("architect")
+                      or (status.get("design_approved") or {}).get("architect")),
+        "design_reviewed_by": (status.get("design_review") or {}).get("by"),
+        "implemented_by": status.get("implemented_by"),
+        "reviewed_by": status.get("reviewed_by"),
+        "approved_by": (status.get("deployment_approved") or {}).get("by"),
+        "active_role": _active_role(status, input_request),
+    }
+    sessions = status.get("agent_sessions") if isinstance(status.get("agent_sessions"), dict) else {}
+
+    def session_view(session):
+        if not isinstance(session, dict):
+            return None
+        fields = ("session_id", "role", "actor", "adapter", "requested_model",
+                  "reported_model", "resolution_source", "state", "started_at",
+                  "running_at", "ended_at", "exit_code")
+        return {field: session.get(field) for field in fields}
+
+    def session_for_actor(actor):
+        if not isinstance(actor, str) or not actor.strip():
+            return None
+        identity = actor.strip().casefold()
+        matches = [session for session in sessions.values()
+                   if isinstance(session, dict)
+                   and isinstance(session.get("actor"), str)
+                   and session["actor"].strip().casefold() == identity]
+        return session_view(matches[-1]) if matches else None
+
+    current_sessions = lib.current_agent_sessions(status)
+    supervisor_session = current_sessions.get("supervisor")
+    crew = [
+        {"key": "architect", "label": "ARCHITECT", "actor": actors["architect"],
+         "session": session_for_actor(actors["architect"])},
+        {"key": "design_reviewer", "label": "DESIGN REVIEWER", "actor": actors["design_reviewed_by"],
+         "session": session_for_actor(actors["design_reviewed_by"])},
+        {"key": "supervisor", "label": "SUPERVISOR",
+         "actor": supervisor_session.get("actor") if isinstance(supervisor_session, dict) else None,
+         "session": session_view(supervisor_session)},
+        {"key": "implementer", "label": "IMPLEMENTER", "actor": actors["implemented_by"],
+         "session": session_for_actor(actors["implemented_by"])},
+        {"key": "reviewer", "label": "REVIEWER", "actor": actors["reviewed_by"],
+         "session": session_for_actor(actors["reviewed_by"])},
+        {"key": "approver", "label": "APPROVER", "actor": actors["approved_by"], "session": None},
+    ]
+    replacements = []
+    for replacement in (status.get("agent_replacements") or [])[-8:]:
+        if not isinstance(replacement, dict):
+            continue
+        fields = ("replacement_id", "role", "from_session_id", "to_session_id", "trigger",
+                  "category", "reason", "attempt", "cap", "action", "planner_reason",
+                  "selected_profile", "state", "at", "ended_at")
+        item = {field: replacement.get(field) for field in fields}
+        item["from_profile"] = session_view(sessions.get(replacement.get("from_session_id")))
+        item["to_profile"] = session_view(sessions.get(replacement.get("to_session_id")))
+        replacements.append(item)
     return {
         "initialized": True,
         "generated_at": generated_at,
@@ -378,17 +434,11 @@ def build_snapshot(root: Path) -> dict:
             "total": len(criteria),
             "original_symptom_resolved": coverage.get("original_symptom_resolved") is True,
         },
-        "actors": {
-            "architect": ((status.get("design_review") or {}).get("architect")
-                          or (status.get("design_approved") or {}).get("architect")),
-            "design_reviewed_by": (status.get("design_review") or {}).get("by"),
-            "implemented_by": status.get("implemented_by"),
-            "reviewed_by": status.get("reviewed_by"),
-            "approved_by": (status.get("deployment_approved") or {}).get("by"),
-            "active_role": _active_role(status, input_request),
-        },
+        "actors": actors,
+        "crew": crew,
         "runtime": {
-            "current_sessions": lib.current_agent_sessions(status),
+            "current_sessions": current_sessions,
+            "replacements": replacements,
         },
         "audit": {
             "healthy": audit_healthy,

@@ -45,7 +45,7 @@ test("a session with no reported_model shows honest 'exact model not reported' t
 
 test("an unassigned role shows the vacant-station text, not a blank or crash", () => {
   const label = runProfileLabel("supervisor", { runSessions: {}, actors: {} });
-  assert.equal(label, "THIS RUN: station not assigned · profile not recorded");
+  assert.equal(label, "THIS RUN: station not assigned · no managed session recorded");
 });
 
 test("a role with a recorded actor but no live session shows profile-not-recorded plus the actor", () => {
@@ -53,7 +53,7 @@ test("a role with a recorded actor but no live session shows profile-not-recorde
     runSessions: {},
     actors: { architect: "claude-architect-issue25" },
   });
-  assert.equal(label, "THIS RUN: profile not recorded · claude-architect-issue25");
+  assert.equal(label, "THIS RUN: external/manual launch · provider, model, and session not recorded · claude-architect-issue25");
 });
 
 test("adapterLabel never fabricates a name for an unrecognized/missing adapter", () => {
