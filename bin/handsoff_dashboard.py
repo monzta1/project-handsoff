@@ -126,7 +126,7 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
         return tuple(signature)
 
 
-def _phase_view(current: int, run_complete: bool) -> list[dict]:
+def _phase_view(current: int, run_complete: bool, current_name: str | None = None) -> list[dict]:
     """The current phase renders "active" (the pulsing in-progress bar) only
     while the run is still moving. Once status is complete, phase 8 being
     "current" no longer means "in progress", so it renders solid-complete
@@ -135,12 +135,20 @@ def _phase_view(current: int, run_complete: bool) -> list[dict]:
     return [
         {
             "number": number,
-            "name": name,
+            "name": current_name if number == current and current_name else name,
             "state": ("complete" if number < current or (number == current and run_complete)
                       else "active" if number == current else "upcoming"),
         }
         for number, name in lib.PHASES.items()
     ]
+
+
+def _display_phase_name(status: dict) -> str:
+    """Never describe an accepted deployment authorization as still awaiting it."""
+    phase_number = int(status.get("phase_number", 1) or 1)
+    if phase_number == 7 and status.get("deployment_approved"):
+        return "Deployment authorized · ready to ship"
+    return status.get("phase") or lib.PHASES.get(phase_number, "Unknown phase")
 
 
 #: Which crew role is doing the work during each phase, for the dashboard's
@@ -347,13 +355,19 @@ def build_snapshot(root: Path) -> dict:
     coverage = status.get("requirement_coverage", {})
     audit_healthy = not gate_errors and not audit_errors
     input_request = _input_request(status, cfg)
+    display_status = dict(status)
+    display_status["phase"] = _display_phase_name(status)
     return {
         "initialized": True,
         "generated_at": generated_at,
         "root": str(root),
         "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature"))},
-        "status": status,
-        "phases": _phase_view(int(status.get("phase_number", 1) or 1), status.get("status") == "complete"),
+        "status": display_status,
+        "phases": _phase_view(
+            int(status.get("phase_number", 1) or 1),
+            status.get("status") == "complete",
+            display_status["phase"],
+        ),
         "acceptance": {
             "criteria": criteria,
             "passing": coverage.get("passing", 0),
@@ -396,7 +410,7 @@ def build_snapshot(root: Path) -> dict:
         "settings": _settings_view(cfg),
         "input_required": input_request,
         "activity_note": activity,
-        "supervisor": _supervisor_briefing(status, criteria, gate_errors, audit_errors, stall, activity,
+        "supervisor": _supervisor_briefing(display_status, criteria, gate_errors, audit_errors, stall, activity,
                                             latest_event, input_request),
         "events": list(reversed(events[-12:])),
         "verifications": list(reversed(verifications[-8:])),

@@ -208,6 +208,26 @@ class TestEveMissionControl(HandsoffTestCase):
             self.assertLess(len(briefing["summary"]), 260)
             self.assertNotIn("!!!", briefing["headline"] + briefing["summary"])
 
+    def test_approved_deployment_immediately_reads_ready_to_ship(self):
+        dashboard = self._dashboard()
+        self.init("Immediate deployment authorization display")
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-1")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        approved = run(["deployment-gate", "--approve", "--by", "Mission Control Pilot"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+
+        snapshot = dashboard.build_snapshot(self.tmp)
+        self.assertEqual(snapshot["status"]["status"], "ready_to_deploy")
+        self.assertEqual(snapshot["status"]["phase"], "Deployment authorized · ready to ship")
+        self.assertEqual(snapshot["phases"][6]["name"], "Deployment authorized · ready to ship")
+        current_display = json.dumps({
+            "status": snapshot["status"],
+            "active_phase": snapshot["phases"][6],
+            "supervisor": snapshot["supervisor"],
+        }).lower()
+        self.assertNotIn("awaiting deployment approval", current_display)
+
     def test_alerts_and_empty_state_remain_actionable(self):
         dashboard = self._dashboard()
         exact_action = "Run the targeted verification for EVE-003."
