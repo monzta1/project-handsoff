@@ -26,6 +26,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -133,11 +134,20 @@ AGENT_SESSION_TERMINAL_STATES = {
     "completed", "failed", "timed_out", "cancelled", "failed_to_start",
 }
 AGENT_SESSION_STATES = AGENT_SESSION_LIVE_STATES | AGENT_SESSION_TERMINAL_STATES
-AGENT_SESSION_RESOLUTION_SOURCES = {"configured", "auto_detected", "legacy_auto_detected"}
+AGENT_SESSION_RESOLUTION_SOURCES = {"configured", "auto_detected", "legacy_auto_detected", "fallback"}
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
 }
+MAX_AGENT_REPLACEMENTS = 32
+MAX_QUALITY_FINDINGS = 32
+AGENT_REPLACEMENT_TRIGGERS = {"runtime_failure", "quality_finding"}
+AGENT_REPLACEMENT_STATES = {"reserved", "claimed", "running", "failed", "recovered", "pilot_pause"}
+QUALITY_FINDING_CODES = {
+    "acceptance_not_met", "incorrect_implementation", "review_changes_requested",
+}
+REPLACEMENT_ID_PATTERN = re.compile(r"^hr-[0-9a-f]{32}$")
+QUALITY_FINDING_ID_PATTERN = re.compile(r"^hq-[0-9a-f]{32}$")
 
 REQUIRED_STATUS_FIELDS = (
     "feature", "phase_number", "phase", "progress", "status", "updated_at",
@@ -905,7 +915,7 @@ def _new_agent_session_id(sessions: dict, *, id_factory=None) -> str:
     raise HandsoffError("could not allocate a collision-free agent session id")
 
 
-def _prune_agent_sessions(sessions: dict, current: dict) -> None:
+def _prune_agent_sessions(sessions: dict, current: dict) -> set[str]:
     """Bound status growth while retaining every role's current snapshot."""
     protected = {value for value in current.values() if isinstance(value, str)}
     removable = sorted(
@@ -913,10 +923,35 @@ def _prune_agent_sessions(sessions: dict, current: dict) -> None:
          if sid not in protected and session.get("state") in AGENT_SESSION_TERMINAL_STATES),
         key=lambda session: (session.get("started_at", ""), session.get("session_id", "")),
     )
+    removed = set()
     while len(sessions) >= MAX_AGENT_SESSIONS and removable:
-        sessions.pop(removable.pop(0)["session_id"], None)
+        session_id = removable.pop(0)["session_id"]
+        sessions.pop(session_id, None)
+        removed.add(session_id)
     if len(sessions) >= MAX_AGENT_SESSIONS:
         raise HandsoffError("agent session history is full; no terminal session can be retired safely")
+    return removed
+
+
+def _implementer_binding(status: dict, cfg: dict) -> dict | None:
+    sessions = status.get("agent_sessions") or {}
+    current = status.get("current_agent_sessions") or {}
+    implementer = sessions.get(current.get("implementer"))
+    identity = _canonical_implementer_identity(implementer)
+    implementer_session_id = implementer.get("session_id") if identity and isinstance(implementer, dict) else None
+    if identity is None:
+        review_profile = (status.get("review") or {}).get("implementer_profile")
+        identity = _canonical_implementer_identity(review_profile)
+    if identity is None:
+        configured = agent_profiles(cfg).get("implementer")
+        identity = _canonical_implementer_identity(configured)
+    if identity is None:
+        return None
+    return {
+        "implementer_session_id": implementer_session_id,
+        "adapter": identity[0], "model": identity[1],
+        "bound_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _assert_agent_telemetry_integrity(root: Path, cfg: dict, status: dict) -> None:
@@ -964,7 +999,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             raise HandsoffError(
                 f"role {role} already has live agent session {active_id} ({active.get('state')})"
             )
-        _prune_agent_sessions(sessions, current)
+        removed_session_ids = _prune_agent_sessions(sessions, current)
         session_id = _new_agent_session_id(sessions, id_factory=id_factory)
         now = datetime.now(timezone.utc).isoformat()
         session = {
@@ -986,6 +1021,25 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         proposed = deepcopy(status)
         proposed["agent_sessions"] = sessions
         proposed["current_agent_sessions"] = current
+        failures = {
+            sid: deepcopy(failure) for sid, failure in (status.get("agent_failures") or {}).items()
+            if sid not in removed_session_ids
+        }
+        if failures:
+            proposed["agent_failures"] = failures
+        else:
+            proposed.pop("agent_failures", None)
+        bindings = {
+            sid: deepcopy(binding) for sid, binding in (status.get("reviewer_implementer_bindings") or {}).items()
+            if sid in sessions
+        }
+        binding = _implementer_binding(status, cfg) if role == "reviewer" else None
+        if binding is not None:
+            bindings[session_id] = {"reviewer_session_id": session_id, **binding}
+        if bindings:
+            proposed["reviewer_implementer_bindings"] = bindings
+        else:
+            proposed.pop("reviewer_implementer_bindings", None)
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
@@ -996,12 +1050,27 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session_id=session_id, role=role, actor=actor, adapter=adapter,
             requested_model=requested_model, reported_model=None,
             resolution_source=resolution_source, state="launching",
+            implementer_binding={"adapter": binding["adapter"], "model": binding["model"]}
+            if binding else None,
         )
         return deepcopy(session)
 
 
+def _validate_failure_classification(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != {"category", "reason", "tail_sha256"}:
+        raise HandsoffError("agent failure classification is invalid")
+    category = value.get("category")
+    if category not in FAILURE_CATEGORIES or value.get("reason") != _FAILURE_REASON_LABELS.get(category):
+        raise HandsoffError("agent failure classification is not from the closed set")
+    digest = value.get("tail_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise HandsoffError("agent failure classification digest is invalid")
+    return {"category": category, "reason": value["reason"], "tail_sha256": digest}
+
+
 def transition_agent_session(root: Path, session_id: str, state: str,
-                             *, exit_code: int | None = None) -> dict:
+                             *, exit_code: int | None = None,
+                             failure: dict | None = None) -> dict:
     """Apply a session-ID-matched lifecycle-only update under the lock."""
     if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
         raise HandsoffError("agent session id is invalid")
@@ -1012,6 +1081,10 @@ def transition_agent_session(root: Path, session_id: str, state: str,
     terminal = state in AGENT_SESSION_TERMINAL_STATES
     if not terminal and exit_code is not None:
         raise HandsoffError("a non-terminal agent session cannot have an exit code")
+    if failure is not None:
+        failure = _validate_failure_classification(failure)
+        if not terminal or state == "completed" or failure["category"] == "still_running":
+            raise HandsoffError("failure classification requires a failed terminal session")
     with project_lock(root.resolve()):
         root = root.resolve()
         cfg = load_config(root)
@@ -1039,13 +1112,33 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             raise HandsoffError(f"agent session cannot transition from {old_state} to {state}")
         proposed = deepcopy(status)
         updated = proposed["agent_sessions"][session_id]
+        replacement = next((item for item in proposed.get("agent_replacements", [])
+                            if item.get("action") == "launch"
+                            and item.get("to_session_id") == session_id), None)
+        if replacement is not None and replacement.get("state") != (
+                "claimed" if state == "running" else "running" if old_state == "running" else "claimed"):
+            raise HandsoffError("replacement lifecycle does not match its claimed session")
         now = datetime.now(timezone.utc).isoformat()
         updated["state"] = state
         if state == "running":
             updated["running_at"] = now
+            if replacement is not None:
+                replacement["state"] = "running"
+                replacement["running_at"] = now
+                replacement["handoff"]["state"] = "running"
+                replacement["handoff"]["running_at"] = now
         else:
             updated["ended_at"] = now
             updated["exit_code"] = exit_code
+            if replacement is not None:
+                replacement_state = "recovered" if state == "completed" else "failed"
+                replacement["state"] = replacement_state
+                replacement["ended_at"] = now
+                replacement["handoff"]["state"] = replacement_state
+                replacement["handoff"]["ended_at"] = now
+            if failure is not None:
+                failures = proposed.setdefault("agent_failures", {})
+                failures[session_id] = {"session_id": session_id, **failure, "at": now}
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
@@ -1055,8 +1148,351 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             event_kind=event_kind,
             event_message=f"Managed {role} agent session is {state.replace('_', ' ')}",
             session_id=session_id, role=role, state=state, exit_code=exit_code,
+            failure_category=failure["category"] if failure else None,
+            replacement_id=replacement.get("replacement_id") if replacement else None,
+            replacement_state=replacement.get("state") if replacement else None,
         )
         return deepcopy(updated)
+
+
+def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
+    """Return bounded exact git identity without retaining porcelain text."""
+    def git(*args: str) -> str:
+        try:
+            result = runner(
+                ["git", *args], cwd=str(root.resolve()), shell=False, text=True,
+                capture_output=True, timeout=3, check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HandsoffError(f"cannot establish repository identity: {type(exc).__name__}") from exc
+        return result.stdout
+    head = git("rev-parse", "HEAD").strip()
+    branch = git("branch", "--show-current").strip() or "(detached)"
+    porcelain = git("status", "--porcelain=v1")
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head) or len(branch) > 256:
+        raise HandsoffError("cannot establish bounded repository identity")
+    return {
+        "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
+        "status_sha256": hashlib.sha256(porcelain.encode("utf-8", "replace")).hexdigest(),
+    }
+
+
+def _new_bounded_id(prefix: str, pattern: re.Pattern, existing: set[str], id_factory=None) -> str:
+    factory = id_factory or (lambda: f"{prefix}-{uuid.uuid4().hex}")
+    for _ in range(16):
+        candidate = factory()
+        if not isinstance(candidate, str) or not pattern.fullmatch(candidate):
+            raise HandsoffError(f"generated {prefix} id is invalid")
+        if candidate not in existing:
+            return candidate
+    raise HandsoffError(f"could not allocate a collision-free {prefix} id")
+
+
+def record_quality_finding(root: Path, *, session_id: str, finding_code: str,
+                           id_factory=None) -> dict:
+    """Authenticate a closed quality observation for the current completed session."""
+    if finding_code not in QUALITY_FINDING_CODES:
+        raise HandsoffError("quality finding code is not from the closed set")
+    with project_lock(root.resolve()):
+        root = root.resolve()
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        errors = validate_status_schema(status)
+        if errors:
+            raise HandsoffError(errors[0])
+        _assert_agent_telemetry_integrity(root, cfg, status)
+        session = (status.get("agent_sessions") or {}).get(session_id)
+        if not isinstance(session, dict) or session.get("state") != "completed" \
+                or (status.get("current_agent_sessions") or {}).get(session.get("role")) != session_id:
+            raise HandsoffError("quality findings require the current completed session")
+        findings = list(status.get("agent_quality_findings") or [])
+        if len(findings) >= MAX_QUALITY_FINDINGS:
+            raise HandsoffError("quality finding history is full")
+        finding_id = _new_bounded_id(
+            "hq", QUALITY_FINDING_ID_PATTERN,
+            {item.get("finding_id") for item in findings if isinstance(item, dict)}, id_factory,
+        )
+        trusted_round = status.get("review_round", 0)
+        if not isinstance(trusted_round, int) or isinstance(trusted_round, bool) or trusted_round < 0:
+            raise HandsoffError("trusted review round is invalid")
+        if any(item.get("session_id") == session_id and item.get("review_round") == trusted_round
+               for item in findings):
+            raise HandsoffError("quality finding already exists for this session and review round")
+        count = sum(1 for item in findings if item.get("session_id") == session_id) + 1
+        distinct_review_rounds = {
+            item.get("review_round") for item in findings
+            if item.get("session_id") == session_id
+            and isinstance(item.get("review_round"), int) and item.get("review_round") > 0
+        }
+        if trusted_round > 0:
+            distinct_review_rounds.add(trusted_round)
+        distinct_round_count = len(distinct_review_rounds)
+        now = datetime.now(timezone.utc).isoformat()
+        finding = {
+            "finding_id": finding_id, "session_id": session_id, "role": session["role"],
+            "code": finding_code, "count": count, "limit": cfg["max_review_rounds"],
+            "review_round": trusted_round,
+            "distinct_round_count": distinct_round_count,
+            "eligible": should_failover_for_quality(
+                retry_count=distinct_round_count, retry_limit=cfg["max_review_rounds"], finding_id=finding_id,
+            ), "at": now,
+        }
+        proposed = deepcopy(status)
+        proposed["agent_quality_findings"] = [*findings, finding]
+        errors = validate_status_schema(proposed)
+        if errors:
+            raise HandsoffError(errors[0])
+        commit(root, cfg, status=proposed, event_kind="agent_quality_finding",
+               event_message="Trusted agent quality finding recorded",
+               finding_id=finding_id, session_id=session_id, role=session["role"],
+               finding_code=finding_code, count=count, review_round=trusted_round,
+               distinct_round_count=distinct_round_count,
+               eligible=finding["eligible"])
+        return deepcopy(finding)
+
+
+def _replacement_chain(status: dict, from_session_id: str) -> tuple[list[tuple[str, str]], int]:
+    sessions = status.get("agent_sessions") or {}
+    replacements = status.get("agent_replacements") or []
+    attempted = []
+    cursor = from_session_id
+    count = 0
+    while cursor:
+        session = sessions.get(cursor)
+        if not isinstance(session, dict):
+            break
+        identity = (session.get("adapter"), session.get("requested_model"))
+        if identity not in attempted:
+            attempted.append(identity)
+        parent = next((r for r in reversed(replacements)
+                       if r.get("action") == "launch" and r.get("to_session_id") == cursor), None)
+        if parent is None:
+            break
+        count += 1
+        cursor = parent.get("from_session_id")
+    return attempted, count
+
+
+def _derive_replacement_handoff(status: dict, acceptance: dict, repository: dict,
+                                *, role: str, from_session_id: str, to_session_id: str,
+                                trigger: str, category: str, reason: str,
+                                attempt: int, cap: int, profile: dict) -> dict:
+    criteria = acceptance.get("criteria", [])
+    passing = [item.get("id") for item in criteria if item.get("state") == "passing"][:128]
+    remaining = [item.get("id") for item in criteria if item.get("state") != "passing"][:128]
+    evidence = []
+    for item in criteria:
+        for evidence_id in item.get("evidence", []):
+            if evidence_id not in evidence and len(evidence) < 256:
+                evidence.append(evidence_id)
+    source = (status.get("agent_sessions") or {}).get(from_session_id, {})
+    return {
+        "role": role, "from_session_id": from_session_id, "to_session_id": to_session_id,
+        "trigger": trigger, "category": category, "reason": reason,
+        "attempt": attempt, "cap": cap, "phase_number": status["phase_number"],
+        "progress": status["progress"], "passing_criterion_ids": passing,
+        "remaining_criterion_ids": remaining, "evidence_ids": evidence,
+        "repository": repository, "selected_profile": deepcopy(profile),
+        "from_state": source.get("state"), "from_started_at": source.get("started_at"),
+        "from_running_at": source.get("running_at"), "from_ended_at": source.get("ended_at"),
+        "state": "reserved", "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def reserve_agent_replacement(root: Path, *, from_session_id: str,
+                              trigger: str = "runtime_failure", finding_id: str | None = None,
+                              which=shutil.which, snapshotter=repository_snapshot,
+                              session_id_factory=None, replacement_id_factory=None) -> dict:
+    """Atomically reserve one trusted fallback; caller cannot supply failure category or handoff."""
+    if trigger not in AGENT_REPLACEMENT_TRIGGERS:
+        raise HandsoffError("replacement trigger is invalid")
+    with project_lock(root.resolve()):
+        root = root.resolve()
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        acceptance = load_unique_json(acceptance_path(root, cfg))
+        errors = validate_status_schema(status) or validate_acceptance_schema(acceptance)
+        if errors:
+            raise HandsoffError(errors[0])
+        _assert_agent_telemetry_integrity(root, cfg, status)
+        sessions = deepcopy(status.get("agent_sessions") or {})
+        current = deepcopy(status.get("current_agent_sessions") or {})
+        source = sessions.get(from_session_id)
+        if not isinstance(source, dict) or current.get(source.get("role")) != from_session_id:
+            raise HandsoffError("replacement lost the current-session CAS")
+        role = source["role"]
+        # Repository identity and availability belong to this exact CAS
+        # moment, so derive both while the same lock protects the source.
+        repository = snapshotter(root)
+        availability = {adapter: bool(which(adapter)) for adapter in SELECTABLE_AGENT_ADAPTERS}
+        forced_pause_reason = None
+        if source.get("state") in AGENT_SESSION_LIVE_STATES:
+            category, reason = "still_running", _FAILURE_REASON_LABELS["still_running"]
+        elif trigger == "runtime_failure":
+            failure = (status.get("agent_failures") or {}).get(from_session_id)
+            if not isinstance(failure, dict):
+                raise HandsoffError("runtime replacement requires an authenticated session failure")
+            category, reason = failure.get("category"), failure.get("reason")
+        else:
+            finding = next((item for item in status.get("agent_quality_findings", [])
+                            if item.get("finding_id") == finding_id
+                            and item.get("session_id") == from_session_id), None)
+            if source.get("state") != "completed" or not finding:
+                raise HandsoffError("quality replacement requires a trusted finding for a completed session")
+            if finding.get("eligible"):
+                category, reason = "non_zero_exit", "bounded quality finding reached review limit"
+            else:
+                category, reason = "unknown", "quality finding has not reached the review limit"
+                forced_pause_reason = "quality_boundary_not_reached"
+        attempted, failover_count = _replacement_chain(status, from_session_id)
+        implementer = None
+        if role == "reviewer":
+            binding = (status.get("reviewer_implementer_bindings") or {}).get(from_session_id)
+            if isinstance(binding, dict):
+                implementer = {"adapter": binding.get("adapter"), "requested_model": binding.get("model")}
+        decision = _fallback_decision("pilot_pause", forced_pause_reason) if forced_pause_reason else \
+            plan_agent_fallback(
+                role, category, cfg["fallbacks"][role], availability, attempted,
+                failover_count, cfg["max_failovers_per_role"], implementer,
+            )
+        records = list(status.get("agent_replacements") or [])
+        if len(records) >= MAX_AGENT_REPLACEMENTS:
+            raise HandsoffError("agent replacement history is full")
+        replacement_id = _new_bounded_id(
+            "hr", REPLACEMENT_ID_PATTERN,
+            {item.get("replacement_id") for item in records if isinstance(item, dict)},
+            replacement_id_factory,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        if decision["action"] != "select":
+            record = {
+                "replacement_id": replacement_id, "role": role,
+                "from_session_id": from_session_id, "to_session_id": None,
+                "trigger": trigger, "category": category, "reason": decision["reason"],
+                "attempt": failover_count, "cap": cfg["max_failovers_per_role"],
+                "action": "pilot_pause", "planner_reason": decision["reason"],
+                "skipped": deepcopy(decision["skipped"]),
+                "selected_profile": None, "handoff": None, "state": "pilot_pause", "at": now,
+            }
+            proposed = deepcopy(status)
+            proposed["agent_replacements"] = [*records, record]
+            errors = validate_status_schema(proposed)
+            if errors:
+                raise HandsoffError(errors[0])
+            commit(root, cfg, status=proposed, event_kind="agent_replacement_pilot_pause",
+                   event_message="Agent replacement paused for Pilot review",
+                   replacement_id=replacement_id, session_id=from_session_id, role=role,
+                   trigger=trigger, category=category, reason=decision["reason"],
+                   replacement_state="pilot_pause")
+            return deepcopy(record)
+        removed_session_ids = _prune_agent_sessions(sessions, current)
+        to_session_id = _new_agent_session_id(sessions, id_factory=session_id_factory)
+        profile = decision["profile"]
+        session = {
+            "session_id": to_session_id, "role": role,
+            "actor": default_agent_actor(profile["adapter"], role),
+            "adapter": profile["adapter"], "requested_model": profile["model"],
+            "reported_model": None, "resolution_source": "fallback",
+            "started_at": now, "running_at": None, "ended_at": None,
+            "state": "launching", "exit_code": None,
+        }
+        handoff = _derive_replacement_handoff(
+            status, acceptance, repository, role=role, from_session_id=from_session_id,
+            to_session_id=to_session_id, trigger=trigger, category=category, reason=reason,
+            attempt=failover_count + 1, cap=cfg["max_failovers_per_role"], profile=profile,
+        )
+        record = {
+            "replacement_id": replacement_id, "role": role,
+            "from_session_id": from_session_id, "to_session_id": to_session_id,
+            "trigger": trigger, "category": category, "reason": reason,
+            "attempt": failover_count + 1, "cap": cfg["max_failovers_per_role"],
+            "action": "launch", "planner_reason": decision["reason"],
+            "skipped": deepcopy(decision["skipped"]), "selected_profile": deepcopy(profile),
+            "handoff": handoff, "state": "reserved", "at": now,
+        }
+        proposed = deepcopy(status)
+        proposed["agent_sessions"] = sessions
+        proposed["agent_sessions"][to_session_id] = session
+        proposed["current_agent_sessions"] = current
+        proposed["current_agent_sessions"][role] = to_session_id
+        proposed["agent_replacements"] = [*records, record]
+        failures = {
+            sid: deepcopy(failure) for sid, failure in (status.get("agent_failures") or {}).items()
+            if sid not in removed_session_ids
+        }
+        if failures:
+            proposed["agent_failures"] = failures
+        else:
+            proposed.pop("agent_failures", None)
+        bindings = deepcopy(status.get("reviewer_implementer_bindings") or {})
+        bindings = {sid: item for sid, item in bindings.items() if sid in sessions}
+        if role == "reviewer" and isinstance(bindings.get(from_session_id), dict):
+            copied = deepcopy(bindings[from_session_id])
+            copied["reviewer_session_id"] = to_session_id
+            bindings[to_session_id] = copied
+        if bindings:
+            proposed["reviewer_implementer_bindings"] = bindings
+        else:
+            proposed.pop("reviewer_implementer_bindings", None)
+        errors = validate_status_schema(proposed)
+        if errors:
+            raise HandsoffError(errors[0])
+        commit(root, cfg, status=proposed, event_kind="agent_replacement_reserved",
+               event_message=f"Managed {role} replacement session is reserved",
+               replacement_id=replacement_id, from_session_id=from_session_id,
+               to_session_id=to_session_id, role=role, trigger=trigger,
+               category=category, reason=reason, attempt=failover_count + 1,
+               replacement_state="reserved")
+        return deepcopy(record)
+
+
+def claim_precreated_agent_session(root: Path, session_id: str, *, role: str,
+                                   adapter: str, requested_model: str) -> dict:
+    """One-way pre-spawn claim of the exact reserved session/profile."""
+    with project_lock(root.resolve()):
+        root = root.resolve()
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        errors = validate_status_schema(status)
+        if errors:
+            raise HandsoffError(errors[0])
+        _assert_agent_telemetry_integrity(root, cfg, status)
+        session = (status.get("agent_sessions") or {}).get(session_id)
+        records = status.get("agent_replacements", [])
+        reservation_index = next((index for index, item in enumerate(records)
+                                  if item.get("action") == "launch"
+                                  and item.get("to_session_id") == session_id), None)
+        reservation = records[reservation_index] if reservation_index is not None else None
+        if not isinstance(session, dict) or session.get("state") != "launching" \
+                or (status.get("current_agent_sessions") or {}).get(role) != session_id \
+                or not isinstance(reservation, dict) \
+                or reservation.get("state") != "reserved" \
+                or not isinstance(reservation.get("handoff"), dict) \
+                or reservation["handoff"].get("state") != "reserved" \
+                or reservation.get("selected_profile") != {
+                    "adapter": adapter, "model": requested_model,
+                } \
+                or (session.get("role"), session.get("adapter"), session.get("requested_model")) \
+                != (role, adapter, requested_model):
+            raise HandsoffError("precreated replacement session does not match the exact reservation")
+        proposed = deepcopy(status)
+        claimed = proposed["agent_replacements"][reservation_index]
+        now = datetime.now(timezone.utc).isoformat()
+        claimed["state"] = "claimed"
+        claimed["claimed_at"] = now
+        claimed["handoff"]["state"] = "claimed"
+        claimed["handoff"]["claimed_at"] = now
+        errors = validate_status_schema(proposed)
+        if errors:
+            raise HandsoffError(errors[0])
+        commit(
+            root, cfg, status=proposed,
+            event_kind="agent_replacement_claimed",
+            event_message=f"Managed {role} replacement reservation was claimed",
+            replacement_id=claimed["replacement_id"], from_session_id=claimed["from_session_id"],
+            to_session_id=session_id, role=role, state="claimed",
+        )
+        return deepcopy(session)
 
 
 def current_agent_sessions(status: dict) -> dict:
@@ -1576,6 +2012,89 @@ def validate_status_schema(status: dict) -> list[str]:
                     errors.append(f"status: current_agent_sessions.{role} points to a different role")
     if (sessions is None) != (pointers is None):
         errors.append("status: agent_sessions and current_agent_sessions must be present together")
+    failures = status.get("agent_failures")
+    if failures is not None:
+        if not isinstance(failures, dict) or len(failures) > MAX_AGENT_SESSIONS:
+            errors.append("status: 'agent_failures' must be an object with at most 64 entries")
+        else:
+            for session_id, failure in failures.items():
+                if not isinstance(sessions, dict) or session_id not in sessions:
+                    errors.append(f"status: agent failure {session_id!r} has no session")
+                    continue
+                try:
+                    normalized = _validate_failure_classification({
+                        key: failure.get(key) for key in ("category", "reason", "tail_sha256")
+                    }) if isinstance(failure, dict) else None
+                except HandsoffError as exc:
+                    errors.append(f"status: agent failure {session_id!r}: {exc}")
+                    normalized = None
+                if not isinstance(failure, dict) or set(failure) != {
+                    "session_id", "category", "reason", "tail_sha256", "at",
+                } or failure.get("session_id") != session_id:
+                    errors.append(f"status: agent failure {session_id!r} has invalid fields")
+                if normalized and sessions[session_id].get("state") not in \
+                        AGENT_SESSION_TERMINAL_STATES - {"completed"}:
+                    errors.append(f"status: agent failure {session_id!r} is not terminal")
+    findings = status.get("agent_quality_findings")
+    if findings is not None:
+        if not isinstance(findings, list) or len(findings) > MAX_QUALITY_FINDINGS:
+            errors.append("status: 'agent_quality_findings' must contain at most 32 entries")
+        else:
+            for finding in findings:
+                required = {"finding_id", "session_id", "role", "code", "count", "limit",
+                            "review_round", "distinct_round_count", "eligible", "at"}
+                if not isinstance(finding, dict) or set(finding) != required \
+                        or not QUALITY_FINDING_ID_PATTERN.fullmatch(str(finding.get("finding_id", ""))) \
+                        or finding.get("code") not in QUALITY_FINDING_CODES \
+                        or not isinstance(finding.get("eligible"), bool) \
+                        or not isinstance(finding.get("review_round"), int) \
+                        or isinstance(finding.get("review_round"), bool) \
+                        or finding.get("review_round", -1) < 0 \
+                        or not isinstance(finding.get("distinct_round_count"), int) \
+                        or isinstance(finding.get("distinct_round_count"), bool) \
+                        or finding.get("distinct_round_count", -1) < 0:
+                    errors.append("status: agent quality finding is invalid")
+    bindings = status.get("reviewer_implementer_bindings")
+    if bindings is not None:
+        if not isinstance(bindings, dict) or len(bindings) > MAX_AGENT_SESSIONS:
+            errors.append("status: 'reviewer_implementer_bindings' must have at most 64 entries")
+        else:
+            for session_id, binding in bindings.items():
+                required = {"reviewer_session_id", "implementer_session_id", "adapter", "model", "bound_at"}
+                reviewer = sessions.get(session_id) if isinstance(sessions, dict) else None
+                if not isinstance(binding, dict) or set(binding) != required \
+                        or binding.get("reviewer_session_id") != session_id \
+                        or not isinstance(reviewer, dict) or reviewer.get("role") != "reviewer" \
+                        or binding.get("adapter") not in SELECTABLE_AGENT_ADAPTERS:
+                    errors.append(f"status: reviewer implementer binding {session_id!r} is invalid")
+                    continue
+                try:
+                    validate_agent_model(binding.get("model"))
+                except HandsoffError as exc:
+                    errors.append(f"status: reviewer implementer binding {session_id!r}: {exc}")
+                implementer_id = binding.get("implementer_session_id")
+                if implementer_id is not None and (not isinstance(implementer_id, str)
+                                                     or not AGENT_SESSION_ID_PATTERN.fullmatch(implementer_id)):
+                    errors.append(f"status: reviewer implementer binding {session_id!r} has invalid implementer id")
+    replacements = status.get("agent_replacements")
+    if replacements is not None:
+        if not isinstance(replacements, list) or len(replacements) > MAX_AGENT_REPLACEMENTS:
+            errors.append("status: 'agent_replacements' must contain at most 32 entries")
+        else:
+            for record in replacements:
+                if not isinstance(record, dict) or not REPLACEMENT_ID_PATTERN.fullmatch(
+                        str(record.get("replacement_id", ""))) \
+                        or record.get("trigger") not in AGENT_REPLACEMENT_TRIGGERS \
+                        or record.get("action") not in {"launch", "pilot_pause"} \
+                        or record.get("category") not in FAILURE_CATEGORIES \
+                        or record.get("state") not in AGENT_REPLACEMENT_STATES:
+                    errors.append("status: agent replacement record is invalid")
+                elif record.get("action") == "launch":
+                    handoff = record.get("handoff")
+                    if not isinstance(handoff, dict) or handoff.get("state") != record.get("state"):
+                        errors.append("status: agent replacement handoff state is invalid")
+                elif record.get("state") != "pilot_pause" or record.get("handoff") is not None:
+                    errors.append("status: paused agent replacement is invalid")
     return errors
 
 
