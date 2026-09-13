@@ -19,52 +19,14 @@ const state = {
   fallbackDraft: {},
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
-const ALLOWED_ADAPTERS = ["auto", "codex", "claude"];
+// adapterLabel, effectiveProfileLabel, actorForRole, runProfileLabel,
+// cleanKind, eventMessage, autoDetectOptionLabel, resolveAgentSelectValue,
+// ALLOWED_ADAPTERS, and the fallback-list helpers come from
+// lib/dashboard-logic.js (loaded before this file) so they stay testable
+// with plain `node --test` and no DOM.
 
-function adapterLabel(adapter) {
-  if (adapter === "codex") return "Codex";
-  if (adapter === "claude") return "Claude Code";
-  return adapter || "NONE DETECTED";
-}
-
-function effectiveProfileLabel(profile) {
-  const adapter = adapterLabel(profile?.adapter);
-  const model = profile?.model || "default";
-  if (model === "default") {
-    return `${adapter} · runner default (exact model not exposed)`;
-  }
-  return `${adapter} · ${model}`;
-}
-
-function actorForRole(role) {
-  const sessionActor = state.runSessions?.[role]?.actor;
-  if (sessionActor) return sessionActor;
-  const recorded = {
-    architect: state.actors?.architect,
-    implementer: state.actors?.implemented_by,
-    reviewer: state.actors?.reviewed_by,
-  }[role];
-  if (recorded) return recorded;
-  if (role === state.activeRole && state.latestEvent?.kind === "heartbeat") {
-    return state.latestEvent.by || null;
-  }
-  return null;
-}
-
-function runProfileLabel(role) {
-  const actor = actorForRole(role);
-  const session = state.runSessions?.[role];
-  if (session) {
-    const requested = session.requested_model === "default"
-      ? "requested runner default"
-      : `requested ${session.requested_model}`;
-    const reported = session.reported_model
-      ? `reported ${session.reported_model}`
-      : "exact model not reported";
-    return `THIS RUN: ${adapterLabel(session.adapter)} · ${requested} · ${reported} · ${session.actor} · ${session.session_id} · ${String(session.state || "unknown").replaceAll("_", " ").toUpperCase()}`;
-  }
-  if (!actor) return "THIS RUN: station not assigned · profile not recorded";
-  return `THIS RUN: profile not recorded · ${actor}`;
+function runProfileLabelForRole(role) {
+  return runProfileLabel(role, state);
 }
 
 function escapeHtml(value) {
@@ -88,10 +50,6 @@ function relativeTime(value) {
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return then.toLocaleDateString(undefined, { month: "short", day: "numeric", year: then.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined });
-}
-
-function cleanKind(value) {
-  return String(value || "event").replaceAll("_", " ");
 }
 
 function stateClass(element, value) {
@@ -142,11 +100,12 @@ function renderFallbackRole(role) {
   add.type = "button";
   add.className = "fallback-add";
   add.textContent = "+ ADD FALLBACK";
-  add.disabled = entries.length >= 8;
+  add.disabled = entries.length >= MAX_FALLBACK_ENTRIES;
   add.addEventListener("click", () => {
-    entries.push({ adapter: "codex", model: "default" });
-    renderFallbackRole(role);
-    markSettingsDirty();
+    if (addFallbackEntry(entries)) {
+      renderFallbackRole(role);
+      markSettingsDirty();
+    }
   });
   head.append(label, add);
   container.append(head);
@@ -182,15 +141,16 @@ function renderFallbackRole(role) {
       return button;
     };
     const move = (offset) => () => {
-      const [item] = entries.splice(index, 1);
-      entries.splice(index + offset, 0, item);
-      renderFallbackRole(role);
-      markSettingsDirty();
+      if (moveFallbackEntry(entries, index, offset)) {
+        renderFallbackRole(role);
+        markSettingsDirty();
+      }
     };
     const remove = () => {
-      entries.splice(index, 1);
-      renderFallbackRole(role);
-      markSettingsDirty();
+      if (removeFallbackEntry(entries, index)) {
+        renderFallbackRole(role);
+        markSettingsDirty();
+      }
     };
     row.append(order, adapter, model,
       control("↑", `Move ${role} fallback ${index + 1} up`, index === 0, move(-1)),
@@ -202,9 +162,7 @@ function renderFallbackRole(role) {
 
 function populateAgentSettings() {
   if (!state.settings) return;
-  state.fallbackDraft = Object.fromEntries(AGENT_ROLES.map((role) => [
-    role, (state.settings.fallbacks?.[role] || []).map((profile) => ({ ...profile })),
-  ]));
+  state.fallbackDraft = buildFallbackDraft(state.settings.fallbacks, AGENT_ROLES);
   $("max-failovers").value = String(state.settings.max_failovers_per_role ?? 2);
   for (const role of AGENT_ROLES) {
     const select = $(`agent-${role}`);
@@ -213,13 +171,13 @@ function populateAgentSettings() {
       adapter: state.settings.agents?.[role] || "auto",
       model: "default",
     };
-    const value = profile.adapter === "configure-me" ? "auto" : profile.adapter;
-    if (ALLOWED_ADAPTERS.includes(value)) {
+    const value = resolveAgentSelectValue(profile.adapter);
+    if (value) {
       select.value = value;
     } else {
       const custom = document.createElement("option");
       custom.value = "";
-      custom.textContent = `Custom · ${value} — choose replacement`;
+      custom.textContent = `Custom · ${profile.adapter} — choose replacement`;
       custom.dataset.custom = "true";
       custom.disabled = true;
       custom.selected = true;
@@ -227,7 +185,7 @@ function populateAgentSettings() {
     }
     const autoOption = select.querySelector('option[value="auto"]');
     if (autoOption) {
-      autoOption.textContent = `Auto-detect (currently ${adapterLabel(state.settings.default_adapter)})`;
+      autoOption.textContent = autoDetectOptionLabel(state.settings.default_adapter);
     }
     select.title = select.options[select.selectedIndex]?.textContent || "";
     $(`agent-${role}-model`).value = profile.model || "default";
@@ -236,7 +194,7 @@ function populateAgentSettings() {
     effectiveNode.textContent = `NEXT LAUNCH: ${effectiveProfileLabel(effective)}`;
     effectiveNode.title = effectiveNode.textContent;
     const runNode = $(`agent-${role}-run`);
-    runNode.textContent = runProfileLabel(role);
+    runNode.textContent = runProfileLabelForRole(role);
     runNode.title = runNode.textContent;
     renderFallbackRole(role);
   }
@@ -288,9 +246,7 @@ async function saveAgentSettings(event) {
   }]));
   const payload = {
     profiles,
-    fallbacks: Object.fromEntries(AGENT_ROLES.map((role) => [
-      role, state.fallbackDraft[role].map((profile) => ({ ...profile })),
-    ])),
+    fallbacks: serializeFallbackDraft(state.fallbackDraft, AGENT_ROLES),
     max_failovers_per_role: Number($("max-failovers").value),
   };
   updateSettingsSaveState();
@@ -482,7 +438,7 @@ function renderEvents(events, total) {
   $("event-list").innerHTML = events.length ? events.map((event) => `
     <div class="event">
       <time datetime="${escapeHtml(event.at)}">${escapeHtml(relativeTime(event.at))}</time>
-      <div><strong>${escapeHtml(cleanKind(event.kind))}</strong><p>${escapeHtml(event.message || "Recorded state transition")}</p></div>
+      <div><strong>${escapeHtml(cleanKind(event.kind))}</strong><p>${escapeHtml(eventMessage(event))}</p></div>
     </div>`).join("") : '<div class="empty-row">Flight Log clear. No events recorded.</div>';
 }
 

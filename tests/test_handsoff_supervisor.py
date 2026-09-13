@@ -50,12 +50,32 @@ def set_fixture_check_commands(path, commands):
 
 
 def setUpModule():
-    """Keep issue #24 dogfood checks exact; fixtures are normalized below."""
+    """Keep issue #24 dogfood checks intact and in order; fixtures are normalized below.
+
+    Later features append their own checks to the same [checks].commands
+    array (e.g. issue #25's dashboard tests), so this only requires the six
+    issue #24 commands to still appear, unmodified and in relative order --
+    not that the array contains nothing else.
+    """
     text = (ROOT / "handsoff.toml").read_text()
-    expected = f"commands = {json.dumps(ISSUE24_TARGETED_COMMANDS)}"
-    if expected not in text:
+    # Requires the array on one line, matching this repo's current style; if
+    # it's ever reformatted to span multiple lines this raises too (safe,
+    # fails loud) but with a misleading "must define" message.
+    match = re.search(r"^commands\s*=\s*(\[.*\])$", text, flags=re.MULTILINE)
+    if not match:
+        raise SystemExit("This repo's handsoff.toml must define [checks].commands.")
+    actual_commands = json.loads(match.group(1))
+    positions = []
+    for command in ISSUE24_TARGETED_COMMANDS:
+        if command not in actual_commands:
+            raise SystemExit(
+                "This repo's handsoff.toml is missing an issue #24 targeted check: "
+                f"{command!r}"
+            )
+        positions.append(actual_commands.index(command))
+    if positions != sorted(positions):
         raise SystemExit(
-            "This repo's handsoff.toml must list exactly the six issue #24 targeted checks."
+            "This repo's handsoff.toml must keep the six issue #24 targeted checks in order."
         )
     # Any test that lands Phase 8 with status complete now triggers a real
     # archive write (see handsoff_lib.archive_run). Sandboxed here at module
@@ -488,6 +508,10 @@ class TestEveMissionControl(HandsoffTestCase):
 
         html = (ROOT / "dashboard" / "index.html").read_text()
         script = (ROOT / "dashboard" / "app.js").read_text()
+        # THIS RUN/model-text formatting and actorForRole's actor lookup live
+        # in the shared, DOM-free logic module (dashboard/lib/dashboard-logic.js)
+        # since issue #25 extracted it there for node:test coverage.
+        logic_script = (ROOT / "dashboard" / "lib" / "dashboard-logic.js").read_text()
         styles = (ROOT / "dashboard" / "styles.css").read_text()
         for role in ("architect", "supervisor", "implementer", "reviewer"):
             self.assertIn(f'id="agent-{role}-model"', html)
@@ -497,12 +521,12 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertIn("default</code> sends no model flag", html)
         self.assertIn("exact model ID to pin it", html)
         self.assertIn("JSON.stringify(payload)", script)
-        self.assertIn("THIS RUN:", script)
+        self.assertIn("THIS RUN:", logic_script)
         self.assertIn("NEXT LAUNCH:", script)
-        self.assertIn("state.actors?.implemented_by", script)
+        self.assertIn("actors?.implemented_by", logic_script)
         self.assertIn("snapshot.runtime?.current_sessions", script)
         self.assertIn("model not recorded", script)
-        self.assertIn("exact model not exposed", script)
+        self.assertIn("exact model not exposed", logic_script)
         self.assertIn("width: min(900px", styles)
         self.assertIn("minmax(280px", styles)
 
@@ -850,10 +874,15 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
 
         html = (ROOT / "dashboard" / "index.html").read_text()
         script = (ROOT / "dashboard" / "app.js").read_text()
+        # Auto-detect labeling and the configure-me/auto fallback live in the
+        # shared, DOM-free logic module (dashboard/lib/dashboard-logic.js)
+        # since issue #25 extracted it there for node:test coverage; app.js
+        # still owns effective_profiles handling.
+        logic_script = (ROOT / "dashboard" / "lib" / "dashboard-logic.js").read_text()
         self.assertEqual(html.count('<option value="auto">Auto-detect</option>'), 4)
-        self.assertIn("Auto-detect (currently", script)
+        self.assertIn("Auto-detect (currently", logic_script)
         self.assertIn("effective_profiles", script)
-        self.assertIn('profile.adapter === "configure-me" ? "auto"', script)
+        self.assertIn('storedAdapter === "configure-me" ? "auto"', logic_script)
 
         legacy_path = self.tmp / "handsoff.toml"
         legacy_path.write_text(legacy_path.read_text().replace('reviewer = "auto"',
@@ -1432,10 +1461,14 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "adapter": "claude", "model": "next-model",
         })
         script = (ROOT / "dashboard" / "app.js").read_text()
+        # THIS RUN/profile-text formatting lives in the shared, DOM-free
+        # logic module (dashboard/lib/dashboard-logic.js) since issue #25
+        # extracted it there for node:test coverage.
+        logic_script = (ROOT / "dashboard" / "lib" / "dashboard-logic.js").read_text()
         self.assertIn("snapshot.runtime?.current_sessions", script)
-        self.assertIn("THIS RUN:", script)
-        self.assertIn("profile not recorded", script)
-        self.assertIn("exact model not reported", script)
+        self.assertIn("THIS RUN:", logic_script)
+        self.assertIn("profile not recorded", logic_script)
+        self.assertIn("exact model not reported", logic_script)
         self.assertIn("NEXT LAUNCH:", script)
 
     def test_runtime_telemetry_excludes_sensitive_payloads(self):

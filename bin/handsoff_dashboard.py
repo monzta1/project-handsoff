@@ -29,6 +29,7 @@ ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/lib/dashboard-logic.js": ("lib/dashboard-logic.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
 MAX_SETTINGS_BODY = 16 * 1024
