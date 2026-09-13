@@ -14,7 +14,13 @@ const state = {
   settingsDirty: false,
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
-const ALLOWED_ADAPTERS = ["codex", "claude"];
+const ALLOWED_ADAPTERS = ["auto", "codex", "claude"];
+
+function adapterLabel(adapter) {
+  if (adapter === "codex") return "Codex";
+  if (adapter === "claude") return "Claude Code";
+  return adapter || "NONE DETECTED";
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -79,10 +85,10 @@ function populateAgentSettings() {
     const select = $(`agent-${role}`);
     select.querySelectorAll("option[data-custom]").forEach((option) => option.remove());
     const profile = state.settings.profiles?.[role] || {
-      adapter: state.settings.agents?.[role] || "configure-me",
+      adapter: state.settings.agents?.[role] || "auto",
       model: "default",
     };
-    const value = profile.adapter;
+    const value = profile.adapter === "configure-me" ? "auto" : profile.adapter;
     if (ALLOWED_ADAPTERS.includes(value)) {
       select.value = value;
     } else {
@@ -94,10 +100,12 @@ function populateAgentSettings() {
       custom.selected = true;
       select.prepend(custom);
     }
+    const autoOption = select.querySelector('option[value="auto"]');
+    if (autoOption) autoOption.textContent = `Auto-detect → ${adapterLabel(state.settings.default_adapter)}`;
     $(`agent-${role}-model`).value = profile.model || "default";
   }
   const availability = state.settings.availability || {};
-  $("adapter-availability").textContent = ALLOWED_ADAPTERS.map((adapter) =>
+  $("adapter-availability").textContent = ALLOWED_ADAPTERS.filter((adapter) => adapter !== "auto").map((adapter) =>
     `${adapter === "claude" ? "Claude Code" : "Codex"}: ${availability[adapter]?.available ? "DETECTED" : "NOT DETECTED"}`
   ).join(" · ");
   renderProviderStatus(state.settings.providers || {});

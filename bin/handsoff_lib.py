@@ -91,10 +91,10 @@ DEFAULT_CONFIG = {
     "live_check_commands": [],
     "check_timeout_seconds": 600,
     "agents": {
-        "architect": "configure-me",
-        "supervisor": "configure-me",
-        "implementer": "configure-me",
-        "reviewer": "configure-me",
+        "architect": "auto",
+        "supervisor": "auto",
+        "implementer": "auto",
+        "reviewer": "auto",
     },
     "models": {
         "architect": "default",
@@ -108,6 +108,10 @@ AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
 SELECTABLE_AGENT_ROLES = AGENT_ROLES
 LEGACY_AGENT_ROLES = ("architect", "implementer", "reviewer")
 SELECTABLE_AGENT_ADAPTERS = ("codex", "claude")
+AUTO_AGENT_ADAPTER = "auto"
+LEGACY_UNCONFIGURED_AGENT_ADAPTER = "configure-me"
+AGENT_SETTING_ADAPTERS = (AUTO_AGENT_ADAPTER, *SELECTABLE_AGENT_ADAPTERS)
+DEFAULT_AGENT_PREFERENCE = SELECTABLE_AGENT_ADAPTERS
 DEFAULT_AGENT_MODEL = "default"
 MAX_AGENT_MODEL_LENGTH = 128
 
@@ -278,6 +282,30 @@ def agent_profiles(cfg: dict) -> dict:
         role: {"adapter": cfg["agents"][role], "model": cfg["models"][role]}
         for role in SELECTABLE_AGENT_ROLES
     }
+
+
+def default_agent_adapter(*, which=None) -> str | None:
+    """Return the first installed runnable adapter in documented order."""
+    lookup = which or shutil.which
+    return next((adapter for adapter in DEFAULT_AGENT_PREFERENCE if lookup(adapter)), None)
+
+
+def resolved_agent_profiles(cfg: dict, *, which=None, require_available: bool = False) -> dict:
+    """Resolve auto/unconfigured roles without changing explicit selections."""
+    configured = agent_profiles(cfg)
+    automatic = default_agent_adapter(which=which)
+    resolved = {}
+    for role, profile in configured.items():
+        adapter = profile["adapter"]
+        if adapter in {AUTO_AGENT_ADAPTER, LEGACY_UNCONFIGURED_AGENT_ADAPTER}:
+            if automatic is None and require_available:
+                raise HandsoffError(
+                    "no supported agent adapter is available on PATH; install Codex or Claude Code, "
+                    "or choose an explicit installed adapter"
+                )
+            adapter = automatic
+        resolved[role] = {"adapter": adapter, "model": profile["model"]}
+    return resolved
 
 
 def adapter_availability() -> dict:
@@ -457,8 +485,8 @@ def update_agent_config(root: Path, assignments: dict) -> dict:
             raise HandsoffError("each agent profile must contain exactly adapter and model")
         adapters = {role: value["adapter"] for role, value in assignments.items()}
         models = {role: validate_agent_model(value["model"]) for role, value in assignments.items()}
-    if any(value not in SELECTABLE_AGENT_ADAPTERS for value in adapters.values()):
-        raise HandsoffError("agent adapters must be exactly 'codex' or 'claude'")
+    if any(value not in AGENT_SETTING_ADAPTERS for value in adapters.values()):
+        raise HandsoffError("agent adapters must be exactly 'auto', 'codex', or 'claude'")
     path = root / "handsoff.toml"
     if tomllib is None:
         raise HandsoffError("agent settings require Python 3.11+ TOML support")

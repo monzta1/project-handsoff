@@ -35,10 +35,14 @@ MAX_SETTINGS_BODY = 4096
 
 
 def _settings_view(cfg: dict) -> dict:
+    effective_profiles = lib.resolved_agent_profiles(cfg)
     return {
         "agents": dict(cfg.get("agents", {})),
         "profiles": lib.agent_profiles(cfg),
-        "allowed_adapters": list(lib.SELECTABLE_AGENT_ADAPTERS),
+        "effective_profiles": effective_profiles,
+        "default_adapter": lib.default_agent_adapter(),
+        "default_order": list(lib.DEFAULT_AGENT_PREFERENCE),
+        "allowed_adapters": list(lib.AGENT_SETTING_ADAPTERS),
         "availability": lib.adapter_availability(),
         "availability_scope": (
             "Executable discovery only; it does not prove authentication, account entitlement, "

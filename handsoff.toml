@@ -13,10 +13,12 @@ require_live_verification = true
 deployment_requires_explicit_approval = true
 
 [agents]
-architect = "configure-me"
-supervisor = "configure-me"
-implementer = "configure-me"
-reviewer = "configure-me"
+# "auto" selects the first installed adapter in this order: Codex, then
+# Claude Code. Set any role explicitly to override its automatic choice.
+architect = "auto"
+supervisor = "auto"
+implementer = "auto"
+reviewer = "auto"
 
 [models]
 # Use "default" to inherit the runner's configured model, or enter an exact

@@ -51,7 +51,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
-    profile = lib.agent_profiles(cfg)[role]
+    profile = lib.resolved_agent_profiles(cfg, which=which, require_available=True)[role]
     adapter = profile["adapter"]
     if adapter not in lib.SELECTABLE_AGENT_ADAPTERS:
         raise lib.HandsoffError(f"role {role} uses unsupported adapter: {adapter}")

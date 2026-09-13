@@ -353,7 +353,7 @@ class TestEveMissionControl(HandsoffTestCase):
 
         config_path = self.tmp / "handsoff.toml"
         original = config_path.read_text()
-        customized = original.replace('architect = "configure-me"\n', '# architect intentionally omitted\n')
+        customized = original.replace('architect = "auto"\n', '# architect intentionally omitted\n')
         customized += '\n[adapter.extra]\nnote = "preserve this byte-for-byte"\n'
         config_path.write_text(customized)
 
@@ -364,7 +364,7 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertEqual(effective, {"architect": "codex", "implementer": "claude", "reviewer": "codex"})
         self.assertIn('# architect intentionally omitted\n', updated)
         self.assertIn('architect = "codex"\n', updated)
-        self.assertIn('supervisor = "configure-me"', updated)
+        self.assertIn('supervisor = "auto"', updated)
         self.assertIn('[adapter.extra]\nnote = "preserve this byte-for-byte"', updated)
         self.assertEqual(lib.load_config(self.tmp)["agents"]["implementer"], "claude")
 
@@ -418,7 +418,7 @@ class TestEveMissionControl(HandsoffTestCase):
 
             snapshot = dashboard.build_snapshot(self.tmp)
             self.assertEqual(snapshot["settings"]["agents"]["reviewer"], "claude")
-            self.assertEqual(snapshot["settings"]["allowed_adapters"], ["codex", "claude"])
+            self.assertEqual(snapshot["settings"]["allowed_adapters"], ["auto", "codex", "claude"])
         finally:
             server.shutdown()
             server.server_close()
@@ -592,7 +592,7 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertIn("never reads, displays, or stores credential values", view["providers_scope"])
 
         # Existing role/model settings behavior is untouched by this addition.
-        self.assertEqual(view["allowed_adapters"], list(lib.SELECTABLE_AGENT_ADAPTERS))
+        self.assertEqual(view["allowed_adapters"], list(lib.AGENT_SETTING_ADAPTERS))
         self.assertIn("profiles", view)
 
         html = (ROOT / "dashboard" / "index.html").read_text()
@@ -681,6 +681,93 @@ class TestEveMissionControl(HandsoffTestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+class TestZeroConfigAgentDefaults(HandsoffTestCase):
+    """AG3: fresh projects launch with deterministic, visible defaults."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+
+    def _runtime(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_agent
+        return handsoff_agent
+
+    def test_missing_role_selections_resolve_to_first_available_adapter(self):
+        import handsoff_lib as lib
+
+        config_path = self.tmp / "handsoff.toml"
+        text = config_path.read_text()
+        for role in lib.SELECTABLE_AGENT_ROLES:
+            text = text.replace(f'{role} = "auto"\n', f'# {role} intentionally omitted\n', 1)
+        config_path.write_text(text)
+        cfg = lib.load_config(self.tmp)
+        self.assertTrue(all(profile["adapter"] == "auto" for profile in lib.agent_profiles(cfg).values()))
+
+        with mock.patch.object(lib.shutil, "which",
+                               side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+            resolved = lib.resolved_agent_profiles(cfg, require_available=True)
+        self.assertTrue(all(profile["adapter"] == "codex" for profile in resolved.values()))
+
+    def test_auto_profile_builds_every_role_with_available_fallback(self):
+        runtime = self._runtime()
+
+        for role in ("architect", "supervisor", "implementer", "reviewer"):
+            spec = runtime.build_launch_spec(
+                self.tmp, role, "zero-config launch",
+                which=lambda name: "/usr/local/bin/claude" if name == "claude" else None,
+            )
+            self.assertEqual(spec.adapter, "claude")
+            self.assertEqual(spec.argv[0], "/usr/local/bin/claude")
+            self.assertNotIn("--model", spec.argv)
+
+    def test_explicit_role_override_wins_without_changing_other_auto_roles(self):
+        runtime = self._runtime()
+        import handsoff_lib as lib
+
+        profiles = {
+            role: {"adapter": "claude" if role == "architect" else "auto", "model": "default"}
+            for role in lib.SELECTABLE_AGENT_ROLES
+        }
+        self.assertEqual(lib.update_agent_config(self.tmp, profiles), profiles)
+        both_installed = lambda name: f"/usr/local/bin/{name}"
+        architect = runtime.build_launch_spec(self.tmp, "architect", "explicit override", which=both_installed)
+        implementer = runtime.build_launch_spec(self.tmp, "implementer", "automatic fallback", which=both_installed)
+        self.assertEqual(architect.adapter, "claude")
+        self.assertEqual(implementer.adapter, "codex")
+
+    def test_dashboard_explains_default_and_missing_adapter_fails_clearly(self):
+        import handsoff_dashboard as dashboard
+        import handsoff_lib as lib
+
+        with mock.patch.object(lib.shutil, "which",
+                               side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+            view = dashboard._settings_view(lib.load_config(self.tmp))
+        self.assertEqual(view["default_adapter"], "codex")
+        self.assertEqual(view["default_order"], ["codex", "claude"])
+        self.assertEqual(view["allowed_adapters"], ["auto", "codex", "claude"])
+        self.assertTrue(all(profile["adapter"] == "codex" for profile in view["effective_profiles"].values()))
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        script = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertEqual(html.count('<option value="auto">Auto-detect</option>'), 4)
+        self.assertIn("Auto-detect →", script)
+        self.assertIn('profile.adapter === "configure-me" ? "auto"', script)
+
+        legacy_path = self.tmp / "handsoff.toml"
+        legacy_path.write_text(legacy_path.read_text().replace('reviewer = "auto"',
+                                                               'reviewer = "configure-me"'))
+        with mock.patch.object(lib.shutil, "which",
+                               side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+            legacy_view = dashboard._settings_view(lib.load_config(self.tmp))
+        self.assertEqual(legacy_view["profiles"]["reviewer"]["adapter"], "configure-me")
+        self.assertEqual(legacy_view["effective_profiles"]["reviewer"]["adapter"], "codex")
+
+        with self.assertRaisesRegex(lib.HandsoffError, "no supported agent adapter"):
+            lib.resolved_agent_profiles(lib.load_config(self.tmp), which=lambda _name: None,
+                                        require_available=True)
 
 
 class TestAgentRuntimeAdapter(HandsoffTestCase):
