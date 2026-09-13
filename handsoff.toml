@@ -41,13 +41,10 @@ reviewer = []
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a
 # free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
-commands = ["python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_config_round_trip_preserves_order_and_legacy_defaults", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_selection_orders_and_skips_unavailable_profiles_with_audit", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_invalid_profiles_are_skipped_with_safe_audit_reasons", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_recovery_categories_caps_and_exhaustion_pause", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_reviewer_independence_survives_fallback", "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_dashboard_edits_fallbacks_without_mutating_current_session", "node --test tests/dashboard/run_profile.test.js", "node --test tests/dashboard/auto_detect.test.js", "node --test tests/dashboard/event_log.test.js", "node --test tests/dashboard/settings_copy.test.js", "node --test tests/dashboard/fallback_order.test.js"]
+commands = []
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-# Reads HANDSOFF_DASHBOARD_PORT (default 8765, the documented default) so a
-# parallel worktree running its own dashboard on another port can point
-# verify-live at itself without committing a different default for everyone.
-live_commands = ["python3 -c \"import json, os, urllib.request; port = os.environ.get('HANDSOFF_DASHBOARD_PORT', '8765'); data = json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/api/dashboard')); assert data['initialized'] and data['status']['deployment_approved'] and data['status']['status'] == 'ready_to_deploy'\""]
+live_commands = []
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600

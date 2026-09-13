@@ -133,7 +133,8 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
 
 
 def execute_request(root: Path, request: dict, *, capability: object,
-                    workflow_popen=subprocess.Popen, agent_launcher=agent_runtime.execute_launch) -> int:
+                    workflow_popen=subprocess.Popen,
+                    agent_launcher=agent_runtime.execute_with_recovery) -> int:
     root = root.resolve()
     if capability is not _SUPERVISOR_HOST_CAPABILITY:
         raise lib.HandsoffError("broker accepts requests only from the trusted Supervisor context")
@@ -156,6 +157,29 @@ def execute_request(root: Path, request: dict, *, capability: object,
             raise lib.HandsoffError("broker launch timeout must be a positive integer")
         spec = agent_runtime.build_launch_spec(root, role, _text(request, "task"))
         return agent_launcher(spec, timeout=timeout)
+    if action == "quality_finding":
+        _exact_fields(
+            request,
+            {"actor", "project_root", "action", "session_id", "finding_code"},
+        )
+        session_id = _text(request, "session_id")
+        finding = lib.record_quality_finding(
+            root, session_id=session_id, finding_code=_text(request, "finding_code"),
+        )
+        status = lib.load_unique_json(lib.status_path(root, lib.load_config(root)))
+        source = (status.get("agent_sessions") or {}).get(session_id)
+        if not isinstance(source, dict):
+            raise lib.HandsoffError("quality finding session disappeared before replacement")
+        seed = agent_runtime.LaunchSpec(
+            source["role"], source["adapter"], source["requested_model"], (), str(root),
+            agent_runtime.build_role_input(
+                root, source["role"],
+                "Continue the current mission using only the trusted Handsoff state.",
+            ), "configured",
+        )
+        return agent_launcher(
+            seed, from_session_id=session_id, quality_finding_id=finding["finding_id"],
+        )
     if action == "workflow":
         argv = _workflow_argv(root, request)
         process = workflow_popen(
@@ -174,7 +198,7 @@ def execute_request(root: Path, request: dict, *, capability: object,
         if returncode:
             raise lib.HandsoffError(f"brokered workflow command exited with status {returncode}")
         return 0
-    raise lib.HandsoffError("broker action must be workflow or launch_role")
+    raise lib.HandsoffError("broker action must be workflow, launch_role, or quality_finding")
 
 
 def parse_request(text: str) -> dict:

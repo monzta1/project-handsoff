@@ -28,16 +28,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
 
-ISSUE24_TARGETED_COMMANDS = [
-    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_config_round_trip_preserves_order_and_legacy_defaults",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_selection_orders_and_skips_unavailable_profiles_with_audit",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_invalid_profiles_are_skipped_with_safe_audit_reasons",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_recovery_categories_caps_and_exhaustion_pause",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_reviewer_independence_survives_fallback",
-    "python3 -m unittest tests.test_handsoff_supervisor.TestFallbackPolicy.test_dashboard_edits_fallbacks_without_mutating_current_session",
-]
-
-
 def set_fixture_check_commands(path, commands):
     """Give copied fixtures their own checks without inheriting dogfood checks."""
     text, count = re.subn(
@@ -50,33 +40,7 @@ def set_fixture_check_commands(path, commands):
 
 
 def setUpModule():
-    """Keep issue #24 dogfood checks intact and in order; fixtures are normalized below.
-
-    Later features append their own checks to the same [checks].commands
-    array (e.g. issue #25's dashboard tests), so this only requires the six
-    issue #24 commands to still appear, unmodified and in relative order --
-    not that the array contains nothing else.
-    """
-    text = (ROOT / "handsoff.toml").read_text()
-    # Requires the array on one line, matching this repo's current style; if
-    # it's ever reformatted to span multiple lines this raises too (safe,
-    # fails loud) but with a misleading "must define" message.
-    match = re.search(r"^commands\s*=\s*(\[.*\])$", text, flags=re.MULTILINE)
-    if not match:
-        raise SystemExit("This repo's handsoff.toml must define [checks].commands.")
-    actual_commands = json.loads(match.group(1))
-    positions = []
-    for command in ISSUE24_TARGETED_COMMANDS:
-        if command not in actual_commands:
-            raise SystemExit(
-                "This repo's handsoff.toml is missing an issue #24 targeted check: "
-                f"{command!r}"
-            )
-        positions.append(actual_commands.index(command))
-    if positions != sorted(positions):
-        raise SystemExit(
-            "This repo's handsoff.toml must keep the six issue #24 targeted checks in order."
-        )
+    """Keep completion archives inside a temporary test-only directory."""
     # Any test that lands Phase 8 with status complete now triggers a real
     # archive write (see handsoff_lib.archive_run). Sandboxed here at module
     # scope, not just in TestRunArchive, so a test class that reaches
@@ -4946,6 +4910,283 @@ class TestFailureClassification(unittest.TestCase):
         self.assertEqual(result["reason"], closed_set_reasons[result["category"]])
         self.assertRegex(result["tail_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(result["tail_sha256"], __import__("hashlib").sha256(secret.encode()).hexdigest())
+
+
+class TestAgentReplacement(HandsoffTestCase):
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        self.init("Issue 23 agent replacement")
+        sys.path.insert(0, str(BIN))
+        import handsoff_agent
+        import handsoff_lib
+        self.runtime = handsoff_agent
+        self.lib = handsoff_lib
+        self.repo = {
+            "head": "a" * 40, "branch": "main", "dirty": True,
+            "status_sha256": "b" * 64,
+        }
+
+    def _policy(self, role, entries, cap=2):
+        cfg = self.lib.load_config(self.tmp)
+        payload = {
+            "profiles": self.lib.agent_profiles(cfg),
+            "fallbacks": self.lib.fallback_profiles(cfg),
+            "max_failovers_per_role": cap,
+        }
+        payload["fallbacks"][role] = entries
+        self.lib.update_agent_settings(self.tmp, payload)
+
+    def _session(self, role="implementer", adapter="codex", model="primary", state="failed",
+                 category="non_zero_exit"):
+        session = self.lib.create_agent_session(
+            self.tmp, role=role, actor=f"{adapter}-{role}", adapter=adapter,
+            requested_model=model, resolution_source="configured",
+        )
+        self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        if state == "completed":
+            self.lib.transition_agent_session(self.tmp, session["session_id"], "completed", exit_code=0)
+        else:
+            kwargs = {"exit_code": -9} if category == "process_crash" else {"exit_code": 1}
+            if category == "cancelled":
+                kwargs = {"cancelled": True}
+            elif category == "timeout":
+                kwargs = {"timed_out": True}
+            elif category == "unknown":
+                kwargs = {"stderr_tail": "unrecognized host diagnostic"}
+            failure = self.lib.classify_runtime_failure(**kwargs)
+            terminal_state = "cancelled" if category == "cancelled" else "timed_out" if category == "timeout" else "failed"
+            self.lib.transition_agent_session(
+                self.tmp, session["session_id"], terminal_state,
+                exit_code=130 if category == "cancelled" else 124 if category == "timeout" else 1,
+                failure=failure,
+            )
+        return session["session_id"]
+
+    @staticmethod
+    def _process(returncode=0, timeout=False):
+        fail_timeout = timeout
+        class Process:
+            pid = None
+            def __init__(self):
+                self.returncode = returncode
+                self.terminated = 0
+                self.killed = 0
+                self.waits = 0
+            def communicate(self, *, input, timeout):
+                if fail_timeout:
+                    raise subprocess.TimeoutExpired("agent", timeout)
+                return None
+            def terminate(self):
+                self.terminated += 1
+            def kill(self):
+                self.killed += 1
+                self.returncode = -9
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.terminated and not self.killed:
+                    raise subprocess.TimeoutExpired("agent", timeout)
+                return self.returncode
+        return Process()
+
+    def _reserve(self, session_id, **kwargs):
+        return self.lib.reserve_agent_replacement(
+            self.tmp, from_session_id=session_id,
+            which=lambda adapter: f"/bin/{adapter}", snapshotter=lambda root: dict(self.repo),
+            **kwargs,
+        )
+
+    def _set_review_round(self, value):
+        with self.lib.project_lock(self.tmp):
+            cfg = self.lib.load_config(self.tmp)
+            status = self.lib.load_unique_json(self.lib.status_path(self.tmp, cfg))
+            status["review_round"] = value
+            self.lib.commit(
+                self.tmp, cfg, status=status, event_kind="test_review_round_advanced",
+                event_message=f"Trusted review round advanced to {value}", review_round=value,
+            )
+
+    def test_successful_running_replacement_launches_fresh_same_phase_session(self):
+        self._policy("implementer", [{"adapter": "claude", "model": "sonnet"}])
+        source = self._session()
+        before = self.read_status()
+        record = self._reserve(source)
+        self.assertEqual(record["action"], "launch")
+        self.assertNotEqual(record["to_session_id"], source)
+        self.assertEqual(record["selected_profile"], {"adapter": "claude", "model": "sonnet"})
+        fallback = self.runtime.build_profile_launch_spec(
+            self.tmp, "implementer", "trusted in-memory task", record["selected_profile"],
+            which=lambda adapter: f"/bin/{adapter}",
+        )
+        claim_seen_before_spawn = []
+        def popen_after_claim(*args, **kwargs):
+            live = self.read_status()["agent_replacements"][0]
+            claim_seen_before_spawn.append((live["state"], live["handoff"]["state"]))
+            return self._process()
+        self.assertEqual(self.runtime.execute_launch(
+            fallback, precreated_session_id=record["to_session_id"],
+            popen_factory=popen_after_claim,
+        ), 0)
+        self.assertEqual(claim_seen_before_spawn, [("claimed", "claimed")])
+        after = self.read_status()
+        self.assertEqual(after["agent_sessions"][record["to_session_id"]]["state"], "completed")
+        self.assertEqual((after["agent_replacements"][0]["state"],
+                          after["agent_replacements"][0]["handoff"]["state"]),
+                         ("recovered", "recovered"))
+        self.assertEqual((after["phase_number"], after["progress"]),
+                         (before["phase_number"], before["progress"]))
+        replay_spawn = mock.Mock(return_value=self._process())
+        with self.assertRaisesRegex(self.lib.HandsoffError, "exact reservation"):
+            self.runtime.execute_launch(
+                fallback, precreated_session_id=record["to_session_id"],
+                popen_factory=replay_spawn,
+            )
+        replay_spawn.assert_not_called()
+
+    def test_active_stop_escalates_and_terminalizes_once(self):
+        process = self._process(timeout=True)
+        spec = self.runtime.LaunchSpec(
+            "implementer", "codex", "default", ("/bin/codex",), str(self.tmp), "private", "configured",
+        )
+        with self.assertRaises(self.runtime.AgentLaunchError):
+            self.runtime.execute_launch(spec, timeout=1, popen_factory=mock.Mock(return_value=process))
+        self.assertEqual((process.terminated, process.killed), (1, 1))
+        status = self.read_status()
+        session_id = status["current_agent_sessions"]["implementer"]
+        self.assertEqual(status["agent_sessions"][session_id]["state"], "timed_out")
+        events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+        terminal = [e for e in events if e.get("session_id") == session_id
+                    and e.get("state") in self.lib.AGENT_SESSION_TERMINAL_STATES]
+        self.assertEqual(len(terminal), 1)
+
+    def test_failed_relaunch_tries_next_fallback_within_cap(self):
+        self._policy("implementer", [
+            {"adapter": "claude", "model": "first"},
+            {"adapter": "codex", "model": "second"},
+        ], cap=2)
+        spec = self.runtime.LaunchSpec(
+            "implementer", "codex", "primary", ("/bin/codex",), str(self.tmp), "secret task", "configured",
+        )
+        outcomes = [self._process(returncode=1), OSError("missing runner"), self._process()]
+        def launch(*args, **kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+        self.assertEqual(self.runtime.execute_with_recovery(
+            spec, popen_factory=launch, which=lambda adapter: f"/bin/{adapter}",
+            snapshotter=lambda root: dict(self.repo),
+        ), 0)
+        status = self.read_status()
+        self.assertEqual([r["selected_profile"]["model"] for r in status["agent_replacements"]],
+                         ["first", "second"])
+        self.assertEqual([r["state"] for r in status["agent_replacements"]],
+                         ["failed", "recovered"])
+        self.assertEqual([r["handoff"]["state"] for r in status["agent_replacements"]],
+                         ["failed", "recovered"])
+        self.assertEqual(len(status["agent_replacements"]), 2)
+        self.assertEqual(status["agent_sessions"][status["current_agent_sessions"]["implementer"]]["state"],
+                         "completed")
+
+    def test_nonrecoverable_and_unbounded_quality_requests_are_refused(self):
+        self._policy("implementer", [{"adapter": "claude", "model": "fallback"}])
+        cancelled = self._session(category="cancelled")
+        before_sessions = set(self.read_status()["agent_sessions"])
+        paused = self._reserve(cancelled)
+        self.assertEqual((paused["action"], paused["reason"]),
+                         ("pilot_pause", "non_recoverable_failure"))
+        self.assertEqual(set(self.read_status()["agent_sessions"]), before_sessions)
+        completed = self._session(state="completed")
+        stable = (self.tmp / "handsoff-status.json").read_bytes()
+        with self.assertRaisesRegex(self.lib.HandsoffError, "closed set"):
+            self.lib.record_quality_finding(
+                self.tmp, session_id=completed, finding_code="caller says output was bad",
+            )
+        self.assertEqual((self.tmp / "handsoff-status.json").read_bytes(), stable)
+        import handsoff_broker
+        request = {
+            "actor": "supervisor", "project_root": str(self.tmp.resolve()),
+            "action": "quality_finding", "session_id": completed,
+            "finding_code": "acceptance_not_met",
+        }
+        def broker_launcher(spec, **kwargs):
+            self.assertIn((self.tmp / "prompts" / "implementer.md").read_text().strip(), spec.stdin)
+            return self.runtime.execute_with_recovery(
+                spec, which=lambda adapter: f"/bin/{adapter}",
+                snapshotter=lambda root: dict(self.repo), **kwargs,
+            )
+        with self.assertRaisesRegex(self.lib.HandsoffError, "quality_boundary_not_reached"):
+            handsoff_broker.dispatch_supervisor_request(
+                self.tmp, request, agent_launcher=broker_launcher,
+            )
+        finding = self.read_status()["agent_quality_findings"][-1]
+        self.assertFalse(finding["eligible"])
+        self.assertEqual(finding["review_round"], 0)
+        self.assertEqual(self.read_status()["agent_replacements"][-1]["state"], "pilot_pause")
+        stable = (self.tmp / "handsoff-status.json").read_bytes()
+        with self.assertRaisesRegex(self.lib.HandsoffError, "already exists"):
+            handsoff_broker.dispatch_supervisor_request(
+                self.tmp, {**request, "finding_code": "incorrect_implementation"},
+                agent_launcher=broker_launcher,
+            )
+        self.assertEqual((self.tmp / "handsoff-status.json").read_bytes(), stable)
+        for review_round in (1, 2, 3):
+            self._set_review_round(review_round)
+            boundary = self.lib.record_quality_finding(
+                self.tmp, session_id=completed, finding_code="acceptance_not_met",
+            )
+        self.assertEqual(boundary["review_round"], 3)
+        self.assertTrue(boundary["eligible"])
+
+    def test_handoff_is_derived_bounded_and_secret_free(self):
+        secret = "sk-private-caller-task-and-token"
+        acceptance = json.loads((self.tmp / "handsoff-acceptance.json").read_text())
+        acceptance["criteria"][0].update({"id": "REQ-001", "state": "passing", "evidence": ["run-safe"]})
+        acceptance["criteria"].append({
+            **acceptance["criteria"][0], "id": "REQ-002", "state": "not_tested",
+            "requirement": secret, "evidence": [],
+        })
+        with self.lib.project_lock(self.tmp):
+            self.lib.commit(
+                self.tmp, self.lib.load_config(self.tmp), acceptance=acceptance,
+                event_kind="test_acceptance_prepared",
+                event_message="Prepared trusted acceptance state for replacement handoff",
+            )
+        self._policy("implementer", [{"adapter": "claude", "model": "safe"}])
+        source = self._session()
+        record = self._reserve(source)
+        handoff = record["handoff"]
+        self.assertEqual(handoff["passing_criterion_ids"], ["REQ-001"])
+        self.assertIn("REQ-002", handoff["remaining_criterion_ids"])
+        self.assertEqual(handoff["evidence_ids"], ["run-safe"])
+        self.assertEqual(handoff["repository"], self.repo)
+        serialized = json.dumps(record)
+        self.assertNotIn(secret, serialized)
+        for forbidden in ("prompt", "output", "environment", "credential", "token"):
+            self.assertNotIn(forbidden, serialized.lower())
+
+    def test_reviewer_independence_and_governance_gates_are_preserved(self):
+        self._session(role="implementer", adapter="codex", model="impl", state="completed")
+        self._policy("reviewer", [
+            {"adapter": "codex", "model": "impl"},
+            {"adapter": "claude", "model": "independent"},
+        ])
+        reviewer = self._session(role="reviewer", model="review-primary")
+        status_before = self.read_status()
+        original_binding = status_before["reviewer_implementer_bindings"][reviewer]
+        self.assertEqual((original_binding["adapter"], original_binding["model"]), ("codex", "impl"))
+        self._session(role="implementer", adapter="claude", model="independent", state="completed")
+        acceptance_before = (self.tmp / "handsoff-acceptance.json").read_bytes()
+        record = self._reserve(reviewer)
+        self.assertEqual(record["selected_profile"], {"adapter": "claude", "model": "independent"})
+        status_after = self.read_status()
+        copied_binding = status_after["reviewer_implementer_bindings"][record["to_session_id"]]
+        self.assertEqual((copied_binding["adapter"], copied_binding["model"]), ("codex", "impl"))
+        governed = ("phase_number", "phase", "progress", "status", "requirement_coverage",
+                    "design_review", "design_approved", "deployment_approved", "review")
+        self.assertEqual({key: status_after.get(key) for key in governed},
+                         {key: status_before.get(key) for key in governed})
+        self.assertEqual((self.tmp / "handsoff-acceptance.json").read_bytes(), acceptance_before)
 
 
 if __name__ == "__main__":

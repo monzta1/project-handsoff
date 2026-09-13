@@ -33,7 +33,7 @@
             "adapter": {"enum": ["codex", "claude"]},
             "requested_model": {"type": "string", "minLength": 1, "maxLength": 128},
             "reported_model": {"type": ["string", "null"], "maxLength": 128},
-            "resolution_source": {"enum": ["configured", "auto_detected", "legacy_auto_detected"]},
+            "resolution_source": {"enum": ["configured", "auto_detected", "legacy_auto_detected", "fallback"]},
             "started_at": {"type": "string", "format": "date-time"},
             "running_at": {"type": ["string", "null"], "format": "date-time"},
             "ended_at": {"type": ["string", "null"], "format": "date-time"},
@@ -52,6 +52,95 @@
         "supervisor": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
         "implementer": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
         "reviewer": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"}
+      }
+    },
+    "agent_failures": {
+      "type": "object",
+      "maxProperties": 64,
+      "patternProperties": {
+        "^hs-[0-9a-f]{32}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session_id", "category", "reason", "tail_sha256", "at"],
+          "properties": {
+            "session_id": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
+            "category": {"enum": ["cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion", "process_crash", "non_zero_exit", "unknown"]},
+            "reason": {"type": "string"},
+            "tail_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "at": {"type": "string", "format": "date-time"}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "agent_quality_findings": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "session_id", "role", "code", "count", "limit", "review_round", "distinct_round_count", "eligible", "at"],
+        "properties": {
+          "finding_id": {"type": "string", "pattern": "^hq-[0-9a-f]{32}$"},
+          "session_id": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
+          "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
+          "code": {"enum": ["acceptance_not_met", "incorrect_implementation", "review_changes_requested"]},
+          "count": {"type": "integer", "minimum": 1},
+          "limit": {"type": "integer", "minimum": 0},
+          "review_round": {"type": "integer", "minimum": 0},
+          "distinct_round_count": {"type": "integer", "minimum": 0},
+          "eligible": {"type": "boolean"},
+          "at": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "reviewer_implementer_bindings": {
+      "type": "object",
+      "maxProperties": 64,
+      "patternProperties": {
+        "^hs-[0-9a-f]{32}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reviewer_session_id", "implementer_session_id", "adapter", "model", "bound_at"],
+          "properties": {
+            "reviewer_session_id": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
+            "implementer_session_id": {"type": ["string", "null"], "pattern": "^hs-[0-9a-f]{32}$"},
+            "adapter": {"enum": ["codex", "claude"]},
+            "model": {"type": "string", "minLength": 1, "maxLength": 128},
+            "bound_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "agent_replacements": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["replacement_id", "role", "from_session_id", "to_session_id", "trigger", "category", "reason", "attempt", "cap", "action", "planner_reason", "skipped", "selected_profile", "handoff", "state", "at"],
+        "properties": {
+          "replacement_id": {"type": "string", "pattern": "^hr-[0-9a-f]{32}$"},
+          "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
+          "from_session_id": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
+          "to_session_id": {"type": ["string", "null"], "pattern": "^hs-[0-9a-f]{32}$"},
+          "trigger": {"enum": ["runtime_failure", "quality_finding"]},
+          "category": {"enum": ["cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion", "process_crash", "non_zero_exit", "unknown", "still_running"]},
+          "reason": {"type": "string"},
+          "attempt": {"type": "integer", "minimum": 0, "maximum": 8},
+          "cap": {"type": "integer", "minimum": 0, "maximum": 8},
+          "action": {"enum": ["launch", "pilot_pause"]},
+          "planner_reason": {"type": "string"},
+          "skipped": {"type": "array", "maxItems": 8},
+          "selected_profile": {"type": ["object", "null"]},
+          "handoff": {"type": ["object", "null"]},
+          "state": {"enum": ["reserved", "claimed", "running", "failed", "recovered", "pilot_pause"]},
+          "claimed_at": {"type": "string", "format": "date-time"},
+          "running_at": {"type": "string", "format": "date-time"},
+          "ended_at": {"type": "string", "format": "date-time"},
+          "at": {"type": "string", "format": "date-time"}
+        }
       }
     },
     "design_review": {
