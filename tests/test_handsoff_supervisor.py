@@ -602,6 +602,34 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertIn("function renderProviderStatus", script)
         self.assertIn("requires_setup", script)
 
+    def test_agent_settings_note_capability_guidance_for_architect_and_reviewer(self):
+        """AG6: the config surface must inform, not restrict -- it names
+        Architect and Reviewer as the roles that benefit most from a
+        stronger model, while every role stays freely selectable."""
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        self.assertIn("CAPABILITY GUIDANCE", html)
+        self.assertIn("Architect and Reviewer", html)
+        self.assertIn("benefit most from a more capable model", html)
+        self.assertIn("guidance only", html)
+
+        import re
+        for role in ("architect", "reviewer"):
+            select_match = re.search(rf'<select id="agent-{role}"[^>]*>(.*?)</select>', html, re.DOTALL)
+            self.assertIsNotNone(select_match, f"agent-{role} select not found")
+            self.assertNotIn("disabled", select_match.group(0))
+            options = re.findall(r'<option value="([^"]*)"', select_match.group(1))
+            self.assertEqual(options, ["auto", "codex", "claude"])
+
+            model_input_match = re.search(rf'<input id="agent-{role}-model"[^>]*>', html)
+            self.assertIsNotNone(model_input_match, f"agent-{role}-model input not found")
+            self.assertNotIn("disabled", model_input_match.group(0))
+            self.assertNotIn("readonly", model_input_match.group(0))
+
+        # No specific model is named as objectively "stronger" -- guidance
+        # only, never an unverifiable claim baked into shipped UI copy.
+        for named_model in ("gpt-5.4", "sonnet", "opus", "haiku", "claude-opus", "gpt-5"):
+            self.assertNotIn(named_model, html.split("CAPABILITY GUIDANCE")[1].split("</p>")[0])
+
     def test_background_review_start_clears_stale_authorization_state(self):
         dashboard = self._dashboard()
         self.init("Instant review transition")
