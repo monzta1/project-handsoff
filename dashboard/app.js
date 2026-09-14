@@ -376,6 +376,12 @@ function renderInputAlert(inputRequest, feature, regression) {
   const regressionDecline = $("regression-decline");
   approvalButton.classList.toggle("hidden", state.inputKind !== "design_approval");
   deploymentButton.classList.toggle("hidden", state.inputKind !== "deployment_approval");
+  const budgetButton = $("design-review-authorize");
+  budgetButton.classList.toggle("hidden", state.inputKind !== "design_review_budget");
+  if (state.inputKind === "design_review_budget" && signature !== state.alertSignature) {
+    budgetButton.disabled = false;
+    budgetButton.textContent = "AUTHORIZE ONE MORE DESIGN REVIEW";
+  }
   regressionAccept.classList.toggle("hidden", state.inputKind !== "regression_approval");
   regressionDecline.classList.toggle("hidden", state.inputKind !== "regression_approval");
   state.regressionRequest = regression?.pending || null;
@@ -445,6 +451,27 @@ async function authorizeDesign() {
   } catch (error) {
     button.disabled = false;
     button.textContent = "AUTHORIZE DESIGN";
+    showError(`Authorization rejected: ${error.message}`);
+  }
+}
+
+async function authorizeDesignReviewAttempt() {
+  const button = $("design-review-authorize");
+  button.disabled = true;
+  button.textContent = "TRANSMITTING AUTHORIZATION…";
+  try {
+    const response = await fetch("/api/design-review-authorize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Authorization returned ${response.status}`);
+    button.textContent = "ATTEMPT AUTHORIZED";
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "AUTHORIZE ONE MORE DESIGN REVIEW";
     showError(`Authorization rejected: ${error.message}`);
   }
 }
@@ -897,6 +924,7 @@ connectEventStream();
 $("enable-alerts").addEventListener("click", enableDesktopAlerts);
 $("design-approve").addEventListener("click", authorizeDesign);
 $("deployment-approve").addEventListener("click", authorizeDeployment);
+$("design-review-authorize").addEventListener("click", authorizeDesignReviewAttempt);
 $("regression-accept").addEventListener("click", () => decideRegression("accept"));
 $("regression-decline").addEventListener("click", () => decideRegression("decline"));
 $("settings-toggle").addEventListener("click", openSettings);

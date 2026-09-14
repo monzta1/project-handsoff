@@ -247,6 +247,10 @@ def _input_request(status: dict, cfg: dict) -> dict:
     amendment_decision = lib.amendment_pending_decision(amendment)
     # #46: a blocking role question is a named decision the Pilot answers.
     questions = lib.open_questions(status, blocking_only=True)
+    # #35 follow-up: an exhausted design-review budget is a Pilot decision
+    # with its own control, like the design and deployment gates.
+    budget = lib.design_review_budget(status, cfg)
+    budget_exhausted = phase == 2 and budget.get("exhausted") and status.get("authorization_hold") == "design_review"
     required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
         or older_signal or bool(amendment) or bool(questions)
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
@@ -271,6 +275,10 @@ def _input_request(status: dict, cfg: dict) -> dict:
             kind = "amendment_review"
             message = (f"Amendment {amendment_id} is open and frozen. Pending decision: independent "
                        "amendment review (amendment-review), then Pilot approval.")
+    elif budget_exhausted:
+        kind = "design_review_budget"
+        message = (f"Design review budget exhausted ({budget['attempts']} of {budget['limit']} attempts). "
+                   "Authorize exactly one more design-review attempt, or leave the run held.")
     elif questions:
         kind = "question"
         lead = questions[0]
@@ -852,7 +860,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_shutdown()
             return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
-                        "/api/regression-decision", "/api/question-answer"}:
+                        "/api/regression-decision", "/api/question-answer",
+                        "/api/design-review-authorize"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
         if not self._same_origin_allowed():
@@ -939,6 +948,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.server.project_root, lib.load_config(self.server.project_root)
                 )).get("design_approved")
                 self._json_response(HTTPStatus.OK, {"ok": True, "design_approved": approved})
+                return
+            if path == "/api/design-review-authorize":
+                if requested:
+                    raise lib.HandsoffError("design review authorization payload must be empty")
+                snapshot = build_snapshot(self.server.project_root)
+                if (snapshot.get("input_required") or {}).get("kind") != "design_review_budget":
+                    self._json_response(HTTPStatus.CONFLICT, {
+                        "ok": False, "error": "The current mission is not waiting on a design-review authorization"})
+                    return
+                command = argparse.Namespace(root=str(self.server.project_root), by="Mission Control Pilot",
+                                             note="Authorized from Mission Control")
+                if supervisor.cmd_design_review_authorize(command) != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The design-review budget rejected this authorization"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True})
                 return
             if path == "/api/deployment-approval":
                 if requested:

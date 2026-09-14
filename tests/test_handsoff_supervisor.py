@@ -11352,3 +11352,58 @@ class TestRoleQuestions(HandsoffTestCase):
     def test_prompts_document_the_question_line(self):
         for role in ("architect", "implementer", "reviewer", "supervisor"):
             self.assertIn("HANDSOFF_QUESTION:", (ROOT / "prompts" / f"{role}.md").read_text())
+
+
+class TestDesignReviewBudgetAuthorizeControl(HandsoffTestCase):
+    """#35 follow-up: an exhausted design-review budget shows its own Pilot
+    control on Mission Control, and the control records the same
+    authorization the CLI does."""
+
+    def setUp(self):
+        super().setUp()
+        self.init("Budget control")
+        sys.path.insert(0, str(BIN))
+        import handsoff_dashboard
+        self.dashboard = handsoff_dashboard
+        run(["criterion-update", "REQ-001", "--requirement", "A real criterion"], cwd=self.tmp)
+        run(["advance", "2", "10"], cwd=self.tmp)
+        for n in (1, 2):
+            r = run(["record-design-review", "--by", f"rev-{n}", "--architect", "arch",
+                     "--request-changes", "--summary", f"round {n}"], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["advance", "2", "10", "--status", "blocked", "--next-action", "authorize attempt 3",
+                 "--authorization-hold", "design_review"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def _api(self, server, method, path, body=None):
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        headers = {"Content-Type": "application/json", "Origin": f"http://{host}:{port}"} if body is not None else {}
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        connection.close()
+        return response.status, json.loads(payload)
+
+    def test_exhausted_budget_is_its_own_input_kind_and_the_control_authorizes_once(self):
+        server = self.dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            code, snapshot = self._api(server, "GET", "/api/dashboard")
+            self.assertEqual(snapshot["input_required"]["kind"], "design_review_budget")
+            self.assertIn("2 of 2", snapshot["input_required"]["message"])
+            code, result = self._api(server, "POST", "/api/design-review-authorize", body="{}")
+            self.assertEqual(code, 200, result)
+            authorization = self.read_status()["design_review_authorization"]
+            self.assertEqual(authorization["by"], "Mission Control Pilot")
+            self.assertEqual(authorization["attempt_permitted"], 3)
+            code, again = self._api(server, "POST", "/api/design-review-authorize", body="{}")
+            self.assertEqual(code, 409, again)
+        finally:
+            server.shutdown()
+            server.server_close()
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        app = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertIn('id="design-review-authorize"', html)
+        self.assertIn('state.inputKind !== "design_review_budget"', app)
+        self.assertIn('fetch("/api/design-review-authorize"', app)
