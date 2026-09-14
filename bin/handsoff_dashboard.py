@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import re
 import os
 import sys
 import threading
@@ -237,10 +238,13 @@ def _input_request(status: dict, cfg: dict) -> dict:
         and not status.get("design_approved")
         and design_review.get("decision") == "approved"
     )
-    older_signal = any(phrase in next_action.lower() for phrase in (
-        "waiting for user", "waiting on user", "your input", "need your decision",
-        "need your approval", "provide credentials", "grant permission", "authorize",
-    ))
+    # Whole-word phrases only: "Launch the authorized attempt" is progress,
+    # not a request, and must not re-arm the banner after the Pilot acts.
+    older_signal = status.get("status") != "in_progress" and any(
+        re.search(r"\b" + re.escape(phrase) + r"\b", next_action.lower()) for phrase in (
+            "waiting for user", "waiting on user", "your input", "need your decision",
+            "need your approval", "provide credentials", "grant permission", "authorize",
+        ))
     # #42: an open amendment always waits on a named decision (review,
     # revision, or the Pilot's approval); the banner names which.
     amendment = lib.open_amendment(status)
