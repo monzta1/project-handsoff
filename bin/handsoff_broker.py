@@ -21,7 +21,9 @@ import handsoff_lib as lib  # noqa: E402
 
 SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("handsoff_supervisor.py")
 MAX_REQUEST_BYTES = 65536
-HUMAN_ONLY_COMMANDS = {"design-approve", "deployment-gate"}
+HUMAN_ONLY_COMMANDS = {
+    "design-approve", "deployment-gate", "design-review-authorize", "design-review-escalate",
+}
 _SUPERVISOR_HOST_CAPABILITY = object()
 
 
@@ -109,12 +111,44 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     if command == "record-design-review":
         _exact_fields(request, {
             "actor", "project_root", "action", "command", "by", "architect", "decision", "summary",
-        })
+        }, {"findings", "structural_blocker"})
         decision = _text(request, "decision")
         if decision not in {"approve", "request-changes"}:
             raise lib.HandsoffError("broker design-review decision is invalid")
         base.extend(["--by", _text(request, "by"), "--architect", _text(request, "architect"),
                      f"--{decision}", "--summary", _text(request, "summary")])
+        if "structural_blocker" in request:
+            # #37: a boolean flag only; the supervisor refuses it without
+            # request-changes before writing anything.
+            if request["structural_blocker"] is True:
+                base.append("--structural-blocker")
+            elif request["structural_blocker"] is not False:
+                raise lib.HandsoffError("broker record-design-review structural_blocker must be boolean")
+        if "findings" in request:
+            # #36: bounded here only by shape; the supervisor enforces the
+            # count and length caps and refuses before writing.
+            findings = request["findings"]
+            if not isinstance(findings, list) or not findings \
+                    or not all(isinstance(f, str) and f.strip() and not any(ord(c) == 0 for c in f)
+                               for f in findings):
+                raise lib.HandsoffError("broker record-design-review findings must be a non-empty string array")
+            for finding in findings:
+                base.extend(["--finding", finding])
+        return base
+    if command == "design-review-packet":
+        # #36: the Supervisor may generate the delta packet for the next
+        # attempt; every disposition string is validated by the supervisor
+        # against the most recent review's findings.
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"dispositions"})
+        base.extend(["--by", _text(request, "by")])
+        if "dispositions" in request:
+            dispositions = request["dispositions"]
+            if not isinstance(dispositions, list) or not dispositions \
+                    or not all(isinstance(d, str) and d.strip() and not any(ord(c) == 0 for c in d)
+                               for d in dispositions):
+                raise lib.HandsoffError("broker design-review-packet dispositions must be a non-empty string array")
+            for disposition in dispositions:
+                base.extend(["--disposition", disposition])
         return base
     if command == "record-review":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"symptom_reproduced"})
@@ -128,6 +162,31 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     if command == "record-symptom-resolved":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "evidence"})
         base.extend(["--evidence", _text(request, "evidence"), "--by", _text(request, "by")])
+        return base
+    if command == "design-evidence":
+        # #38: both actions are non-human-only. `run` refreshes (or reuses)
+        # the cached measurements; `show` prints their states as JSON.
+        _exact_fields(request, {"actor", "project_root", "action", "command", "evidence_action"},
+                      {"by", "ids", "force"})
+        evidence_action = _text(request, "evidence_action")
+        if evidence_action not in {"run", "show"}:
+            raise lib.HandsoffError("broker design-evidence evidence_action must be run or show")
+        base.append(evidence_action)
+        if evidence_action == "show":
+            if set(request) & {"by", "ids", "force"}:
+                raise lib.HandsoffError("broker design-evidence show takes no by, ids, or force")
+            return base
+        if "ids" in request:
+            ids = request["ids"]
+            if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i.strip() for i in ids):
+                raise lib.HandsoffError("broker design-evidence ids must be a non-empty string array")
+            for artifact_id in ids:
+                base.extend(["--id", artifact_id])
+        base.extend(["--by", _text(request, "by")])
+        if request.get("force") is True:
+            base.append("--force")
+        elif "force" in request and request["force"] is not False:
+            raise lib.HandsoffError("broker design-evidence force must be boolean")
         return base
     raise lib.HandsoffError(f"broker refuses unknown workflow command: {command}")
 

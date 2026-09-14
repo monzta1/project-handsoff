@@ -23,6 +23,13 @@
       </div>
     </header>
 
+    <section id="live-status" class="live-status hidden" data-state="idle" role="status" aria-live="polite" aria-label="Live ship-feature status">
+      <span class="live-pill" id="live-state">IDLE</span>
+      <span class="live-role" id="live-role">NO ROLE</span>
+      <span class="live-age" id="live-age">last activity unknown</span>
+      <span class="live-detail" id="live-detail">no managed process is running</span>
+    </section>
+
     <main id="dashboard" aria-live="polite">
       <section id="empty-state" class="empty-state hidden">
         <span class="empty-code">SYSTEM ONLINE · NO ACTIVE MISSION</span>
@@ -74,6 +81,9 @@
                 <span id="phase-kicker">PHASE 1 OF 8</span>
                 <h2 id="phase-name">Orient</h2>
                 <p id="status-updated">Awaiting initial telemetry</p>
+                <p id="design-review-budget">Design review 0/0</p>
+                <p id="design-review-packet">Delta packet: none (first review gets the full task)</p>
+                <p id="design-reviewer-profile">Review profile: not selected</p>
               </div>
             </div>
             <div class="mini-stats">
@@ -116,6 +126,11 @@
               <tbody id="ticket-list"></tbody>
             </table>
           </div>
+        </section>
+
+        <section id="design-evidence-panel" class="panel design-evidence-panel hidden">
+          <div class="section-head"><div><p class="panel-label">DESIGN EVIDENCE</p><h2>Cached measurements</h2></div><span id="design-evidence-total" class="section-meta">0 ARTIFACTS</span></div>
+          <div id="design-evidence-list" class="design-evidence-list"></div>
         </section>
 
         <section class="content-grid">
@@ -161,6 +176,7 @@
       </header>
       <p class="settings-intro"><strong>NEXT MANAGED LAUNCH CONFIGURATION.</strong> These controls do not rewrite Command Crew history or a process already running. Each station reports this run's recorded session first, then the profile that will launch next.</p>
       <p class="default-model-explainer"><strong>DEFAULT MODEL PROTOCOL</strong><span><code>default</code> sends no model flag. Codex or Claude Code chooses from its own configuration, so the exact model is not guaranteed. Enter an exact model ID to pin it.</span></p>
+      <p class="default-model-explainer"><strong>RECOMMENDED CREW</strong><span>A role left unset in <code>handsoff.toml</code> launches with the recommended crew: Claude Code <code>claude-opus-5</code> for Architect, Supervisor, and Implementer; Codex runner default for Reviewer. Such a role is labelled <code>recommended default</code> below. Saving this matrix writes every role explicitly.</span></p>
       <p class="default-model-explainer"><strong>CAPABILITY GUIDANCE</strong><span>Architect and Reviewer carry the most demanding work -- design rigor and catching subtle blind spots -- and benefit most from a more capable model. Assigning Reviewer a different provider or model than Implementer can strengthen independent review. This is guidance only: every role stays freely selectable, including matching profiles.</span></p>
       <div class="settings-grid">
         <label for="agent-architect"><span>ARCHITECT</span><small>Designs the approach and victory conditions.</small></label>

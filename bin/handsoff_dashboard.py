@@ -8,7 +8,9 @@ commands exposed by the supervisor CLI.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
 import sys
 import threading
 import time
@@ -40,11 +42,16 @@ def _settings_view(cfg: dict) -> dict:
     return {
         "agents": dict(cfg.get("agents", {})),
         "profiles": lib.agent_profiles(cfg),
+        "profile_sources": lib.profile_sources(cfg),
+        "recommended_crew": {role: dict(profile) for role, profile in lib.RECOMMENDED_CREW.items()},
+        "crew": lib.crew_view(cfg),
         "effective_profiles": effective_profiles,
         "fallbacks": lib.fallback_profiles(cfg),
         "max_failovers_per_role": cfg.get(
             "max_failovers_per_role", lib.DEFAULT_MAX_FAILOVERS_PER_ROLE,
         ),
+        # #37: read-only here; the settings dialog never writes these keys.
+        "reviewer_followup": lib.followup_reviewer_profile(cfg),
         "max_fallback_profiles": lib.MAX_FALLBACK_PROFILES,
         "default_adapter": lib.default_agent_adapter(),
         "default_order": list(lib.DEFAULT_AGENT_PREFERENCE),
@@ -114,9 +121,13 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 lib.acceptance_path(root, cfg),
                 lib.event_log_path(root, cfg),
                 lib.verification_log_path(root, cfg),
+                lib.design_evidence_path(root),
+                # #33: every beacon write invalidates the snapshot so the
+                # live strip follows the managed child in near real time.
+                lib.live_beacon_path(root),
             ]
         except lib.HandsoffError:
-            paths = [root / "handsoff.toml"]
+            paths = [root / "handsoff.toml", lib.live_beacon_path(root)]
         signature = []
         for path in paths:
             try:
@@ -171,6 +182,10 @@ def _active_role(status: dict, input_request: dict) -> str | None:
     if status.get("status") == "complete":
         return None
     if input_request.get("required"):
+        return None
+    # #34/#33: an open human pause means nobody is mid-task either, whether
+    # or not the run was also marked blocked.
+    if isinstance(status.get("human_pause"), dict):
         return None
     phase_number = int(status.get("phase_number", 1) or 1)
     if phase_number == 2:
@@ -348,12 +363,27 @@ def build_snapshot(root: Path) -> dict:
                 audit_errors.append("Verification ledger tail does not match its anchored head.")
             stall = lib.stall_warning(status, cfg)
             activity = lib.activity_note(status, cfg)
+            # #33: the live session view, from structured state plus the beacon.
+            live = lib.live_status(status, cfg, root)
+            # #38: states and hashes only; the bounded output stays in the side file.
+            try:
+                design_evidence = lib.design_evidence_view(root, cfg)
+            except lib.HandsoffError as exc:
+                design_evidence = [{"id": entry["id"], "state": "missing", "reasons": [str(exc)],
+                                    "input_hash": None, "matched_files": None, "output_sha256": None,
+                                    "at": None, "by": None, "head": None, "commit_matches_head": False,
+                                    "truncated": False, "exit_code": None}
+                                   for entry in cfg.get("design_evidence", [])]
     except (lib.HandsoffError, OSError) as exc:
         return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
     criteria = acceptance.get("criteria", [])
     latest_event = events[-1] if events else None
     coverage = status.get("requirement_coverage", {})
+    design_review_budget = lib.design_review_budget(status, cfg)
+    # #37: current (the latest recorded review's tier) and next (what the
+    # next launch selects, with any refusal named) reviewer profile.
+    design_reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
     audit_healthy = not gate_errors and not audit_errors
     input_request = _input_request(status, cfg)
     display_status = dict(status)
@@ -374,7 +404,7 @@ def build_snapshot(root: Path) -> dict:
             return None
         fields = ("session_id", "role", "actor", "adapter", "requested_model",
                   "reported_model", "resolution_source", "state", "started_at",
-                  "running_at", "ended_at", "exit_code")
+                  "running_at", "ended_at", "exit_code", "tier")
         return {field: session.get(field) for field in fields}
 
     def session_for_actor(actor):
@@ -435,6 +465,9 @@ def build_snapshot(root: Path) -> dict:
             "original_symptom_resolved": coverage.get("original_symptom_resolved") is True,
         },
         "tickets": list(cfg.get("tickets", [])),
+        "design_evidence": design_evidence,
+        # #36: counts and flags of the latest delta packet, never finding text.
+        "design_review_packet": lib.design_review_packet_summary(status),
         "actors": actors,
         "crew": crew,
         "runtime": {
@@ -454,6 +487,11 @@ def build_snapshot(root: Path) -> dict:
             "max_review_rounds": cfg.get("max_review_rounds"),
             "design_round": status.get("design_round", 0),
             "max_design_rounds": cfg.get("max_design_rounds"),
+            "design_review_attempts": design_review_budget["attempts"],
+            "max_autonomous_design_reviews": design_review_budget["limit"],
+            "design_review_authorization": status.get("design_review_authorization"),
+            "design_reviewer_selection": design_reviewer_selection,
+            "design_reviewer_escalation": status.get("design_reviewer_escalation"),
             "explicit_approval": cfg.get("deployment_requires_explicit_approval", True),
             "live_verification": cfg.get("require_live_verification", True),
             "configured_checks": len(cfg.get("check_commands", [])),
@@ -462,6 +500,7 @@ def build_snapshot(root: Path) -> dict:
         "settings": _settings_view(cfg),
         "input_required": input_request,
         "activity_note": activity,
+        "live": live,
         "supervisor": _supervisor_briefing(display_status, criteria, gate_errors, audit_errors, stall, activity,
                                             latest_event, input_request),
         "events": list(reversed(events[-12:])),
@@ -472,9 +511,47 @@ def build_snapshot(root: Path) -> dict:
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], root: Path):
+    def __init__(self, address: tuple[str, int], root: Path, *,
+                 run_token: str | None = None, root_sha256: str | None = None):
         self.project_root = root
+        # #40: an owned server keeps its own ownership values in memory
+        # from launch; the pointer file on disk is never consulted to
+        # answer /api/ownership or to authorize /api/shutdown.
+        self.run_token = run_token
+        self.root_sha256 = root_sha256
+        self.stopping = False
+        self._stop_lock = threading.Lock()
         super().__init__(address, DashboardHandler)
+
+    @property
+    def owned_by_run(self) -> bool:
+        return bool(self.run_token) and bool(self.root_sha256)
+
+    def ownership_view(self) -> dict:
+        if not self.owned_by_run:
+            return {"owned": False}
+        return {"owned": True, "run_token": self.run_token, "root_sha256": self.root_sha256}
+
+    def shutdown_matches(self, run_token, root_sha256) -> bool:
+        """Both bindings must match the in-memory values; constant-time
+        comparison so a wrong token learns nothing from timing."""
+        if not self.owned_by_run:
+            return False
+        if not isinstance(run_token, str) or not isinstance(root_sha256, str):
+            return False
+        return (hmac.compare_digest(run_token.encode("utf-8"), self.run_token.encode("utf-8"))
+                and hmac.compare_digest(root_sha256.encode("utf-8"), self.root_sha256.encode("utf-8")))
+
+    def request_stop(self) -> None:
+        """Flag every SSE loop to exit, then run shutdown() off the handler
+        thread (shutdown() blocks until serve_forever returns, and the
+        handler thread is one of the things serve_forever is waiting on).
+        Idempotent: a second request while stopping starts nothing new."""
+        with self._stop_lock:
+            if self.stopping:
+                return
+            self.stopping = True
+        threading.Thread(target=self.shutdown, name="handsoff-dashboard-stop", daemon=True).start()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -540,8 +617,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         last_keepalive = time.monotonic()
         self.wfile.write(b"retry: 1000\n")
         self._send_event("ready", {"connected": True})
-        while True:
+        while not self.server.stopping:
             time.sleep(0.2)
+            if self.server.stopping:
+                break
             current = _artifact_signature(self.server.project_root)
             if current != signature:
                 signature = current
@@ -551,6 +630,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b": telemetry keepalive\n\n")
                 self.wfile.flush()
                 last_keepalive = time.monotonic()
+        # #40: the stream has no length, so the client only learns it is
+        # over when the connection closes; make handle() drop it instead
+        # of waiting for a next request that will never come.
+        self.close_connection = True
+
+    def _serve_shutdown(self) -> None:
+        """`POST /api/shutdown` for the CLI release path (#40). Not a
+        browser endpoint, so no same-origin header check: the run_token
+        and root_sha256 in the body are its authentication, and both are
+        compared against the server's own in-memory values."""
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self._json_response(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"ok": False, "error": "Content-Type must be application/json"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        if length < 1:
+            self._json_response(HTTPStatus.LENGTH_REQUIRED, {"ok": False, "error": "A shutdown request body is required"})
+            return
+        if length > MAX_SETTINGS_BODY:
+            self._json_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "Shutdown request is too large"})
+            return
+        try:
+            requested = _strict_json_object(self.rfile.read(length))
+        except lib.HandsoffError as exc:
+            self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if not self.server.owned_by_run:
+            self._json_response(HTTPStatus.FORBIDDEN, {"ok": False, "error": "This dashboard is not run-owned"})
+            return
+        if not self.server.shutdown_matches(requested.get("run_token"), requested.get("root_sha256")):
+            self._json_response(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Ownership mismatch"})
+            return
+        self.server.request_stop()
+        self._json_response(HTTPStatus.OK, {"ok": True, "stopping": True, "port": self.server.server_port})
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
@@ -564,6 +680,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._serve_events()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
+            return
+        if path == "/api/ownership":
+            self._json_response(HTTPStatus.OK, self.server.ownership_view())
             return
         if path == "/healthz":
             payload = b'{"ok":true}'
@@ -589,6 +708,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if path == "/api/shutdown":
+            self._serve_shutdown()
+            return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
@@ -685,17 +807,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response(HTTPStatus.OK, {"ok": True, **response})
 
 
-def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> int:
-    if host not in {"127.0.0.1", "localhost", "::1"}:
+def _owner_feature(root: Path) -> str | None:
+    """The feature name for the pointer file, or None when there is no
+    readable run yet. Informational only; nothing checks it."""
+    try:
+        cfg = lib.load_config(root)
+        status_file = lib.status_path(root, cfg)
+        if not status_file.exists():
+            return None
+        feature = lib.load_unique_json(status_file).get("feature")
+    except (lib.HandsoffError, OSError):
+        return None
+    return feature if isinstance(feature, str) else None
+
+
+def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+          owned_by_run: bool = False) -> int:
+    if host not in lib.DASHBOARD_LOOPBACK_HOSTS:
         raise lib.HandsoffError("dashboard binds to localhost only; use an authenticated reverse proxy for remote access")
     if not ASSET_ROOT.is_dir():
         raise lib.HandsoffError(f"dashboard assets are missing at {ASSET_ROOT}")
-    server = DashboardServer((host, port), root)
+    # #40: only a server launched with --owned-by-run mints ownership
+    # values; without the flag nothing is written and no release call can
+    # ever target this server.
+    run_token = lib.new_dashboard_run_token() if owned_by_run else None
+    root_sha256 = lib.dashboard_root_sha256(root) if owned_by_run else None
+    server = DashboardServer((host, port), root, run_token=run_token, root_sha256=root_sha256)
     actual_host, actual_port = server.server_address[:2]
     browser_host = "127.0.0.1" if actual_host in {"0.0.0.0", "::"} else actual_host
     url = f"http://{browser_host}:{actual_port}/"
     print(f"HANDSOFF_DASHBOARD: {url}")
     print(f"PROJECT_ROOT: {root}")
+    if owned_by_run:
+        owner_path = lib.write_dashboard_owner(
+            root, pid=os.getpid(), host=host, port=actual_port, run_token=run_token,
+            root_sha256=root_sha256, feature=_owner_feature(root),
+        )
+        print(f"HANDSOFF_DASHBOARD_OWNER: {owner_path}")
     print("Press Ctrl-C to stop.")
     if open_browser:
         threading.Timer(0.25, lambda: webbrowser.open(url)).start()
@@ -705,6 +853,13 @@ def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: b
         print("\nHANDSOFF_DASHBOARD_STOPPED")
     finally:
         server.server_close()
+        if owned_by_run:
+            # Only while the file still carries this server's token; a
+            # different token means a newer server on this root owns it.
+            try:
+                lib.remove_dashboard_owner_if_token(root, run_token)
+            except OSError:
+                pass
     return 0
 
 
@@ -714,9 +869,12 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--owned-by-run", action="store_true",
+                        help="mark this server as owned by the current run so completion releases its port")
     args = parser.parse_args()
     try:
-        return serve(lib.resolve_root(args.root), args.host, args.port, not args.no_open)
+        return serve(lib.resolve_root(args.root), args.host, args.port, not args.no_open,
+                     owned_by_run=args.owned_by_run)
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}")
         return 1

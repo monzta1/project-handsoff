@@ -94,8 +94,10 @@ def main() -> int:
         # its pristine template state) -- this script shouldn't assume that
         # and break if the source ever legitimately configures commands.
         toml = target / "handsoff.toml"
-        toml_text, n = re.subn(r"^commands\s*=\s*\[.*\]$", 'commands = ["true"]',
-                                toml.read_text(), count=1, flags=re.MULTILINE)
+        # DOTALL with a non-greedy body: the source repo's own self-hosting
+        # config spans the array over several lines, one command per line.
+        toml_text, n = re.subn(r"^commands\s*=\s*\[.*?\]$", 'commands = ["true"]',
+                                toml.read_text(), count=1, flags=re.MULTILINE | re.DOTALL)
         check(n == 1, "could not locate a commands = [...] line in the drop-in copy's handsoff.toml")
         toml.write_text(toml_text)
 

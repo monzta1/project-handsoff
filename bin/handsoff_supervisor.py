@@ -135,6 +135,7 @@ def cmd_init(args) -> int:
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
             "requires_design_approval": True, "design_approved": None,
             "requires_design_review": True, "design_review": None,
+            "design_review_attempts": 0, "design_review_authorization": None,
             "review": None, "live_verification_id": None, "original_symptom_evidence_id": None,
             "verification_head": "GENESIS",
             "requirement_coverage": {"passing": 0, "failing": 1, "not_tested": 0, "blocked": 0,
@@ -163,6 +164,9 @@ def cmd_status(args) -> int:
                                     verification_problems=verification_problems)
         warning = lib.stall_warning(status, cfg)
         activity = lib.activity_note(status, cfg)
+        live = lib.live_status(status, cfg, root)
+        budget = lib.design_review_budget(status, cfg)
+        reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
         log_problems = lib.verify_event_log(root, cfg)
     print(__import__("json").dumps({
         "root": str(root), "feature": status.get("feature"), "phase": status.get("phase"),
@@ -170,11 +174,14 @@ def cmd_status(args) -> int:
         "status": status.get("status"), "next_action": status.get("next_action"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
         "design_review": status.get("design_review"),
+        "design_review_attempts": budget["attempts"], "design_review_budget": budget,
+        "design_reviewer_selection": reviewer_selection,
         "reviewed_by": status.get("reviewed_by"),
         "live_verification_id": status.get("live_verification_id"),
         "verification_runs": len(verifications),
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
-        "stall_warning": warning, "activity_note": activity,
+        "stall_warning": warning, "activity_note": activity, "live": live,
+        "crew": lib.crew_view(cfg),
         "event_log_intact": not log_problems, "event_log_problems": log_problems,
     }, indent=2))
     return 1 if errors or log_problems else 0
@@ -349,8 +356,34 @@ def cmd_advance(args) -> int:
                 print(f"HANDSOFF_ARCHIVED: {archive_path}")
             except OSError as exc:
                 print(f"HANDSOFF_ARCHIVE_FAILED (run still completed successfully): {exc}")
+    if args.phase == 8 and proposed.get("status") == "complete":
+        # #40: outside the project lock on purpose. The dashboard's own
+        # event stream takes that lock every 0.2 s, so holding it here
+        # would keep the server from ever noticing the stop request.
+        _release_run_dashboard(root, cfg)
     print("SHIP_FEATURE_ADVANCED")
     return 0
+
+
+def _release_run_dashboard(root, cfg) -> None:
+    """Release the dashboard this run owns (#40), if any, and log what
+    happened. Like the archive step, a failure here is reported and never
+    turns an already-committed completion into a failed advance."""
+    try:
+        release = lib.release_run_dashboard(root)
+        with lib.project_lock(root):
+            if release.get("released"):
+                lib.commit(root, cfg, event_kind="dashboard_released",
+                          event_message=f"Run-owned dashboard on port {release.get('port')} released",
+                          port=release.get("port"), pid=release.get("pid"), reason=release.get("reason"))
+                print(f"HANDSOFF_DASHBOARD_RELEASED: port {release.get('port')}")
+            else:
+                lib.commit(root, cfg, event_kind="dashboard_release_skipped",
+                          event_message=f"Run-owned dashboard release skipped: {release.get('reason')}",
+                          reason=release.get("reason"))
+                print(f"HANDSOFF_DASHBOARD_RELEASE_SKIPPED: {release.get('reason')}")
+    except (lib.HandsoffError, OSError) as exc:
+        print(f"HANDSOFF_DASHBOARD_RELEASE_FAILED (run still completed successfully): {exc}")
 
 
 def cmd_deployment_gate(args) -> int:
@@ -692,6 +725,10 @@ def cmd_record_design_review(args) -> int:
     if args.by.strip().casefold() == args.architect.strip().casefold():
         print("SHIP_FEATURE_BLOCKED: design reviewer must differ from the architect, no self-review")
         return 1
+    structural_blocker = bool(getattr(args, "structural_blocker", False))
+    if structural_blocker and not args.request_changes:
+        print("SHIP_FEATURE_BLOCKED: --structural-blocker is only valid with --request-changes")
+        return 1
 
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -714,18 +751,75 @@ def cmd_record_design_review(args) -> int:
                   "criterion; author a real criterion before design review")
             return 1
 
+        # #35: every record, approve or request-changes, is one attempt
+        # against the autonomous budget; past it the Pilot authorizes one
+        # attempt at a time. The refusal names the exact command.
+        budget = lib.design_review_budget(status, cfg)
+        if budget["exhausted"]:
+            print(f"SHIP_FEATURE_BLOCKED: {lib.design_review_budget_exhausted_message(budget)}")
+            return 1
+
+        # #36: bounded findings carry ids F<attempt>.<n>; the record also
+        # binds the commit it was made at so a later packet can tell
+        # whether the repository moved underneath the prior review.
+        try:
+            findings = lib.validate_design_review_findings(args.finding, budget["next_attempt"])
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        try:
+            head = lib.repository_snapshot(root)["head"]
+        except lib.HandsoffError:
+            head = None
+
+        # #37: which reviewer tier this attempt was made under, selected by
+        # the same pure precedence a managed launch uses (attempt number,
+        # follow-up config, open escalation, last structural blocker,
+        # criteria structure), from the state as it stands right now.
+        tier, tier_reason = lib.select_design_reviewer_tier(cfg, status, acceptance)
+        try:
+            tier_profile = lib.design_reviewer_tier_profile(cfg, tier, require_available=False)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        reviewer_profile = {"adapter": tier_profile["adapter"], "model": tier_profile["model"],
+                            "tier": tier, "reason": tier_reason}
+
+        now = datetime.now(timezone.utc).isoformat()
         decision = "approved" if args.approve else "changes_requested"
         status["design_review"] = {
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at": now,
             "by": args.by.strip(),
             "architect": args.architect.strip(),
             "decision": decision,
             "summary": args.summary.strip(),
             "design_hash": lib.design_hash(criteria),
             "config_hash": lib.config_hash(cfg),
+            "attempt": budget["next_attempt"],
+            "head": head,
+            "findings": findings,
+            "structural_blocker": structural_blocker,
+            "reviewer_profile": reviewer_profile,
         }
+        lib.append_design_review_history(
+            status, lib.design_review_history_entry(status["design_review"], criteria,
+                                                    structural_blocker=structural_blocker))
         status.pop("authorization_hold", None)
-        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        status["updated_at"] = now
+        status["design_review_attempts"] = budget["next_attempt"]
+        # An unconsumed authorization is spent by this record whether a
+        # managed session reserved it (launch_session_id set, kept as the
+        # audit trail of which session performed the attempt) or a human
+        # recorded the review directly (launch_session_id null).
+        authorized = budget["authorized"]
+        if authorized:
+            status["design_review_authorization"]["consumed_at"] = now
+        # #37: a Pilot escalation buys exactly one primary-tier attempt; this
+        # record is that attempt, so the escalation is spent here.
+        escalation = status.get("design_reviewer_escalation")
+        escalation_consumed = isinstance(escalation, dict) and escalation.get("consumed_at") is None
+        if escalation_consumed:
+            status["design_reviewer_escalation"]["consumed_at"] = now
         if decision == "approved":
             if not lib._design_errors(status, acceptance, cfg):
                 status["status"] = "in_progress"
@@ -741,10 +835,202 @@ def cmd_record_design_review(args) -> int:
             status["next_action"] = "Architect revises the design, starts a new design round, and requests review again."
             event_kind = "design_review_changes_requested"
             message = f"Independent design review requested changes: {args.summary.strip()}"
-        lib.commit(root, cfg, status=status, event_kind=event_kind, event_message=message,
-                  by=args.by.strip(), architect=args.architect.strip(), decision=decision,
-                  design_hash=status["design_review"]["design_hash"])
+        review_event = {
+            "kind": event_kind, "message": message,
+            "by": args.by.strip(), "architect": args.architect.strip(), "decision": decision,
+            "design_hash": status["design_review"]["design_hash"],
+            "design_review_attempt": budget["next_attempt"],
+            "design_review_limit": budget["limit"],
+            "authorized": authorized,
+            "head": head,
+            "findings": len(findings),
+            "structural_blocker": structural_blocker,
+            "reviewer_tier": tier,
+            "reviewer_selection_reason": tier_reason,
+            "reviewer_profile": {"adapter": reviewer_profile["adapter"], "model": reviewer_profile["model"]},
+            "escalation_consumed": escalation_consumed,
+        }
+        after = lib.design_review_budget(status, cfg)
+        if decision == "changes_requested" and after["exhausted"]:
+            # The run cannot request another review on its own. Phase 3
+            # stays closed (the gate still sees changes_requested); the
+            # Pilot's command is the next action, verbatim, so status and
+            # the Mission Control banner both carry it.
+            status["status"] = "blocked"
+            status["next_action"] = lib.design_review_budget_exhausted_message(after)
+            lib.commit(root, cfg, status=status, extra_events=[review_event],
+                      event_kind="design_review_budget_exhausted",
+                      event_message=f"Design review budget exhausted ({after['attempts']}/{after['limit']}); "
+                                    "Pilot authorization required for any further attempt",
+                      design_review_attempts=after["attempts"], design_review_limit=after["limit"])
+        else:
+            fields = {k: v for k, v in review_event.items() if k not in ("kind", "message")}
+            lib.commit(root, cfg, status=status, event_kind=event_kind, event_message=message, **fields)
     print("DESIGN_REVIEW_APPROVED" if args.approve else "DESIGN_CHANGES_REQUESTED")
+    return 0
+
+
+def cmd_design_review_packet(args) -> int:
+    """#36: generate the delta review packet for the next design-review
+    attempt from the most recent recorded review. Refused before any review
+    (the first review gets the full task) and outside Phase 2. Every
+    disposition refusal names the offending value and writes nothing."""
+    json_module = __import__("json")
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, records, problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if status.get("phase_number") != 2:
+            print("SHIP_FEATURE_BLOCKED: a delta review packet can only be generated in Phase 2")
+            return 1
+        budget = lib.design_review_budget(status, cfg)
+        if budget["attempts"] == 0:
+            print("SHIP_FEATURE_BLOCKED: no design review has been recorded yet; the first review "
+                  "receives the full task, not a delta packet")
+            return 1
+        if not status.get("design_review_history"):
+            print("SHIP_FEATURE_BLOCKED: no design review history is recorded; record-design-review "
+                  "must run on this version before a delta packet can be built")
+            return 1
+        try:
+            dispositions = lib.parse_design_review_dispositions(
+                args.disposition, lib.latest_design_review_findings(status))
+            packet = lib.build_design_review_packet(root, cfg, status, acceptance, dispositions)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        size = lib.design_review_packet_bytes(packet)
+        status["design_review_packet"] = packet
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        delta = packet["criteria_delta"]
+        lib.commit(
+            root, cfg, status=status, event_kind="design_review_packet_generated",
+            event_message=f"Delta review packet {packet['packet_id']} generated for design-review "
+                          f"attempt {packet['attempt']}",
+            by=args.by.strip(), packet_id=packet["packet_id"], attempt=packet["attempt"],
+            previous_attempt=packet["previous_attempt"], design_hash=packet["design_hash"],
+            previous_design_hash=packet["previous_design_hash"], head=packet["repository"]["head"],
+            previous_head=packet["previous_head"], bytes=size, stale=packet["stale"],
+            truncated=bool(packet.get("truncated")),
+            counts={
+                "findings": len(packet["findings"]),
+                **{name: len(ids) for name, ids in packet["dispositions"].items()},
+                "new_findings": len(packet["new_findings_since"]),
+                "criteria_added": len(delta["added"]), "criteria_removed": len(delta["removed"]),
+                "criteria_changed": len(delta["changed"]),
+                "criteria_unchanged": (len(delta["unchanged"]) if "unchanged" in delta
+                                       else delta.get("unchanged_count", 0)),
+                "evidence": len(packet["evidence"]),
+                "files_changed": (len(packet["files_changed_since_previous"])
+                                  if packet["files_changed_since_previous"] is not None else None),
+            },
+        )
+    print(f"DESIGN_REVIEW_PACKET_GENERATED: {packet['packet_id']} attempt {packet['attempt']} ({size} bytes)")
+    print(json_module.dumps(packet, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_design_review_authorize(args) -> int:
+    """#35: the Pilot permits exactly one more design-review attempt past
+    the autonomous budget. Human-only (the broker refuses it). Refuses
+    while the budget is not exhausted (nothing to authorize) and while an
+    earlier authorization is still unconsumed (one at a time). Never
+    touches design_review_attempts: only a recorded review counts."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        budget = lib.design_review_budget(status, cfg)
+        if budget["authorized"]:
+            print("SHIP_FEATURE_BLOCKED: an unconsumed design-review authorization already exists "
+                  f"(attempt {status['design_review_authorization']['attempt_permitted']}); "
+                  "record-design-review must consume it before another can be granted")
+            return 1
+        if budget["attempts"] < budget["limit"]:
+            print(f"SHIP_FEATURE_BLOCKED: design review budget is not exhausted "
+                  f"({budget['attempts']}/{budget['limit']}); nothing to authorize")
+            return 1
+        now = datetime.now(timezone.utc).isoformat()
+        note = args.note.strip() if args.note and args.note.strip() else None
+        status["design_review_authorization"] = {
+            "by": args.by.strip(), "at": now, "note": note,
+            "attempt_permitted": budget["next_attempt"],
+            "launch_session_id": None, "consumed_at": None,
+        }
+        status["status"] = "in_progress"
+        status["next_action"] = f"Launch the authorized design-review attempt {budget['next_attempt']}"
+        status["updated_at"] = now
+        lib.commit(root, cfg, status=status, event_kind="design_review_attempt_authorized",
+                  event_message=note or f"Pilot authorized design-review attempt {budget['next_attempt']}",
+                  by=args.by.strip(), attempt_permitted=budget["next_attempt"],
+                  design_review_attempts=budget["attempts"], design_review_limit=budget["limit"])
+    print(f"DESIGN_REVIEW_ATTEMPT_AUTHORIZED: {budget['next_attempt']}")
+    return 0
+
+
+def cmd_design_review_escalate(args) -> int:
+    """#37: the Pilot forces the NEXT design-review attempt onto the primary
+    reviewer tier regardless of what the delta check would select. Human-only
+    (the broker refuses it). Refused outside Phase 2 and while an earlier
+    escalation is still unconsumed (one at a time); consumed by the next
+    record-design-review. Never touches design_review_attempts."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, acceptance, verifications, verification_problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if status.get("phase_number") != 2:
+            print("SHIP_FEATURE_BLOCKED: a design reviewer escalation can only be recorded in Phase 2")
+            return 1
+        escalation = status.get("design_reviewer_escalation")
+        if isinstance(escalation, dict) and escalation.get("consumed_at") is None:
+            print("SHIP_FEATURE_BLOCKED: an unconsumed design reviewer escalation already exists "
+                  f"(by {escalation['by']} at {escalation['at']}); record-design-review must consume "
+                  "it before another can be recorded")
+            return 1
+        now = datetime.now(timezone.utc).isoformat()
+        note = args.note.strip() if args.note and args.note.strip() else None
+        status["design_reviewer_escalation"] = {
+            "by": args.by.strip(), "at": now, "note": note, "consumed_at": None,
+        }
+        status["updated_at"] = now
+        budget = lib.design_review_budget(status, cfg)
+        lib.commit(root, cfg, status=status, event_kind="design_reviewer_escalated",
+                  event_message=note or f"Pilot escalated design-review attempt {budget['next_attempt']} "
+                                        "to the primary reviewer tier",
+                  by=args.by.strip(), tier="primary", reason="pilot_escalation",
+                  design_review_attempt=budget["next_attempt"],
+                  design_review_attempts=budget["attempts"])
+    print(f"DESIGN_REVIEWER_ESCALATED: attempt {budget['next_attempt']} will use the primary reviewer tier")
     return 0
 
 
@@ -1095,7 +1381,11 @@ def cmd_human_pause_start(args) -> int:
     the state machine). Deliberately does not touch last_heartbeat_at:
     nothing is actively running here, so there is nothing alive to
     declare -- that is the whole point of distinguishing this from a
-    background wait."""
+    background wait. The pause is persisted as a durable `human_pause`
+    record on status instead (a heartbeat would expire after
+    stall_minutes and the pause would read as abandoned again), which is
+    what suppresses stall_warning and feeds activity_note while it is
+    open. updated_at is left alone so the pause length stays visible."""
     if not args.by or not args.by.strip():
         print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
         return 1
@@ -1114,8 +1404,13 @@ def cmd_human_pause_start(args) -> int:
         if _most_recent_kind(events, {"human_pause_started", "human_pause_ended"}) == "human_pause_started":
             print("SHIP_FEATURE_BLOCKED: a human pause is already open; call human-pause-end first")
             return 1
-        message = args.note.strip() if args.note and args.note.strip() else "Human input pause started"
-        lib.commit(root, cfg, event_kind="human_pause_started", event_message=message, by=args.by)
+        note = args.note.strip() if args.note and args.note.strip() else None
+        message = note or "Human input pause started"
+        status["human_pause"] = {
+            "by": args.by.strip(), "since": datetime.now(timezone.utc).isoformat(), "note": note,
+        }
+        lib.commit(root, cfg, status=status,
+                  event_kind="human_pause_started", event_message=message, by=args.by)
     print("HUMAN_PAUSE_STARTED")
     return 0
 
@@ -1139,8 +1434,10 @@ def cmd_human_pause_end(args) -> int:
         if _most_recent_kind(events, {"human_pause_started", "human_pause_ended"}) != "human_pause_started":
             print("SHIP_FEATURE_BLOCKED: no open human pause to end")
             return 1
+        status["human_pause"] = None
         message = args.note.strip() if args.note and args.note.strip() else "Human input pause ended"
-        lib.commit(root, cfg, event_kind="human_pause_ended", event_message=message, by=args.by)
+        lib.commit(root, cfg, status=status,
+                  event_kind="human_pause_ended", event_message=message, by=args.by)
     print("HUMAN_PAUSE_ENDED")
     return 0
 
@@ -1168,6 +1465,43 @@ def cmd_design_timing(args) -> int:
     summary = lib.summarize_design_timing(events)
     print(json_module.dumps(summary, indent=2))
     return 0
+
+
+def cmd_design_evidence(args) -> int:
+    """#38: `design-evidence run` executes the configured [[design_evidence]]
+    measurements that are missing, stale, or failed (or all of them with
+    --force) and caches their bounded output in handsoff-design-evidence.json;
+    `design-evidence show` prints the state view the dashboard and the role
+    prompts consume. Neither touches status or acceptance; `run` appends a
+    hashes-only `design_evidence_recorded` event per executed command."""
+    json_module = __import__("json")
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    if args.action == "show":
+        print(json_module.dumps({"artifacts": lib.design_evidence_view(root, cfg)}, indent=2))
+        return 0
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    if not cfg.get("design_evidence"):
+        print("SHIP_FEATURE_NO_DESIGN_EVIDENCE_CONFIGURED: add [[design_evidence]] tables to handsoff.toml")
+        return 1
+    with lib.project_lock(root):
+        status, acceptance, existing_records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, existing_records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+    # The commands run outside the lock (they may be slow); run_design_evidence
+    # takes the lock itself around the store write and the event commit.
+    records = lib.run_design_evidence(root, cfg, ids=args.id or None, by=args.by, force=args.force)
+    summary = [{
+        "id": r["id"], "reused": r["reused"], "exit_code": r["exit_code"], "input_hash": r["input_hash"],
+        "output_sha256": r["output_sha256"], "output_bytes": r["output_bytes"], "truncated": r["truncated"],
+        "matched_files": r["matched_files"], "head": r["head"], "at": r["at"],
+    } for r in records]
+    ok = all(r["exit_code"] == 0 for r in records)
+    print(json_module.dumps({"ok": ok, "artifacts": summary}, indent=2))
+    return 0 if ok else 1
 
 
 def cmd_verify_log(args) -> int:
@@ -1320,7 +1654,8 @@ def cmd_dashboard(args) -> int:
     """Launch the local, read-only Mission Control dashboard."""
     root = lib.resolve_root(args.root)
     from handsoff_dashboard import serve
-    return serve(root, host=args.host, port=args.port, open_browser=not args.no_open)
+    return serve(root, host=args.host, port=args.port, open_browser=not args.no_open,
+                 owned_by_run=bool(getattr(args, "owned_by_run", False)))
 
 
 def main() -> int:
@@ -1331,7 +1666,8 @@ def main() -> int:
     init = sub.add_parser("init")
     init.add_argument("feature")
 
-    sub.add_parser("status")
+    sub.add_parser("status", help="print run state as JSON, including the requested crew per role "
+                                  "with its source (explicit or recommended) and adapter availability")
     sub.add_parser("validate")
     sub.add_parser("verify-log")
 
@@ -1342,6 +1678,11 @@ def main() -> int:
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--no-open", action="store_true", help="serve without opening a browser")
+    dashboard.add_argument("--owned-by-run", action="store_true",
+                           help="mark this server as owned by the current run: it writes "
+                                ".handsoff-dashboard-owner.json and `advance 8` with status complete "
+                                "shuts it down so the port is free for the next run (the persistent "
+                                "LaunchAgent and manual launches leave this off)")
 
     verify = sub.add_parser("verify")
     verify.add_argument("--criterion", action="append", required=True,
@@ -1378,6 +1719,42 @@ def main() -> int:
     design_review_decision = design_review.add_mutually_exclusive_group(required=True)
     design_review_decision.add_argument("--approve", action="store_true")
     design_review_decision.add_argument("--request-changes", action="store_true")
+    design_review.add_argument("--finding", action="append", default=None,
+                               help="one concrete finding (at most 512 characters); repeat for more, at most 32; "
+                               "each gets the id F<attempt>.<n> that a later design-review-packet "
+                               "disposition refers to")
+    design_review.add_argument("--structural-blocker", action="store_true",
+                               help="only with --request-changes: the design needs structural rework, so the "
+                               "next attempt goes to the primary reviewer tier even when a follow-up "
+                               "reviewer profile is configured (#37)")
+
+    design_review_packet = sub.add_parser(
+        "design-review-packet",
+        help="generate the delta review packet for the next design-review attempt from the most recent "
+             "recorded review (#36): criteria delta, dispositioned prior findings, evidence states, and "
+             "repository identity; refused before the first review, which gets the full task")
+    design_review_packet.add_argument("--by", required=True, help="identity generating the packet")
+    design_review_packet.add_argument(
+        "--disposition", action="append", default=None, metavar="ID=resolved|rejected|unresolved[:note]",
+        help="disposition of one prior finding by id; rejected requires a note; an omitted finding "
+             "defaults to unresolved")
+
+    design_review_authorize = sub.add_parser(
+        "design-review-authorize",
+        help="Pilot-only: permit exactly one more design-review attempt once the autonomous budget "
+             "([workflow] max_autonomous_design_reviews) is exhausted; consumed by the next "
+             "record-design-review, whether a managed reviewer session or a human recorded it")
+    design_review_authorize.add_argument("--by", required=True, help="the Pilot's identity")
+    design_review_authorize.add_argument("--note", default=None,
+                                         help="optional one-line reason, recorded as the event message")
+
+    design_review_escalate = sub.add_parser(
+        "design-review-escalate",
+        help="Pilot-only: force the next design-review attempt onto the primary reviewer tier instead of "
+             "the configured follow-up profile (#37); consumed by the next record-design-review")
+    design_review_escalate.add_argument("--by", required=True, help="the Pilot's identity")
+    design_review_escalate.add_argument("--note", default=None,
+                                        help="optional one-line reason, recorded as the event message")
 
     review = sub.add_parser("record-review")
     review.add_argument("--by", required=True)
@@ -1418,6 +1795,21 @@ def main() -> int:
     timing.add_argument("--events-file", default=None,
                         help="path to a handsoff-events.jsonl to summarize instead of the live project's own "
                         "(e.g. an archived run under .handsoff-archive/<run>/handsoff-events.jsonl)")
+
+    design_evidence = sub.add_parser(
+        "design-evidence",
+        help="run or show the cached, hash-bound [[design_evidence]] measurements (#38): a "
+             "configured command runs once and is reused until its command or declared inputs change",
+    )
+    design_evidence_actions = design_evidence.add_subparsers(dest="action", required=True)
+    design_evidence_run = design_evidence_actions.add_parser(
+        "run", help="execute every missing, stale, or failed measurement and cache its bounded output")
+    design_evidence_run.add_argument("--id", action="append", default=None,
+                                     help="artifact id to run; repeat for more than one (default: all)")
+    design_evidence_run.add_argument("--by", required=True)
+    design_evidence_run.add_argument("--force", action="store_true",
+                                     help="rerun even when the cached record is current (the reviewer's challenge path)")
+    design_evidence_actions.add_parser("show", help="print every artifact's state as JSON, never its output")
 
     criterion = sub.add_parser("criterion-update")
     criterion.add_argument("criterion")
@@ -1473,6 +1865,9 @@ def main() -> int:
         "record-symptom-resolved": cmd_record_symptom,
         "design-approve": cmd_design_approve,
         "record-design-review": cmd_record_design_review,
+        "design-review-packet": cmd_design_review_packet,
+        "design-review-authorize": cmd_design_review_authorize,
+        "design-review-escalate": cmd_design_review_escalate,
         "record-review": cmd_record_review,
         "verify-live": cmd_verify_live,
         "heartbeat": cmd_heartbeat,
@@ -1481,6 +1876,7 @@ def main() -> int:
         "human-pause-start": cmd_human_pause_start,
         "human-pause-end": cmd_human_pause_end,
         "design-timing": cmd_design_timing,
+        "design-evidence": cmd_design_evidence,
         "criterion-update": cmd_criterion_update,
         "criterion-add": cmd_criterion_add,
         "criterion-remove": cmd_criterion_remove,

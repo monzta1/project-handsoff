@@ -25,10 +25,13 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from copy import deepcopy
@@ -80,7 +83,109 @@ PLACEHOLDER_REQUIREMENT = "State the exact observable outcome."
 PLACEHOLDER_TESTS = ["name_or_path_of_test"]
 MAX_FALLBACK_PROFILES = 8
 DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
+# #35: how many design-review attempts (approve or request-changes, every
+# record-design-review counts) a run may consume on its own before the
+# Pilot has to authorize each further attempt one at a time.
+DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS = 2
+DESIGN_REVIEW_AUTHORIZATION_COMMAND = "handsoff_supervisor.py design-review-authorize --by <pilot>"
 TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
+#: #38: cached, hash-bound design evidence. The side file is generated
+#: state (gitignored), never a ledger: it holds the bounded output of
+#: trusted configured commands, and the event log only ever carries hashes.
+DESIGN_EVIDENCE_FILE = "handsoff-design-evidence.json"
+DESIGN_EVIDENCE_ID_PATTERN = re.compile(r"^[a-z0-9-]{1,64}$")
+MAX_DESIGN_EVIDENCE_ENTRIES = 16
+MAX_DESIGN_EVIDENCE_OUTPUT_BYTES = 8192
+DESIGN_EVIDENCE_STATES = ("current", "stale", "failed", "missing")
+#: #33: liveness beacon written by `handsoff_agent.execute_launch` while a
+#: managed child runs. Generated state (gitignored), never hashed, never
+#: read by any gate: identifiers, integers, and timestamps only. The
+#: ledger-bound session record stays the authority on lifecycle; the beacon
+#: only says whether the process that owns that session is still signalling.
+LIVE_BEACON_FILE = ".handsoff-live.json"
+LIVE_BEACON_KEYS = ("session_id", "role", "state", "pid", "beacon_at", "ended_at", "exit_code")
+LIVE_BEACON_INTERVAL_SECONDS = 5.0
+LIVE_BEACON_FRESH_SECONDS = 15.0
+LIVE_STATES = ("idle", "started", "running", "waiting", "stalled", "stopped", "failed", "complete")
+#: #40: a dashboard launched with `--owned-by-run` writes this pointer file
+#: in the project root so run completion can find and release it. It is
+#: generated state (gitignored), a pointer and never the authority: the
+#: server keeps its own run_token and root_sha256 in memory and answers
+#: `/api/ownership` from those, so a stale or hand-edited file can only
+#: ever get itself removed, never get a foreign process shut down.
+DASHBOARD_OWNER_FILE = ".handsoff-dashboard-owner.json"
+DASHBOARD_OWNER = "ship-feature"
+DASHBOARD_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+# #36: delta review packets. A recorded review may carry bounded findings;
+# every record appends a bounded history entry; a packet is the sorted,
+# canonical, size-capped delta a follow-up reviewer receives instead of
+# the full task.
+MAX_DESIGN_REVIEW_FINDINGS = 32
+MAX_DESIGN_REVIEW_FINDING_LENGTH = 512
+MAX_DESIGN_REVIEW_HISTORY = 8
+MAX_DESIGN_REVIEW_PACKET_BYTES = 65536
+MAX_DESIGN_REVIEW_PACKET_FILES = 200
+DESIGN_REVIEW_PACKET_TRIMMED_TEXT_LENGTH = 256
+DESIGN_REVIEW_DISPOSITIONS = ("resolved", "rejected", "unresolved")
+DESIGN_REVIEW_FINDING_ID_PATTERN = re.compile(r"^F[1-9][0-9]*\.[1-9][0-9]*$")
+DESIGN_REVIEW_PACKET_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+DESIGN_REVIEW_HISTORY_FIELDS = (
+    "attempt", "decision", "by", "design_hash", "head", "criteria_ids", "criterion_hashes",
+    "structural_blocker", "findings",
+)
+DESIGN_REVIEW_PACKET_INSTRUCTIONS = (
+    "Verify the revision: changed criteria, unresolved and rejected findings, new material. "
+    "Repository access remains available to challenge any omission or stale fact."
+)
+DESIGN_EVIDENCE_RECORD_FIELDS = (
+    "id", "command", "command_sha256", "identity_sha256", "inputs", "input_hash", "matched_files",
+    "exit_code", "output", "output_sha256", "output_bytes", "truncated", "at", "by", "head", "branch", "dirty",
+)
+
+#: #39: the crew a role gets when handsoff.toml does not name one (or still
+#: carries the legacy "configure-me" placeholder). Architect, Supervisor,
+#: and Implementer share one premium reasoning profile: design needs the
+#: strongest reasoning available, and the operator keeps the same Opus
+#: profile for orchestration and implementation so one run has one
+#: consistent voice. The Reviewer runs on an independent provider family
+#: so the critique never comes from the model being critiqued. An explicit
+#: "auto" is NOT part of this table: it keeps the older first-installed
+#: auto-detect path (DEFAULT_AGENT_PREFERENCE) on purpose.
+RECOMMENDED_CREW = {
+    "architect": {"adapter": "claude", "model": "claude-opus-5"},
+    "supervisor": {"adapter": "claude", "model": "claude-opus-5"},
+    "implementer": {"adapter": "claude", "model": "claude-opus-5"},
+    "reviewer": {"adapter": "codex", "model": "default"},
+}
+#: Where a role's adapter or model came from: named in handsoff.toml
+#: ("explicit"), taken from RECOMMENDED_CREW because the key was absent or
+#: the placeholder ("recommended"), or the runner default because the
+#: adapter was overridden but no model was named, so the recommended model
+#: for the other adapter would be the wrong thing to pass ("runner_default").
+PROFILE_SOURCES = ("explicit", "recommended", "runner_default")
+RECOMMENDED_PROFILE_SOURCE = "recommended"
+EXPLICIT_PROFILE_SOURCE = "explicit"
+RUNNER_DEFAULT_PROFILE_SOURCE = "runner_default"
+#: #37: the optional economical follow-up reviewer profile. Both keys
+#: ([agents].reviewer_followup and [models].reviewer_followup) present
+#: enables tiering; both absent reproduces the single-profile behavior
+#: exactly; exactly one present is a config error. It is a cost knob, not
+#: a gate, so it is deliberately NOT in GOVERNANCE_CONFIG_KEYS.
+FOLLOWUP_REVIEWER_KEY = "reviewer_followup"
+DESIGN_REVIEWER_TIERS = ("primary", "followup")
+#: Selection precedence, evaluated in this order; the first match is the
+#: reason. Only `delta_check` selects the follow-up tier.
+DESIGN_REVIEWER_SELECTION_REASONS = (
+    "first_review", "no_followup_configured", "pilot_escalation",
+    "structural_blocker", "criteria_structure_changed", "delta_check",
+)
+DESIGN_REVIEWER_ESCALATION_FIELDS = ("by", "at", "note", "consumed_at")
+DESIGN_REVIEWER_PROFILE_FIELDS = ("adapter", "model", "tier", "reason")
+#: What crew_view's `available` actually proves, and nothing more: the
+#: adapter executable was found on PATH. Authentication, entitlement,
+#: network access, and whether the model id is valid for that adapter are
+#: never checked offline, so the view names its scope instead of implying it.
+CREW_AVAILABILITY_SCOPE = "executable discovery only"
 
 DEFAULT_CONFIG = {
     "status_file": "handsoff-status.json",
@@ -90,24 +195,16 @@ DEFAULT_CONFIG = {
     "max_design_rounds": 3,
     "max_review_rounds": 3,
     "stall_minutes": 10,
+    "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
     "require_live_verification": True,
     "deployment_requires_explicit_approval": True,
     "check_commands": [],
     "live_check_commands": [],
     "check_timeout_seconds": 600,
     "tickets": [],
-    "agents": {
-        "architect": "auto",
-        "supervisor": "auto",
-        "implementer": "auto",
-        "reviewer": "auto",
-    },
-    "models": {
-        "architect": "default",
-        "supervisor": "default",
-        "implementer": "default",
-        "reviewer": "default",
-    },
+    "design_evidence": [],
+    "agents": {role: profile["adapter"] for role, profile in RECOMMENDED_CREW.items()},
+    "models": {role: profile["model"] for role, profile in RECOMMENDED_CREW.items()},
     "fallbacks": {
         "architect": [],
         "supervisor": [],
@@ -115,6 +212,7 @@ DEFAULT_CONFIG = {
         "reviewer": [],
     },
     "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
+    "reviewer_followup": None,
 }
 
 AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
@@ -136,10 +234,20 @@ AGENT_SESSION_TERMINAL_STATES = {
     "completed", "failed", "timed_out", "cancelled", "failed_to_start",
 }
 AGENT_SESSION_STATES = AGENT_SESSION_LIVE_STATES | AGENT_SESSION_TERMINAL_STATES
-AGENT_SESSION_RESOLUTION_SOURCES = {"configured", "auto_detected", "legacy_auto_detected", "fallback"}
+AGENT_SESSION_RESOLUTION_SOURCES = {
+    "configured", "recommended", "auto_detected", "legacy_auto_detected", "fallback",
+}
+# #36: packet_id and design_hash are written on every new session (null
+# unless a Phase-2 reviewer was launched with a delta packet) but stay
+# OPTIONAL on read, so a status.json written before they existed is still
+# valid; when present they must be null or a non-empty string. #37 adds
+# `tier` the same way: null unless a Phase-2 reviewer was launched through
+# the tiered selection, otherwise exactly "primary" or "followup".
+AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier"}
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
+    *AGENT_SESSION_OPTIONAL_FIELDS,
 }
 MAX_AGENT_REPLACEMENTS = 32
 MAX_QUALITY_FINDINGS = 32
@@ -209,6 +317,11 @@ def load_config(root: Path) -> dict:
     cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
+    cfg["design_evidence"] = []
+    cfg["profile_sources"] = {
+        role: {"adapter": RECOMMENDED_PROFILE_SOURCE, "model": RECOMMENDED_PROFILE_SOURCE}
+        for role in AGENT_ROLES
+    }
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -233,7 +346,7 @@ def load_config(root: Path) -> dict:
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
     cfg["verification_log"] = project.get("verification_log", cfg["verification_log"])
-    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes"):
+    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews"):
         value = workflow.get(key, cfg[key])
         if not isinstance(value, int) or isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be an integer")
@@ -243,14 +356,58 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
         cfg[key] = value
+    # #39: a role key absent from the TOML (or still holding the legacy
+    # "configure-me" placeholder) takes the recommended crew profile. Any
+    # explicit value, "auto" included, is kept as written and only ever
+    # affects its own role.
     for role in AGENT_ROLES:
-        value = agents.get(role, cfg["agents"][role])
+        if role not in agents:
+            continue
+        value = agents[role]
         if not isinstance(value, str) or not value.strip():
             raise HandsoffError(f"handsoff.toml: agents.{role} must be a non-empty string")
-        cfg["agents"][role] = value.strip()
+        value = value.strip()
+        if value == LEGACY_UNCONFIGURED_AGENT_ADAPTER:
+            continue
+        cfg["agents"][role] = value
+        cfg["profile_sources"][role]["adapter"] = EXPLICIT_PROFILE_SOURCE
     for role in SELECTABLE_AGENT_ROLES:
-        value = models.get(role, cfg["models"][role])
-        cfg["models"][role] = validate_agent_model(value)
+        if role in models:
+            cfg["models"][role] = validate_agent_model(models[role])
+            cfg["profile_sources"][role]["model"] = EXPLICIT_PROFILE_SOURCE
+        elif cfg["agents"][role] != RECOMMENDED_CREW[role]["adapter"]:
+            # The recommended model belongs to the recommended adapter. With
+            # the adapter overridden (or set to "auto") and no model named,
+            # passing that model id to a different runner would be wrong,
+            # so the runner's own default is used and labelled as such.
+            cfg["models"][role] = DEFAULT_AGENT_MODEL
+            cfg["profile_sources"][role]["model"] = RUNNER_DEFAULT_PROFILE_SOURCE
+    # #37: the follow-up reviewer profile is enabled only by BOTH keys.
+    # Half a profile is refused rather than guessed, and "auto" is not a
+    # profile (the follow-up must be a specific adapter so the independence
+    # check against the architect and implementer means something).
+    followup_adapter = agents.get(FOLLOWUP_REVIEWER_KEY)
+    followup_model = models.get(FOLLOWUP_REVIEWER_KEY)
+    if (followup_adapter is None) != (followup_model is None):
+        raise HandsoffError(
+            f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} and models.{FOLLOWUP_REVIEWER_KEY} "
+            "must be set together (both present enables the follow-up reviewer tier; both absent disables it)"
+        )
+    if followup_adapter is not None:
+        if not isinstance(followup_adapter, str) or not followup_adapter.strip():
+            raise HandsoffError(f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} must be a non-empty string")
+        followup_adapter = followup_adapter.strip()
+        if followup_adapter not in SELECTABLE_AGENT_ADAPTERS:
+            raise HandsoffError(
+                f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} must be exactly 'codex' or 'claude'"
+            )
+        try:
+            followup_model = validate_agent_model(followup_model)
+        except HandsoffError as exc:
+            raise HandsoffError(f"handsoff.toml: models.{FOLLOWUP_REVIEWER_KEY}: {exc}") from exc
+        cfg["reviewer_followup"] = {"adapter": followup_adapter, "model": followup_model}
+    else:
+        cfg["reviewer_followup"] = None
     allowed_fallback_keys = {*SELECTABLE_AGENT_ROLES, "max_failovers_per_role"}
     unknown_fallback_keys = set(fallback_policy) - allowed_fallback_keys
     if unknown_fallback_keys:
@@ -303,6 +460,7 @@ def load_config(root: Path) -> dict:
     if len({ticket["number"] for ticket in normalized_tickets}) != len(normalized_tickets):
         raise HandsoffError("handsoff.toml: ticket numbers must be unique")
     cfg["tickets"] = normalized_tickets
+    cfg["design_evidence"] = _validate_design_evidence_config(raw.get("design_evidence", []))
     resolved_root = root.resolve()
     for key in ("status_file", "acceptance_file", "event_log", "verification_log"):
         value = cfg[key]
@@ -319,7 +477,7 @@ def load_config(root: Path) -> dict:
             raise HandsoffError(
                 f"handsoff.toml: project.{key} resolves outside the project root "
                 f"(a parent directory may be a symlink)") from None
-    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes"):
+    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews"):
         if cfg[key] < 0:
             raise HandsoffError(f"handsoff.toml: {key} must not be negative")
     return cfg
@@ -341,6 +499,49 @@ def _atomic_write_text(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _validate_design_evidence_config(value: object) -> list[dict]:
+    """#38: `[[design_evidence]]` entries, each {id, command, inputs}. An
+    absent section is an empty list and changes nothing. Commands are
+    trusted configuration at the same level as [checks].commands; the
+    input globs are relative to the project root and may not escape it."""
+    if not isinstance(value, list):
+        raise HandsoffError("handsoff.toml: design_evidence must be an array of tables")
+    if len(value) > MAX_DESIGN_EVIDENCE_ENTRIES:
+        raise HandsoffError(
+            f"handsoff.toml: design_evidence may hold at most {MAX_DESIGN_EVIDENCE_ENTRIES} entries"
+        )
+    entries = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise HandsoffError(f"handsoff.toml: design_evidence[{index}] must be a table")
+        unknown = set(entry) - {"id", "command", "inputs"}
+        if unknown:
+            raise HandsoffError(
+                f"handsoff.toml: design_evidence[{index}] has unknown keys: {', '.join(sorted(unknown))}"
+            )
+        artifact_id, command, inputs = entry.get("id"), entry.get("command"), entry.get("inputs")
+        if not isinstance(artifact_id, str) or not DESIGN_EVIDENCE_ID_PATTERN.match(artifact_id):
+            raise HandsoffError(
+                f"handsoff.toml: design_evidence[{index}].id must match [a-z0-9-]{{1,64}}"
+            )
+        if not isinstance(command, str) or not command.strip():
+            raise HandsoffError(f"handsoff.toml: design_evidence[{index}].command must be a non-empty string")
+        if not isinstance(inputs, list) or not inputs \
+                or not all(isinstance(pattern, str) and pattern.strip() for pattern in inputs):
+            raise HandsoffError(
+                f"handsoff.toml: design_evidence[{index}].inputs must be a non-empty array of glob strings"
+            )
+        for pattern in inputs:
+            if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+                raise HandsoffError(
+                    f"handsoff.toml: design_evidence[{index}].inputs must be relative globs inside the project root"
+                )
+        entries.append({"id": artifact_id, "command": command.strip(), "inputs": [p.strip() for p in inputs]})
+    if len({entry["id"] for entry in entries}) != len(entries):
+        raise HandsoffError("handsoff.toml: design_evidence ids must be unique")
+    return entries
 
 
 def validate_agent_model(value: object) -> str:
@@ -404,6 +605,44 @@ def agent_profiles(cfg: dict) -> dict:
     }
 
 
+def followup_reviewer_profile(cfg: dict) -> dict | None:
+    """#37: the configured follow-up reviewer profile, or None when the run
+    has no reviewer tiering (both keys absent, or a cfg predating #37)."""
+    profile = cfg.get("reviewer_followup") if isinstance(cfg, dict) else None
+    if not isinstance(profile, dict):
+        return None
+    return {"adapter": profile["adapter"], "model": profile["model"]}
+
+
+def unavailable_adapter_message(role: str, adapter: str, model: str, resolution_source: str) -> str:
+    """The refusal for a role whose adapter executable is not on PATH (#39),
+    shared by the launcher and the tiered reviewer selection so the legacy
+    wording is identical whichever path refuses."""
+    origin = "the recommended default" if resolution_source == "recommended" else "the configured"
+    return (
+        f"{role} cannot launch: {origin} adapter {adapter} ({model}) is not available on PATH. "
+        f"Install {adapter}, or set [agents].{role} and [models].{role} in handsoff.toml to an "
+        f"installed adapter, or add a fallback_policy.{role} profile. Availability means only "
+        "that the executable was found; it does not prove authentication, entitlement, "
+        "network access, or model validity"
+    )
+
+
+def profile_sources(cfg: dict) -> dict:
+    """Per-role adapter/model provenance (see PROFILE_SOURCES). A cfg built
+    without load_config, or one predating #39, reads as fully explicit."""
+    recorded = cfg.get("profile_sources") if isinstance(cfg, dict) else None
+    result = {}
+    for role in SELECTABLE_AGENT_ROLES:
+        entry = recorded.get(role) if isinstance(recorded, dict) else None
+        entry = entry if isinstance(entry, dict) else {}
+        result[role] = {
+            "adapter": entry.get("adapter", EXPLICIT_PROFILE_SOURCE),
+            "model": entry.get("model", EXPLICIT_PROFILE_SOURCE),
+        }
+    return result
+
+
 def fallback_profiles(cfg: dict) -> dict:
     return {role: deepcopy(cfg.get("fallbacks", {}).get(role, [])) for role in SELECTABLE_AGENT_ROLES}
 
@@ -415,8 +654,14 @@ def default_agent_adapter(*, which=None) -> str | None:
 
 
 def resolved_agent_profiles(cfg: dict, *, which=None, require_available: bool = False) -> dict:
-    """Resolve auto/unconfigured roles without changing explicit selections."""
+    """Resolve auto/unconfigured roles without changing explicit selections.
+
+    Each entry also carries ``source`` (adapter/model provenance, see
+    PROFILE_SOURCES) so a recommended default is never mistaken for a
+    choice the operator made.
+    """
     configured = agent_profiles(cfg)
+    sources = profile_sources(cfg)
     automatic = default_agent_adapter(which=which)
     resolved = {}
     for role, profile in configured.items():
@@ -428,7 +673,7 @@ def resolved_agent_profiles(cfg: dict, *, which=None, require_available: bool = 
                     "or choose an explicit installed adapter"
                 )
             adapter = automatic
-        resolved[role] = {"adapter": adapter, "model": profile["model"]}
+        resolved[role] = {"adapter": adapter, "model": profile["model"], "source": dict(sources[role])}
     return resolved
 
 
@@ -440,7 +685,37 @@ def audited_agent_profile(cfg: dict, role: str) -> dict:
         "adapter": configured["adapter"],
         "model": configured["model"],
         "effective_adapter": effective["adapter"],
+        "source": dict(profile_sources(cfg)[role]),
     }
+
+
+def crew_view(cfg: dict, *, which=None) -> dict:
+    """#39: the four requested profiles, their provenance, and whether each
+    adapter executable is discoverable right now.
+
+    ``available`` is executable discovery only (CREW_AVAILABILITY_SCOPE).
+    Whether the model id is valid for claude or codex cannot be checked
+    offline, so the view says what it checked instead of claiming more.
+    ``which`` is injectable for tests; production uses shutil.which.
+    """
+    lookup = which or shutil.which
+    resolved = resolved_agent_profiles(cfg, which=lookup)
+    view = {}
+    for role in SELECTABLE_AGENT_ROLES:
+        profile = resolved[role]
+        adapter = profile["adapter"]
+        discovered = lookup(adapter) if adapter in SELECTABLE_AGENT_ADAPTERS else None
+        executable = str(Path(discovered).resolve()) if discovered else None
+        view[role] = {
+            "adapter": adapter,
+            "model": profile["model"],
+            "adapter_source": profile["source"]["adapter"],
+            "model_source": profile["source"]["model"],
+            "available": executable is not None,
+            "executable": executable,
+            "availability_scope": CREW_AVAILABILITY_SCOPE,
+        }
+    return view
 
 
 def adapter_availability() -> dict:
@@ -547,7 +822,7 @@ def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
                            assignments: dict[str, str]) -> list[str]:
     section_pattern = re.compile(rf"^\s*\[{re.escape(table)}\]\s*(?:#.*)?(?:\r?\n)?$")
     section_starts = [i for i, line in enumerate(lines)
-                      if re.match(r"^\s*\[[^\]]+\]\s*(?:#.*)?(?:\r?\n)?$", line)]
+                      if re.match(r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?(?:\r?\n)?$", line)]
     headers = [i for i in section_starts if section_pattern.match(lines[i])]
     if len(headers) > 1:
         raise HandsoffError(f"handsoff.toml: ambiguous duplicate [{table}] tables")
@@ -599,7 +874,7 @@ def _replace_fallback_policy_table(lines: list[str], parsed: dict, fallbacks: di
     """Replace the framework-owned fallback table with canonical one-line values."""
     header_pattern = re.compile(r"^\s*\[fallback_policy\]\s*(?:#.*)?(?:\r?\n)?$")
     section_starts = [index for index, line in enumerate(lines)
-                      if re.match(r"^\s*\[[^\]]+\]\s*(?:#.*)?(?:\r?\n)?$", line)]
+                      if re.match(r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?(?:\r?\n)?$", line)]
     headers = [index for index in section_starts if header_pattern.match(lines[index])]
     if len(headers) > 1:
         raise HandsoffError("handsoff.toml: ambiguous duplicate [fallback_policy] tables")
@@ -742,7 +1017,12 @@ def update_agent_settings(root: Path, payload: object) -> dict:
         except ValueError as exc:
             raise HandsoffError(f"refusing invalid proposed handsoff.toml: {exc}") from exc
         proposed_policy = proposed_raw.get("fallback_policy", {})
-        if proposed_raw.get("agents") != adapters or proposed_raw.get("models") != models:
+        # #37: compare the four roles only, so the optional reviewer_followup
+        # keys survive a settings save untouched instead of failing it.
+        proposed_agents = proposed_raw.get("agents", {})
+        proposed_models = proposed_raw.get("models", {})
+        if any(proposed_agents.get(role) != adapters[role] or proposed_models.get(role) != models[role]
+               for role in SELECTABLE_AGENT_ROLES):
             raise HandsoffError("refusing ambiguous primary agent profile update")
         if proposed_policy.get("max_failovers_per_role") != cap:
             raise HandsoffError("refusing ambiguous fallback cap update")
@@ -999,14 +1279,29 @@ def _assert_agent_telemetry_integrity(root: Path, cfg: dict, status: dict) -> No
         raise HandsoffError(problems[0])
 
 
+def _validate_session_reference(value: object, field: str) -> str | None:
+    """#36: a session's packet_id/design_hash is null or a bounded non-empty string."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > 64:
+        raise HandsoffError(f"agent session {field} must be null or a non-empty string of at most 64 characters")
+    return value
+
+
 def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          requested_model: str, resolution_source: str,
-                         id_factory=None) -> dict:
+                         id_factory=None, packet_id: str | None = None,
+                         design_hash: str | None = None, tier: str | None = None,
+                         tier_reason: str | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
     are deliberately not accepted by this API, so callers cannot accidentally
-    persist them as telemetry.
+    persist them as telemetry. `packet_id`/`design_hash` (#36) record which
+    delta review packet, if any, a Phase-2 reviewer was launched with.
+    `tier`/`tier_reason` (#37) record which reviewer tier the selection
+    chose and why; the session keeps `tier`, and a `design_reviewer_selected`
+    event carrying both is committed with the launch.
     """
     root = root.resolve()
     if role not in SELECTABLE_AGENT_ROLES:
@@ -1017,6 +1312,16 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
     requested_model = validate_agent_model(requested_model)
     if resolution_source not in AGENT_SESSION_RESOLUTION_SOURCES:
         raise HandsoffError("agent session resolution source is invalid")
+    packet_id = _validate_session_reference(packet_id, "packet_id")
+    design_hash = _validate_session_reference(design_hash, "design_hash")
+    if tier is not None and tier not in DESIGN_REVIEWER_TIERS:
+        raise HandsoffError(f"agent session tier must be null or one of {', '.join(DESIGN_REVIEWER_TIERS)}")
+    if tier is not None and role != "reviewer":
+        raise HandsoffError("agent session tier applies to reviewer sessions only")
+    if tier is not None and tier_reason not in DESIGN_REVIEWER_SELECTION_REASONS:
+        raise HandsoffError(
+            f"agent session tier_reason must be one of {', '.join(DESIGN_REVIEWER_SELECTION_REASONS)}"
+        )
     with project_lock(root):
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
@@ -1024,6 +1329,23 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         if schema_errors:
             raise HandsoffError(schema_errors[0])
         _assert_agent_telemetry_integrity(root, cfg, status)
+        # #35: the sole authorization decision for a managed Phase-2
+        # reviewer launch, taken here on the status re-read inside the
+        # lock (build_launch_spec's pre-check is advisory only). At or
+        # past the autonomous budget the launch needs an unconsumed,
+        # unreserved Pilot authorization and takes it by writing this
+        # session's id into launch_session_id in the same commit() that
+        # records the launch, so a second concurrent launch finds the
+        # reservation and is refused before any session or event exists.
+        reservation = None
+        budget = None
+        if role == "reviewer" and status.get("phase_number") == 2:
+            budget = design_review_budget(status, cfg)
+            refusal = design_review_launch_refusal(budget, status)
+            if refusal:
+                raise HandsoffError(refusal)
+            if budget["attempts"] >= budget["limit"]:
+                reservation = deepcopy(status["design_review_authorization"])
         sessions = deepcopy(status.get("agent_sessions") or {})
         current = deepcopy(status.get("current_agent_sessions") or {})
         active_id = current.get(role)
@@ -1035,6 +1357,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         removed_session_ids = _prune_agent_sessions(sessions, current)
         session_id = _new_agent_session_id(sessions, id_factory=id_factory)
         now = datetime.now(timezone.utc).isoformat()
+        if reservation is not None:
+            reservation["launch_session_id"] = session_id
         session = {
             "session_id": session_id,
             "role": role,
@@ -1048,12 +1372,17 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             "ended_at": None,
             "state": "launching",
             "exit_code": None,
+            "packet_id": packet_id,
+            "design_hash": design_hash,
+            "tier": tier,
         }
         sessions[session_id] = session
         current[role] = session_id
         proposed = deepcopy(status)
         proposed["agent_sessions"] = sessions
         proposed["current_agent_sessions"] = current
+        if reservation is not None:
+            proposed["design_review_authorization"] = reservation
         failures = {
             sid: deepcopy(failure) for sid, failure in (status.get("agent_failures") or {}).items()
             if sid not in removed_session_ids
@@ -1076,8 +1405,19 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
+        selection_events = []
+        if tier is not None:
+            # #37: the selection is a fact of its own, logged before the
+            # launch event it explains (extra_events precede the primary).
+            selection_events.append({
+                "kind": "design_reviewer_selected",
+                "message": f"Design reviewer tier {tier} selected ({tier_reason})",
+                "session_id": session_id, "role": role, "tier": tier, "reason": tier_reason,
+                "adapter": adapter, "requested_model": requested_model,
+                "design_review_attempt": budget["next_attempt"] if budget else None,
+            })
         commit(
-            root, cfg, status=proposed,
+            root, cfg, status=proposed, extra_events=selection_events,
             event_kind="agent_session_launching",
             event_message=f"Managed {role} agent session is launching",
             session_id=session_id, role=role, actor=actor, adapter=adapter,
@@ -1085,6 +1425,9 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             resolution_source=resolution_source, state="launching",
             implementer_binding={"adapter": binding["adapter"], "model": binding["model"]}
             if binding else None,
+            design_review_attempt=budget["next_attempt"] if budget else None,
+            design_review_authorization_reserved=reservation is not None,
+            packet_id=packet_id, design_hash=design_hash, tier=tier,
         )
         return deepcopy(session)
 
@@ -1428,6 +1771,7 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
             "reported_model": None, "resolution_source": "fallback",
             "started_at": now, "running_at": None, "ended_at": None,
             "state": "launching", "exit_code": None,
+            "packet_id": None, "design_hash": None, "tier": None,
         }
         handoff = _derive_replacement_handoff(
             status, acceptance, repository, role=role, from_session_id=from_session_id,
@@ -1515,6 +1859,13 @@ def claim_precreated_agent_session(root: Path, session_id: str, *, role: str,
         claimed["claimed_at"] = now
         claimed["handoff"]["state"] = "claimed"
         claimed["handoff"]["claimed_at"] = now
+        # #35: a runtime-failure replacement continues the SAME authorized
+        # design-review attempt, so the reservation follows it to the new
+        # session id; it never becomes a second attempt.
+        authorization = proposed.get("design_review_authorization")
+        if isinstance(authorization, dict) and authorization.get("consumed_at") is None \
+                and authorization.get("launch_session_id") == claimed.get("from_session_id"):
+            authorization["launch_session_id"] = session_id
         errors = validate_status_schema(proposed)
         if errors:
             raise HandsoffError(errors[0])
@@ -1812,6 +2163,157 @@ def _is_number(value) -> bool:
             and math.isfinite(value))
 
 
+def _design_review_findings_errors(findings: object, label: str) -> list[str]:
+    """#36: a bounded list of {id, text} findings, ids in the F<attempt>.<n> form."""
+    if not isinstance(findings, list):
+        return [f"status: '{label}' must be an array"]
+    if len(findings) > MAX_DESIGN_REVIEW_FINDINGS:
+        return [f"status: '{label}' must contain at most {MAX_DESIGN_REVIEW_FINDINGS} findings"]
+    errors: list[str] = []
+    seen: set[str] = set()
+    for finding in findings:
+        if not isinstance(finding, dict) or set(finding) != {"id", "text"}:
+            errors.append(f"status: '{label}' entries must be objects with exactly id and text")
+            continue
+        finding_id = finding.get("id")
+        if not isinstance(finding_id, str) or not DESIGN_REVIEW_FINDING_ID_PATTERN.fullmatch(finding_id):
+            errors.append(f"status: '{label}' id {finding_id!r} is not a finding id")
+        elif finding_id in seen:
+            errors.append(f"status: '{label}' repeats finding id {finding_id}")
+        else:
+            seen.add(finding_id)
+        text = finding.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_DESIGN_REVIEW_FINDING_LENGTH:
+            errors.append(f"status: '{label}' text must be a non-empty string of at most "
+                          f"{MAX_DESIGN_REVIEW_FINDING_LENGTH} characters")
+    return errors
+
+
+def _design_reviewer_profile_errors(profile: object, label: str) -> list[str]:
+    """#37: {adapter, model, tier, reason} from the closed vocabularies."""
+    if not isinstance(profile, dict) or set(profile) != set(DESIGN_REVIEWER_PROFILE_FIELDS):
+        return [f"status: '{label}' must have exactly the keys {sorted(DESIGN_REVIEWER_PROFILE_FIELDS)}"]
+    errors: list[str] = []
+    for key in ("adapter", "model"):
+        if not isinstance(profile.get(key), str) or not profile[key].strip():
+            errors.append(f"status: '{label}.{key}' must be a non-empty string")
+    if profile.get("tier") not in DESIGN_REVIEWER_TIERS:
+        errors.append(f"status: '{label}.tier' must be one of {', '.join(DESIGN_REVIEWER_TIERS)}")
+    if profile.get("reason") not in DESIGN_REVIEWER_SELECTION_REASONS:
+        errors.append(f"status: '{label}.reason' must be one of {', '.join(DESIGN_REVIEWER_SELECTION_REASONS)}")
+    return errors
+
+
+def _design_reviewer_escalation_errors(escalation: object) -> list[str]:
+    """#37: absent or null when no Pilot escalation is recorded; when present
+    a complete {by, at, note, consumed_at} record, so a hand edit refuses
+    cleanly instead of being read by the selection as an open escalation."""
+    if escalation is None:
+        return []
+    if not isinstance(escalation, dict):
+        return ["status: 'design_reviewer_escalation' must be an object or null"]
+    errors: list[str] = []
+    if set(escalation) != set(DESIGN_REVIEWER_ESCALATION_FIELDS):
+        errors.append("status: 'design_reviewer_escalation' must have exactly the keys "
+                      f"{sorted(DESIGN_REVIEWER_ESCALATION_FIELDS)}")
+    if not isinstance(escalation.get("by"), str) or not escalation["by"].strip():
+        errors.append("status: 'design_reviewer_escalation.by' must be a non-empty string")
+    for sub in ("at", "consumed_at"):
+        value = escalation.get(sub)
+        if value is None and sub == "consumed_at":
+            continue
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"status: 'design_reviewer_escalation.{sub}' must be a non-empty string"
+                          + (" or null" if sub == "consumed_at" else ""))
+            continue
+        try:
+            if datetime.fromisoformat(value).tzinfo is None:
+                errors.append(f"status: 'design_reviewer_escalation.{sub}' must include a timezone")
+        except ValueError:
+            errors.append(f"status: 'design_reviewer_escalation.{sub}' must be an ISO-8601 timestamp")
+    note = escalation.get("note")
+    if note is not None and (not isinstance(note, str) or not note.strip()):
+        errors.append("status: 'design_reviewer_escalation.note' must be a non-empty string or null")
+    return errors
+
+
+def _design_review_history_errors(history: object) -> list[str]:
+    """#36: absent on a legacy status; when present, at most 8 complete entries."""
+    if history is None:
+        return []
+    if not isinstance(history, list):
+        return ["status: 'design_review_history' must be an array"]
+    if len(history) > MAX_DESIGN_REVIEW_HISTORY:
+        return [f"status: 'design_review_history' must contain at most {MAX_DESIGN_REVIEW_HISTORY} entries"]
+    errors: list[str] = []
+    for index, entry in enumerate(history):
+        label = f"status: design_review_history[{index}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        if set(entry) != set(DESIGN_REVIEW_HISTORY_FIELDS):
+            errors.append(f"{label} must have exactly the keys {sorted(DESIGN_REVIEW_HISTORY_FIELDS)}")
+            continue
+        attempt = entry["attempt"]
+        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+            errors.append(f"{label}.attempt must be a positive integer")
+        if entry["decision"] not in {"approved", "changes_requested"}:
+            errors.append(f"{label}.decision must be 'approved' or 'changes_requested'")
+        for field in ("by", "design_hash"):
+            if not isinstance(entry[field], str) or not entry[field].strip():
+                errors.append(f"{label}.{field} must be a non-empty string")
+        if entry["head"] is not None and (not isinstance(entry["head"], str) or not entry["head"].strip()):
+            errors.append(f"{label}.head must be a non-empty string or null")
+        ids = entry["criteria_ids"]
+        if not isinstance(ids, list) or not all(isinstance(i, str) and i.strip() for i in ids) \
+                or ids != sorted(ids):
+            errors.append(f"{label}.criteria_ids must be a sorted array of criterion ids")
+        hashes = entry["criterion_hashes"]
+        if not isinstance(hashes, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) and v for k, v in hashes.items()):
+            errors.append(f"{label}.criterion_hashes must map criterion ids to spec hashes")
+        if not isinstance(entry["structural_blocker"], bool):
+            errors.append(f"{label}.structural_blocker must be boolean")
+        errors.extend(_design_review_findings_errors(entry["findings"], f"design_review_history[{index}].findings"))
+    return errors
+
+
+def _design_review_packet_errors(packet: object) -> list[str]:
+    """#36: null or the latest generated packet with its load-bearing fields typed."""
+    if packet is None:
+        return []
+    if not isinstance(packet, dict):
+        return ["status: 'design_review_packet' must be an object or null"]
+    errors: list[str] = []
+    packet_id = packet.get("packet_id")
+    if not isinstance(packet_id, str) or not DESIGN_REVIEW_PACKET_ID_PATTERN.fullmatch(packet_id):
+        errors.append("status: 'design_review_packet.packet_id' must be 32 hex characters")
+    attempt = packet.get("attempt")
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 2:
+        errors.append("status: 'design_review_packet.attempt' must be an integer of at least 2")
+    previous = packet.get("previous_attempt")
+    if not isinstance(previous, int) or isinstance(previous, bool) or previous < 1:
+        errors.append("status: 'design_review_packet.previous_attempt' must be a positive integer")
+    for field in ("design_hash", "previous_design_hash"):
+        if not isinstance(packet.get(field), str) or not packet[field].strip():
+            errors.append(f"status: 'design_review_packet.{field}' must be a non-empty string")
+    if not isinstance(packet.get("stale"), bool):
+        errors.append("status: 'design_review_packet.stale' must be boolean")
+    reasons = packet.get("stale_reasons")
+    if not isinstance(reasons, list) or not all(isinstance(r, str) for r in reasons):
+        errors.append("status: 'design_review_packet.stale_reasons' must be an array of strings")
+    if not isinstance(packet.get("criteria_delta"), dict):
+        errors.append("status: 'design_review_packet.criteria_delta' must be an object")
+    findings = packet.get("findings")
+    if not isinstance(findings, list) or not all(
+            isinstance(f, dict) and f.get("disposition") in DESIGN_REVIEW_DISPOSITIONS for f in findings):
+        errors.append("status: 'design_review_packet.findings' must be an array of dispositioned findings")
+    if "truncated" in packet and (not isinstance(packet["truncated"], dict) or not all(
+            isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in packet["truncated"].values())):
+        errors.append("status: 'design_review_packet.truncated' must map field names to dropped counts")
+    return errors
+
+
 def validate_status_schema(status: dict) -> list[str]:
     """Every field compute_errors later casts with int()/float() is
     type-checked HERE first. Skipping this and letting a bad cast raise
@@ -1865,6 +2367,81 @@ def validate_status_schema(status: dict) -> list[str]:
                     errors.append("status: 'last_heartbeat_at' must include a timezone")
             except ValueError:
                 errors.append("status: 'last_heartbeat_at' must be an ISO-8601 timestamp")
+    # 'human_pause' is the durable record of an open human-pause-start
+    # (#34): absent or null on any status.json written before the field
+    # existed, or whenever no pause is open. When PRESENT it must be a
+    # complete object so a hand edit refuses cleanly instead of being
+    # read by stall_warning()/activity_note() as an open pause.
+    if "human_pause" in status and status["human_pause"] is not None:
+        pause = status["human_pause"]
+        if not isinstance(pause, dict):
+            errors.append("status: 'human_pause' must be an object or null")
+        else:
+            expected = {"by", "since", "note"}
+            if set(pause) != expected:
+                errors.append(f"status: 'human_pause' must have exactly the keys {sorted(expected)}")
+            if not isinstance(pause.get("by"), str) or not pause["by"].strip():
+                errors.append("status: 'human_pause.by' must be a non-empty string")
+            since = pause.get("since")
+            if not isinstance(since, str) or not since.strip():
+                errors.append("status: 'human_pause.since' must be a non-empty string")
+            else:
+                try:
+                    parsed = datetime.fromisoformat(since)
+                    if parsed.tzinfo is None:
+                        errors.append("status: 'human_pause.since' must include a timezone")
+                except ValueError:
+                    errors.append("status: 'human_pause.since' must be an ISO-8601 timestamp")
+            note = pause.get("note")
+            if note is not None and (not isinstance(note, str) or not note.strip()):
+                errors.append("status: 'human_pause.note' must be a non-empty string or null")
+    # #35: the cumulative attempt counter and the Pilot's one-attempt
+    # authorization. Both absent on any status.json written before the
+    # fields existed (read as zero attempts / no authorization); when
+    # PRESENT they are held to a strict shape so a hand edit refuses
+    # cleanly instead of being read by design_review_budget() as budget.
+    if "design_review_attempts" in status and (
+            not isinstance(status["design_review_attempts"], int)
+            or isinstance(status["design_review_attempts"], bool)
+            or status["design_review_attempts"] < 0):
+        errors.append("status: 'design_review_attempts' must be a non-negative integer, "
+                      f"got {status['design_review_attempts']!r}")
+    if "design_review_authorization" in status and status["design_review_authorization"] is not None:
+        authorization = status["design_review_authorization"]
+        if not isinstance(authorization, dict):
+            errors.append("status: 'design_review_authorization' must be an object or null")
+        else:
+            expected = {"by", "at", "note", "attempt_permitted", "launch_session_id", "consumed_at"}
+            if set(authorization) != expected:
+                errors.append("status: 'design_review_authorization' must have exactly the keys "
+                              f"{sorted(expected)}")
+            if not isinstance(authorization.get("by"), str) or not authorization["by"].strip():
+                errors.append("status: 'design_review_authorization.by' must be a non-empty string")
+            for sub in ("at", "consumed_at"):
+                value = authorization.get(sub)
+                if value is None and sub == "consumed_at":
+                    continue
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"status: 'design_review_authorization.{sub}' must be a non-empty string"
+                                  + (" or null" if sub == "consumed_at" else ""))
+                    continue
+                try:
+                    if datetime.fromisoformat(value).tzinfo is None:
+                        errors.append(f"status: 'design_review_authorization.{sub}' must include a timezone")
+                except ValueError:
+                    errors.append(f"status: 'design_review_authorization.{sub}' must be an ISO-8601 timestamp")
+            note = authorization.get("note")
+            if note is not None and (not isinstance(note, str) or not note.strip()):
+                errors.append("status: 'design_review_authorization.note' must be a non-empty string or null")
+            permitted = authorization.get("attempt_permitted")
+            if not isinstance(permitted, int) or isinstance(permitted, bool) or permitted < 1:
+                errors.append("status: 'design_review_authorization.attempt_permitted' must be a positive integer")
+            launch_session_id = authorization.get("launch_session_id")
+            if launch_session_id is not None and (
+                    not isinstance(launch_session_id, str)
+                    or not AGENT_SESSION_ID_PATTERN.fullmatch(launch_session_id)):
+                errors.append("status: 'design_review_authorization.launch_session_id' must be an agent "
+                              "session id or null")
     if "events" in status and not isinstance(status["events"], list):
         errors.append("status: 'events' must be an array")
     for field in ("passing", "failing", "not_tested", "blocked"):
@@ -1939,6 +2516,25 @@ def validate_status_schema(status: dict) -> list[str]:
                         errors.append("status: 'design_review.at' must include a timezone")
                 except ValueError:
                     errors.append("status: 'design_review.at' must be an ISO-8601 timestamp")
+            # #36: optional on a record written before the fields existed.
+            if "findings" in design_review:
+                errors.extend(_design_review_findings_errors(design_review["findings"], "design_review.findings"))
+            if "head" in design_review and design_review["head"] is not None and (
+                    not isinstance(design_review["head"], str) or not design_review["head"].strip()):
+                errors.append("status: 'design_review.head' must be a non-empty string or null")
+            if "attempt" in design_review and (
+                    not isinstance(design_review["attempt"], int) or isinstance(design_review["attempt"], bool)
+                    or design_review["attempt"] < 1):
+                errors.append("status: 'design_review.attempt' must be a positive integer")
+            # #37: optional on a record written before the fields existed.
+            if "structural_blocker" in design_review and not isinstance(design_review["structural_blocker"], bool):
+                errors.append("status: 'design_review.structural_blocker' must be boolean")
+            if "reviewer_profile" in design_review and design_review["reviewer_profile"] is not None:
+                errors.extend(_design_reviewer_profile_errors(design_review["reviewer_profile"],
+                                                              "design_review.reviewer_profile"))
+    errors.extend(_design_reviewer_escalation_errors(status.get("design_reviewer_escalation")))
+    errors.extend(_design_review_history_errors(status.get("design_review_history")))
+    errors.extend(_design_review_packet_errors(status.get("design_review_packet")))
     review = status.get("review")
     if isinstance(review, dict) and "checklist" in review and not isinstance(review["checklist"], dict):
         errors.append("status: 'review.checklist' must be an object")
@@ -1956,6 +2552,17 @@ def validate_status_schema(status: dict) -> list[str]:
             effective = profile.get("effective_adapter")
             if effective is not None and (not isinstance(effective, str) or not effective.strip()):
                 errors.append(f"status: 'review.{field}.effective_adapter' must be a non-empty string or null")
+            # #39: provenance is optional (records from before it carry
+            # none) but, when present, must be exactly adapter/model
+            # sources from the closed PROFILE_SOURCES vocabulary.
+            source = profile.get("source")
+            if source is not None and (
+                    not isinstance(source, dict) or set(source) != {"adapter", "model"}
+                    or any(value not in PROFILE_SOURCES for value in source.values())):
+                errors.append(
+                    f"status: 'review.{field}.source' must be an object with adapter and model "
+                    f"sources from {', '.join(PROFILE_SOURCES)}"
+                )
         if "profiles_distinct" in review and not isinstance(review["profiles_distinct"], bool):
             errors.append("status: 'review.profiles_distinct' must be boolean")
     sessions = status.get("agent_sessions")
@@ -1974,12 +2581,18 @@ def validate_status_schema(status: dict) -> list[str]:
             if not isinstance(session, dict):
                 errors.append(f"{label} must be an object")
                 continue
-            missing = AGENT_SESSION_FIELDS - set(session)
+            missing = AGENT_SESSION_FIELDS - AGENT_SESSION_OPTIONAL_FIELDS - set(session)
             if missing:
                 errors.append(f"{label} is missing fields: {', '.join(sorted(missing))}")
             unexpected = set(session) - AGENT_SESSION_FIELDS
             if unexpected:
                 errors.append(f"{label} contains unsupported fields: {', '.join(sorted(unexpected))}")
+            for optional_field in sorted(AGENT_SESSION_OPTIONAL_FIELDS):
+                value = session.get(optional_field)
+                if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 64):
+                    errors.append(f"{label}.{optional_field} must be null or a non-empty string")
+                elif optional_field == "tier" and value is not None and value not in DESIGN_REVIEWER_TIERS:
+                    errors.append(f"{label}.tier must be null or one of {', '.join(DESIGN_REVIEWER_TIERS)}")
             if session.get("session_id") != session_id:
                 errors.append(f"{label} session_id must match its object key")
             if session.get("role") not in SELECTABLE_AGENT_ROLES:
@@ -2138,7 +2751,19 @@ def validate_status_schema(status: dict) -> list[str]:
 GOVERNANCE_CONFIG_KEYS = (
     "deployment_requires_explicit_approval", "require_live_verification",
     "max_design_rounds", "max_review_rounds", "stall_minutes",
+    "max_autonomous_design_reviews",
 )
+# Governance keys added after runs were already in flight. A key in this
+# set is hashed only while it holds a non-default value: an absent (or
+# explicitly default) key must reproduce the pre-existing hash byte for
+# byte, or upgrading bin/ would invalidate every design review, design
+# approval, and deployment approval already recorded on every project
+# running Handsoff (this repo's own run included). Changing the key to
+# anything else still invalidates the decisions bound to the old value,
+# which is the whole point of the chain of trust.
+_LEGACY_OPTIONAL_GOVERNANCE_KEYS = {
+    "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
+}
 
 
 def config_hash(cfg: dict) -> str:
@@ -2147,7 +2772,14 @@ def config_hash(cfg: dict) -> str:
     could flip deployment_requires_explicit_approval or
     require_live_verification off AFTER a review, silently downgrading what
     the workflow requires without invalidating anything already granted."""
-    return hashlib.sha256(_canonical({k: cfg.get(k) for k in GOVERNANCE_CONFIG_KEYS}).encode("utf-8")).hexdigest()
+    bound = {}
+    for key in GOVERNANCE_CONFIG_KEYS:
+        if key in _LEGACY_OPTIONAL_GOVERNANCE_KEYS:
+            default = _LEGACY_OPTIONAL_GOVERNANCE_KEYS[key]
+            if cfg.get(key, default) == default:
+                continue
+        bound[key] = cfg.get(key)
+    return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
 
 
 def acceptance_hash(criteria: list[dict]) -> str:
@@ -2323,6 +2955,193 @@ def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str
     return errors
 
 
+def design_review_budget(status: dict, cfg: dict) -> dict:
+    """#35: the one rule for both kinds of design-review attempt.
+
+    `design_review_attempts` counts every record-design-review ever made
+    on the run (approve or request-changes, cumulative, never decremented;
+    `design_round` is a separate, human-driven number and was the gap the
+    original symptom slipped through). Once `attempts >= limit` the run is
+    `exhausted` unless the Pilot has recorded a `design_review_authorization`
+    that no record has consumed yet. An authorization permits exactly ONE
+    attempt, performed either by a managed reviewer session (which reserves
+    it under the project lock by writing `launch_session_id`, see
+    create_agent_session) or by a human-recorded review (which consumes it
+    directly). `launch_reserved` is that reservation: while it is set and
+    the authorization is unconsumed, no second managed launch is permitted.
+    Legacy status files without the fields read as zero attempts and no
+    authorization, which reproduces the pre-#35 behavior below the limit."""
+    attempts = int(status.get("design_review_attempts", 0) or 0)
+    limit = int(cfg.get("max_autonomous_design_reviews", DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS))
+    authorization = status.get("design_review_authorization")
+    authorized = isinstance(authorization, dict) and authorization.get("consumed_at") is None
+    launch_reserved = authorized and authorization.get("launch_session_id") is not None
+    return {
+        "attempts": attempts,
+        "limit": limit,
+        "authorized": authorized,
+        "exhausted": attempts >= limit and not authorized,
+        "launch_reserved": launch_reserved,
+        "next_attempt": attempts + 1,
+        "authorization_command": DESIGN_REVIEW_AUTHORIZATION_COMMAND,
+    }
+
+
+def design_review_budget_exhausted_message(budget: dict) -> str:
+    """The exact sentence a refused record, a refused launch, and a blocked
+    run's next_action all carry, so the Pilot reads the same command in
+    the CLI, in `status`, and on the Mission Control banner."""
+    return (f"design review budget exhausted ({budget['attempts']}/{budget['limit']}); "
+            f"Pilot must run {budget['authorization_command']} to permit one more attempt")
+
+
+def design_review_launch_refusal(budget: dict, status: dict) -> str | None:
+    """Why a managed reviewer launch in Phase 2 is refused right now, or
+    None when it is permitted. Below the limit no authorization is
+    involved; at or past it the launch needs an unconsumed, unreserved
+    authorization."""
+    if budget["attempts"] < budget["limit"]:
+        return None
+    if budget["exhausted"]:
+        return f"managed reviewer launch refused: {design_review_budget_exhausted_message(budget)}"
+    if budget["launch_reserved"]:
+        reserved_by = (status.get("design_review_authorization") or {}).get("launch_session_id")
+        return (f"managed reviewer launch refused: the authorized design-review attempt "
+                f"{budget['next_attempt']} is already reserved by session {reserved_by}; "
+                f"record-design-review must consume it before any further launch, after which "
+                f"the Pilot may run {budget['authorization_command']} again")
+    return None
+
+
+def select_design_reviewer_tier(cfg: dict, status: dict, acceptance: dict) -> tuple[str, str]:
+    """#37: which reviewer tier the NEXT design-review attempt gets, and why.
+
+    Pure over (cfg, status, acceptance): the same inputs always give the
+    same answer. Deterministic precedence, first match wins:
+      1. attempts == 0                          -> primary, first_review
+      2. no follow-up configured                -> primary, no_followup_configured
+      3. unconsumed design_reviewer_escalation  -> primary, pilot_escalation
+      4. last review flagged structural_blocker -> primary, structural_blocker
+      5. criterion id set differs from the last review's criteria_ids
+         (any id added or removed; a text-only edit does not count; a
+         history entry missing entirely also cannot prove the structure
+         unchanged)                             -> primary, criteria_structure_changed
+      6. otherwise                              -> followup, delta_check
+    """
+    if design_review_budget(status, cfg)["attempts"] == 0:
+        return "primary", "first_review"
+    if followup_reviewer_profile(cfg) is None:
+        return "primary", "no_followup_configured"
+    escalation = status.get("design_reviewer_escalation")
+    if isinstance(escalation, dict) and escalation.get("consumed_at") is None:
+        return "primary", "pilot_escalation"
+    history = [h for h in (status.get("design_review_history") or []) if isinstance(h, dict)]
+    last = history[-1] if history else None
+    if last is not None and last.get("structural_blocker") is True:
+        return "primary", "structural_blocker"
+    criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
+    current_ids = sorted(c.get("id") for c in criteria if isinstance(c, dict) and isinstance(c.get("id"), str))
+    previous_ids = sorted(i for i in (last.get("criteria_ids") or []) if isinstance(i, str)) if last else None
+    if previous_ids is None or current_ids != previous_ids:
+        return "primary", "criteria_structure_changed"
+    return "followup", "delta_check"
+
+
+def design_reviewer_tier_profile(cfg: dict, tier: str, *, which=None, require_available: bool = True) -> dict:
+    """The (adapter, model, resolution_source) a tier launches with, before
+    any post-selection check. With ``require_available`` false (a record
+    made by hand, where nothing launches) an unresolvable "auto" primary
+    keeps the configured adapter string instead of raising."""
+    if tier == "followup":
+        followup = followup_reviewer_profile(cfg)
+        if followup is None:
+            raise HandsoffError("followup reviewer tier selected but no reviewer_followup profile is configured")
+        return {**followup, "resolution_source": "configured"}
+    configured_adapter = agent_profiles(cfg)["reviewer"]["adapter"]
+    profile = resolved_agent_profiles(cfg, which=which, require_available=require_available)["reviewer"]
+    if profile["adapter"] is None:
+        profile = {**profile, "adapter": configured_adapter}
+    if configured_adapter == AUTO_AGENT_ADAPTER:
+        resolution_source = "auto_detected"
+    elif profile["source"]["adapter"] == RECOMMENDED_PROFILE_SOURCE:
+        resolution_source = "recommended"
+    else:
+        resolution_source = "configured"
+    return {"adapter": profile["adapter"], "model": profile["model"], "resolution_source": resolution_source}
+
+
+def select_design_reviewer_profile(cfg: dict, status: dict, acceptance: dict, *, which=None) -> dict:
+    """#37: the profile the next Phase-2 reviewer launch uses.
+
+    Tier and reason come from select_design_reviewer_tier. Two checks are
+    then applied to WHICHEVER tier was selected and never switch it:
+
+    - independence (tiering configured only, so a legacy single-profile
+      run behaves exactly as before): the selected adapter/model must
+      differ from the architect's and the implementer's, or the clash is
+      named and the launch refused;
+    - availability: the selected adapter executable must be on PATH. A
+      missing follow-up never falls back to primary and a missing primary
+      never falls forward to follow-up.
+
+    Returns {"adapter", "model", "tier", "reason", "resolution_source"}.
+    ``which`` is injectable for tests; production uses shutil.which.
+    """
+    lookup = which or shutil.which
+    tier, reason = select_design_reviewer_tier(cfg, status, acceptance)
+    selected = design_reviewer_tier_profile(cfg, tier, which=lookup)
+    adapter, model = selected["adapter"], selected["model"]
+    tiering = followup_reviewer_profile(cfg) is not None
+    if tiering:
+        resolved = resolved_agent_profiles(cfg, which=lookup)
+        for role in ("architect", "implementer"):
+            other = resolved[role]
+            if (other["adapter"], other["model"]) == (adapter, model):
+                raise HandsoffError(
+                    f"{tier} reviewer profile {adapter}/{model} is the same as the {role} profile; "
+                    f"an independent design review needs a different adapter or model for the "
+                    f"{tier} reviewer tier"
+                )
+    if adapter not in SELECTABLE_AGENT_ADAPTERS or not lookup(adapter):
+        if tiering:
+            raise HandsoffError(
+                f"{tier} reviewer profile unavailable: {adapter} is not on PATH; install it, "
+                f"set fallback_policy.reviewer, or remove {FOLLOWUP_REVIEWER_KEY}"
+            )
+        raise HandsoffError(unavailable_adapter_message("reviewer", adapter, model, selected["resolution_source"]))
+    return {"adapter": adapter, "model": model, "tier": tier, "reason": reason,
+            "resolution_source": selected["resolution_source"]}
+
+
+def design_reviewer_selection_view(cfg: dict, status: dict, acceptance: dict, *, which=None) -> dict:
+    """#37 for `status` and Mission Control: ``current`` is the profile the
+    latest recorded design review was made under (null before any review,
+    or on a record predating #37); ``next`` is what the next launch would
+    select, with ``error`` naming a post-selection refusal (independence or
+    availability) instead of raising, so the dashboard still shows the
+    tier and reason the Pilot needs to act on."""
+    review = status.get("design_review") if isinstance(status, dict) else None
+    current = None
+    if isinstance(review, dict) and isinstance(review.get("reviewer_profile"), dict):
+        profile = review["reviewer_profile"]
+        current = {field: profile.get(field) for field in DESIGN_REVIEWER_PROFILE_FIELDS}
+    tier, reason = select_design_reviewer_tier(cfg, status, acceptance)
+    lookup = which or shutil.which
+    try:
+        profile = design_reviewer_tier_profile(cfg, tier, which=lookup, require_available=False)
+    except HandsoffError as exc:
+        return {"current": current,
+                "next": {"tier": tier, "reason": reason, "adapter": None, "model": None, "error": str(exc)}}
+    error = None
+    try:
+        select_design_reviewer_profile(cfg, status, acceptance, which=lookup)
+    except HandsoffError as exc:
+        error = str(exc)
+    return {"current": current,
+            "next": {"tier": tier, "reason": reason, "adapter": profile["adapter"],
+                     "model": profile["model"], "error": error}}
+
+
 def _valid_symptom_record(status: dict, criteria: list[dict], verifications: list[dict]) -> dict | None:
     evidence_id = status.get("original_symptom_evidence_id")
     primary = {c["id"]: c for c in criteria if c.get("type") == "primary_fix"}
@@ -2455,9 +3274,17 @@ def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None) -> st
     signal current -- genuinely no activity, not merely no status-file
     write. `last_heartbeat_at` may be entirely absent (any status.json
     written before this field existed); that reads as 'no heartbeat', the
-    same as if it were missing today, never as an error."""
+    same as if it were missing today, never as an error.
+
+    An open human pause (`human_pause` set by `human-pause-start`) also
+    suppresses the warning, for as long as it stays open: nothing is
+    running, the run is waiting on a person, and `activity_note` says so.
+    It is a declared state, not a heartbeat, so it never expires on its
+    own and never masquerades as liveness."""
     now = now or datetime.now(timezone.utc)
     if status.get("status") not in ("in_progress",):
+        return None
+    if isinstance(status.get("human_pause"), dict):
         return None
     updated_minutes = _minutes_since(status.get("updated_at"), now)
     if updated_minutes is None:
@@ -2479,10 +3306,21 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None) -> st
     operator to guess between 'stalled' and 'on course'. Mutually exclusive
     with `stall_warning`: whenever this returns non-None, `stall_warning`
     is guaranteed None, since a fresh heartbeat is exactly what suppresses
-    it."""
+    it.
+
+    An open human pause takes precedence over the heartbeat reading and
+    renders as 'waiting on <by> since <n> min ago[: <note>]', the one
+    rendering both `status` and the dashboard snapshot show."""
     now = now or datetime.now(timezone.utc)
     if status.get("status") not in ("in_progress",):
         return None
+    pause = status.get("human_pause")
+    if isinstance(pause, dict):
+        since_minutes = _minutes_since(pause.get("since"), now)
+        since = f"{since_minutes:.0f} min ago" if since_minutes is not None else "an unknown time"
+        note = pause.get("note")
+        suffix = f": {note}" if isinstance(note, str) else ""
+        return f"waiting on {pause.get('by')} since {since}{suffix}"
     updated_minutes = _minutes_since(status.get("updated_at"), now)
     heartbeat_minutes = _minutes_since(status.get("last_heartbeat_at"), now)
     if updated_minutes is None or heartbeat_minutes is None:
@@ -2492,6 +3330,167 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None) -> st
         return (f"background task active (heartbeat {heartbeat_minutes:.0f} min ago); "
                 f"no status update in {updated_minutes:.0f} minutes, but the run is alive")
     return None
+
+
+# --------------------------------------------------------------------------
+# #33: live session status. A managed child beacons `.handsoff-live.json`
+# every few seconds; `live_status` folds that liveness signal into the
+# structured state (run status, human pause, the ledger-bound session
+# record) into one small view the dashboard strip and `status` show.
+# --------------------------------------------------------------------------
+
+def live_beacon_path(root: Path) -> Path:
+    return Path(root) / LIVE_BEACON_FILE
+
+
+def _seconds_since(timestamp: str | None, now: datetime) -> float | None:
+    minutes = _minutes_since(timestamp, now)
+    return None if minutes is None else minutes * 60
+
+
+def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
+                      pid: int | None, ended_at: str | None = None,
+                      exit_code: int | None = None, now: datetime | None = None) -> bool:
+    """Best-effort atomic write of the seven-key beacon. Returns False
+    instead of raising on any OSError: the beacon is a liveness hint, never
+    the authority, so a full disk or a bad path must not touch the child's
+    lifecycle or the session record."""
+    now = now or datetime.now(timezone.utc)
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        pid = None
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        exit_code = None
+    beacon = {
+        "session_id": session_id, "role": role, "state": state, "pid": pid,
+        "beacon_at": now.isoformat(), "ended_at": ended_at, "exit_code": exit_code,
+    }
+    try:
+        _atomic_write_text(live_beacon_path(root), json.dumps(beacon, sort_keys=True) + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def read_live_beacon(root: Path) -> dict | None:
+    """The beacon if it exists and is well-formed (exactly the seven keys,
+    identifiers, integers, and timestamps only); anything else reads as no
+    signal, never as an error."""
+    path = live_beacon_path(root)
+    try:
+        beacon = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(beacon, dict) or set(beacon) != set(LIVE_BEACON_KEYS):
+        return None
+    for key in ("session_id", "role", "state", "beacon_at"):
+        if not isinstance(beacon[key], str) or not beacon[key]:
+            return None
+    for key in ("pid", "exit_code"):
+        if beacon[key] is not None and (not isinstance(beacon[key], int) or isinstance(beacon[key], bool)):
+            return None
+    if beacon["ended_at"] is not None and not isinstance(beacon["ended_at"], str):
+        return None
+    if _minutes_since(beacon["beacon_at"], datetime.now(timezone.utc)) is None:
+        return None
+    return beacon
+
+
+def _live_focus_session(status: dict) -> dict | None:
+    """The one session the live view is about: a live (launching/running)
+    current session first, else the most recently ended terminal one."""
+    sessions = [s for s in current_agent_sessions(status).values() if isinstance(s, dict)]
+    live = [s for s in sessions if s.get("state") in AGENT_SESSION_LIVE_STATES]
+    if live:
+        return max(live, key=lambda s: str(s.get("running_at") or s.get("started_at") or ""))
+    terminal = [s for s in sessions if s.get("state") in AGENT_SESSION_TERMINAL_STATES]
+    if terminal:
+        return max(terminal, key=lambda s: str(s.get("ended_at") or s.get("started_at") or ""))
+    return None
+
+
+def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = None) -> dict:
+    """Derive one of LIVE_STATES from structured state plus the beacon.
+
+    Precedence: a complete run; a run waiting on a person (blocked, open
+    human pause, Phase 7 awaiting deployment approval); the current live
+    session (a beacon counts only when its session_id is the current
+    session's; fresh means at most LIVE_BEACON_FRESH_SECONDS old); the
+    current terminal session, reported from the ledger-bound record
+    (`ended_at`, `exit_code`) with the beacon informing `process_signal`
+    only; else idle. `last_activity_at` is the freshest of updated_at,
+    last_heartbeat_at, the matching beacon, and the session timestamps."""
+    now = now or datetime.now(timezone.utc)
+    beacon = read_live_beacon(root)
+    session = _live_focus_session(status)
+    session_id = session.get("session_id") if session else None
+    role = session.get("role") if session else None
+    matching = beacon if (beacon and session_id and beacon["session_id"] == session_id) else None
+    beacon_age = _seconds_since(matching["beacon_at"], now) if matching else None
+    if matching is None:
+        process_signal = "none"
+    elif beacon_age is not None and 0 <= beacon_age <= LIVE_BEACON_FRESH_SECONDS:
+        process_signal = "fresh"
+    else:
+        process_signal = "stale"
+
+    candidates = [status.get("updated_at"), status.get("last_heartbeat_at")]
+    if matching:
+        candidates.append(matching["beacon_at"])
+    if session:
+        candidates.extend(session.get(key) for key in ("started_at", "running_at", "ended_at"))
+    stamped = [(c, _seconds_since(c, now)) for c in candidates if isinstance(c, str)]
+    stamped = [(c, age) for c, age in stamped if age is not None]
+    last_activity_at = min(stamped, key=lambda item: item[1])[0] if stamped else None
+    seconds_since_activity = int(round(min(age for _, age in stamped))) if stamped else None
+
+    view = {
+        "state": "idle", "role": role, "session_id": session_id,
+        "last_activity_at": last_activity_at, "seconds_since_activity": seconds_since_activity,
+        "process_signal": process_signal, "detail": "no managed process is running",
+        "ended_at": None, "exit_code": None,
+    }
+    session_state = session.get("state") if session else None
+    phase = int(status.get("phase_number", 1) or 1)
+    awaiting_deployment = (
+        cfg.get("deployment_requires_explicit_approval", True)
+        and phase == 7 and not status.get("deployment_approved")
+        and status.get("status") == "in_progress"
+    )
+    if status.get("status") == "complete":
+        view["state"] = "complete"
+        view["detail"] = "run complete"
+    elif (status.get("status") == "blocked" or isinstance(status.get("human_pause"), dict)
+          or awaiting_deployment):
+        view["state"] = "waiting"
+        view["detail"] = (activity_note(status, cfg, now=now)
+                          or status.get("next_action")
+                          or ("awaiting deployment approval" if awaiting_deployment else "waiting on a decision"))
+    elif session_state in AGENT_SESSION_LIVE_STATES:
+        mismatch = (f"beacon belongs to session {beacon['session_id']}, not current session {session_id}"
+                    if beacon and matching is None else None)
+        if process_signal == "fresh":
+            view["state"] = "started" if session_state == "launching" else "running"
+            view["detail"] = f"{role} session {session_state}"
+            if matching.get("pid") is not None:
+                view["detail"] += f" (pid {matching['pid']})"
+        elif session_state == "launching":
+            view["state"] = "started"
+            view["detail"] = mismatch or f"{role} session launching, no process signal yet"
+        else:
+            signal_at = matching["beacon_at"] if matching else (session.get("running_at") or session.get("started_at"))
+            silent = _seconds_since(signal_at, now)
+            silent_text = f"{int(round(silent))} s" if silent is not None else "an unknown time"
+            view["state"] = "stalled"
+            view["detail"] = f"no process signal for {silent_text}" + (f" ({mismatch})" if mismatch else "")
+    elif session_state in AGENT_SESSION_TERMINAL_STATES:
+        exit_code = session.get("exit_code")
+        view["state"] = "stopped" if session_state in ("completed", "cancelled") else "failed"
+        view["ended_at"] = session.get("ended_at")
+        view["exit_code"] = exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None
+        exit_text = f"exit {view['exit_code']}" if view["exit_code"] is not None else "no exit code"
+        view["detail"] = (f"{role} session {session_state.replace('_', ' ')} ({exit_text})"
+                          f" at {view['ended_at'] or 'an unknown time'}")
+    return view
 
 
 # --------------------------------------------------------------------------
@@ -2525,6 +3524,579 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
             "output_tail": output[-2000:],
         })
     return results
+
+
+# --------------------------------------------------------------------------
+# #38: cached, hash-bound design evidence. A configured measurement command
+# (an AST inventory, a dependency graph, a schema dump) runs once and its
+# bounded output is reused for as long as its declared inputs and its own
+# command line are unchanged. The store is a side file, not a ledger: the
+# event log carries only ids and hashes, never output, so the secret-safety
+# boundary of the chained ledgers is untouched.
+# --------------------------------------------------------------------------
+
+def design_evidence_path(root: Path) -> Path:
+    return root / DESIGN_EVIDENCE_FILE
+
+
+def load_design_evidence(root: Path) -> dict:
+    """The store, `{"artifacts": {id: record}}`; a missing file is empty and
+    a malformed one is refused rather than half-trusted."""
+    path = design_evidence_path(root)
+    if not path.exists():
+        return {"artifacts": {}}
+    data = load_unique_json(path)
+    artifacts = data.get("artifacts") if isinstance(data, dict) else None
+    if not isinstance(artifacts, dict) or not all(
+        isinstance(record, dict) and record.get("id") == artifact_id
+        and all(field in record for field in DESIGN_EVIDENCE_RECORD_FIELDS)
+        for artifact_id, record in artifacts.items()
+    ):
+        raise HandsoffError(f"{path.name}: malformed design evidence store; delete it and rerun design-evidence run")
+    return {"artifacts": artifacts}
+
+
+def _design_evidence_matches(root: Path, inputs: list[str]) -> list[Path]:
+    """Regular files matched by the declared globs, deduplicated, sorted by
+    root-relative path, and confined to the resolved project root so a
+    symlink cannot pull an outside file into the hash."""
+    resolved_root = root.resolve()
+    matches: dict[str, Path] = {}
+    for pattern in inputs:
+        for candidate in root.glob(pattern):
+            if not candidate.is_file():
+                continue
+            try:
+                relative = candidate.resolve().relative_to(resolved_root)
+            except ValueError:
+                continue
+            matches[relative.as_posix()] = candidate
+    return [matches[key] for key in sorted(matches)]
+
+
+def design_evidence_input_hash(root: Path, inputs: list[str]) -> tuple[str, int]:
+    """sha256 over the sorted (relative path, file sha256) pairs the globs
+    match right now, plus how many files that was. A glob that matches
+    nothing still contributes to the identity (see design_evidence_identity)
+    but not to this hash."""
+    resolved_root = root.resolve()
+    pairs = []
+    for path in _design_evidence_matches(root, inputs):
+        relative = path.resolve().relative_to(resolved_root).as_posix()
+        pairs.append([relative, hashlib.sha256(path.read_bytes()).hexdigest()])
+    return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest(), len(pairs)
+
+
+def design_evidence_identity(command: str, inputs: list[str]) -> str:
+    """The cache key: sha256(command + newline + canonical JSON of the
+    declared inputs list). Changing the command OR the glob list changes
+    the identity even when the matched file set would hash the same."""
+    return hashlib.sha256(
+        (command + "\n" + json.dumps(list(inputs), sort_keys=True, separators=(",", ":"))).encode("utf-8")
+    ).hexdigest()
+
+
+def _design_evidence_repository(root: Path) -> dict:
+    """Exact commit identity when the root is a git checkout; nulls when it
+    is not, so a plain directory can still cache evidence."""
+    try:
+        snapshot = repository_snapshot(root)
+    except HandsoffError:
+        return {"head": None, "branch": None, "dirty": None}
+    return {"head": snapshot["head"], "branch": snapshot["branch"], "dirty": snapshot["dirty"]}
+
+
+def _bounded_output(output: str) -> tuple[str, str, int, bool]:
+    """Keep at most MAX_DESIGN_EVIDENCE_OUTPUT_BYTES of UTF-8 in the store;
+    the sha256 and byte count always describe the full output."""
+    raw = output.encode("utf-8", "replace")
+    digest = hashlib.sha256(raw).hexdigest()
+    truncated = len(raw) > MAX_DESIGN_EVIDENCE_OUTPUT_BYTES
+    kept = raw[:MAX_DESIGN_EVIDENCE_OUTPUT_BYTES].decode("utf-8", "ignore") if truncated else output
+    return kept, digest, len(raw), truncated
+
+
+def _execute_design_evidence(entry: dict, root: Path, timeout: int, runner) -> tuple[int, str]:
+    """Run one measurement the way run_checks runs a check: shell, project
+    root, the configured check timeout, exit 124 on a timeout."""
+    try:
+        proc = runner(entry["command"], shell=True, cwd=str(root), capture_output=True, text=True, timeout=timeout)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        return 124, stdout + stderr + f"\nHANDSOFF: command timed out after {timeout} seconds"
+
+
+def _design_evidence_entries(cfg: dict, ids: list[str] | None) -> list[dict]:
+    entries = cfg.get("design_evidence") or []
+    if ids is None:
+        return list(entries)
+    known = {entry["id"]: entry for entry in entries}
+    unknown = [artifact_id for artifact_id in ids if artifact_id not in known]
+    if unknown:
+        raise HandsoffError(f"unknown design_evidence ids: {', '.join(unknown)}")
+    seen: list[str] = []
+    for artifact_id in ids:
+        if artifact_id not in seen:
+            seen.append(artifact_id)
+    return [known[artifact_id] for artifact_id in seen]
+
+
+def run_design_evidence(root: Path, cfg: dict, *, ids: list[str] | None = None, by: str,
+                        force: bool = False, runner=subprocess.run) -> list[dict]:
+    """Run (or reuse) the configured measurements. A stored record is reused,
+    with no command executed and no event written, when its identity and
+    input hash still match and it exited 0; `force` is the reviewer's
+    challenge path and always reruns. Every executed measurement is stored
+    under the project lock and logged as `design_evidence_recorded` with
+    hashes and metadata only. Returns one record per requested artifact,
+    each with a transient `reused` flag that is not persisted."""
+    if not isinstance(by, str) or not by.strip():
+        raise HandsoffError("--by must be a non-empty string")
+    entries = _design_evidence_entries(cfg, ids)
+    if not entries:
+        return []
+    timeout = cfg.get("check_timeout_seconds", DEFAULT_CONFIG["check_timeout_seconds"])
+    stored = load_design_evidence(root)["artifacts"]
+    results: list[dict] = []
+    executed: list[dict] = []
+    for entry in entries:
+        identity = design_evidence_identity(entry["command"], entry["inputs"])
+        input_hash, matched = design_evidence_input_hash(root, entry["inputs"])
+        previous = stored.get(entry["id"])
+        if (previous is not None and not force and previous.get("identity_sha256") == identity
+                and previous.get("input_hash") == input_hash and previous.get("exit_code") == 0):
+            results.append({**previous, "reused": True})
+            continue
+        exit_code, output = _execute_design_evidence(entry, root, timeout, runner)
+        kept, digest, size, truncated = _bounded_output(output)
+        record = {
+            "id": entry["id"], "command": entry["command"],
+            "command_sha256": hashlib.sha256(entry["command"].encode("utf-8")).hexdigest(),
+            "identity_sha256": identity, "inputs": list(entry["inputs"]),
+            "input_hash": input_hash, "matched_files": matched,
+            "exit_code": exit_code, "output": kept, "output_sha256": digest, "output_bytes": size,
+            "truncated": truncated, "at": datetime.now(timezone.utc).isoformat(), "by": by.strip(),
+            **_design_evidence_repository(root),
+        }
+        executed.append(record)
+        results.append({**record, "reused": False})
+    if executed:
+        with project_lock(root):
+            store = load_design_evidence(root)
+            for record in executed:
+                store["artifacts"][record["id"]] = record
+            atomic_write_json(design_evidence_path(root), store)
+            events = [{
+                "kind": "design_evidence_recorded",
+                "message": f"Recorded design evidence {record['id']}",
+                "artifact_id": record["id"], "input_hash": record["input_hash"],
+                "output_sha256": record["output_sha256"], "exit_code": record["exit_code"],
+                "truncated": record["truncated"], "head": record["head"],
+            } for record in executed]
+            last = events.pop()
+            commit(root, cfg, event_kind=last["kind"], event_message=last["message"], extra_events=events,
+                   **{k: v for k, v in last.items() if k not in ("kind", "message")})
+    return results
+
+
+def design_evidence_view(root: Path, cfg: dict) -> list[dict]:
+    """One entry per configured artifact with its state (current, stale,
+    failed, missing) and the hashes behind that judgement. Never includes
+    output: this is what the dashboard snapshot, `design-evidence show`,
+    and the #36 packet consume. `commit_matches_head` is informational; an
+    unrelated commit does not make an artifact stale, but the exact commit
+    it was measured at is always visible."""
+    stored = load_design_evidence(root)["artifacts"]
+    current_head = _design_evidence_repository(root)["head"]
+    view = []
+    for entry in cfg.get("design_evidence") or []:
+        identity = design_evidence_identity(entry["command"], entry["inputs"])
+        input_hash, matched = design_evidence_input_hash(root, entry["inputs"])
+        record = stored.get(entry["id"])
+        reasons: list[str] = []
+        if record is None:
+            state = "missing"
+            reasons.append("never run")
+        else:
+            if record.get("identity_sha256") != identity:
+                if record.get("command") != entry["command"]:
+                    reasons.append("command changed")
+                if list(record.get("inputs") or []) != list(entry["inputs"]):
+                    reasons.append("declared inputs changed")
+                if not reasons:
+                    reasons.append("cache identity changed")
+            if record.get("input_hash") != input_hash:
+                reasons.append("input files changed")
+            if reasons:
+                state = "stale"
+            elif record.get("exit_code") != 0:
+                state = "failed"
+                reasons.append(f"exit code {record.get('exit_code')}")
+            else:
+                state = "current"
+        if matched == 0:
+            reasons.append("declared inputs match no files")
+        view.append({
+            "id": entry["id"], "state": state, "reasons": reasons,
+            "input_hash": input_hash, "matched_files": matched,
+            "output_sha256": record.get("output_sha256") if record else None,
+            "at": record.get("at") if record else None,
+            "by": record.get("by") if record else None,
+            "head": record.get("head") if record else None,
+            "commit_matches_head": bool(record and record.get("head") and record.get("head") == current_head),
+            "truncated": bool(record.get("truncated")) if record else False,
+            "exit_code": record.get("exit_code") if record else None,
+        })
+    return view
+
+
+def design_evidence_prompt_section(root: Path, cfg: dict) -> str:
+    """The `# Design evidence` block appended to the Architect's and the
+    Reviewer's role input. Only `current` artifacts show their bounded
+    output; stale, failed, and missing ones are listed by state alone so
+    they are never presented as current truth. Empty when nothing is
+    configured, so a project without [[design_evidence]] sees no change."""
+    view = design_evidence_view(root, cfg)
+    if not view:
+        return ""
+    stored = load_design_evidence(root)["artifacts"]
+    lines = [
+        "# Design evidence",
+        "",
+        "Cached output of the configured [[design_evidence]] measurement commands. Only artifacts marked "
+        "`current` show output; a stale, failed, or missing artifact must be refreshed with "
+        "`handsoff_supervisor.py design-evidence run --by <you>` (add `--force` to challenge a cached "
+        "result) before it is relied on.",
+    ]
+    for item in view:
+        reasons = f" ({'; '.join(item['reasons'])})" if item["reasons"] else ""
+        lines.extend(["", f"## {item['id']}: {item['state']}{reasons}"])
+        if item["state"] != "current":
+            continue
+        record = stored[item["id"]]
+        head_note = "matches HEAD" if item["commit_matches_head"] else "HEAD has moved since"
+        lines.append(f"command: {record['command']}")
+        lines.append(f"measured at {record['at']} by {record['by']} on commit {record['head'] or 'n/a'} "
+                     f"({head_note}); input_hash {record['input_hash'][:16]}; "
+                     f"{'truncated to' if record['truncated'] else 'complete,'} "
+                     f"{min(record['output_bytes'], MAX_DESIGN_EVIDENCE_OUTPUT_BYTES)} of {record['output_bytes']} bytes")
+        lines.extend(["", "```", record["output"].rstrip("\n"), "```"])
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# #36 delta review packets: after the first full design review, a follow-up
+# reviewer receives the sorted, canonical, size-capped delta (criteria delta,
+# dispositioned prior findings, evidence states, repository identity) in
+# front of its role prompt instead of re-deriving the whole design.
+# --------------------------------------------------------------------------
+
+def validate_design_review_findings(values: object, attempt: int) -> list[dict]:
+    """Bounded `--finding` texts become `{"id": "F<attempt>.<n>", "text"}`."""
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise HandsoffError("design review findings must be a list of strings")
+    if len(values) > MAX_DESIGN_REVIEW_FINDINGS:
+        raise HandsoffError(f"at most {MAX_DESIGN_REVIEW_FINDINGS} --finding entries are accepted per review")
+    findings = []
+    for index, value in enumerate(values, start=1):
+        if not isinstance(value, str) or not value.strip():
+            raise HandsoffError(f"--finding {index} must be a non-empty string")
+        text = value.strip()
+        if len(text) > MAX_DESIGN_REVIEW_FINDING_LENGTH:
+            raise HandsoffError(f"--finding {index} exceeds {MAX_DESIGN_REVIEW_FINDING_LENGTH} characters")
+        findings.append({"id": f"F{attempt}.{index}", "text": text})
+    return findings
+
+
+def design_review_history_entry(review: dict, criteria: list[dict], *, structural_blocker: bool = False) -> dict:
+    """The bounded fact a later packet (and #37's tier selection) compares
+    against: which criteria existed, their spec hashes, the commit, and the
+    findings, at the moment the review was recorded."""
+    ordered = sorted(criteria, key=lambda c: c.get("id") or "")
+    return {
+        "attempt": review["attempt"],
+        "decision": review["decision"],
+        "by": review["by"],
+        "design_hash": review["design_hash"],
+        "head": review.get("head"),
+        "criteria_ids": sorted(c.get("id") for c in ordered if isinstance(c.get("id"), str)),
+        "criterion_hashes": {c["id"]: criterion_spec_hash(c) for c in ordered if isinstance(c.get("id"), str)},
+        "structural_blocker": bool(structural_blocker),
+        "findings": deepcopy(review.get("findings") or []),
+    }
+
+
+def append_design_review_history(status: dict, entry: dict) -> None:
+    history = [h for h in (status.get("design_review_history") or []) if isinstance(h, dict)]
+    history.append(entry)
+    status["design_review_history"] = history[-MAX_DESIGN_REVIEW_HISTORY:]
+
+
+def latest_design_review_findings(status: dict) -> list[dict]:
+    history = status.get("design_review_history") or []
+    if not history or not isinstance(history[-1], dict):
+        return []
+    return [f for f in (history[-1].get("findings") or []) if isinstance(f, dict)]
+
+
+def parse_design_review_dispositions(values: object, findings: list[dict]) -> dict:
+    """`ID=resolved|rejected|unresolved[:note]` per entry, validated against
+    the most recent review's findings. Every refusal names the offending
+    value; an omitted finding is filled in by the packet as unresolved."""
+    known = {f["id"] for f in findings}
+    parsed: dict[str, dict] = {}
+    for raw in values or []:
+        if not isinstance(raw, str) or "=" not in raw:
+            raise HandsoffError(f"--disposition {raw!r} must have the form ID=resolved|rejected|unresolved[:note]")
+        finding_id, _, rest = raw.partition("=")
+        finding_id = finding_id.strip()
+        disposition, _, note = rest.partition(":")
+        disposition = disposition.strip()
+        if finding_id not in known:
+            raise HandsoffError(f"--disposition names unknown finding {finding_id!r}; known: "
+                                f"{', '.join(sorted(known)) or 'none'}")
+        if finding_id in parsed:
+            raise HandsoffError(f"--disposition repeats finding {finding_id}")
+        if disposition not in DESIGN_REVIEW_DISPOSITIONS:
+            raise HandsoffError(f"--disposition for {finding_id} has invalid value {disposition!r}; "
+                                f"expected one of {', '.join(DESIGN_REVIEW_DISPOSITIONS)}")
+        note = note.strip()[:MAX_DESIGN_REVIEW_FINDING_LENGTH] or None
+        if disposition == "rejected" and note is None:
+            raise HandsoffError(f"--disposition {finding_id}=rejected requires a note explaining why")
+        parsed[finding_id] = {"disposition": disposition, "note": note}
+    return parsed
+
+
+def _packet_repository(root: Path) -> dict:
+    try:
+        snapshot = repository_snapshot(root)
+    except HandsoffError:
+        return {"head": None, "branch": None, "dirty": None}
+    return {"head": snapshot["head"], "branch": snapshot["branch"], "dirty": snapshot["dirty"]}
+
+
+def _files_changed_between(root: Path, previous_head: str, head: str, runner=subprocess.run) -> list[str] | None:
+    if not re.fullmatch(r"[0-9a-f]{40,64}", previous_head or "") or not re.fullmatch(r"[0-9a-f]{40,64}", head or ""):
+        return None
+    try:
+        result = runner(
+            ["git", "diff", "--name-only", f"{previous_head}..{head}"], cwd=str(root.resolve()),
+            shell=False, text=True, capture_output=True, timeout=10, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+
+
+def _normalized_finding_text(text: object) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _packet_size(body: dict, truncated: dict) -> int:
+    probe = {**body, "packet_id": "0" * 32}
+    if truncated:
+        probe["truncated"] = truncated
+    return len(_canonical(probe).encode("utf-8"))
+
+
+def build_design_review_packet(root: Path, cfg: dict, status: dict, acceptance: dict,
+                               dispositions: dict | None = None, *, runner=subprocess.run) -> dict:
+    """Deterministic (no timestamps, every list sorted) delta packet for the
+    next design-review attempt, at most MAX_DESIGN_REVIEW_PACKET_BYTES when
+    serialized canonically. Over budget it is trimmed in a fixed order,
+    re-measured after each step, and each trim is recorded in `truncated`;
+    ids, hashes, attempt numbers, repository identity, and stale_reasons are
+    never trimmed. `packet_id` is sha256 of the final trimmed body."""
+    root = root.resolve()
+    history = [h for h in (status.get("design_review_history") or []) if isinstance(h, dict)]
+    if not history:
+        raise HandsoffError("no recorded design review to build a delta packet from")
+    previous = history[-1]
+    attempts = design_review_budget(status, cfg)["attempts"]
+    criteria = acceptance.get("criteria", [])
+    current_hashes = {c["id"]: criterion_spec_hash(c) for c in criteria if isinstance(c.get("id"), str)}
+    previous_hashes = previous.get("criterion_hashes") or {}
+    previous_ids = {i for i in (previous.get("criteria_ids") or []) if isinstance(i, str)}
+    current_ids = set(current_hashes)
+    common = current_ids & previous_ids
+    # A criterion whose earlier spec hash is unknown counts as changed:
+    # the reviewer verifies more, never less, when the record is thin.
+    changed = sorted(i for i in common if previous_hashes.get(i) != current_hashes[i])
+    criteria_delta = {
+        "added": sorted(current_ids - previous_ids),
+        "removed": sorted(previous_ids - current_ids),
+        "changed": changed,
+        "unchanged": sorted(common - set(changed)),
+    }
+    dispositions = dispositions or {}
+    findings = []
+    for finding in sorted(latest_design_review_findings(status), key=lambda f: f.get("id") or ""):
+        given = dispositions.get(finding["id"]) or {"disposition": "unresolved", "note": None}
+        findings.append({"id": finding["id"], "text": finding["text"],
+                         "disposition": given["disposition"], "note": given.get("note")})
+    earlier_texts = {
+        _normalized_finding_text(f.get("text"))
+        for entry in history[:-1] for f in (entry.get("findings") or []) if isinstance(f, dict)
+    }
+    new_findings_since = sorted(
+        f["id"] for f in findings if _normalized_finding_text(f["text"]) not in earlier_texts
+    )
+    repository = _packet_repository(root)
+    previous_head = previous.get("head")
+    stale_reasons: list[str] = []
+    files_changed: list[str] | None = None
+    if previous_head is None:
+        stale_reasons.append("previous review recorded no repository head")
+    elif repository["head"] is None:
+        stale_reasons.append("current repository identity is unavailable")
+    elif previous_head != repository["head"]:
+        stale_reasons.append(f"HEAD moved from {previous_head[:12]} to {repository['head'][:12]} since the previous review")
+        files_changed = _files_changed_between(root, previous_head, repository["head"], runner)
+        if files_changed is None:
+            stale_reasons.append("files changed since the previous review could not be listed")
+    else:
+        files_changed = []
+    stale = bool(stale_reasons)
+    try:
+        evidence_view = design_evidence_view(root, cfg)
+    except HandsoffError:
+        evidence_view = []
+    evidence = []
+    for item in sorted(evidence_view, key=lambda e: e.get("id") or ""):
+        evidence.append({
+            "id": item["id"], "state": item["state"], "reasons": sorted(item.get("reasons") or []),
+            "input_hash": item.get("input_hash"), "output_sha256": item.get("output_sha256"),
+            "head": item.get("head"), "commit_matches_head": bool(item.get("commit_matches_head")),
+            "at": item.get("at"), "by": item.get("by"), "truncated": bool(item.get("truncated")),
+            "exit_code": item.get("exit_code"),
+            "stale_for_packet": stale or item["state"] != "current" or not item.get("commit_matches_head"),
+        })
+    body = {
+        "attempt": attempts + 1,
+        "previous_attempt": previous["attempt"],
+        "design_hash": design_hash(criteria),
+        "previous_design_hash": previous["design_hash"],
+        "criteria_delta": criteria_delta,
+        "findings": findings,
+        "dispositions": {
+            name: sorted(f["id"] for f in findings if f["disposition"] == name)
+            for name in DESIGN_REVIEW_DISPOSITIONS
+        },
+        "new_findings_since": new_findings_since,
+        "evidence": evidence,
+        "repository": repository,
+        "previous_head": previous_head,
+        "files_changed_since_previous": files_changed,
+        "stale": stale,
+        "stale_reasons": stale_reasons,
+        "instructions": DESIGN_REVIEW_PACKET_INSTRUCTIONS,
+    }
+    truncated: dict[str, int] = {}
+    limit = MAX_DESIGN_REVIEW_PACKET_BYTES
+
+    def fits() -> bool:
+        return _packet_size(body, truncated) <= limit
+
+    # (1) files: first 200, then halve until it fits or is empty.
+    if files_changed is not None and len(files_changed) > MAX_DESIGN_REVIEW_PACKET_FILES:
+        truncated["files_changed_since_previous"] = len(files_changed) - MAX_DESIGN_REVIEW_PACKET_FILES
+        files_changed = files_changed[:MAX_DESIGN_REVIEW_PACKET_FILES]
+        body["files_changed_since_previous"] = files_changed
+    while not fits() and files_changed:
+        keep = len(files_changed) // 2
+        truncated["files_changed_since_previous"] = (
+            truncated.get("files_changed_since_previous", 0) + len(files_changed) - keep)
+        files_changed = files_changed[:keep]
+        body["files_changed_since_previous"] = files_changed
+    # (2) unchanged criteria ids collapse to their count.
+    if not fits():
+        unchanged = criteria_delta.pop("unchanged")
+        criteria_delta["unchanged_count"] = len(unchanged)
+        truncated["criteria_delta.unchanged"] = len(unchanged)
+    # (3) finding text and note cut to 256 characters.
+    if not fits():
+        cut = 0
+        for finding in findings:
+            for field in ("text", "note"):
+                value = finding.get(field)
+                if isinstance(value, str) and len(value) > DESIGN_REVIEW_PACKET_TRIMMED_TEXT_LENGTH:
+                    finding[field] = value[:DESIGN_REVIEW_PACKET_TRIMMED_TEXT_LENGTH]
+                    cut += 1
+        if cut:
+            truncated["findings.text"] = cut
+    # (4) evidence reasons dropped, keeping id and state.
+    if not fits():
+        dropped = 0
+        for item in evidence:
+            if item.pop("reasons", None):
+                dropped += 1
+        if dropped:
+            truncated["evidence.reasons"] = dropped
+    # (5) findings cut from the end.
+    while not fits() and findings:
+        findings.pop()
+        truncated["findings"] = truncated.get("findings", 0) + 1
+    if truncated:
+        body["truncated"] = truncated
+    packet_id = hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()[:32]
+    return {"packet_id": packet_id, **body}
+
+
+def design_review_packet_bytes(packet: dict) -> int:
+    return len(_canonical(packet).encode("utf-8"))
+
+
+def applicable_design_review_packet(status: dict, cfg: dict, criteria: list[dict]) -> dict | None:
+    """The stored packet only when it is for the NEXT attempt of the CURRENT
+    design in Phase 2; anything else (older attempt, criteria edited since,
+    another phase) is ignored so the reviewer gets full context instead."""
+    packet = status.get("design_review_packet") if isinstance(status, dict) else None
+    if not isinstance(packet, dict) or status.get("phase_number") != 2:
+        return None
+    if packet.get("attempt") != design_review_budget(status, cfg)["attempts"] + 1:
+        return None
+    if packet.get("design_hash") != design_hash(criteria):
+        return None
+    return deepcopy(packet)
+
+
+def design_review_packet_summary(status: dict) -> dict | None:
+    """Counts and flags for the dashboard; never the finding texts."""
+    packet = status.get("design_review_packet") if isinstance(status, dict) else None
+    if not isinstance(packet, dict):
+        return None
+    findings = [f for f in (packet.get("findings") or []) if isinstance(f, dict)]
+    delta = packet.get("criteria_delta") or {}
+    unchanged = delta.get("unchanged")
+    return {
+        "packet_id": packet.get("packet_id"),
+        "attempt": packet.get("attempt"),
+        "previous_attempt": packet.get("previous_attempt"),
+        "design_hash": packet.get("design_hash"),
+        "stale": bool(packet.get("stale")),
+        "stale_reasons": list(packet.get("stale_reasons") or []),
+        "findings": {
+            "total": len(findings),
+            **{name: sum(1 for f in findings if f.get("disposition") == name)
+               for name in DESIGN_REVIEW_DISPOSITIONS},
+        },
+        "new_findings": len(packet.get("new_findings_since") or []),
+        "criteria_delta": {
+            "added": len(delta.get("added") or []),
+            "removed": len(delta.get("removed") or []),
+            "changed": len(delta.get("changed") or []),
+            "unchanged": len(unchanged) if isinstance(unchanged, list) else int(delta.get("unchanged_count") or 0),
+        },
+        "evidence": len(packet.get("evidence") or []),
+        "files_changed": (len(packet["files_changed_since_previous"])
+                          if isinstance(packet.get("files_changed_since_previous"), list) else None),
+        "truncated": bool(packet.get("truncated")),
+        "bytes": design_review_packet_bytes(packet),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -2933,3 +4505,204 @@ def archive_run(root: Path, cfg: dict, status: dict, acceptance: dict,
     out_path = out_dir / filename
     out_path.write_text(json.dumps(record, indent=1, sort_keys=True))
     return out_path
+
+
+# --------------------------------------------------------------------------
+# #40: run-owned dashboard release
+# --------------------------------------------------------------------------
+# A dashboard launched with `dashboard --owned-by-run` belongs to one run of
+# one root. When that run lands Phase 8 complete, `advance` asks the server
+# to stop so the port is free for the next run. Two independent bindings
+# decide whether a server may be stopped: the run_token the server minted
+# at launch, and the sha256 of the root it serves, which the caller
+# computes from its OWN resolved root and never reads from the file. No
+# PID is ever signalled; a server that does not answer with both values
+# is left alone and only the pointer file is removed.
+
+def dashboard_owner_path(root: Path) -> Path:
+    return root / DASHBOARD_OWNER_FILE
+
+
+def dashboard_root_sha256(root: Path) -> str:
+    """The root binding both sides compute independently."""
+    return hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()
+
+
+def new_dashboard_run_token() -> str:
+    return secrets.token_hex(16)
+
+
+def write_dashboard_owner(root: Path, *, pid: int, host: str, port: int, run_token: str,
+                          root_sha256: str, feature: str | None) -> Path:
+    """Write the pointer file for a run-owned server. Identifiers, integers,
+    and timestamps only; the token is a random handle, not a credential
+    for anything beyond stopping this one loopback server."""
+    path = dashboard_owner_path(root)
+    atomic_write_json(path, {
+        "pid": int(pid),
+        "host": host,
+        "port": int(port),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "owner": DASHBOARD_OWNER,
+        "run_token": run_token,
+        "root_sha256": root_sha256,
+        "feature": feature,
+    })
+    return path
+
+
+def remove_dashboard_owner_if_token(root: Path, run_token: str) -> bool:
+    """The server's own exit path: remove the pointer file only while it
+    still carries this server's token. A file with a different token
+    belongs to a newer server on the same root and is left in place.
+    Returns True when a file was removed."""
+    path = dashboard_owner_path(root)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict) or record.get("run_token") != run_token:
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _dashboard_base_url(host: str, port: int) -> str:
+    if ":" in host:
+        return f"http://[{host}]:{port}"
+    return f"http://{host}:{port}"
+
+
+def _dashboard_json_request(url: str, *, timeout: float, body: dict | None = None) -> dict:
+    """One loopback JSON exchange. Raises OSError for any transport failure
+    and ValueError for any answer that is not a JSON object; the caller
+    turns either into a "stale metadata" outcome."""
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body, separators=(",", ":")).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers,
+                                     method="POST" if body is not None else "GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        payload = exc.read()
+        try:
+            answer = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            answer = {}
+        detail = answer.get("error") if isinstance(answer, dict) else None
+        raise ValueError(f"HTTP {exc.code}: {detail or 'no detail'}") from exc
+    except urllib.error.URLError as exc:
+        raise OSError(str(exc.reason)) from exc
+    try:
+        answer = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("answer is not JSON") from exc
+    if not isinstance(answer, dict):
+        raise ValueError("answer is not a JSON object")
+    return answer
+
+
+def _dashboard_port_refuses(host: str, port: int, *, wait: float) -> bool:
+    """Poll until a fresh TCP connect to the port is refused, up to `wait`
+    seconds. Only ECONNREFUSED counts as closed; a connect that succeeds
+    (even to a listen backlog nobody accepts from any more) means the
+    listening socket is still open."""
+    deadline = time.monotonic() + max(wait, 0.0)
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=0.25):
+                pass
+        except ConnectionRefusedError:
+            return True
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def release_run_dashboard(root: Path, *, timeout: float = 2.0, wait: float = 5.0) -> dict:
+    """Stop the dashboard this root's run owns, if the server behind the
+    pointer file proves it is that server.
+
+    1. No pointer file: nothing to do.
+    2. The file names a port. `GET /api/ownership` on it must answer
+       `owned: true` with the file's run_token AND the root hash this
+       caller computes itself from its own resolved root. Only then is
+       `POST /api/shutdown` sent (the server re-checks both values), the
+       port is polled until it refuses, and the file is removed.
+    3. Anything else (connection refused, an unowned server, a foreign
+       token, another root, a malformed answer): the metadata is stale
+       or the port belongs to someone else. The file is removed and no
+       process is touched.
+    Never signals a PID. Idempotent: the file is gone after any outcome
+    except the no-file case, so a repeated call reports that."""
+    path = dashboard_owner_path(root)
+    if not path.exists():
+        return {"released": False, "reason": "no run-owned dashboard"}
+
+    def stale(which: str) -> dict:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return {"released": False, "reason": f"stale ownership metadata removed: {which}"}
+
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return stale("owner file is not readable JSON")
+    if not isinstance(record, dict):
+        return stale("owner file is not a JSON object")
+    port = record.get("port")
+    token = record.get("run_token")
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
+        return stale("owner file has no usable port")
+    if not isinstance(token, str) or not token:
+        return stale("owner file has no run_token")
+    host = record.get("host")
+    if host not in DASHBOARD_LOOPBACK_HOSTS:
+        host = "127.0.0.1"
+    pid = record.get("pid") if isinstance(record.get("pid"), int) else None
+    expected_root = dashboard_root_sha256(root)
+    base = _dashboard_base_url(host, port)
+
+    try:
+        ownership = _dashboard_json_request(f"{base}/api/ownership", timeout=timeout)
+    except OSError as exc:
+        return stale(f"connection failed ({exc})")
+    except ValueError as exc:
+        return stale(f"malformed ownership answer ({exc})")
+    if ownership.get("owned") is not True:
+        return stale("server is not run-owned")
+    if ownership.get("run_token") != token:
+        return stale("run_token mismatch")
+    if ownership.get("root_sha256") != expected_root:
+        return stale("root_sha256 mismatch")
+
+    try:
+        answer = _dashboard_json_request(f"{base}/api/shutdown", timeout=timeout,
+                                         body={"run_token": token, "root_sha256": expected_root})
+    except OSError as exc:
+        return stale(f"shutdown request failed ({exc})")
+    except ValueError as exc:
+        return stale(f"shutdown refused ({exc})")
+    if answer.get("ok") is not True:
+        return stale("shutdown not acknowledged")
+    closed = _dashboard_port_refuses(host, port, wait=wait)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    if not closed:
+        return {"released": False, "pid": pid, "port": port,
+                "reason": f"shutdown accepted but port {port} still accepted connections after {wait:g} s"}
+    return {"released": True, "pid": pid, "port": port,
+            "reason": f"run-owned dashboard on port {port} shut down"}

@@ -18,6 +18,31 @@
     "live_verification_id": {"type": ["string", "null"]},
     "verification_head": {"type": "string"},
     "requires_design_review": {"type": "boolean"},
+    "design_review_attempts": {"type": "integer", "minimum": 0},
+    "design_review_authorization": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["by", "at", "note", "attempt_permitted", "launch_session_id", "consumed_at"],
+      "properties": {
+        "by": {"type": "string", "minLength": 1},
+        "at": {"type": "string", "format": "date-time"},
+        "note": {"type": ["string", "null"]},
+        "attempt_permitted": {"type": "integer", "minimum": 1},
+        "launch_session_id": {"type": ["string", "null"], "pattern": "^hs-[0-9a-f]{32}$"},
+        "consumed_at": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "design_reviewer_escalation": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["by", "at", "note", "consumed_at"],
+      "properties": {
+        "by": {"type": "string", "minLength": 1},
+        "at": {"type": "string", "format": "date-time"},
+        "note": {"type": ["string", "null"]},
+        "consumed_at": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
     "agent_sessions": {
       "type": "object",
       "maxProperties": 64,
@@ -33,12 +58,15 @@
             "adapter": {"enum": ["codex", "claude"]},
             "requested_model": {"type": "string", "minLength": 1, "maxLength": 128},
             "reported_model": {"type": ["string", "null"], "maxLength": 128},
-            "resolution_source": {"enum": ["configured", "auto_detected", "legacy_auto_detected", "fallback"]},
+            "resolution_source": {"enum": ["configured", "recommended", "auto_detected", "legacy_auto_detected", "fallback"]},
             "started_at": {"type": "string", "format": "date-time"},
             "running_at": {"type": ["string", "null"], "format": "date-time"},
             "ended_at": {"type": ["string", "null"], "format": "date-time"},
             "state": {"enum": ["launching", "running", "completed", "failed", "timed_out", "cancelled", "failed_to_start"]},
-            "exit_code": {"type": ["integer", "null"]}
+            "exit_code": {"type": ["integer", "null"]},
+            "packet_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+            "design_hash": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+            "tier": {"enum": ["primary", "followup", null]}
           }
         }
       },
@@ -152,7 +180,77 @@
         "decision": {"enum": ["approved", "changes_requested"]},
         "summary": {"type": "string"},
         "design_hash": {"type": "string"},
-        "config_hash": {"type": "string"}
+        "config_hash": {"type": "string"},
+        "attempt": {"type": "integer", "minimum": 1},
+        "head": {"type": ["string", "null"]},
+        "findings": {"$ref": "#/$defs/design_review_findings"},
+        "structural_blocker": {"type": "boolean"},
+        "reviewer_profile": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["adapter", "model", "tier", "reason"],
+          "properties": {
+            "adapter": {"type": "string", "minLength": 1},
+            "model": {"type": "string", "minLength": 1},
+            "tier": {"enum": ["primary", "followup"]},
+            "reason": {"enum": ["first_review", "no_followup_configured", "pilot_escalation", "structural_blocker", "criteria_structure_changed", "delta_check"]}
+          }
+        }
+      }
+    },
+    "design_review_history": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attempt", "decision", "by", "design_hash", "head", "criteria_ids", "criterion_hashes", "structural_blocker", "findings"],
+        "properties": {
+          "attempt": {"type": "integer", "minimum": 1},
+          "decision": {"enum": ["approved", "changes_requested"]},
+          "by": {"type": "string", "minLength": 1},
+          "design_hash": {"type": "string", "minLength": 1},
+          "head": {"type": ["string", "null"]},
+          "criteria_ids": {"type": "array", "items": {"type": "string"}},
+          "criterion_hashes": {"type": "object", "additionalProperties": {"type": "string"}},
+          "structural_blocker": {"type": "boolean"},
+          "findings": {"$ref": "#/$defs/design_review_findings"}
+        }
+      }
+    },
+    "design_review_packet": {
+      "type": ["object", "null"],
+      "required": ["packet_id", "attempt", "previous_attempt", "design_hash", "previous_design_hash", "criteria_delta", "findings", "dispositions", "new_findings_since", "evidence", "repository", "previous_head", "files_changed_since_previous", "stale", "stale_reasons", "instructions"],
+      "properties": {
+        "packet_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "attempt": {"type": "integer", "minimum": 2},
+        "previous_attempt": {"type": "integer", "minimum": 1},
+        "design_hash": {"type": "string"},
+        "previous_design_hash": {"type": "string"},
+        "criteria_delta": {"type": "object"},
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "text", "disposition", "note"],
+            "properties": {
+              "id": {"type": "string", "pattern": "^F[1-9][0-9]*\\.[1-9][0-9]*$"},
+              "text": {"type": "string"},
+              "disposition": {"enum": ["resolved", "rejected", "unresolved"]},
+              "note": {"type": ["string", "null"]}
+            }
+          }
+        },
+        "dispositions": {"type": "object"},
+        "new_findings_since": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array"},
+        "repository": {"type": "object"},
+        "previous_head": {"type": ["string", "null"]},
+        "files_changed_since_previous": {"type": ["array", "null"], "items": {"type": "string"}},
+        "stale": {"type": "boolean"},
+        "stale_reasons": {"type": "array", "items": {"type": "string"}},
+        "instructions": {"type": "string"},
+        "truncated": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
       }
     },
     "review": {
@@ -178,5 +276,20 @@
       }
     },
     "events": {"type": "array"}
+  },
+  "$defs": {
+    "design_review_findings": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^F[1-9][0-9]*\\.[1-9][0-9]*$"},
+          "text": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      }
+    }
   }
 }

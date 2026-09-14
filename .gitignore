@@ -7,5 +7,8 @@ handsoff-status.json
 handsoff-acceptance.json
 handsoff-events.jsonl
 handsoff-verifications.jsonl
+handsoff-design-evidence.json
 .handsoff-selfcheck/
 .handsoff-archive/
+.handsoff-dashboard-owner.json
+.handsoff-live.json

@@ -13,19 +13,32 @@ require_live_verification = true
 deployment_requires_explicit_approval = true
 
 [agents]
-# "auto" selects the first installed adapter in this order: Codex, then
-# Claude Code. Set any role explicitly to override its automatic choice.
-architect = "auto"
-supervisor = "auto"
-implementer = "auto"
-reviewer = "auto"
+# Every role here is set explicitly and happens to equal the recommended
+# crew (README "Default crew"): a role whose key is absent, or still holds
+# the legacy "configure-me" placeholder, gets that same recommended profile
+# and is reported with source "recommended" instead of "explicit".
+# Recommended adapters: claude for architect, supervisor, and implementer;
+# codex for the reviewer, so the critique comes from an independent
+# provider family. Setting one role never changes the other three.
+# "auto" is an explicit choice, not a placeholder: it keeps the older
+# first-installed auto-detect path (Codex, then Claude Code).
+architect = "claude"
+supervisor = "claude"
+implementer = "claude"
+reviewer = "codex"
 
 [models]
 # Use "default" to inherit the runner's configured model, or enter an exact
-# model ID/alias supported by the selected adapter.
-architect = "default"
-supervisor = "default"
-implementer = "default"
+# model ID/alias supported by the selected adapter. Recommended models, used
+# when a role's key is absent: claude-opus-5 for architect, supervisor, and
+# implementer (premium reasoning on design, and the same Opus profile kept
+# for orchestration and implementation by operator preference); "default"
+# for the codex reviewer. A recommended model applies only with its
+# recommended adapter: override an adapter without naming a model and the
+# role runs with the runner default (source "runner_default").
+architect = "claude-opus-5"
+supervisor = "claude-opus-5"
+implementer = "claude-opus-5"
 reviewer = "default"
 
 [fallback_policy]
@@ -41,10 +54,24 @@ reviewer = []
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a
 # free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
-commands = []
+commands = [
+  "python3 -m unittest tests.test_handsoff_supervisor.TestHumanPauseSuppressesStall -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestDesignReviewAttemptBudget -v",
+  "node --test tests/dashboard/design_review_budget.test.js",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestRecommendedCrewDefaults -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestDesignEvidenceCache -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestDesignReviewPacket -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestTieredDesignReviewerProfiles -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestRunOwnedDashboardRelease -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestLiveSessionStatus -v",
+  "node --test tests/dashboard/live_status.test.js",
+]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = []
+live_commands = [
+  'git fetch -q origin && test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"',
+  """python3 -c "import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8765/api/dashboard')); assert data['initialized'] and data['status']['deployment_approved'] and data['live']['state'] and 'design_review_attempts' in data['policy'] and 'design_reviewer_selection' in data['policy'] and 'design_evidence' in data and 'design_review_packet' in data"""",
+]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600

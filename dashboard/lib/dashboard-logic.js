@@ -49,6 +49,61 @@ function runProfileLabel(role, context = {}) {
   return `THIS RUN: external/manual launch · provider, model, and session not recorded · ${actor}`;
 }
 
+// #35: the design-review attempt budget, derived from the structured
+// policy fields only (never parsed out of next_action or any prose), so
+// the label can never disagree with what the supervisor enforces.
+function designReviewBudgetLabel(policy) {
+  const attempts = Number.isInteger(policy?.design_review_attempts) ? policy.design_review_attempts : 0;
+  const limit = Number.isInteger(policy?.max_autonomous_design_reviews) ? policy.max_autonomous_design_reviews : 0;
+  const authorization = policy?.design_review_authorization;
+  const authorized = authorization && typeof authorization === "object" && authorization.consumed_at === null;
+  const suffix = authorized ? ` · attempt ${authorization.attempt_permitted} authorized` : "";
+  return `Design review ${attempts}/${limit}${suffix}`;
+}
+
+// #36: one compact line for the latest delta review packet, derived from
+// the snapshot's counts only (the packet's finding text never reaches the
+// dashboard). Null or a legacy snapshot without the field reads as no packet.
+function designReviewPacketLabel(packet) {
+  if (!packet || typeof packet !== "object" || !Number.isInteger(packet.attempt)) {
+    return "Delta packet: none (first review gets the full task)";
+  }
+  const findings = packet.findings && typeof packet.findings === "object" ? packet.findings : {};
+  const count = (value) => (Number.isInteger(value) ? value : 0);
+  const delta = packet.criteria_delta && typeof packet.criteria_delta === "object" ? packet.criteria_delta : {};
+  const parts = [
+    `Delta packet for attempt ${packet.attempt}`,
+    `${count(findings.total)} finding${count(findings.total) === 1 ? "" : "s"} (${count(findings.resolved)} resolved, ${count(findings.rejected)} rejected, ${count(findings.unresolved)} unresolved)`,
+    `criteria +${count(delta.added)} -${count(delta.removed)} ~${count(delta.changed)}`,
+  ];
+  if (packet.stale) parts.push("STALE");
+  if (packet.truncated) parts.push("truncated");
+  return parts.join(" · ");
+}
+
+// #37: one line naming the reviewer tier the NEXT design-review launch
+// selects, derived from policy.design_reviewer_selection only (never from
+// prose). The reason token is shown with spaces; a post-selection refusal
+// (independence or availability) is appended so a missing follow-up
+// executable is visible instead of silently substituted. The latest
+// recorded review's tier follows as "last review" when there is one.
+function designReviewerProfileLabel(selection) {
+  const next = selection && typeof selection === "object" ? selection.next : null;
+  if (!next || typeof next !== "object" || typeof next.tier !== "string" || !next.tier) {
+    return "Review profile: not selected";
+  }
+  const reason = String(next.reason || "unknown").replaceAll("_", " ");
+  const profile = `${next.adapter || "unresolved"}/${next.model || "default"}`;
+  let label = `Review profile: ${next.tier} ${profile} (${reason})`;
+  if (typeof next.error === "string" && next.error) label += ` · BLOCKED: ${next.error}`;
+  const current = selection.current;
+  if (current && typeof current === "object" && typeof current.tier === "string" && current.tier) {
+    const currentReason = String(current.reason || "unknown").replaceAll("_", " ");
+    label += ` · last review: ${current.tier} ${current.adapter || "unresolved"}/${current.model || "default"} (${currentReason})`;
+  }
+  return label;
+}
+
 function cleanKind(value) {
   return String(value || "event").replaceAll("_", " ");
 }
@@ -91,7 +146,38 @@ function replacementDetail(replacement) {
   return `${from} → ${to} · ${trigger} / ${category}`;
 }
 
+// #38: one pill per configured [[design_evidence]] artifact. The snapshot
+// carries states and hashes only, never command output.
+const DESIGN_EVIDENCE_STATES = ["current", "stale", "failed", "missing"];
+
+function designEvidenceState(artifact) {
+  const state = String(artifact?.state || "");
+  return DESIGN_EVIDENCE_STATES.includes(state) ? state : "missing";
+}
+
+function designEvidenceDetail(artifact) {
+  const parts = [];
+  const reasons = Array.isArray(artifact?.reasons) ? artifact.reasons.filter(Boolean) : [];
+  if (reasons.length) parts.push(reasons.join("; "));
+  if (Number.isInteger(artifact?.matched_files)) {
+    parts.push(`${artifact.matched_files} input file${artifact.matched_files === 1 ? "" : "s"}`);
+  }
+  if (artifact?.head) {
+    parts.push(`commit ${String(artifact.head).slice(0, 12)}${artifact.commit_matches_head ? " (HEAD)" : " (HEAD has moved)"}`);
+  }
+  if (artifact?.at) parts.push(`measured ${artifact.at}${artifact.by ? ` by ${artifact.by}` : ""}`);
+  return parts.join(" · ") || "No measurement recorded.";
+}
+
 function eventDetail(event) {
+  if (String(event?.kind || "") === "design_evidence_recorded") {
+    return [
+      event.artifact_id,
+      Number.isInteger(event.exit_code) ? `exit ${event.exit_code}` : null,
+      event.truncated ? "truncated" : null,
+      event.head ? `commit ${String(event.head).slice(0, 12)}` : null,
+    ].filter(Boolean).join(" · ");
+  }
   if (!String(event?.kind || "").startsWith("agent_replacement_")) return "";
   const transition = [event.from_session_id, event.to_session_id].filter(Boolean).join(" → ");
   const parts = [
@@ -102,6 +188,69 @@ function eventDetail(event) {
     event.replacement_state,
   ];
   return parts.filter(Boolean).map((part) => String(part).replaceAll("_", " ")).join(" · ");
+}
+
+// #39: a role whose adapter or model came from the recommended crew
+// (the handsoff.toml key was absent, or held the legacy placeholder) is
+// labelled as such, so a default is never displayed as an operator choice.
+// `sources` is the settings view's profile_sources[role]: each of adapter
+// and model is "explicit", "recommended", or "runner_default" (adapter
+// overridden with no model named, so the runner's own default applies).
+function profileSourceLabel(sources) {
+  if (!sources) return "explicit";
+  if (sources.adapter === "recommended" && sources.model === "recommended") {
+    return "recommended default";
+  }
+  const part = (kind, source) => {
+    if (source === "recommended") return `recommended default ${kind}`;
+    if (source === "runner_default") return `runner default ${kind}`;
+    return `explicit ${kind}`;
+  };
+  return `${part("adapter", sources.adapter)} · ${part("model", sources.model)}`;
+}
+
+// #33: the live ship-feature status strip. Every state the server can
+// derive (handsoff_lib.LIVE_STATES) maps to a fixed pill label, a tone
+// class, and whether the pill pulses; an unknown state reads as such
+// rather than being coerced into a healthy-looking one.
+const LIVE_STATES = ["idle", "started", "running", "waiting", "stalled", "stopped", "failed", "complete"];
+
+const LIVE_STATE_META = {
+  idle: { label: "IDLE", tone: "muted", pulsing: false },
+  started: { label: "STARTING", tone: "good", pulsing: true },
+  running: { label: "RUNNING", tone: "good", pulsing: true },
+  waiting: { label: "WAITING", tone: "warning", pulsing: false },
+  stalled: { label: "STALLED", tone: "bad", pulsing: false },
+  stopped: { label: "STOPPED", tone: "muted", pulsing: false },
+  failed: { label: "FAILED", tone: "bad", pulsing: false },
+  complete: { label: "COMPLETE", tone: "good", pulsing: false },
+};
+
+function liveStateLabel(state) {
+  const meta = LIVE_STATE_META[String(state || "")];
+  return meta ? meta.label : "UNKNOWN";
+}
+
+function liveStatusView(live) {
+  const state = LIVE_STATES.includes(live?.state) ? live.state : "unknown";
+  const meta = LIVE_STATE_META[state] || { label: "UNKNOWN", tone: "muted", pulsing: false };
+  const role = typeof live?.role === "string" && live.role ? live.role.toUpperCase() : "NO ROLE";
+  const detail = typeof live?.detail === "string" && live.detail ? live.detail : "no managed process is running";
+  return { state, label: meta.label, tone: meta.tone, pulsing: meta.pulsing, role, detail };
+}
+
+// The age line ticks locally between snapshots: the server's
+// seconds_since_activity (measured at generated_at) plus the seconds that
+// have elapsed on this page since the snapshot arrived.
+function liveAgeLabel(live, elapsedSeconds = 0) {
+  const base = live?.seconds_since_activity;
+  if (!Number.isFinite(base)) return "last activity unknown";
+  const elapsed = Number.isFinite(elapsedSeconds) && elapsedSeconds > 0 ? elapsedSeconds : 0;
+  const seconds = Math.max(0, Math.floor(base + elapsed));
+  if (seconds < 120) return `last activity ${seconds} s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 120) return `last activity ${minutes} min ago`;
+  return `last activity ${Math.floor(minutes / 60)} h ago`;
 }
 
 // REQ-002: the Auto-detect <option> label always names the live resolved
@@ -116,7 +265,9 @@ const ALLOWED_ADAPTERS = ["auto", "codex", "claude"];
 // Returns the value the role's <select> should hold: one of
 // ALLOWED_ADAPTERS, or null when the stored adapter is a custom value the
 // dropdown must present as a distinct disabled placeholder instead of
-// silently coercing it to a listed option.
+// silently coercing it to a listed option. Since #39 the server folds the
+// legacy "configure-me" placeholder into the recommended crew before it
+// reaches the UI; the mapping below only matters for an older server.
 function resolveAgentSelectValue(storedAdapter) {
   const value = storedAdapter === "configure-me" ? "auto" : storedAdapter;
   return ALLOWED_ADAPTERS.includes(value) ? value : null;
@@ -169,12 +320,23 @@ if (typeof module !== "undefined" && module.exports) {
     actorForRole,
     runProfileLabel,
     cleanKind,
+    designReviewBudgetLabel,
+    designReviewPacketLabel,
+    designReviewerProfileLabel,
     eventMessage,
     runtimeProfileLabel,
     crewProfileLabel,
     replacementHeadline,
     replacementDetail,
     eventDetail,
+    DESIGN_EVIDENCE_STATES,
+    designEvidenceState,
+    designEvidenceDetail,
+    profileSourceLabel,
+    LIVE_STATES,
+    liveStateLabel,
+    liveStatusView,
+    liveAgeLabel,
     autoDetectOptionLabel,
     resolveAgentSelectValue,
     ALLOWED_ADAPTERS,

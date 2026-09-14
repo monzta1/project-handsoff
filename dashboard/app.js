@@ -19,12 +19,17 @@ const state = {
   crew: [],
   replacements: [],
   fallbackDraft: {},
+  live: null,
+  liveReceivedAt: null,
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 // adapterLabel, effectiveProfileLabel, actorForRole, runProfileLabel,
-// cleanKind, eventMessage, runtime/crew/replacement labels, eventDetail,
-// autoDetectOptionLabel, resolveAgentSelectValue,
-// ALLOWED_ADAPTERS, and the fallback-list helpers come from
+// cleanKind, designReviewBudgetLabel, designReviewPacketLabel,
+// designReviewerProfileLabel, eventMessage,
+// runtime/crew/replacement
+// labels, eventDetail, designEvidenceState, designEvidenceDetail,
+// profileSourceLabel, autoDetectOptionLabel, resolveAgentSelectValue,
+// ALLOWED_ADAPTERS, liveStatusView, liveAgeLabel, and the fallback-list helpers come from
 // lib/dashboard-logic.js (loaded before this file) so they stay testable
 // with plain `node --test` and no DOM.
 
@@ -180,7 +185,7 @@ function populateAgentSettings() {
     } else {
       const custom = document.createElement("option");
       custom.value = "";
-      custom.textContent = `Custom · ${profile.adapter} — choose replacement`;
+      custom.textContent = `Custom · ${profile.adapter}: choose replacement`;
       custom.dataset.custom = "true";
       custom.disabled = true;
       custom.selected = true;
@@ -194,7 +199,10 @@ function populateAgentSettings() {
     $(`agent-${role}-model`).value = profile.model || "default";
     const effective = state.settings.effective_profiles?.[role] || profile;
     const effectiveNode = $(`agent-${role}-effective`);
-    effectiveNode.textContent = `NEXT LAUNCH: ${effectiveProfileLabel(effective)}`;
+    // #39: name the provenance next to the next-launch profile so a
+    // recommended default is never mistaken for a saved choice.
+    const sources = state.settings.profile_sources?.[role];
+    effectiveNode.textContent = `NEXT LAUNCH: ${effectiveProfileLabel(effective)} · ${profileSourceLabel(sources)}`;
     effectiveNode.title = effectiveNode.textContent;
     const runNode = $(`agent-${role}-run`);
     runNode.textContent = runProfileLabelForRole(role);
@@ -423,11 +431,55 @@ function renderTickets(tickets) {
     </tr>`).join("");
 }
 
+function renderDesignEvidence(artifacts) {
+  const panel = $("design-evidence-panel");
+  panel.classList.toggle("hidden", !artifacts.length);
+  $("design-evidence-total").textContent = `${artifacts.length} ARTIFACT${artifacts.length === 1 ? "" : "S"}`;
+  $("design-evidence-list").innerHTML = artifacts.map((artifact) => `
+    <div class="design-evidence-item">
+      <span class="evidence-pill ${escapeHtml(designEvidenceState(artifact))}">${escapeHtml(designEvidenceState(artifact))}</span>
+      <div>
+        <strong>${escapeHtml(artifact.id)}</strong>
+        <p>${escapeHtml(designEvidenceDetail(artifact))}</p>
+      </div>
+      ${artifact.truncated ? '<span class="evidence-flag">truncated</span>' : ""}
+    </div>`).join("");
+}
+
 function renderAttention(items) {
   $("attention-count").textContent = items.length;
   $("attention-list").innerHTML = items.length
     ? items.map((item) => `<div class="attention-item"><i></i><span>${escapeHtml(item)}</span></div>`).join("")
     : '<div class="attention-clear">Threat scan clear. Trajectory stable.</div>';
+}
+
+// #33: the live status strip under the header. `renderLive` runs on every
+// snapshot; `renderLiveAge` also runs from a 1 s local ticker so the
+// "last activity N s ago" reading visibly moves between snapshots.
+function renderLive(live) {
+  const strip = $("live-status");
+  if (!strip) return;
+  state.live = live && typeof live === "object" ? live : null;
+  state.liveReceivedAt = state.live ? Date.now() : null;
+  if (!state.live) {
+    strip.classList.add("hidden");
+    return;
+  }
+  const view = liveStatusView(state.live);
+  strip.classList.remove("hidden");
+  strip.dataset.state = view.state;
+  strip.dataset.tone = view.tone;
+  strip.classList.toggle("is-pulsing", view.pulsing);
+  $("live-state").textContent = view.label;
+  $("live-role").textContent = view.role;
+  $("live-detail").textContent = view.detail;
+  renderLiveAge();
+}
+
+function renderLiveAge() {
+  if (!state.live) return;
+  const elapsed = state.liveReceivedAt ? (Date.now() - state.liveReceivedAt) / 1000 : 0;
+  $("live-age").textContent = liveAgeLabel(state.live, elapsed);
 }
 
 function renderRoleChiclets(activeRole) {
@@ -488,6 +540,7 @@ function render(snapshot) {
     if (!$("settings-dialog").open || !state.settingsDirty) populateAgentSettings();
   }
   if (!snapshot.initialized) {
+    renderLive(null);
     state.inputRequired = false;
     state.alertSignature = null;
     document.body.classList.remove("input-is-required");
@@ -507,6 +560,7 @@ function render(snapshot) {
   const policy = snapshot.policy;
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
+  renderLive(snapshot.live);
   renderInputAlert(snapshot.input_required, snapshot.project.feature);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   setFaviconState(status.status === "complete" ? "complete"
@@ -524,6 +578,9 @@ function render(snapshot) {
   $("status-updated").textContent = `State updated ${relativeTime(status.updated_at)}`;
   $("design-rounds").textContent = `${policy.design_round} / ${policy.max_design_rounds}`;
   $("review-rounds").textContent = `${policy.review_round} / ${policy.max_review_rounds}`;
+  $("design-review-budget").textContent = designReviewBudgetLabel(policy);
+  $("design-review-packet").textContent = designReviewPacketLabel(snapshot.design_review_packet);
+  $("design-reviewer-profile").textContent = designReviewerProfileLabel(policy.design_reviewer_selection);
   $("evidence-runs").textContent = snapshot.audit.verification_runs;
 
   renderPhases(snapshot.phases);
@@ -549,6 +606,7 @@ function render(snapshot) {
 
   renderCriteria(acceptance.criteria);
   renderTickets(snapshot.tickets || []);
+  renderDesignEvidence(snapshot.design_evidence || []);
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
   renderReplacements(state.replacements);
@@ -681,6 +739,7 @@ document.addEventListener("visibilitychange", () => {
 window.setInterval(() => {
   if (state.lastGenerated) $("last-sync").textContent = `SYNCED ${relativeTime(state.lastGenerated).toUpperCase()}`;
 }, 1000);
+window.setInterval(renderLiveAge, 1000);
 window.setInterval(() => {
   if (!state.inputRequired) return;
   state.titleFlip = !state.titleFlip;
