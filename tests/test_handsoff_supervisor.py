@@ -11147,3 +11147,208 @@ class TestBenchmarkHarness(HandsoffTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestRoleQuestions(HandsoffTestCase):
+    """#46: a role's `HANDSOFF_QUESTION:` line reaches Mission Control
+    without Supervisor relay, blocks only from the current live session,
+    and the Pilot's answer is delivered on the next launch."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        self.init("Issue 46 role questions")
+        sys.path.insert(0, str(BIN))
+        import handsoff_agent
+        import handsoff_dashboard
+        import handsoff_lib
+        self.runtime = handsoff_agent
+        self.dashboard = handsoff_dashboard
+        self.lib = handsoff_lib
+        self.set_criterion_state("failing", resolved=False)
+        r = self.advance_to(4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    @staticmethod
+    def _sid(number):
+        return f"hs-{number:032x}"
+
+    def _events(self):
+        return [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+
+    def _spec(self, role, code):
+        return self.runtime.LaunchSpec(
+            role, "claude", "default", (sys.executable, "-c", code), str(self.tmp),
+            "private task text", "configured",
+        )
+
+    def _launch_asking(self, role, questions, number, sleep=0.6):
+        code = ("import time\n"
+                + "".join(f"print({q!r}, flush=True)\n" for q in questions)
+                + f"time.sleep({sleep})\n")
+        result = {}
+
+        def launch():
+            try:
+                with mock.patch("sys.stdout", new=io.StringIO()):
+                    result["code"] = self.runtime.execute_launch(
+                        self._spec(role, code), session_id_factory=lambda: self._sid(number),
+                        popen_factory=subprocess.Popen, beacon_interval=0.1,
+                    )
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                result["error"] = exc
+
+        worker = threading.Thread(target=launch)
+        worker.start()
+        return worker, result
+
+    def _api(self, server, method, path, body=None):
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        headers = {"Content-Type": "application/json", "Origin": f"http://{host}:{port}"} if body is not None else {}
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        connection.close()
+        return response.status, json.loads(payload)
+
+    def test_question_line_from_the_live_session_blocks_the_run_while_it_still_runs(self):
+        status_before = self.read_status()
+        worker, result = self._launch_asking(
+            "architect", ["HANDSOFF_QUESTION: Concise path or full path for this feature?",
+                          "ordinary prose that is not a question line"], 31, sleep=1.5)
+        seen = None
+        deadline = time.monotonic() + 6
+        while worker.is_alive() and time.monotonic() < deadline:
+            status = self.read_status()
+            if status.get("pending_questions"):
+                seen = status
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(seen, "question was not recorded while the child was running")
+        self.assertEqual(seen["status"], "blocked")
+        self.assertEqual(seen["next_action"], "Architect asks: Concise path or full path for this feature?")
+        question = seen["pending_questions"][0]
+        self.assertEqual(set(question), self.lib.QUESTION_FIELDS)
+        self.assertEqual((question["role"], question["session_id"], question["blocking"]),
+                         ("architect", self._sid(31), True))
+        self.assertEqual(question["previous_next_action"], status_before["next_action"])
+        worker.join(timeout=10)
+        self.assertEqual(result.get("code"), 0, result.get("error"))
+        after = self.read_status()
+        # Liveness metadata only: phase, progress and coverage are untouched.
+        for key in ("phase_number", "progress", "requirement_coverage"):
+            self.assertEqual(after[key], status_before[key])
+        self.assertEqual(after["status"], "blocked")
+        raised = [e for e in self._events() if e["kind"] == "question_raised"]
+        self.assertEqual(len(raised), 1)
+        self.assertEqual(set(raised[0]) & {"text", "role", "session_id", "blocking", "question_id"},
+                         {"text", "role", "session_id", "blocking", "question_id"})
+        self.assertNotIn("private task text", json.dumps(raised[0]))
+        # The board and the CLI both surface it as a named decision.
+        r = run(["status"], cwd=self.tmp)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["questions"]["blocking"][0]["question_id"], question["question_id"])
+        server = self.dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            code, snapshot = self._api(server, "GET", "/api/dashboard")
+            self.assertEqual(code, 200)
+            self.assertTrue(snapshot["input_required"]["required"])
+            self.assertEqual(snapshot["input_required"]["kind"], "question")
+            self.assertEqual(snapshot["input_required"]["question_id"], question["question_id"])
+            self.assertIn("Concise path or full path", snapshot["input_required"]["message"])
+            self.assertEqual(snapshot["questions"]["blocking"][0]["question_id"], question["question_id"])
+            # Answering from the board takes the same audited path and lifts the block.
+            code, answered = self._api(server, "POST", "/api/question-answer",
+                                       body=json.dumps({"question_id": question["question_id"],
+                                                        "text": "Concise path."}))
+            self.assertEqual(code, 200, answered)
+            code, snapshot = self._api(server, "GET", "/api/dashboard")
+            self.assertFalse(snapshot["input_required"]["required"])
+        finally:
+            server.shutdown()
+            server.server_close()
+        final = self.read_status()
+        self.assertEqual(final["status"], "in_progress")
+        self.assertEqual(final["next_action"], status_before["next_action"])
+        record = final["pending_questions"][0]
+        self.assertEqual((record["answer"], record["answered_by"]), ("Concise path.", "Mission Control Pilot"))
+        self.assertEqual([e["kind"] for e in self._events() if e["kind"].startswith("question_")],
+                         ["question_raised", "question_answered"])
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_answer_is_delivered_to_the_role_exactly_once_on_its_next_launch(self):
+        record = self.lib.raise_question(self.tmp, role="architect", text="Which region?", by="test-supervisor")
+        run(["question-answer", "--id", record["question_id"], "--by", "moncy", "--text", "us-east-1"], cwd=self.tmp)
+        first = self.runtime.build_role_input(self.tmp, "architect", "next task")
+        self.assertIn("# Pilot answers to your earlier questions", first)
+        self.assertIn("Which region?", first)
+        self.assertIn("A (moncy): us-east-1", first)
+        second = self.runtime.build_role_input(self.tmp, "architect", "next task")
+        self.assertNotIn("# Pilot answers to your earlier questions", second)
+        other = self.runtime.build_role_input(self.tmp, "reviewer", "review task")
+        self.assertNotIn("# Pilot answers to your earlier questions", other)
+        self.assertIsNotNone(self.read_status()["pending_questions"][0]["delivered_at"])
+        self.assertIn("question_answers_delivered", [e["kind"] for e in self._events()])
+
+    def test_question_from_a_non_current_or_finished_session_is_recorded_without_blocking(self):
+        worker, result = self._launch_asking("reviewer", ["HANDSOFF_QUESTION: first"], 41, sleep=0.3)
+        worker.join(timeout=10)
+        self.assertEqual(result.get("code"), 0, result.get("error"))
+        answer = self.read_status()["pending_questions"][0]
+        run(["question-answer", "--id", answer["question_id"], "--by", "moncy", "--text", "ok"], cwd=self.tmp)
+        self.assertEqual(self.read_status()["status"], "in_progress")
+        # The session is now completed: a late question from it cannot hold the run.
+        late = self.lib.raise_question(self.tmp, role="reviewer", session_id=self._sid(41), text="late question")
+        self.assertFalse(late["blocking"])
+        unknown = self.lib.raise_question(self.tmp, role="implementer", session_id=self._sid(99), text="who am I")
+        self.assertFalse(unknown["blocking"])
+        status = self.read_status()
+        self.assertEqual(status["status"], "in_progress")
+        self.assertEqual(len(status["pending_questions"]), 3)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_multiple_open_questions_hold_until_the_last_blocking_one_is_answered(self):
+        first = self.lib.raise_question(self.tmp, role="architect", text="Q1", by="test-supervisor")
+        second = self.lib.raise_question(self.tmp, role="architect", text="Q2", by="test-supervisor")
+        self.assertTrue(first["blocking"] and second["blocking"])
+        self.assertEqual(self.read_status()["status"], "blocked")
+        self.lib.answer_question(self.tmp, question_id=first["question_id"], by="moncy", text="A1")
+        self.assertEqual(self.read_status()["status"], "blocked")
+        self.lib.answer_question(self.tmp, question_id=second["question_id"], by="moncy", text="A2")
+        self.assertEqual(self.read_status()["status"], "in_progress")
+        with self.assertRaisesRegex(self.lib.HandsoffError, "already answered"):
+            self.lib.answer_question(self.tmp, question_id=second["question_id"], by="moncy", text="again")
+
+    def test_text_is_bounded_and_hand_edits_refuse_cleanly(self):
+        long_text = "x" * (self.lib.MAX_QUESTION_TEXT + 50)
+        record = self.lib.raise_question(self.tmp, role="implementer", text=long_text, by="test-supervisor")
+        self.assertEqual(len(record["text"]), self.lib.MAX_QUESTION_TEXT)
+        self.assertTrue(record["truncated"])
+        with self.assertRaisesRegex(self.lib.HandsoffError, "must not be empty"):
+            self.lib.raise_question(self.tmp, role="implementer", text="   ", by="test-supervisor")
+        status = self.read_status()
+        status["pending_questions"][0]["blocking"] = "yes"
+        errors = self.lib.validate_status_schema(status)
+        self.assertTrue(any("blocking must be boolean" in e for e in errors), errors)
+        status["pending_questions"][0] = {"question_id": "qn-bad"}
+        errors = self.lib.validate_status_schema(status)
+        self.assertTrue(any("exactly the keys" in e for e in errors), errors)
+
+    def test_broker_routes_question_raise_and_refuses_question_answer(self):
+        import handsoff_broker
+        argv = handsoff_broker._workflow_argv(self.tmp, {
+            "actor": "supervisor", "project_root": str(self.tmp), "action": "workflow",
+            "command": "question-raise", "by": "supervisor-1", "role": "architect", "text": "why",
+        })
+        self.assertEqual(argv[-6:], ["--role", "architect", "--text", "why", "--by", "supervisor-1"])
+        with self.assertRaisesRegex(self.lib.HandsoffError, "human-only"):
+            handsoff_broker._workflow_argv(self.tmp, {
+                "actor": "supervisor", "project_root": str(self.tmp), "action": "workflow",
+                "command": "question-answer", "id": "qn-x", "by": "supervisor-1", "text": "no",
+            })
+
+    def test_prompts_document_the_question_line(self):
+        for role in ("architect", "implementer", "reviewer", "supervisor"):
+            self.assertIn("HANDSOFF_QUESTION:", (ROOT / "prompts" / f"{role}.md").read_text())

@@ -245,8 +245,10 @@ def _input_request(status: dict, cfg: dict) -> dict:
     # revision, or the Pilot's approval); the banner names which.
     amendment = lib.open_amendment(status)
     amendment_decision = lib.amendment_pending_decision(amendment)
+    # #46: a blocking role question is a named decision the Pilot answers.
+    questions = lib.open_questions(status, blocking_only=True)
     required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
-        or older_signal or bool(amendment)
+        or older_signal or bool(amendment) or bool(questions)
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
     if regression:
         kind = "regression_approval"
@@ -269,6 +271,11 @@ def _input_request(status: dict, cfg: dict) -> dict:
             kind = "amendment_review"
             message = (f"Amendment {amendment_id} is open and frozen. Pending decision: independent "
                        "amendment review (amendment-review), then Pilot approval.")
+    elif questions:
+        kind = "question"
+        lead = questions[0]
+        more = f" (+{len(questions) - 1} more)" if len(questions) > 1 else ""
+        message = f"{lead.get('role', 'role').capitalize()} asks: {lead.get('text')}{more}"
     elif approval_missing:
         kind = "deployment_approval"
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
@@ -285,7 +292,8 @@ def _input_request(status: dict, cfg: dict) -> dict:
             "message": message if required else None,
             "request_id": regression.get("request_id") if regression else None,
             "amendment_id": amendment.get("amendment_id") if amendment else None,
-            "amendment_decision": amendment_decision}
+            "amendment_decision": amendment_decision,
+            "question_id": questions[0].get("question_id") if questions else None}
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
@@ -544,6 +552,7 @@ def build_snapshot(root: Path) -> dict:
         "design_review_packet": lib.design_review_packet_summary(status),
         # #42: the open amendment (ids, hashes, decisions), never criterion text.
         "amendment": lib.amendment_view(status, acceptance, cfg, verifications),
+        "questions": lib.questions_view(status),
         "actors": actors,
         "crew": crew,
         "runtime": {
@@ -843,7 +852,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_shutdown()
             return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
-                        "/api/regression-decision"}:
+                        "/api/regression-decision", "/api/question-answer"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
         if not self._same_origin_allowed():
@@ -888,6 +897,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                         {"ok": False, "error": "The regression gate rejected this decision"})
                     return
                 self._json_response(HTTPStatus.OK, {"ok": True, "decision": requested["decision"]})
+                return
+            if path == "/api/question-answer":
+                # #46: the same lock-protected, audited path as the CLI; the
+                # actor is the dashboard's Pilot identity, like Authorize.
+                if set(requested) != {"question_id", "text"} \
+                        or not isinstance(requested.get("question_id"), str) \
+                        or not isinstance(requested.get("text"), str):
+                    raise lib.HandsoffError("question answer requires question_id and text")
+                record = lib.answer_question(self.server.project_root, question_id=requested["question_id"],
+                                             by="Mission Control Pilot", text=requested["text"])
+                self._json_response(HTTPStatus.OK, {"ok": True, "question_id": record["question_id"]})
                 return
             if path == "/api/design-approval":
                 if requested:

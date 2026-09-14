@@ -555,6 +555,56 @@ function renderAmendment(amendment) {
   $("amendment-list").innerHTML = rows.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
 }
 
+function renderQuestions(questions) {
+  const panel = $("questions-panel");
+  const visible = showQuestionsPanel(questions);
+  panel.classList.toggle("hidden", !visible);
+  $("questions-headline").textContent = questionHeadline(questions);
+  if (!visible) {
+    $("questions-list").innerHTML = "";
+    $("questions-state").textContent = "NONE OPEN";
+    return;
+  }
+  const open = questions.open || [];
+  const blocking = questions.blocking || [];
+  $("questions-state").textContent = blocking.length ? "PILOT ANSWER REQUIRED" : (open.length ? "OPEN" : "ANSWERED");
+  const rows = [...open, ...(questions.answered || []).slice().reverse()];
+  $("questions-list").innerHTML = rows.map((q) => `
+    <div class="question-row ${q.answer == null ? "is-open" : "is-answered"}">
+      <div class="question-meta"><span class="question-pill">${escapeHtml(questionLabel(q))}</span><span class="question-time">${escapeHtml(relativeTime(q.asked_at))}</span></div>
+      <p class="question-text">${escapeHtml(q.text)}${q.truncated ? " (truncated)" : ""}</p>
+      ${q.answer == null
+        ? `<form class="question-form" data-question-id="${escapeHtml(q.question_id)}"><textarea class="question-input" rows="2" placeholder="Answer for the ${escapeHtml(q.role)}" required></textarea><button type="submit" class="ghost-button">SEND ANSWER</button></form>`
+        : `<p class="question-answer"><strong>${escapeHtml(q.answered_by)}:</strong> ${escapeHtml(q.answer)}</p>`}
+    </div>`).join("");
+  panel.querySelectorAll(".question-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      answerQuestion(form.dataset.questionId, form.querySelector(".question-input").value, form);
+    });
+  });
+}
+
+async function answerQuestion(questionId, text, form) {
+  const button = form.querySelector("button");
+  button.disabled = true;
+  button.textContent = "TRANSMITTING…";
+  try {
+    const response = await fetch("/api/question-answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question_id: questionId, text }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Answer returned ${response.status}`);
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "SEND ANSWER";
+    showError(`Answer rejected: ${error.message}`);
+  }
+}
+
 function renderAttention(items) {
   $("attention-count").textContent = items.length;
   $("attention-list").innerHTML = items.length
@@ -738,6 +788,7 @@ function render(snapshot) {
   renderWorkItems(snapshot.work_items || { items: [], multi: false });
   renderDesignEvidence(snapshot.design_evidence || []);
   renderAmendment(snapshot.amendment || null);
+  renderQuestions(snapshot.questions || null);
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
   renderReplacements(state.replacements, snapshot.recovery?.attempts || []);

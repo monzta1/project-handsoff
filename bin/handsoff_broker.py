@@ -24,7 +24,7 @@ MAX_REQUEST_BYTES = 65536
 HUMAN_ONLY_COMMANDS = {
     "design-approve", "deployment-gate", "design-review-authorize", "design-review-escalate",
     "review-cap-override", "recovery-acknowledge", "regression-decide", "regression-finalize",
-    "amendment-approve",
+    "amendment-approve", "question-answer",
 }
 _SUPERVISOR_HOST_CAPABILITY = object()
 
@@ -258,6 +258,15 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         if decision not in {"approve", "request-changes"}:
             raise lib.HandsoffError("broker amendment-review decision is invalid")
         base.extend(["--by", _text(request, "by"), f"--{decision}", "--summary", _text(request, "summary")])
+        return base
+    if command == "question-raise":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "role", "text"}, {"session"})
+        role = _text(request, "role")
+        if role not in lib.SELECTABLE_AGENT_ROLES:
+            raise lib.HandsoffError("broker question-raise role is invalid")
+        base.extend(["--role", role, "--text", _text(request, "text"), "--by", _text(request, "by")])
+        if "session" in request:
+            base.extend(["--session", _text(request, "session")])
         return base
     if command == "amendment-escalate":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "reason"})

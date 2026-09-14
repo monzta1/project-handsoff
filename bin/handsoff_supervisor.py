@@ -147,7 +147,7 @@ def cmd_init(args) -> int:
             "requires_design_approval": True, "design_approved": None,
             "requires_design_review": True, "design_review": None,
             "design_review_attempts": 0, "design_review_authorization": None,
-            "amendment": None, "amendments": [],
+            "amendment": None, "amendments": [], "pending_questions": [],
             "review": None, "live_verification_id": None, "original_symptom_evidence_id": None,
             "verification_head": "GENESIS",
             "requirement_coverage": {"passing": 0, "failing": 1, "not_tested": 0, "blocked": 0,
@@ -201,6 +201,7 @@ def cmd_status(args) -> int:
         "verification_runs": len(verifications),
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
         "stall_warning": warning, "activity_note": activity, "activity": activity_view, "live": live,
+        "questions": lib.questions_view(status),
         "crew": lib.crew_view(cfg),
         "event_log_intact": not log_problems, "event_log_problems": log_problems,
     }, indent=2))
@@ -2334,6 +2335,42 @@ def cmd_amendment_approve(args) -> int:
     return 0
 
 
+def cmd_question_raise(args) -> int:
+    """#46: a role (or the Supervisor on its behalf) raises a question for
+    the Pilot. From the role's current live managed session it blocks the
+    run with the question as next_action; otherwise it is recorded and shown
+    without blocking. Managed children normally use the
+    `HANDSOFF_QUESTION: <text>` stdout line instead of this command."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    try:
+        record = lib.raise_question(root, role=args.role, text=args.text,
+                                    session_id=args.session, by=args.by.strip())
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
+    print(f"QUESTION_RAISED: {record['question_id']} ({'blocking' if record['blocking'] else 'non-blocking'})")
+    return 0
+
+
+def cmd_question_answer(args) -> int:
+    """#46: the Pilot answers; the block lifts once no blocking question is
+    open, and the answer reaches the role on its next launch."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    try:
+        record = lib.answer_question(root, question_id=args.id, by=args.by.strip(), text=args.text)
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
+    print(f"QUESTION_ANSWERED: {record['question_id']}")
+    return 0
+
+
 def cmd_amendment_escalate(args) -> int:
     """#42: give up on the scoped lane. The amendment closes as
     `escalated` and the run takes the full path: design decisions cleared
@@ -3118,6 +3155,18 @@ def main() -> int:
     amendment_escalate.add_argument("--by", required=True)
     amendment_escalate.add_argument("--reason", required=True)
 
+    question_raise = sub.add_parser("question-raise", help="record a role's question for the Pilot (#46); a "
+                                    "managed child prints HANDSOFF_QUESTION: <text> instead")
+    question_raise.add_argument("--role", required=True, choices=lib.SELECTABLE_AGENT_ROLES)
+    question_raise.add_argument("--text", required=True)
+    question_raise.add_argument("--by", required=True)
+    question_raise.add_argument("--session", default=None, help="managed session id the question belongs to")
+
+    question_answer = sub.add_parser("question-answer", help="Pilot answer to an open question (#46, human-only)")
+    question_answer.add_argument("--id", required=True)
+    question_answer.add_argument("--text", required=True)
+    question_answer.add_argument("--by", required=True)
+
     adv = sub.add_parser("advance")
     adv.add_argument("phase", type=int)
     adv.add_argument("progress", type=int)
@@ -3189,6 +3238,8 @@ def main() -> int:
         "amendment-review": cmd_amendment_review,
         "amendment-approve": cmd_amendment_approve,
         "amendment-escalate": cmd_amendment_escalate,
+        "question-raise": cmd_question_raise,
+        "question-answer": cmd_question_answer,
     }
     try:
         return handlers[args.command](args)

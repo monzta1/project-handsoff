@@ -108,6 +108,15 @@ def build_role_input(root: Path, role: str, task: str) -> str:
         evidence = lib.design_evidence_prompt_section(root, cfg)
         if evidence:
             text = f"{text}\n\n{evidence}"
+    # #46: answers the Pilot recorded for this role's earlier questions are
+    # handed over exactly once, on the next launch, and the hand-over is
+    # audited (questions_prompt_section marks them delivered).
+    try:
+        answers = lib.questions_prompt_section(root, role)
+    except lib.HandsoffError:
+        answers = ""
+    if answers:
+        text = f"{text}\n\n{answers}"
     return text
 
 
@@ -459,6 +468,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
     protocol_errors: list[str] = []
+    question_errors: list[str] = []
     stdout_tail = [""]
     stderr_tail = [""]
     try:
@@ -512,8 +522,6 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     sys.stdout.flush()
                     note_output(chunk)
                     stdout_tail[0] = (stdout_tail[0] + chunk)[-8192:]
-                    if not capture_supervisor:
-                        continue
                     if discarding:
                         if "\n" in chunk:
                             _, pending = chunk.split("\n", 1)
@@ -524,14 +532,18 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         pending += chunk
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
-                        _parse_supervisor_line(line, supervisor_requests, protocol_errors)
+                        _raise_question_line(root, spec.role, session_id, line, question_errors)
+                        if capture_supervisor:
+                            _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                     if len(pending.encode("utf-8")) > 65536:
                         if pending.startswith(SUPERVISOR_REQUEST_PREFIX):
                             protocol_errors.append("Supervisor broker request exceeded 65536 bytes")
                         pending = ""
                         discarding = True
-                if capture_supervisor and pending and not discarding:
-                    _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
+                if pending and not discarding:
+                    _raise_question_line(root, spec.role, session_id, pending, question_errors)
+                    if capture_supervisor:
+                        _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
@@ -694,6 +706,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             )
             raise AgentLaunchError(f"Supervisor broker request failed: {type(exc).__name__}", session_id) from exc
     lib.transition_agent_session(root, session_id, "completed", exit_code=0)
+    for problem in question_errors:
+        sys.stderr.write(f"HANDSOFF_QUESTION_WARNING: {problem}\n")
     return 0
 
 
@@ -754,6 +768,21 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
             source_id = exc.session_id
             trigger = "runtime_failure"
             quality_finding_id = None
+
+
+def _raise_question_line(root: Path, role: str, session_id: str, line: str, errors: list[str]) -> None:
+    """#46: `HANDSOFF_QUESTION: <text>` from any role is recorded the moment
+    it is read, so the board alerts while the child is still running. A
+    failure to record is remembered for the report and never reaches the
+    child, the reader, or the session record."""
+    stripped = line.strip()
+    if not stripped.startswith(lib.QUESTION_PREFIX):
+        return
+    try:
+        lib.raise_question(root, role=role, session_id=session_id,
+                           text=stripped[len(lib.QUESTION_PREFIX):])
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"question not recorded: {type(exc).__name__}: {exc}")
 
 
 def _parse_supervisor_line(line: str, requests: list[dict], errors: list[str]) -> None:

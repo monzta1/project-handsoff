@@ -385,3 +385,15 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
   .event, .verification { grid-template-columns: 1fr; gap: 4px; }
   .legend { display: none; }
 }
+
+/* #46: crew questions */
+.questions-panel .questions-headline { margin: 0 0 12px; color: var(--muted, #9fb2c2); }
+.question-row { border: 1px solid rgba(111, 179, 245, 0.25); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.question-row.is-open { border-color: rgba(255, 143, 136, 0.55); }
+.question-meta { display: flex; justify-content: space-between; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px; }
+.question-pill { color: #ff8f88; }
+.question-row.is-answered .question-pill { color: #3ddc84; }
+.question-text { margin: 0 0 8px; }
+.question-answer { margin: 0; color: var(--muted, #9fb2c2); }
+.question-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: start; }
+.question-input { width: 100%; background: rgba(0, 0, 0, 0.35); color: inherit; border: 1px solid rgba(111, 179, 245, 0.35); border-radius: 8px; padding: 8px; font: inherit; }

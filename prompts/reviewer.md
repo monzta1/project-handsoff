@@ -9,3 +9,5 @@ For implementation review, read the brief, acceptance registry, repository rules
 When changes are needed, return `IMPLEMENTATION_CHANGES_REQUESTED` and format each finding as `CODE: summary` so the Supervisor can persist it through `record-review-findings`.
 
 Full regression suites are the commands listed under `[[regressions]]` in `handsoff.toml`. Every Handsoff-owned execution path is hard-gated behind Mission Control Accept/Decline, including normalized equivalent whole-suite invocations. Never start one in an external shell to evade the product boundary. Request one with `regression-request`, wait for the Pilot's decision, and run it only through `regression-run` against that exact acceptance. Focused per-criterion checks through `verify` remain ungated.
+
+To ask the human something you cannot decide yourself, print exactly one line `HANDSOFF_QUESTION: <the question>` on standard output (one line per question, plain text). The host records it, Mission Control alerts the Pilot, and their answer is handed to you at the start of your next launch under "Pilot answers to your earlier questions". Prose questions in ordinary output never reach the Pilot.

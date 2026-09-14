@@ -421,8 +421,32 @@ function verificationExecutionLabel(record) {
   return "";
 }
 
+
+// #46: role questions. Pure helpers so the panel logic is testable without a DOM.
+function showQuestionsPanel(questions) {
+  return Boolean(questions && ((questions.open || []).length || (questions.answered || []).length));
+}
+
+function questionHeadline(questions) {
+  const open = (questions && questions.open) || [];
+  const blocking = (questions && questions.blocking) || [];
+  if (!open.length) return "No open questions";
+  const roles = [...new Set(open.map((q) => String(q.role || "role")))].join(", ");
+  const hold = blocking.length ? `${blocking.length} holding the run` : "none holding the run";
+  return `${open.length} open question${open.length === 1 ? "" : "s"} from ${roles} (${hold})`;
+}
+
+function questionLabel(question) {
+  const role = String((question && question.role) || "role");
+  const state = question && question.answer != null ? "answered" : (question && question.blocking ? "blocking" : "open");
+  return `${role.charAt(0).toUpperCase()}${role.slice(1)} · ${state}`;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    showQuestionsPanel,
+    questionHeadline,
+    questionLabel,
     adapterLabel,
     effectiveProfileLabel,
     actorForRole,

@@ -3349,6 +3349,7 @@ def validate_status_schema(status: dict) -> list[str]:
     # #42: the open amendment and its closed history, plus the amended_by
     # trail on the design decisions it rewrote.
     errors.extend(amendment_status_errors(status))
+    errors.extend(question_status_errors(status))
     return errors
 
 
@@ -7073,3 +7074,255 @@ def release_run_dashboard(root: Path, *, timeout: float = 2.0, wait: float = 5.0
                 "reason": f"shutdown accepted but port {port} still accepted connections after {wait:g} s"}
     return {"released": True, "pid": pid, "port": port,
             "reason": f"run-owned dashboard on port {port} shut down"}
+
+
+# --------------------------------------------------------------------------
+# #46: role questions that reach Mission Control without Supervisor relay
+# --------------------------------------------------------------------------
+# A managed role prints one line `HANDSOFF_QUESTION: <text>`; the host
+# (handsoff_agent) records it here. The record carries bounded operator-
+# facing text, the role, the session id and timestamps, never prompt,
+# output, or environment content. A question from the CURRENT live session
+# of its role blocks the run (status `blocked`, next_action = the question)
+# so the existing input-required alert fires; a question from any other
+# session is recorded but never blocks. `question-answer` clears the block
+# and the answer reaches the role on its next launch (build_role_input).
+
+QUESTION_PREFIX = "HANDSOFF_QUESTION:"
+QUESTION_ID_PATTERN = re.compile(r"^qn-[0-9a-f]{32}$")
+MAX_PENDING_QUESTIONS = 16
+MAX_QUESTION_TEXT = 1024
+QUESTION_FIELDS = {
+    "question_id", "role", "session_id", "text", "truncated", "asked_at", "blocking",
+    "answer", "answered_by", "answered_at", "delivered_at", "previous_next_action",
+}
+
+
+def _question_text(value: object) -> tuple[str, bool]:
+    """One line of bounded, control-free text; longer input is cut, not refused,
+    so a role that asked a long question still gets its question on the board."""
+    if not isinstance(value, str):
+        raise HandsoffError("question text must be a string")
+    text = " ".join(value.split())
+    if not text:
+        raise HandsoffError("question text must not be empty")
+    truncated = len(text) > MAX_QUESTION_TEXT
+    return text[:MAX_QUESTION_TEXT], truncated
+
+
+def open_questions(status: dict, *, blocking_only: bool = False) -> list[dict]:
+    items = status.get("pending_questions") if isinstance(status, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [q for q in items if isinstance(q, dict) and q.get("answer") is None
+            and (q.get("blocking") or not blocking_only)]
+
+
+def question_blocks_run(status: dict, session_id: str | None, role: str) -> bool:
+    """Only the current live session of its role may hold the run."""
+    if not isinstance(session_id, str):
+        return False
+    current = current_agent_sessions(status).get(role)
+    return isinstance(current, dict) and current.get("session_id") == session_id \
+        and current.get("state") in AGENT_SESSION_LIVE_STATES
+
+
+def raise_question(root: Path, *, role: str, text: object, session_id: str | None = None,
+                   by: str | None = None) -> dict:
+    """Record a role's question; block the run when it comes from the role's
+    current live session. Never touches phase, progress, or evidence."""
+    if role not in SELECTABLE_AGENT_ROLES:
+        raise HandsoffError("question role must be architect, supervisor, implementer, or reviewer")
+    if session_id is not None and not AGENT_SESSION_ID_PATTERN.fullmatch(str(session_id)):
+        raise HandsoffError("question session id is invalid")
+    clean, truncated = _question_text(text)
+    root = root.resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        schema_errors = validate_status_schema(status)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        questions = [dict(q) for q in (status.get("pending_questions") or [])]
+        if len(open_questions(status)) >= MAX_PENDING_QUESTIONS:
+            raise HandsoffError(f"at most {MAX_PENDING_QUESTIONS} questions may be open; answer one first")
+        existing = {q["question_id"] for q in questions}
+        question_id = _new_bounded_id("qn", QUESTION_ID_PATTERN, existing)
+        now = datetime.now(timezone.utc).isoformat()
+        held_by_question = bool(open_questions(status, blocking_only=True))
+        # A manual question (no session) blocks when the run is free to be
+        # held or is already held by a question; a managed one blocks only
+        # from its role's current live session.
+        blocking = question_blocks_run(status, session_id, role) or (
+            session_id is None and by is not None
+            and (status.get("status") == "in_progress" or held_by_question))
+        record = {
+            "question_id": question_id, "role": role, "session_id": session_id, "text": clean,
+            "truncated": truncated, "asked_at": now, "blocking": blocking,
+            "answer": None, "answered_by": None, "answered_at": None, "delivered_at": None,
+            "previous_next_action": None,
+        }
+        proposed = deepcopy(status)
+        if blocking and proposed.get("status") == "in_progress":
+            record["previous_next_action"] = proposed.get("next_action")
+            proposed["status"] = "blocked"
+            proposed["next_action"] = f"{role.capitalize()} asks: {clean}"
+            proposed["updated_at"] = now
+        elif blocking and held_by_question:
+            # A second question joins the hold; the banner keeps the first
+            # question's wording and the panel lists both.
+            pass
+        elif blocking:
+            # Already blocked or waiting on another gate: keep that gate's
+            # wording; the question still shows in the questions panel.
+            record["blocking"] = False
+        questions = questions[-(MAX_PENDING_QUESTIONS * 4 - 1):] + [record]
+        proposed["pending_questions"] = questions
+        schema_errors = validate_status_schema(proposed)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        commit(root, cfg, status=proposed, event_kind="question_raised",
+               event_message=f"{role} asked a question", question_id=question_id, role=role,
+               session_id=session_id, blocking=record["blocking"], truncated=truncated,
+               text=clean, by=by)
+        return deepcopy(record)
+
+
+def answer_question(root: Path, *, question_id: str, by: str, text: object) -> dict:
+    """Record the Pilot's answer; lift the block once no blocking question is open."""
+    if not isinstance(question_id, str) or not QUESTION_ID_PATTERN.fullmatch(question_id):
+        raise HandsoffError("question id is invalid")
+    actor = validate_agent_actor(by)
+    clean, truncated = _question_text(text)
+    root = root.resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        schema_errors = validate_status_schema(status)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        proposed = deepcopy(status)
+        questions = proposed.get("pending_questions") or []
+        record = next((q for q in questions if q.get("question_id") == question_id), None)
+        if record is None:
+            raise HandsoffError(f"question {question_id} was not found")
+        if record.get("answer") is not None:
+            raise HandsoffError(f"question {question_id} is already answered")
+        now = datetime.now(timezone.utc).isoformat()
+        record.update({"answer": clean, "answered_by": actor, "answered_at": now})
+        if record.get("truncated") is False and truncated:
+            record["truncated"] = True
+        still_blocking = open_questions(proposed, blocking_only=True)
+        lifted = False
+        if not still_blocking and record.get("blocking") and proposed.get("status") == "blocked":
+            proposed["status"] = "in_progress"
+            proposed["next_action"] = (record.get("previous_next_action")
+                                       or f"Resume with the Pilot's answer to {question_id}")
+            lifted = True
+        proposed["updated_at"] = now
+        schema_errors = validate_status_schema(proposed)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        commit(root, cfg, status=proposed, event_kind="question_answered",
+               event_message=f"Pilot answered {record.get('role')} question {question_id}",
+               question_id=question_id, role=record.get("role"), session_id=record.get("session_id"),
+               by=actor, answer=clean, block_lifted=lifted,
+               open_blocking_questions=len(still_blocking))
+        return deepcopy(record)
+
+
+def questions_prompt_section(root: Path, role: str) -> str:
+    """Answered questions for `role` not yet delivered, rendered for the next
+    launch; marks them delivered in the same commit so an answer is handed
+    over exactly once and the hand-over is audited."""
+    root = root.resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        try:
+            status = load_unique_json(status_path(root, cfg))
+        except (HandsoffError, OSError):
+            return ""
+        due = [q for q in (status.get("pending_questions") or [])
+               if isinstance(q, dict) and q.get("role") == role and q.get("answer") is not None
+               and q.get("delivered_at") is None]
+        if not due:
+            return ""
+        proposed = deepcopy(status)
+        now = datetime.now(timezone.utc).isoformat()
+        for q in proposed["pending_questions"]:
+            if q.get("question_id") in {d["question_id"] for d in due}:
+                q["delivered_at"] = now
+        commit(root, cfg, status=proposed, event_kind="question_answers_delivered",
+               event_message=f"Delivered {len(due)} Pilot answer(s) to the {role}",
+               role=role, question_ids=[d["question_id"] for d in due])
+    lines = ["# Pilot answers to your earlier questions", ""]
+    for q in due:
+        lines.append(f"- Q ({q['question_id']}): {q['text']}")
+        lines.append(f"  A ({q['answered_by']}): {q['answer']}")
+    return "\n".join(lines)
+
+
+def questions_view(status: dict) -> dict:
+    items = [q for q in (status.get("pending_questions") or []) if isinstance(q, dict)]
+    open_items = [q for q in items if q.get("answer") is None]
+    return {
+        "open": open_items,
+        "blocking": [q for q in open_items if q.get("blocking")],
+        "answered": [q for q in items if q.get("answer") is not None][-8:],
+        "total": len(items),
+    }
+
+
+def question_status_errors(status: dict) -> list[str]:
+    """Schema half of the trust boundary: a hand-edited record refuses cleanly."""
+    errors: list[str] = []
+    if "pending_questions" not in status or status["pending_questions"] is None:
+        return errors
+    items = status["pending_questions"]
+    if not isinstance(items, list):
+        return ["status: 'pending_questions' must be a list"]
+    if len(items) > MAX_PENDING_QUESTIONS * 4:
+        errors.append(f"status: 'pending_questions' must contain at most {MAX_PENDING_QUESTIONS * 4} entries")
+    seen = set()
+    for index, q in enumerate(items):
+        label = f"status: pending_questions[{index}]"
+        if not isinstance(q, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        if set(q) != QUESTION_FIELDS:
+            errors.append(f"{label} must have exactly the keys {sorted(QUESTION_FIELDS)}")
+            continue
+        qid = q.get("question_id")
+        if not isinstance(qid, str) or not QUESTION_ID_PATTERN.fullmatch(qid) or qid in seen:
+            errors.append(f"{label}.question_id is invalid or duplicated")
+        seen.add(qid)
+        if q.get("role") not in SELECTABLE_AGENT_ROLES:
+            errors.append(f"{label}.role is invalid")
+        sid = q.get("session_id")
+        if sid is not None and (not isinstance(sid, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(sid)):
+            errors.append(f"{label}.session_id is invalid")
+        if not isinstance(q.get("text"), str) or not q["text"].strip() or len(q["text"]) > MAX_QUESTION_TEXT:
+            errors.append(f"{label}.text must be a non-empty string of at most {MAX_QUESTION_TEXT} characters")
+        for flag in ("truncated", "blocking"):
+            if not isinstance(q.get(flag), bool):
+                errors.append(f"{label}.{flag} must be boolean")
+        for key in ("asked_at", "answered_at", "delivered_at"):
+            value = q.get(key)
+            if value is None and key != "asked_at":
+                continue
+            try:
+                if not isinstance(value, str) or datetime.fromisoformat(value).tzinfo is None:
+                    raise ValueError
+            except (TypeError, ValueError):
+                errors.append(f"{label}.{key} must be a timezone-aware timestamp")
+        answered = q.get("answer") is not None
+        if answered and (not isinstance(q.get("answer"), str) or not q["answer"].strip()
+                         or not isinstance(q.get("answered_by"), str) or q.get("answered_at") is None):
+            errors.append(f"{label} answer must carry text, answered_by and answered_at together")
+        if not answered and (q.get("answered_by") is not None or q.get("answered_at") is not None
+                             or q.get("delivered_at") is not None):
+            errors.append(f"{label} unanswered question cannot carry answer metadata")
+        previous = q.get("previous_next_action")
+        if previous is not None and not isinstance(previous, str):
+            errors.append(f"{label}.previous_next_action must be a string or null")
+    return errors
