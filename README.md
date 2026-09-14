@@ -249,6 +249,34 @@ reviewer_followup = "claude-haiku" # must differ from the architect and implemen
 
 What sends an attempt back to the primary tier, in precedence order: the first review; an open `handsoff_supervisor.py design-review-escalate --by PILOT [--note "why"]` (Pilot-only, consumed by the next `record-design-review`); the previous review recorded with `record-design-review --request-changes --structural-blocker`; a criterion id added or removed since that review (a text-only `criterion-update` keeps the delta check). The selection is pure over the config, the status file, and the acceptance registry, so `status` (`design_reviewer_selection`) and the dashboard show exactly what the next launch will do, and `next.error` names an independence or availability refusal in advance. Remove both keys to return to a single reviewer profile; the four role keys, the Agent Settings dialog, and every existing record are unaffected either way.
 
+## Review attempts and the convergence cap
+
+Implementation reviews are persistent `review_attempts`, not chat claims. Starting a managed Reviewer opens an attempt automatically; findings close it as `changes_requested`, and approval closes it as `approved`. Findings are accepted only in Phase 4 or later and the complete proposed state is validated before it is written. Evidence attached while review is open refreshes that attempt's acceptance binding atomically, while changing a criterion specification abandons the attempt. A stale attempt can still be closed fail-closed with findings, but can never be approved. `review_round` is derived from the legacy offset plus that ledger. At `max_review_rounds`, Handsoff blocks before another Reviewer launches and Mission Control shows the required operator action. Only `review-cap-override --by OPERATOR --reason TEXT` grants one additional attempt.
+
+## Automatic recovery of stalled runs
+
+The `[recovery]` policy drives a lease-protected watchdog. It evaluates the role assigned to the current phase and that session's own liveness; unrelated agent activity cannot hide a failed or silent worker. `recover --by ACTOR` performs one bounded restart while preserving phase, acceptance, and evidence. Exhaustion becomes a visible blocked escalation. Liveness pings are advisory and unauthenticated: they may postpone recovery, never trigger it; a presumed-lost child is superseded rather than signalled.
+
+## Focused checks versus full regressions
+
+Focused criterion checks stay in `[checks].commands`. Full suites are separate named groups:
+
+```toml
+[regression_gate]
+approval_timeout_minutes = 30
+launch_window_minutes = 10
+
+[[regressions]]
+name = "python-full"
+commands = ["python3 tests/test_handsoff_supervisor.py"]
+```
+
+Handsoff normalizes test footprints and refuses a configured whole-suite command—or an equivalent spelling—through ordinary `verify`. The lifecycle is `regression-request --group NAME --by ACTOR --reason TEXT`, a same-origin Mission Control **Accept Regression** or **Decline** decision, then `regression-run --request-id ID --by ACTOR`. Acceptance is single-use and bound to the run, exact command hash, repository content and commit pair, configuration, acceptance, work-item scope, requester session, and session/recovery epoch. Expiry or any bound change invalidates it. A launched request locks ordinary workflow mutations until the nonce-bound runner terminalizes; only a human can fail a stranded launch with `regression-finalize`. Handsoff cannot intercept arbitrary operating-system processes outside its execution boundary, so role instructions explicitly prohibit external-shell bypasses.
+
+## Work items and the per-item status table
+
+New runs persist `work_items` automatically. GitHub references become stable `issue-N` identities; criterion prefixes such as `[#29]` and `[cross]` map acceptance to `issue-29` and `ask-cross`. Plain asks split only on explicit semicolons, newlines, or numbered prefixes—never on an ambiguous conjunction. `work-items-sync --by ACTOR --from-tickets` migrates a legacy run; `work-item-activate` records the current item, and `work-item-update` changes display metadata or recorded GitHub state. Mission Control automatically shows the multi-item table with canonical Handsoff status, next action, blocker, timestamps, and GitHub discrepancies. Recorded GitHub state is display input only; it never overrides Handsoff evidence. Persisted required items prevent completion until every row is done, while legacy derived-only rows remain informational.
+
 ## Known limitations
 
 - **The advisory file lock is best-effort and POSIX-only.** `project_lock()` uses `fcntl.flock` around the whole read-validate-write; on a platform without `fcntl` it is a silent no-op, and multiple writers on such a platform can still race. Enforce single-writer discipline at the process level (only the Supervisor writes `handsoff-status.json`) if you need this on Windows.
@@ -256,6 +284,8 @@ What sends an attempt back to the primary tier, in precedence order: the first r
 - **A killed process can leave a stray temp file.** `atomic_write_json` cleans up its `.tmp<pid>` file on any ordinary exception, but a `SIGKILL` or power loss between the write and the atomic rename can still leave one behind. Harmless (the real file is never touched), just worth pruning occasionally.
 - **Stall detection reads the freshest of `updated_at` and `last_heartbeat_at`,** not `updated_at` alone. A process that hangs without ever calling `advance` again, and never calls `heartbeat` either, correctly shows as stalled. A process that is merely slow but still calling `advance` periodically will not, as before. A process doing legitimate long background work (no progress to report, but alive) should call `heartbeat --by <id>` periodically; while that heartbeat is fresh, the run reads as "working (background task)," not stalled, even though `updated_at` itself is stale. This still is not a live process heartbeat in the OS sense: it proves *something* called `heartbeat` recently, not that the specific background task it describes is still running, so a caller that calls `heartbeat` and then genuinely hangs will misreport as busy until its next heartbeat would have been due.
 - **`verify` and `design-evidence run` run commands with `shell=True`.** `[checks].commands` and `[[design_evidence]].command` are trusted configuration, the same trust level as any other line in `handsoff.toml`; do not populate them from untrusted input.
+- **Recovery costs real agent time and is bounded.** A recovery launch is a new model session. `max_attempts` limits that cost, and exhaustion requires an operator acknowledgement.
+- **`verify` runs a deliberately small shell-command language.** `[checks].commands` is trusted configuration, but Handsoff rejects command substitution, process substitution, redirects, control operators, and other shell expansion forms before execution. Simple argv and test-path globs remain supported.
 - **Hash chains detect tampering; they do not provide access control.** A writer that can replace a ledger and its separate anchor can forge a new history. Protect the project directory and CI artifacts with normal filesystem/repository permissions. Mission Control has two narrow loopback-only write endpoints: Agent Settings updates role profiles, and Authorize Design records the current hash-bound human approval through the existing gate. Anyone able to execute same-origin browser code on that local dashboard can invoke those actions; other workflow mutations remain unavailable through the dashboard.
 - **Cross-file commits are fail-safe, not transactional.** A crash between appending evidence and updating status leaves a chain-head mismatch that blocks delivery. It will not silently accept the half-commit; run `handsoff_supervisor.py doctor` to attempt recovery. `doctor` only closes the two journal-provable gaps described above: an event log or acceptance/status pair damaged by anything else (a broken hash chain, a deleted tail, hand-edited ledger lines, an edit with no write-ahead journal behind it) still requires restoring from version control or backup.
 - **`doctor` recovers ledger *anchoring*, not lost writes.** If the crash happened before a write reached disk at all (as opposed to after one write landed but before its companion write or event did), there is nothing to recover from; `doctor` will correctly report nothing wrong; get the missing information from the operator or agent that was mid-command.

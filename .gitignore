@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .handsoff.lock
+.handsoff-session-liveness.json
 .handsoff-event-head.json
 .handsoff-writeahead.json
 handsoff-status.json

@@ -18,6 +18,7 @@ const state = {
   runSessions: {},
   crew: [],
   replacements: [],
+  regressionRequest: null,
   fallbackDraft: {},
   live: null,
   liveReceivedAt: null,
@@ -319,7 +320,45 @@ async function enableDesktopAlerts() {
   }
 }
 
-function renderInputAlert(inputRequest, feature) {
+function regressionRecordText(request) {
+  if (!request) return "";
+  const repo = request.repository || {};
+  const pair = repo.commit_pair || {};
+  const results = (request.results || []).map((result) =>
+    `  exit ${result.exit_code}: ${result.command}`).join("\n");
+  return [
+    `Group: ${request.group}`,
+    `State: ${String(request.state || "unknown").toUpperCase()}`,
+    `Command hash: ${request.command_sha256}`,
+    `Repository: ${repo.path || "unknown"}`,
+    `Branch / HEAD: ${repo.branch || "unknown"} @ ${repo.head || "unknown"}`,
+    `Dirty: ${Boolean(repo.dirty)} · Content digest: ${repo.content_sha256 || "unknown"}`,
+    `Commit pair: ${pair.before || "unknown"} → ${pair.after || "unknown"}`,
+    `Reason: ${request.reason || "not supplied"}`,
+    `Requested by: ${request.requested_by || "unknown"}${request.requester_session_id ? ` (${request.requester_session_id})` : ""}`,
+    `Requested: ${request.requested_at || "unknown"} · Expires: ${request.expires_at || "unknown"}${request.expires_at ? ` (${relativeTime(request.expires_at)})` : ""}`,
+    request.decided_at ? `Decision: ${request.decided_by || "unknown"} at ${request.decided_at}` : null,
+    request.launched_at ? `Launched: ${request.launched_at}` : null,
+    request.completed_at ? `Completed: ${request.completed_at}` : null,
+    `Scope: ${request.scope_hash || "unknown"} · Run: ${request.run_id || "unknown"}`,
+    "Commands:",
+    ...(request.commands || []).map((command) => `  ${command}`),
+    results ? `Results:\n${results}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function renderRegression(regression) {
+  const current = regression?.current || null;
+  const last = regression?.last || null;
+  const card = $("regression-alert");
+  card.classList.toggle("hidden", !current && !last);
+  $("regression-status-details").textContent = regressionRecordText(current || last);
+  $("regression-last").textContent = last
+    ? `Last closed request: ${last.group} · ${String(last.state || "unknown").toUpperCase()} · ${last.completed_at || last.decided_at || last.requested_at}`
+    : "";
+}
+
+function renderInputAlert(inputRequest, feature, regression) {
   const required = Boolean(inputRequest?.required);
   const message = inputRequest?.message || "Pilot authorization is required before the mission can continue.";
   const signature = required ? `${inputRequest.kind}:${message}` : null;
@@ -331,8 +370,16 @@ function renderInputAlert(inputRequest, feature) {
   $("input-alert-message").textContent = message;
   const approvalButton = $("design-approve");
   const deploymentButton = $("deployment-approve");
+  const regressionAccept = $("regression-accept");
+  const regressionDecline = $("regression-decline");
   approvalButton.classList.toggle("hidden", state.inputKind !== "design_approval");
   deploymentButton.classList.toggle("hidden", state.inputKind !== "deployment_approval");
+  regressionAccept.classList.toggle("hidden", state.inputKind !== "regression_approval");
+  regressionDecline.classList.toggle("hidden", state.inputKind !== "regression_approval");
+  state.regressionRequest = regression?.pending || null;
+  const regressionDetails = $("regression-details");
+  regressionDetails.classList.toggle("hidden", state.inputKind !== "regression_approval");
+  regressionDetails.textContent = regressionRecordText(state.regressionRequest);
   if (state.inputKind === "design_approval" && signature !== state.alertSignature) {
     approvalButton.disabled = false;
     approvalButton.textContent = "AUTHORIZE DESIGN";
@@ -340,6 +387,10 @@ function renderInputAlert(inputRequest, feature) {
   if (state.inputKind === "deployment_approval" && signature !== state.alertSignature) {
     deploymentButton.disabled = false;
     deploymentButton.textContent = "AUTHORIZE DEPLOYMENT";
+  }
+  if (state.inputKind === "regression_approval" && signature !== state.alertSignature) {
+    regressionAccept.disabled = false;
+    regressionDecline.disabled = false;
   }
   updateAlertButton();
 
@@ -350,6 +401,29 @@ function renderInputAlert(inputRequest, feature) {
     });
   }
   state.alertSignature = signature;
+}
+
+async function decideRegression(decision) {
+  const request = state.regressionRequest;
+  if (!request) return;
+  const accept = $("regression-accept");
+  const decline = $("regression-decline");
+  accept.disabled = true;
+  decline.disabled = true;
+  try {
+    const response = await fetch("/api/regression-decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: request.request_id, decision, command_hash: request.command_sha256 }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Decision returned ${response.status}`);
+    await refresh();
+  } catch (error) {
+    accept.disabled = false;
+    decline.disabled = false;
+    showError(`Regression decision rejected: ${error.message}`);
+  }
 }
 
 async function authorizeDesign() {
@@ -419,15 +493,21 @@ function renderCriteria(criteria) {
     </div>`).join("") : '<div class="empty-row">No acceptance criteria found.</div>';
 }
 
-function renderTickets(tickets) {
+function renderWorkItems(workItems) {
+  const items = workItems?.items || [];
+  const visible = Boolean(workItems?.multi);
   const panel = $("ticket-panel");
-  panel.classList.toggle("hidden", !tickets.length);
-  $("ticket-total").textContent = `${tickets.length} TICKET${tickets.length === 1 ? "" : "S"}`;
-  $("ticket-list").innerHTML = tickets.map((ticket) => `
-    <tr>
-      <td><a href="${escapeHtml(ticket.url || "#")}" ${ticket.url ? 'target="_blank" rel="noreferrer"' : ""}>#${escapeHtml(ticket.number)}</a></td>
-      <td>${escapeHtml(ticket.title)}</td>
-      <td><span class="ticket-state ${escapeHtml(ticket.status)}">${escapeHtml(String(ticket.status).replaceAll("_", " "))}</span></td>
+  panel.classList.toggle("hidden", !visible);
+  $("ticket-total").textContent = `${items.length} ITEM${items.length === 1 ? "" : "S"}`;
+  $("ticket-list").innerHTML = items.map((item) => `
+    <tr data-item-id="${escapeHtml(item.id)}">
+      <td><code>${escapeHtml(item.id)}</code></td>
+      <td>${item.number ? `#${escapeHtml(item.number)}` : "—"}</td>
+      <td>${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
+      <td><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
+      <td>${escapeHtml(item.phase_or_next || "—")}</td>
+      <td>${escapeHtml(item.blocker || "—")}</td>
+      <td>${escapeHtml(relativeTime(item.updated_at))}</td>
     </tr>`).join("");
 }
 
@@ -496,13 +576,33 @@ function renderCrew(crew) {
     </div>`).join("");
 }
 
-function renderReplacements(replacements) {
-  $("replacement-count").textContent = `${replacements.length} EVENT${replacements.length === 1 ? "" : "S"}`;
-  $("replacement-list").innerHTML = replacements.length ? replacements.slice().reverse().map((replacement) => `
+function renderReplacements(replacements, recoveries = []) {
+  const total = replacements.length + recoveries.length;
+  $("replacement-count").textContent = `${total} EVENT${total === 1 ? "" : "S"}`;
+  const recoveryRows = recoveries.slice().reverse().map((item) => `
+    <div class="replacement-item recovery-item" data-recovery-id="${escapeHtml(item.recovery_id)}">
+      <strong>RECOVERY · ${escapeHtml(String(item.role || "agent").toUpperCase())} · ${escapeHtml(String(item.state || "unknown").replaceAll("_", " ").toUpperCase())} · ATTEMPT ${escapeHtml(item.attempt)}/${escapeHtml(item.cap)}</strong>
+      <p>${escapeHtml(item.reason || "Continuity protocol")}</p>
+    </div>`);
+  const replacementRows = replacements.slice().reverse().map((replacement) => `
     <div class="replacement-item">
       <strong>${escapeHtml(replacementHeadline(replacement))}</strong>
       <p>${escapeHtml(replacementDetail(replacement))}</p>
-    </div>`).join("") : '<div class="attention-clear">No agent replacements recorded.</div>';
+    </div>`);
+  $("replacement-list").innerHTML = total
+    ? [...recoveryRows, ...replacementRows].join("")
+    : '<div class="attention-clear">No agent replacements or recoveries recorded.</div>';
+}
+
+function renderReviewAttempts(attempts = []) {
+  const panel = $("review-attempts-panel");
+  panel.classList.toggle("hidden", attempts.length === 0);
+  $("review-attempt-count").textContent = `${attempts.length} ATTEMPT${attempts.length === 1 ? "" : "S"}`;
+  $("review-attempt-list").innerHTML = attempts.length ? attempts.slice().reverse().map((attempt) => `
+    <div class="replacement-item" data-review-attempt="${escapeHtml(attempt.attempt_id)}">
+      <strong>ATTEMPT ${escapeHtml(attempt.attempt)} · ${escapeHtml(String(attempt.disposition || "unknown").replaceAll("_", " ").toUpperCase())}</strong>
+      <p>${escapeHtml(String(attempt.trigger || "unknown").replaceAll("_", " "))} · ${escapeHtml(attempt.reviewer || "reviewer pending")} · ${escapeHtml(attempt.findings_count || 0)} finding(s)</p>
+    </div>`).join("") : "";
 }
 
 function renderEvents(events, total) {
@@ -561,7 +661,8 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
-  renderInputAlert(snapshot.input_required, snapshot.project.feature);
+  renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
+  renderRegression(snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   setFaviconState(status.status === "complete" ? "complete"
     : state.inputRequired ? "blocked" : "in_progress");
@@ -577,7 +678,7 @@ function render(snapshot) {
   $("phase-name").textContent = status.phase;
   $("status-updated").textContent = `State updated ${relativeTime(status.updated_at)}`;
   $("design-rounds").textContent = `${policy.design_round} / ${policy.max_design_rounds}`;
-  $("review-rounds").textContent = `${policy.review_round} / ${policy.max_review_rounds}`;
+  $("review-rounds").textContent = reviewRoundLabel(policy);
   $("design-review-budget").textContent = designReviewBudgetLabel(policy);
   $("design-review-packet").textContent = designReviewPacketLabel(snapshot.design_review_packet);
   $("design-reviewer-profile").textContent = designReviewerProfileLabel(policy.design_reviewer_selection);
@@ -605,11 +706,12 @@ function render(snapshot) {
   stateClass($("approval-state"), status.deployment_approved ? "is-good" : "is-warning");
 
   renderCriteria(acceptance.criteria);
-  renderTickets(snapshot.tickets || []);
+  renderWorkItems(snapshot.work_items || { items: [], multi: false });
   renderDesignEvidence(snapshot.design_evidence || []);
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
-  renderReplacements(state.replacements);
+  renderReplacements(state.replacements, snapshot.recovery?.attempts || []);
+  renderReviewAttempts(snapshot.review?.attempts || []);
   renderRoleChiclets(snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);
@@ -714,6 +816,8 @@ connectEventStream();
 $("enable-alerts").addEventListener("click", enableDesktopAlerts);
 $("design-approve").addEventListener("click", authorizeDesign);
 $("deployment-approve").addEventListener("click", authorizeDeployment);
+$("regression-accept").addEventListener("click", () => decideRegression("accept"));
+$("regression-decline").addEventListener("click", () => decideRegression("decline"));
 $("settings-toggle").addEventListener("click", openSettings);
 $("settings-close").addEventListener("click", closeSettings);
 $("settings-cancel").addEventListener("click", closeSettings);

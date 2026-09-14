@@ -425,6 +425,23 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     except Exception:
         _stop_process_group(process)
         raise
+    lib.update_session_liveness(root, session_id)
+    liveness_interval = lib.load_config(root).get("recovery", {}).get("liveness_seconds", 60)
+
+    def publish_liveness() -> None:
+        # Liveness pings are advisory. A process object without poll()
+        # (a test double that only exposes wait()) simply publishes none.
+        poll = getattr(process, "poll", None)
+        if not callable(poll):
+            return
+        while poll() is None:
+            try:
+                lib.update_session_liveness(root, session_id)
+            except Exception:
+                pass  # liveness is conservative telemetry; lifecycle remains authoritative
+            threading.Event().wait(liveness_interval)
+
+    threading.Thread(target=publish_liveness, daemon=True).start()
     reader = None
     stderr_reader = None
     reader_errors: list[BaseException] = []

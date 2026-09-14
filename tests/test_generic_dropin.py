@@ -99,6 +99,14 @@ def main() -> int:
         toml_text, n = re.subn(r"^commands\s*=\s*\[.*?\]$", 'commands = ["true"]',
                                 toml.read_text(), count=1, flags=re.MULTILINE | re.DOTALL)
         check(n == 1, "could not locate a commands = [...] line in the drop-in copy's handsoff.toml")
+        # The source repo also gates its own full suites behind
+        # [[regressions]] (#28). Those groups name this repo's tests, which
+        # an unrelated project does not have, and the gate reads the
+        # throwaway "true" check as broad enough to capture any group, so
+        # the self-hosting regression tables are dropped from the copy the
+        # same way the self-hosting commands array is replaced above.
+        toml_text = re.sub(r"^\[regression_gate\]\n(?:(?!\[).*\n?)*", "", toml_text, flags=re.MULTILINE)
+        toml_text = re.sub(r"^\[\[regressions\]\]\n(?:(?!\[).*\n?)*", "", toml_text, flags=re.MULTILINE)
         toml.write_text(toml_text)
 
         r = run(["criterion-update", "REQ-001", "--requirement", "Exact observable outcome",

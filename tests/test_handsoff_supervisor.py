@@ -58,21 +58,32 @@ def normalize_fixture_config(path):
         ("checks", "commands"): "commands = []",
         ("checks", "live_commands"): "live_commands = []",
     })
+    # The dogfood repo gates its own full suites behind [[regressions]]
+    # (#28). A fixture project must not inherit those groups: the fixture
+    # checks are `true`, which the footprint gate reads as broad, so an
+    # inherited group would refuse every fixture verify. Both tables are
+    # dropped; tests of the gate itself write their own config.
+    dropped_sections = {"regression_gate", "regressions"}
     section = None
     normalized = []
     # A replaced key whose value is a multi-line array (the dogfood
     # `commands = [` list spans several lines) must also drop the
     # continuation lines up to the closing bracket, or the fixture toml
-    # is left with a dangling array body and refuses to parse.
+    # is left with a dangling array body and refuses to parse. The array
+    # ends on the line that starts with the closing bracket, not on any
+    # line that merely contains one: a dogfood command string may itself
+    # carry a "]" (a Python one-liner indexing a dict, say).
     in_replaced_array = False
     for line in path.read_text().splitlines(keepends=True):
         if in_replaced_array:
-            if "]" in line:
+            if line.strip().startswith("]"):
                 in_replaced_array = False
             continue
-        section_match = re.match(r"^\[([^]]+)\]\s*$", line.strip())
+        section_match = re.match(r"^\[\[?([^]]+)\]\]?\s*$", line.strip())
         if section_match:
             section = section_match.group(1)
+        if section in dropped_sections:
+            continue
         key_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
         replacement = replacements.get((section, key_match.group(1))) if key_match else None
         if replacement is not None:
@@ -5491,8 +5502,9 @@ class TestArchitectDesignReview(HandsoffTestCase):
         self.assertEqual(snapshot["crew"][0]["actor"], "architect-1")
         self.assertIsNone(snapshot["crew"][0]["session"])
         self.assertIn('data-role="architect"', (ROOT / "dashboard" / "index.html").read_text())
-        self.assertIn('"label": "DESIGN REVIEWER"',
-                      (ROOT / "bin" / "handsoff_dashboard.py").read_text())
+        design_reviewer_row = next(row for row in snapshot["crew"] if row["key"] == "design_reviewer")
+        self.assertEqual(design_reviewer_row["label"], "DESIGN REVIEWER")
+        self.assertEqual(design_reviewer_row["actor"], "design-reviewer")
 
         status = self.read_status()
         status["design_review"]["by"] = ""
@@ -8483,6 +8495,12 @@ class TestAgentReplacement(HandsoffTestCase):
             cfg = self.lib.load_config(self.tmp)
             status = self.lib.load_unique_json(self.lib.status_path(self.tmp, cfg))
             status["review_round"] = value
+            # #31 derives review_round from the structured ledger: it must
+            # equal legacy_review_round_offset + len(review_attempts). A
+            # trusted-round fixture therefore moves the legacy offset, the
+            # same thing migrate_review_ledger does for a pre-#31 status.
+            if "review_attempts" in status:
+                status["legacy_review_round_offset"] = value - len(status.get("review_attempts") or [])
             self.lib.commit(
                 self.tmp, cfg, status=status, event_kind="test_review_round_advanced",
                 event_message=f"Trusted review round advanced to {value}", review_round=value,

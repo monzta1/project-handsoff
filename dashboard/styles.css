@@ -149,6 +149,10 @@ button, input { font: inherit; }
 .input-alert-copy > span { color: #ffb7b2; font: 800 11px/1 var(--sans); letter-spacing: .12em; }
 .input-alert-copy h2 { margin: 4px 0 3px; color: #fff5f4; font-size: clamp(20px, 2.2vw, 29px); line-height: 1.1; letter-spacing: .04em; }
 .input-alert-copy p { margin: 0; color: #ffd2cf; font-size: 14px; line-height: 1.45; }
+.regression-details { margin: 10px 0 0; max-width: 760px; white-space: pre-wrap; color: #ffe7e5; font: 12px/1.45 var(--mono); }
+.regression-card { margin: 0 0 24px; padding: 18px 20px; border-color: rgba(255, 191, 92, .55); background: rgba(49, 36, 15, .72); }
+.regression-card .regression-details { max-width: none; color: #ffe8bd; }
+.regression-last { margin: 12px 0 0; color: var(--muted); font: 12px/1.45 var(--mono); }
 .input-alert-actions { position: relative; z-index: 1; display: flex; align-items: center; gap: 9px; }
 .alert-button { position: relative; z-index: 1; min-height: 40px; padding: 0 14px; border: 1px solid rgba(255, 255, 255, .42); border-radius: 8px; background: #fff4f3; color: #46100e; font-size: 12px; font-weight: 750; cursor: pointer; }
 .alert-button:hover { background: white; transform: translateY(-1px); }
@@ -256,6 +260,8 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .ticket-state.in_progress { color: var(--blue); border-color: rgba(143, 192, 255, .3); background: var(--green-soft); }
 .ticket-state.not_started { color: var(--faint); }
 .ticket-state.blocked { color: var(--red); border-color: rgba(255, 143, 136, .28); background: var(--red-soft); }
+.ticket-state.in_review { color: #c8a8ff; border-color: rgba(200,168,255,.3); background: rgba(120,70,180,.14); }
+.ticket-state.awaiting_approval, .ticket-state.recovering { color: var(--amber); border-color: rgba(255,194,92,.3); background: rgba(255,194,92,.1); }
 .design-evidence-panel { margin: 16px 0; }
 .design-evidence-list { display: grid; gap: 8px; }
 .design-evidence-item { display: grid; grid-template-columns: 92px 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 9px; background: #101815; }

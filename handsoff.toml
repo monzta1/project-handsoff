@@ -50,10 +50,23 @@ supervisor = []
 implementer = []
 reviewer = []
 
+[recovery]
+enabled = true
+max_attempts = 3
+lease_minutes = 15
+worker_loss_grace_minutes = 2
+live_session_silence_minutes = 10
+liveness_seconds = 60
+dashboard_watchdog = true
+poll_seconds = 30
+
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
 # Each criterion's evidence should point at one of these having run, not a
 # free-text claim. Example: commands = ["pytest tests/ -q", "npm test"]
+# None of these runs the whole suite. Full regressions belong under
+# [[regressions]] (issue #28) and are gated behind Mission Control
+# Accept/Decline.
 commands = [
   "python3 -m unittest tests.test_handsoff_supervisor.TestHumanPauseSuppressesStall -v",
   "python3 -m unittest tests.test_handsoff_supervisor.TestDesignReviewAttemptBudget -v",
@@ -68,10 +81,19 @@ commands = [
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = [
-  'git fetch -q origin && test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"',
-  """python3 -c "import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8765/api/dashboard')); assert data['initialized'] and data['status']['deployment_approved'] and data['live']['state'] and 'design_review_attempts' in data['policy'] and 'design_reviewer_selection' in data['policy'] and 'design_evidence' in data and 'design_review_packet' in data"""",
-]
+live_commands = ["python3 tests/live_tranche_smoke.py"]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600
+
+[regression_gate]
+approval_timeout_minutes = 30
+launch_window_minutes = 10
+
+[[regressions]]
+name = "python-full"
+commands = ["python3 tests/test_handsoff_supervisor.py"]
+
+[[regressions]]
+name = "dashboard-full"
+commands = ["node --test tests/dashboard/*.test.js"]

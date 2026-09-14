@@ -23,6 +23,7 @@ SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("handsoff_supervisor.py")
 MAX_REQUEST_BYTES = 65536
 HUMAN_ONLY_COMMANDS = {
     "design-approve", "deployment-gate", "design-review-authorize", "design-review-escalate",
+    "review-cap-override", "recovery-acknowledge", "regression-decide", "regression-finalize",
 }
 _SUPERVISOR_HOST_CAPABILITY = object()
 
@@ -85,6 +86,45 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         base.extend(["--by", _text(request, "by")])
         if "note" in request:
             base.extend(["--note", _text(request, "note")])
+        return base
+    if command == "recover":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"dry_run"})
+        base.extend(["--by", _text(request, "by")])
+        if request.get("dry_run") is True:
+            base.append("--dry-run")
+        elif "dry_run" in request and request["dry_run"] is not False:
+            raise lib.HandsoffError("broker recover.dry_run must be boolean")
+        return base
+    if command == "regression-request":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "group"}, {"reason"})
+        base.extend(["--group", _text(request, "group"), "--by", _text(request, "by")])
+        if "reason" in request:
+            base.extend(["--reason", _text(request, "reason")])
+        return base
+    if command in {"regression-run", "regression-cancel"}:
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "request_id"})
+        base.extend(["--request-id", _text(request, "request_id"), "--by", _text(request, "by")])
+        return base
+    if command == "work-items-sync":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"from_tickets"})
+        base.extend(["--by", _text(request, "by")])
+        if request.get("from_tickets") is True:
+            base.append("--from-tickets")
+        elif "from_tickets" in request and request["from_tickets"] is not False:
+            raise lib.HandsoffError("broker from_tickets must be boolean")
+        return base
+    if command == "work-item-activate":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "item"})
+        base.extend([_text(request, "item"), "--by", _text(request, "by")])
+        return base
+    if command == "work-item-update":
+        optional = {"title", "url", "github_state", "notes"}
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "item"}, optional)
+        base.extend([_text(request, "item"), "--by", _text(request, "by")])
+        for field, flag in (("title", "--title"), ("url", "--url"),
+                            ("github_state", "--github-state"), ("notes", "--notes")):
+            if field in request:
+                base.extend([flag, _text(request, field)])
         return base
     if command in {"background-wait-start", "background-wait-end", "human-pause-start", "human-pause-end"}:
         optional = {"note"}
@@ -158,6 +198,25 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             if value not in {"yes", "not_applicable"}:
                 raise lib.HandsoffError("broker symptom_reproduced is invalid")
             base.extend(["--symptom-reproduced", value])
+        return base
+    if command == "review-attempt-start":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by"},
+                      {"reviewer", "trigger", "note"})
+        base.extend(["--by", _text(request, "by")])
+        for field, flag in (("reviewer", "--reviewer"), ("trigger", "--trigger"), ("note", "--note")):
+            if field in request:
+                base.extend([flag, _text(request, field)])
+        return base
+    if command == "record-review-findings":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "findings"})
+        findings = request["findings"]
+        if not isinstance(findings, list) or not findings or len(findings) > 16 \
+                or not all(isinstance(value, str) and value.strip() for value in findings) \
+                or len(findings) != len(set(findings)):
+            raise lib.HandsoffError("broker findings must be a non-empty unique string array of at most 16")
+        base.extend(["--by", _text(request, "by")])
+        for finding in findings:
+            base.extend(["--finding", finding])
         return base
     if command == "record-symptom-resolved":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "evidence"})
