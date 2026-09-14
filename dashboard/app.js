@@ -587,32 +587,83 @@ function renderQuestions(questions) {
   const visible = showQuestionsPanel(questions);
   panel.classList.toggle("hidden", !visible);
   $("questions-headline").textContent = questionHeadline(questions);
+  const cards = $("input-alert-cards");
   if (!visible) {
     $("questions-list").innerHTML = "";
     $("questions-state").textContent = "NONE OPEN";
+    cards.innerHTML = "";
+    cards.classList.add("hidden");
+    $("input-alert-message").classList.remove("hidden");
     return;
   }
   const open = questions.open || [];
   const blocking = questions.blocking || [];
   $("questions-state").textContent = blocking.length ? "PILOT ANSWER REQUIRED" : (open.length ? "OPEN" : "ANSWERED");
-  const rows = [...open, ...(questions.answered || []).slice().reverse()];
-  $("questions-list").innerHTML = rows.map((q) => `
-    <div class="question-row ${q.answer == null ? "is-open" : "is-answered"}">
-      <div class="question-meta"><span class="question-pill">${escapeHtml(questionLabel(q))}</span><span class="question-time">${escapeHtml(relativeTime(q.asked_at))}</span></div>
-      <p class="question-text">${escapeHtml(q.text)}${q.truncated ? " (truncated)" : ""}</p>
-      ${q.answer == null
-        ? `<form class="question-form" data-question-id="${escapeHtml(q.question_id)}"><textarea class="question-input" rows="2" placeholder="Answer for the ${escapeHtml(q.role)}" required></textarea><button type="submit" class="ghost-button">SEND ANSWER</button></form>`
-        : `<p class="question-answer"><strong>${escapeHtml(q.answered_by)}:</strong> ${escapeHtml(q.answer)}</p>`}
-    </div>`).join("");
-  panel.querySelectorAll(".question-form").forEach((form) => {
+  // #48: one compact numbered form per role, rendered by the pure helper
+  // in lib/dashboard-logic.js; the banner gets one card per role.
+  const rendered = renderQuestionForms(questions);
+  const list = $("questions-list");
+  list.innerHTML = rendered.html;
+  const showCards = state.inputKind === "question" && rendered.banner.length > 0;
+  cards.innerHTML = questionBannerCards(rendered.banner);
+  cards.classList.toggle("hidden", !showCards);
+  $("input-alert-message").classList.toggle("hidden", showCards);
+  list.querySelectorAll(".qf-text[data-expand]").forEach((node) => {
+    node.addEventListener("click", () => node.classList.toggle("is-clamped"));
+  });
+  list.querySelectorAll(".qf-row.is-open").forEach((row) => {
+    const other = row.querySelector(".qf-other");
+    row.querySelectorAll('input[type="radio"]').forEach((radio) => {
+      radio.addEventListener("change", () => {
+        const isOther = radio.value === QUESTION_OTHER_VALUE && radio.checked;
+        other.hidden = !isOther;
+        if (isOther) other.focus();
+      });
+    });
+  });
+  list.querySelectorAll(".question-role-form").forEach((form) => {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      answerQuestion(form.dataset.questionId, form.querySelector(".question-input").value, form);
+      const entries = [...form.querySelectorAll(".qf-row.is-open")].map((row) => {
+        const picked = row.querySelector('input[type="radio"]:checked');
+        return {
+          question_id: row.dataset.questionId,
+          choice: picked ? picked.value : null,
+          other: row.querySelector(".qf-other").value,
+        };
+      });
+      answerQuestionsBatch(collectQuestionFormAnswers(entries), form);
     });
   });
 }
 
+async function answerQuestionsBatch(answers, form) {
+  const button = form.querySelector(".qf-send");
+  if (!answers.length) {
+    showError("Pick an answer for at least one question before sending.");
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Transmitting…";
+  try {
+    const response = await fetch("/api/question-answers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answers }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Answers returned ${response.status}`);
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Send answers";
+    showError(`Answers rejected: ${error.message}`);
+  }
+}
+
 async function answerQuestion(questionId, text, form) {
+  // #46 single-answer path, kept for one-off answers; the role forms use
+  // answerQuestionsBatch.
   const button = form.querySelector("button");
   button.disabled = true;
   button.textContent = "TRANSMITTING…";

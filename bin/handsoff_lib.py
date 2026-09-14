@@ -7092,10 +7092,32 @@ QUESTION_PREFIX = "HANDSOFF_QUESTION:"
 QUESTION_ID_PATTERN = re.compile(r"^qn-[0-9a-f]{32}$")
 MAX_PENDING_QUESTIONS = 16
 MAX_QUESTION_TEXT = 1024
-QUESTION_FIELDS = {
+# #48: structured questions. A candidate that begins with '{' is parsed as a
+# JSON form (text + options + optional recommended); anything else after the
+# prefix is plain text exactly as in #46. A form that fails any rule is kept
+# verbatim as plain text with `form_error` naming the rule, so nothing a
+# role asked is ever lost.
+MAX_QUESTION_OPTIONS = 6
+MAX_QUESTION_OPTION_TEXT = 120
+MAX_QUESTION_BATCH = 16
+QUESTION_FORM_REQUIRED_KEYS = {"text", "options"}
+QUESTION_FORM_OPTIONAL_KEYS = {"recommended"}
+QUESTION_FORM_ERRORS = (
+    "malformed_json", "not_object", "unknown_keys", "missing_keys", "text_bounds",
+    "options_bounds", "duplicate_options", "recommended_not_offered",
+)
+QUESTION_LEGACY_FIELDS = {
     "question_id", "role", "session_id", "text", "truncated", "asked_at", "blocking",
     "answer", "answered_by", "answered_at", "delivered_at", "previous_next_action",
 }
+QUESTION_FORM_FIELDS = {"options", "recommended", "form_error"}
+QUESTION_ANSWER_FIELDS = {"chosen_option", "other_text"}
+QUESTION_FIELDS = QUESTION_LEGACY_FIELDS | QUESTION_FORM_FIELDS | QUESTION_ANSWER_FIELDS
+
+
+class QuestionAnswerConflict(HandsoffError):
+    """A batch answer that is well-formed but does not fit the board's
+    current state (unknown or already-answered id, choice not offered)."""
 
 
 def _question_text(value: object) -> tuple[str, bool]:
@@ -7108,6 +7130,61 @@ def _question_text(value: object) -> tuple[str, bool]:
         raise HandsoffError("question text must not be empty")
     truncated = len(text) > MAX_QUESTION_TEXT
     return text[:MAX_QUESTION_TEXT], truncated
+
+
+def _question_form_failure(candidate: str, code: str) -> dict:
+    text, truncated = _question_text(candidate)
+    return {"text": text, "truncated": truncated, "options": [], "recommended": None, "form_error": code}
+
+
+def parse_question_candidate(raw: object) -> dict:
+    """#48: the text after `HANDSOFF_QUESTION:` becomes {text, truncated,
+    options, recommended, form_error}. Only a candidate whose first
+    non-blank character is '{' is tried as a form; everything else is
+    plain text with no form_error, exactly as #46 stored it."""
+    if not isinstance(raw, str):
+        raise HandsoffError("question text must be a string")
+    candidate = raw.strip()
+    if not candidate.startswith("{"):
+        text, truncated = _question_text(raw)
+        return {"text": text, "truncated": truncated, "options": [], "recommended": None, "form_error": None}
+    try:
+        parsed = json.loads(candidate)
+    except ValueError:
+        return _question_form_failure(candidate, "malformed_json")
+    if not isinstance(parsed, dict):
+        return _question_form_failure(candidate, "not_object")
+    keys = set(parsed)
+    if keys - QUESTION_FORM_REQUIRED_KEYS - QUESTION_FORM_OPTIONAL_KEYS:
+        return _question_form_failure(candidate, "unknown_keys")
+    if QUESTION_FORM_REQUIRED_KEYS - keys:
+        return _question_form_failure(candidate, "missing_keys")
+    text_value = parsed["text"]
+    if not isinstance(text_value, str):
+        return _question_form_failure(candidate, "text_bounds")
+    text = " ".join(text_value.split())
+    if not text or len(text) > MAX_QUESTION_TEXT:
+        return _question_form_failure(candidate, "text_bounds")
+    raw_options = parsed["options"]
+    if not isinstance(raw_options, list) or not 1 <= len(raw_options) <= MAX_QUESTION_OPTIONS:
+        return _question_form_failure(candidate, "options_bounds")
+    options: list[str] = []
+    for option in raw_options:
+        if not isinstance(option, str):
+            return _question_form_failure(candidate, "options_bounds")
+        clean = " ".join(option.split())
+        if not clean or len(clean) > MAX_QUESTION_OPTION_TEXT:
+            return _question_form_failure(candidate, "options_bounds")
+        options.append(clean)
+    if len(set(options)) != len(options):
+        return _question_form_failure(candidate, "duplicate_options")
+    recommended = None
+    if "recommended" in parsed:
+        value = parsed["recommended"]
+        recommended = " ".join(value.split()) if isinstance(value, str) else None
+        if recommended not in options:
+            return _question_form_failure(candidate, "recommended_not_offered")
+    return {"text": text, "truncated": False, "options": options, "recommended": recommended, "form_error": None}
 
 
 def open_questions(status: dict, *, blocking_only: bool = False) -> list[dict]:
@@ -7135,7 +7212,8 @@ def raise_question(root: Path, *, role: str, text: object, session_id: str | Non
         raise HandsoffError("question role must be architect, supervisor, implementer, or reviewer")
     if session_id is not None and not AGENT_SESSION_ID_PATTERN.fullmatch(str(session_id)):
         raise HandsoffError("question session id is invalid")
-    clean, truncated = _question_text(text)
+    parsed = parse_question_candidate(text)
+    clean, truncated = parsed["text"], parsed["truncated"]
     root = root.resolve()
     with project_lock(root):
         cfg = load_config(root)
@@ -7159,8 +7237,10 @@ def raise_question(root: Path, *, role: str, text: object, session_id: str | Non
         record = {
             "question_id": question_id, "role": role, "session_id": session_id, "text": clean,
             "truncated": truncated, "asked_at": now, "blocking": blocking,
+            "options": list(parsed["options"]), "recommended": parsed["recommended"],
+            "form_error": parsed["form_error"],
             "answer": None, "answered_by": None, "answered_at": None, "delivered_at": None,
-            "previous_next_action": None,
+            "chosen_option": None, "other_text": None, "previous_next_action": None,
         }
         proposed = deepcopy(status)
         if blocking and proposed.get("status") == "in_progress":
@@ -7184,7 +7264,8 @@ def raise_question(root: Path, *, role: str, text: object, session_id: str | Non
         commit(root, cfg, status=proposed, event_kind="question_raised",
                event_message=f"{role} asked a question", question_id=question_id, role=role,
                session_id=session_id, blocking=record["blocking"], truncated=truncated,
-               text=clean, by=by)
+               text=clean, options=list(parsed["options"]), recommended=parsed["recommended"],
+               form_error=parsed["form_error"], by=by)
         return deepcopy(record)
 
 
@@ -7209,16 +7290,16 @@ def answer_question(root: Path, *, question_id: str, by: str, text: object) -> d
         if record.get("answer") is not None:
             raise HandsoffError(f"question {question_id} is already answered")
         now = datetime.now(timezone.utc).isoformat()
-        record.update({"answer": clean, "answered_by": actor, "answered_at": now})
+        # #48: a single answer that names an offered option is that choice;
+        # anything else is free text. Legacy records gain the two fields.
+        chosen = clean if clean in (record.get("options") or []) else None
+        record.update({"answer": clean, "answered_by": actor, "answered_at": now,
+                       "chosen_option": chosen, "other_text": None if chosen is not None else clean})
+        _upgrade_question_record(record)
         if record.get("truncated") is False and truncated:
             record["truncated"] = True
         still_blocking = open_questions(proposed, blocking_only=True)
-        lifted = False
-        if not still_blocking and record.get("blocking") and proposed.get("status") == "blocked":
-            proposed["status"] = "in_progress"
-            proposed["next_action"] = (record.get("previous_next_action")
-                                       or f"Resume with the Pilot's answer to {question_id}")
-            lifted = True
+        lifted = _lift_question_hold(proposed, [record], still_blocking)
         proposed["updated_at"] = now
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
@@ -7226,9 +7307,124 @@ def answer_question(root: Path, *, question_id: str, by: str, text: object) -> d
         commit(root, cfg, status=proposed, event_kind="question_answered",
                event_message=f"Pilot answered {record.get('role')} question {question_id}",
                question_id=question_id, role=record.get("role"), session_id=record.get("session_id"),
-               by=actor, answer=clean, block_lifted=lifted,
+               by=actor, answer=clean, chosen_option=record["chosen_option"],
+               other_text=record["other_text"], block_lifted=lifted,
                open_blocking_questions=len(still_blocking))
         return deepcopy(record)
+
+
+def _upgrade_question_record(record: dict) -> None:
+    """A #46 record touched by an answer path gains the #48 fields so the
+    schema sees one complete shape; absent fields mean plain text."""
+    for key, default in (("options", []), ("recommended", None), ("form_error", None),
+                         ("chosen_option", None), ("other_text", None)):
+        record.setdefault(key, default)
+
+
+def _lift_question_hold(proposed: dict, answered: list[dict], still_blocking: list[dict]) -> bool:
+    """Lift the hold exactly once: only when no blocking question remains
+    and at least one of the answers just given was holding the run."""
+    if still_blocking or proposed.get("status") != "blocked":
+        return False
+    holding = [q for q in answered if q.get("blocking")]
+    if not holding:
+        return False
+    first = holding[0]
+    proposed["status"] = "in_progress"
+    proposed["next_action"] = (first.get("previous_next_action")
+                               or f"Resume with the Pilot's answer to {first.get('question_id')}")
+    return True
+
+
+def question_answers_from_payload(payload: object) -> list:
+    """The batch envelope shared by `question-answer --batch` and
+    `POST /api/question-answers`: exactly {"answers": [...]}."""
+    if not isinstance(payload, dict) or set(payload) != {"answers"}:
+        raise HandsoffError('question batch must be an object with exactly the key "answers"')
+    return payload["answers"]
+
+
+def _batch_entry(index: int, entry: object) -> tuple[str, str, str]:
+    label = f"answers[{index}]"
+    if not isinstance(entry, dict):
+        raise HandsoffError(f"{label} must be an object")
+    keys = set(entry)
+    if keys == {"question_id", "choice"}:
+        mode = "choice"
+    elif keys == {"question_id", "other"}:
+        mode = "other"
+    else:
+        raise HandsoffError(f'{label} must have exactly the keys question_id and choice, or question_id and other')
+    question_id = entry["question_id"]
+    if not isinstance(question_id, str) or not QUESTION_ID_PATTERN.fullmatch(question_id):
+        raise HandsoffError(f"{label}.question_id is invalid")
+    value = entry[mode]
+    if not isinstance(value, str):
+        raise HandsoffError(f"{label}.{mode} must be a string")
+    clean = " ".join(value.split())
+    if not clean:
+        raise HandsoffError(f"{label}.{mode} must not be empty")
+    if len(clean) > MAX_QUESTION_TEXT:
+        raise HandsoffError(f"{label}.{mode} must be at most {MAX_QUESTION_TEXT} characters")
+    return question_id, mode, clean
+
+
+def answer_questions_batch(root: Path, *, answers: object, by: str) -> list[dict]:
+    """#48: record several Pilot answers in one lock-protected commit with
+    one `question_answers_recorded` event. Any bad entry refuses the whole
+    batch, naming its index, and writes nothing."""
+    actor = validate_agent_actor(by)
+    if not isinstance(answers, list) or not 1 <= len(answers) <= MAX_QUESTION_BATCH:
+        raise HandsoffError(f"answers must be a list of 1 to {MAX_QUESTION_BATCH} entries")
+    entries = [_batch_entry(index, entry) for index, entry in enumerate(answers)]
+    seen: set[str] = set()
+    for index, (question_id, _mode, _clean) in enumerate(entries):
+        if question_id in seen:
+            raise HandsoffError(f"answers[{index}].question_id {question_id} is listed twice")
+        seen.add(question_id)
+    root = root.resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        schema_errors = validate_status_schema(status)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        proposed = deepcopy(status)
+        by_id = {q.get("question_id"): q for q in (proposed.get("pending_questions") or [])
+                 if isinstance(q, dict)}
+        now = datetime.now(timezone.utc).isoformat()
+        answered: list[dict] = []
+        listed: list[dict] = []
+        for index, (question_id, mode, clean) in enumerate(entries):
+            label = f"answers[{index}]"
+            record = by_id.get(question_id)
+            if record is None:
+                raise QuestionAnswerConflict(f"{label}: question {question_id} was not found")
+            if record.get("answer") is not None:
+                raise QuestionAnswerConflict(f"{label}: question {question_id} is already answered")
+            options = record.get("options") or []
+            if mode == "choice":
+                if not options:
+                    raise QuestionAnswerConflict(f"{label}: question {question_id} is plain text and accepts only other")
+                if clean not in options:
+                    raise QuestionAnswerConflict(f"{label}: choice {clean!r} is not offered by question {question_id}")
+            _upgrade_question_record(record)
+            record.update({"answer": clean, "answered_by": actor, "answered_at": now,
+                           "chosen_option": clean if mode == "choice" else None,
+                           "other_text": clean if mode == "other" else None})
+            answered.append(record)
+            listed.append({"question_id": question_id, mode: clean, "answered_by": actor})
+        still_blocking = open_questions(proposed, blocking_only=True)
+        lifted = _lift_question_hold(proposed, answered, still_blocking)
+        proposed["updated_at"] = now
+        schema_errors = validate_status_schema(proposed)
+        if schema_errors:
+            raise HandsoffError(schema_errors[0])
+        commit(root, cfg, status=proposed, event_kind="question_answers_recorded",
+               event_message=f"Pilot answered {len(answered)} question(s)",
+               answers=listed, by=actor, block_lifted=lifted,
+               open_blocking_questions=len(still_blocking))
+        return [deepcopy(q) for q in answered]
 
 
 def questions_prompt_section(root: Path, role: str) -> str:
@@ -7245,6 +7441,7 @@ def questions_prompt_section(root: Path, role: str) -> str:
         due = [q for q in (status.get("pending_questions") or [])
                if isinstance(q, dict) and q.get("role") == role and q.get("answer") is not None
                and q.get("delivered_at") is None]
+        due.sort(key=lambda q: str(q.get("asked_at") or ""))
         if not due:
             return ""
         proposed = deepcopy(status)
@@ -7258,19 +7455,39 @@ def questions_prompt_section(root: Path, role: str) -> str:
     lines = ["# Pilot answers to your earlier questions", ""]
     for q in due:
         lines.append(f"- Q ({q['question_id']}): {q['text']}")
-        lines.append(f"  A ({q['answered_by']}): {q['answer']}")
+        if q.get("options"):
+            lines.append(f"  Options offered: {', '.join(q['options'])}")
+        chosen = " (chosen from the offered options)" if q.get("chosen_option") is not None else ""
+        lines.append(f"  A ({q['answered_by']}): {q['answer']}{chosen}")
     return "\n".join(lines)
 
 
 def questions_view(status: dict) -> dict:
     items = [q for q in (status.get("pending_questions") or []) if isinstance(q, dict)]
     open_items = [q for q in items if q.get("answer") is None]
+    by_role: dict[str, dict] = {}
+    for q in open_items:
+        role = str(q.get("role") or "role")
+        entry = by_role.setdefault(role, {"role": role, "count": 0, "blocking": 0, "question_ids": []})
+        entry["count"] += 1
+        entry["blocking"] += 1 if q.get("blocking") else 0
+        entry["question_ids"].append(q.get("question_id"))
     return {
         "open": open_items,
         "blocking": [q for q in open_items if q.get("blocking")],
         "answered": [q for q in items if q.get("answer") is not None][-8:],
+        "by_role": list(by_role.values()),
         "total": len(items),
     }
+
+
+def question_cards(status: dict) -> list[dict]:
+    """#48: one banner card per role with an open blocking question."""
+    cards: dict[str, int] = {}
+    for q in open_questions(status, blocking_only=True):
+        role = str(q.get("role") or "role")
+        cards[role] = cards.get(role, 0) + 1
+    return [{"role": role, "count": count} for role, count in cards.items()]
 
 
 def question_status_errors(status: dict) -> list[str]:
@@ -7289,7 +7506,10 @@ def question_status_errors(status: dict) -> list[str]:
         if not isinstance(q, dict):
             errors.append(f"{label} must be an object")
             continue
-        if set(q) != QUESTION_FIELDS:
+        # #48 records carry the form and answer fields; a #46 record written
+        # before them is read as plain text (absent means empty list / null).
+        # Any other key set is a hand edit.
+        if set(q) not in (QUESTION_FIELDS, QUESTION_LEGACY_FIELDS):
             errors.append(f"{label} must have exactly the keys {sorted(QUESTION_FIELDS)}")
             continue
         qid = q.get("question_id")
@@ -7325,4 +7545,41 @@ def question_status_errors(status: dict) -> list[str]:
         previous = q.get("previous_next_action")
         if previous is not None and not isinstance(previous, str):
             errors.append(f"{label}.previous_next_action must be a string or null")
+        errors.extend(_question_form_errors(label, q, answered))
+    return errors
+
+
+def _question_form_errors(label: str, q: dict, answered: bool) -> list[str]:
+    """#48 half of the schema check: options, recommended, form_error and
+    the chosen_option / other_text pair must agree with each other."""
+    errors: list[str] = []
+    options = q.get("options", [])
+    options_ok = isinstance(options, list) and len(options) <= MAX_QUESTION_OPTIONS and all(
+        isinstance(o, str) and 1 <= len(o) <= MAX_QUESTION_OPTION_TEXT and " ".join(o.split()) == o
+        for o in options)
+    if not options_ok:
+        errors.append(f"{label}.options must be a list of at most {MAX_QUESTION_OPTIONS} normalized strings "
+                      f"of 1 to {MAX_QUESTION_OPTION_TEXT} characters")
+        options = []
+    elif len(set(options)) != len(options):
+        errors.append(f"{label}.options must be unique")
+    recommended = q.get("recommended")
+    if recommended is not None and (not isinstance(recommended, str) or recommended not in options):
+        errors.append(f"{label}.recommended must be null or one of the options")
+    form_error = q.get("form_error")
+    if form_error is not None:
+        if form_error not in QUESTION_FORM_ERRORS:
+            errors.append(f"{label}.form_error must be null or one of {list(QUESTION_FORM_ERRORS)}")
+        if options or recommended is not None:
+            errors.append(f"{label} with a form_error must carry no options or recommended")
+    chosen = q.get("chosen_option")
+    other = q.get("other_text")
+    if chosen is not None and (not isinstance(chosen, str) or chosen not in options or chosen != q.get("answer")):
+        errors.append(f"{label}.chosen_option must be null or the offered option that is the answer")
+    if other is not None and (not isinstance(other, str) or other != q.get("answer")):
+        errors.append(f"{label}.other_text must be null or equal to the answer")
+    if chosen is not None and other is not None:
+        errors.append(f"{label} cannot carry both chosen_option and other_text")
+    if not answered and (chosen is not None or other is not None):
+        errors.append(f"{label} unanswered question cannot carry chosen_option or other_text")
     return errors

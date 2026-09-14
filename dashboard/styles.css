@@ -397,3 +397,24 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .question-answer { margin: 0; color: var(--muted, #9fb2c2); }
 .question-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: start; }
 .question-input { width: 100%; background: rgba(0, 0, 0, 0.35); color: inherit; border: 1px solid rgba(111, 179, 245, 0.35); border-radius: 8px; padding: 8px; font: inherit; }
+
+/* #48: structured question forms. Thin dividers, no per-question boxes,
+   colors reuse the #46 pill and muted tokens. */
+.input-alert-cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 0; }
+.qf-card { border: 1px solid rgba(255, 143, 136, 0.55); border-radius: 8px; padding: 4px 10px; font-size: 0.9rem; }
+.question-role-form { margin-bottom: 14px; }
+.qf-head { display: flex; justify-content: space-between; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; padding-bottom: 6px; border-bottom: 1px solid rgba(111, 179, 245, 0.25); }
+.qf-count { color: var(--muted, #9fb2c2); }
+.qf-row { padding: 8px 0; border-bottom: 1px solid rgba(111, 179, 245, 0.15); }
+.qf-row.is-answered { color: var(--muted, #9fb2c2); font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qf-line { display: flex; gap: 8px; align-items: baseline; }
+.qf-num { color: var(--muted, #9fb2c2); flex: 0 0 auto; min-width: 1.6em; }
+.qf-text { margin: 0; flex: 1 1 auto; cursor: pointer; }
+.qf-text.is-clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.qf-flags { color: #ff8f88; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; flex: 0 0 auto; }
+.qf-choices { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; margin: 6px 0 0 1.6em; }
+.qf-choice { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.qf-choice input { margin: 0; }
+.qf-recommended { color: var(--muted, #9fb2c2); font-style: normal; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.qf-other { flex: 1 1 240px; background: rgba(0, 0, 0, 0.35); color: inherit; border: 1px solid rgba(111, 179, 245, 0.35); border-radius: 8px; padding: 6px 8px; font: inherit; }
+.qf-actions { display: flex; justify-content: flex-end; padding-top: 8px; }

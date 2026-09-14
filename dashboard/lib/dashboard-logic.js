@@ -442,11 +442,140 @@ function questionLabel(question) {
   return `${role.charAt(0).toUpperCase()}${role.slice(1)} · ${state}`;
 }
 
+// #48: structured question forms. A pure renderer (no DOM) so the node
+// tests can assert on the HTML it returns; app.js injects the HTML and wires
+// the Other reveal, the click-to-expand and the per-role batch submit.
+const QUESTION_OTHER_VALUE = "__other__";
+
+function questionEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function questionRoleTitle(role) {
+  const text = String(role || "role");
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+}
+
+function questionFormErrorLabel(code) {
+  return code ? `form ${String(code).replaceAll("_", " ")}` : "";
+}
+
+function renderQuestionChoices(question) {
+  const id = questionEscape(question.question_id);
+  const options = Array.isArray(question.options) ? question.options : [];
+  const recommended = question.recommended != null ? String(question.recommended) : null;
+  const plain = options.length === 0;
+  const choices = options.map((option) => {
+    const value = String(option);
+    const isRecommended = recommended === value;
+    return `<label class="qf-choice${isRecommended ? " is-recommended" : ""}">`
+      + `<input type="radio" name="${id}" value="${questionEscape(value)}"${isRecommended ? " checked" : ""}>`
+      + `<span>${questionEscape(value)}</span>`
+      + (isRecommended ? '<em class="qf-recommended">recommended</em>' : "")
+      + "</label>";
+  });
+  choices.push(`<label class="qf-choice qf-choice-other">`
+    + `<input type="radio" name="${id}" value="${QUESTION_OTHER_VALUE}"${plain ? " checked" : ""}>`
+    + "<span>Other</span></label>");
+  const field = `<input type="text" class="qf-other" name="${id}-other" maxlength="1024" `
+    + `placeholder="${plain ? "Your answer" : "Your own answer"}"${plain ? "" : " hidden"}>`;
+  return `<div class="qf-choices" role="radiogroup">${choices.join("")}${field}</div>`;
+}
+
+function renderQuestionRow(question, number) {
+  const id = questionEscape(question.question_id);
+  const answered = question.answer != null;
+  const text = `${question.text || ""}${question.truncated ? " (truncated)" : ""}`;
+  if (answered) {
+    const by = question.answered_by || "Pilot";
+    return `<div class="qf-row is-answered" data-question-id="${id}">`
+      + `<span class="qf-num">${number}.</span>`
+      + `<span class="qf-muted">${questionEscape(text)} · ${questionEscape(by)}: ${questionEscape(question.answer)}</span>`
+      + "</div>";
+  }
+  const flags = [question.blocking ? "holding the run" : "", questionFormErrorLabel(question.form_error)]
+    .filter(Boolean).join(" · ");
+  return `<div class="qf-row is-open" data-question-id="${id}">`
+    + `<div class="qf-line"><span class="qf-num">${number}.</span>`
+    + `<p class="qf-text is-clamped" data-expand title="Click to expand">${questionEscape(text)}</p>`
+    + (flags ? `<span class="qf-flags">${questionEscape(flags)}</span>` : "")
+    + "</div>"
+    + renderQuestionChoices(question)
+    + "</div>";
+}
+
+function renderQuestionForms(questions) {
+  const open = (questions && questions.open) || [];
+  const answered = (questions && questions.answered) || [];
+  const byRole = new Map();
+  const asked = (q) => String((q && q.asked_at) || "");
+  [...open, ...answered]
+    .filter((q) => q && q.question_id)
+    .sort((a, b) => (asked(a) < asked(b) ? -1 : asked(a) > asked(b) ? 1 : 0))
+    .forEach((q) => {
+      const role = String(q.role || "role");
+      if (!byRole.has(role)) byRole.set(role, []);
+      byRole.get(role).push(q);
+    });
+  const forms = [];
+  const banner = [];
+  const html = [];
+  byRole.forEach((rows, role) => {
+    const openRows = rows.filter((q) => q.answer == null);
+    const blocking = openRows.filter((q) => q.blocking).length;
+    forms.push({ role, question_ids: rows.map((q) => q.question_id), open_count: openRows.length });
+    if (blocking) banner.push({ role, count: blocking });
+    const body = rows.map((q, index) => renderQuestionRow(q, index + 1)).join("");
+    const send = openRows.length
+      ? `<div class="qf-actions"><button type="submit" class="ghost-button qf-send">Send answers</button></div>`
+      : "";
+    html.push(`<form class="question-role-form" data-role="${questionEscape(role)}">`
+      + `<div class="qf-head"><span class="question-pill">${questionEscape(questionRoleTitle(role))}</span>`
+      + `<span class="qf-count">${openRows.length} open</span></div>`
+      + body + send + "</form>");
+  });
+  return { html: html.join(""), forms, banner };
+}
+
+function questionBannerCards(cards) {
+  return (cards || []).map((card) => {
+    const count = Number(card.count || 0);
+    return `<span class="qf-card">${questionEscape(questionRoleTitle(card.role))}: ${count} question${count === 1 ? "" : "s"} waiting</span>`;
+  }).join("");
+}
+
+function collectQuestionFormAnswers(entries) {
+  // entries: [{question_id, choice, other}] straight from the form controls;
+  // a row with no selection is skipped, an Other row with no text is skipped.
+  const answers = [];
+  (entries || []).forEach((entry) => {
+    if (!entry || !entry.question_id) return;
+    if (entry.choice === QUESTION_OTHER_VALUE) {
+      const other = String(entry.other || "").trim();
+      if (other) answers.push({ question_id: entry.question_id, other });
+      return;
+    }
+    if (entry.choice != null && entry.choice !== "") {
+      answers.push({ question_id: entry.question_id, choice: entry.choice });
+    }
+  });
+  return answers;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     showQuestionsPanel,
     questionHeadline,
     questionLabel,
+    QUESTION_OTHER_VALUE,
+    renderQuestionForms,
+    questionBannerCards,
+    collectQuestionFormAnswers,
     adapterLabel,
     effectiveProfileLabel,
     actorForRole,

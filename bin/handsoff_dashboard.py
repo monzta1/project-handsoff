@@ -36,6 +36,8 @@ ASSETS = {
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
 MAX_SETTINGS_BODY = 16 * 1024
+# #48: sixteen answers of up to 1024 characters each, plus envelope.
+MAX_QUESTION_BATCH_BODY = 64 * 1024
 
 
 def _settings_view(cfg: dict) -> dict:
@@ -284,10 +286,14 @@ def _input_request(status: dict, cfg: dict) -> dict:
         message = (f"Design review budget exhausted ({budget['attempts']} of {budget['limit']} attempts). "
                    "Authorize exactly one more design-review attempt, or leave the run held.")
     elif questions:
+        # #48: one card per role naming the count, never one alert per
+        # question; a lone question still shows its text on the banner.
         kind = "question"
-        lead = questions[0]
-        more = f" (+{len(questions) - 1} more)" if len(questions) > 1 else ""
-        message = f"{lead.get('role', 'role').capitalize()} asks: {lead.get('text')}{more}"
+        cards = lib.question_cards(status)
+        message = " · ".join(f"{card['role'].capitalize()}: {card['count']} "
+                             f"question{'' if card['count'] == 1 else 's'} waiting" for card in cards)
+        if len(questions) == 1:
+            message = f"{message}: {questions[0].get('text')}"
     elif approval_missing:
         kind = "deployment_approval"
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
@@ -305,7 +311,8 @@ def _input_request(status: dict, cfg: dict) -> dict:
             "request_id": regression.get("request_id") if regression else None,
             "amendment_id": amendment.get("amendment_id") if amendment else None,
             "amendment_decision": amendment_decision,
-            "question_id": questions[0].get("question_id") if questions else None}
+            "question_id": questions[0].get("question_id") if questions else None,
+            "question_cards": lib.question_cards(status) if questions else []}
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
@@ -864,7 +871,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_shutdown()
             return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
-                        "/api/regression-decision", "/api/question-answer",
+                        "/api/regression-decision", "/api/question-answer", "/api/question-answers",
                         "/api/design-review-authorize"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
@@ -882,7 +889,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if length < 1:
             self._json_response(HTTPStatus.LENGTH_REQUIRED, {"ok": False, "error": "A settings request body is required"})
             return
-        if length > MAX_SETTINGS_BODY:
+        body_cap = MAX_QUESTION_BATCH_BODY if path == "/api/question-answers" else MAX_SETTINGS_BODY
+        if length > body_cap:
             self._json_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "Settings request is too large"})
             return
         try:
@@ -921,6 +929,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 record = lib.answer_question(self.server.project_root, question_id=requested["question_id"],
                                              by="Mission Control Pilot", text=requested["text"])
                 self._json_response(HTTPStatus.OK, {"ok": True, "question_id": record["question_id"]})
+                return
+            if path == "/api/question-answers":
+                # #48: one form per role sends its answers as one batch; a
+                # shape error is 400, a state conflict (unknown, answered,
+                # choice not offered) is 409, and either writes nothing.
+                try:
+                    records = lib.answer_questions_batch(
+                        self.server.project_root, answers=lib.question_answers_from_payload(requested),
+                        by="Mission Control Pilot")
+                except lib.QuestionAnswerConflict as exc:
+                    self._json_response(HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True, "question_ids": [r["question_id"] for r in records]})
                 return
             if path == "/api/design-approval":
                 if requested:

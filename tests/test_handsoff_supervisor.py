@@ -11354,6 +11354,506 @@ class TestRoleQuestions(HandsoffTestCase):
             self.assertIn("HANDSOFF_QUESTION:", (ROOT / "prompts" / f"{role}.md").read_text())
 
 
+class TestStructuredQuestions(HandsoffTestCase):
+    """#48: a `HANDSOFF_QUESTION:` line may carry a JSON form (text, options,
+    recommended); malformed forms are kept as plain text with form_error;
+    the Pilot answers a role's questions as one batch; the answers reach
+    the role in one ordered section on its next launch."""
+
+    FORM = '{"text": "Which path?", "options": ["Concise", "Full"], "recommended": "Concise"}'
+
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        self.init("Issue 48 structured questions")
+        sys.path.insert(0, str(BIN))
+        import handsoff_agent
+        import handsoff_dashboard
+        import handsoff_lib
+        self.runtime = handsoff_agent
+        self.dashboard = handsoff_dashboard
+        self.lib = handsoff_lib
+        self.set_criterion_state("failing", resolved=False)
+        r = self.advance_to(4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def _events(self):
+        return [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+
+    def _question_events(self):
+        return [e for e in self._events() if e["kind"].startswith("question_")]
+
+    def _ask(self, text, role="architect", by="test-supervisor"):
+        return self.lib.raise_question(self.tmp, role=role, text=text, by=by)
+
+    def _batch_file(self, answers):
+        path = self.tmp / "answers.json"
+        path.write_text(json.dumps({"answers": answers}))
+        return str(path)
+
+    def _snapshot_files(self):
+        return {name: (self.tmp / name).read_bytes()
+                for name in ("handsoff-status.json", "handsoff-events.jsonl")}
+
+    def _api(self, server, method, path, body=None):
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        headers = {"Content-Type": "application/json", "Origin": f"http://{host}:{port}"} if body is not None else {}
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        connection.close()
+        return response.status, json.loads(payload)
+
+    # -- i48-structured-parse ------------------------------------------------
+
+    def test_form_after_prefix_is_parsed_with_options_and_recommended(self):
+        record = self._ask("   " + self.FORM + "  ")
+        self.assertEqual(set(record), self.lib.QUESTION_FIELDS)
+        self.assertEqual(record["text"], "Which path?")
+        self.assertEqual(record["options"], ["Concise", "Full"])
+        self.assertEqual(record["recommended"], "Concise")
+        self.assertIsNone(record["form_error"])
+        self.assertFalse(record["truncated"])
+        self.assertIsNone(record["chosen_option"])
+        self.assertIsNone(record["other_text"])
+        self.assertEqual(self.read_status()["next_action"], "Architect asks: Which path?")
+        raised = self._question_events()[-1]
+        self.assertEqual(raised["kind"], "question_raised")
+        self.assertEqual((raised["options"], raised["recommended"], raised["form_error"]),
+                         (["Concise", "Full"], "Concise", None))
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_form_text_and_options_are_whitespace_normalized(self):
+        record = self._ask('{"text": "  Which    path? ", "options": [" A  b ", "C"], "recommended": "A   b"}')
+        self.assertEqual(record["text"], "Which path?")
+        self.assertEqual(record["options"], ["A b", "C"])
+        self.assertEqual(record["recommended"], "A b")
+        self.assertIsNone(record["form_error"])
+
+    def test_plain_text_without_a_leading_brace_is_unchanged_from_46(self):
+        for text in ("Which path?", '["Concise", "Full"]', '"a scalar"', "42", 'text with {"braces": 1} inside'):
+            record = self._ask(text)
+            self.assertEqual(record["text"], " ".join(text.split()))
+            self.assertEqual(record["options"], [])
+            self.assertIsNone(record["recommended"])
+            self.assertIsNone(record["form_error"], text)
+        with self.assertRaisesRegex(self.lib.HandsoffError, "must not be empty"):
+            self._ask("   ")
+
+    def test_every_form_error_code_keeps_the_candidate_as_plain_text(self):
+        parse = self.lib.parse_question_candidate
+        cases = {
+            "malformed_json": '{"text": "Which path?", "options": ["A", "B"',
+            "unknown_keys": '{"text": "Q", "options": ["A", "B"], "extra": 1}',
+            "missing_keys": '{"text": "Q"}',
+            "text_bounds": '{"text": "   ", "options": ["A", "B"]}',
+            "options_bounds": '{"text": "Q", "options": []}',
+            "duplicate_options": '{"text": "Q", "options": ["A", " A "]}',
+            "recommended_not_offered": '{"text": "Q", "options": ["A", "B"], "recommended": "C"}',
+        }
+        for code, candidate in cases.items():
+            record = self._ask("  " + candidate)
+            self.assertEqual(record["form_error"], code, candidate)
+            self.assertEqual(record["text"], " ".join(candidate.split()), code)
+            self.assertEqual(record["options"], [])
+            self.assertIsNone(record["recommended"])
+            self.assertFalse(record["truncated"])
+            self.assertEqual(self._question_events()[-1]["form_error"], code)
+        # More limit violations, each named by its rule.
+        self.assertEqual(parse('{"text": "' + "x" * 1025 + '", "options": ["A"]}')["form_error"], "text_bounds")
+        self.assertEqual(parse('{"text": 5, "options": ["A"]}')["form_error"], "text_bounds")
+        self.assertEqual(parse('{"text": "Q", "options": "A"}')["form_error"], "options_bounds")
+        self.assertEqual(parse('{"text": "Q", "options": ["A", 1]}')["form_error"], "options_bounds")
+        self.assertEqual(parse('{"text": "Q", "options": ["A", "  "]}')["form_error"], "options_bounds")
+        self.assertEqual(parse('{"text": "Q", "options": ["' + "y" * 121 + '"]}')["form_error"], "options_bounds")
+        seven = json.dumps({"text": "Q", "options": [f"o{i}" for i in range(7)]})
+        self.assertEqual(parse(seven)["form_error"], "options_bounds")
+        six = json.dumps({"text": "Q", "options": [f"o{i}" for i in range(6)]})
+        self.assertIsNone(parse(six)["form_error"])
+        self.assertEqual(parse('{"text": "Q", "options": ["A"], "recommended": null}')["form_error"],
+                         "recommended_not_offered")
+        self.assertEqual(parse('{"options": ["A"]}')["form_error"], "missing_keys")
+        self.assertEqual(parse("{}")["form_error"], "missing_keys")
+        # not_object is the parser's guard for a candidate that decodes to
+        # something other than an object; detection keeps arrays and
+        # scalars away from it, so it is exercised on the parser directly.
+        with mock.patch.object(self.lib.json, "loads", return_value=["not", "an", "object"]):
+            self.assertEqual(parse('{"anything": 1}')["form_error"], "not_object")
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_over_long_malformed_candidate_is_bounded_and_flagged_truncated(self):
+        candidate = '{"text": "' + "x" * 1100
+        record = self._ask(candidate)
+        self.assertEqual(record["form_error"], "malformed_json")
+        self.assertEqual(len(record["text"]), self.lib.MAX_QUESTION_TEXT)
+        self.assertTrue(record["truncated"])
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_schema_refuses_hand_edited_form_fields(self):
+        self._ask(self.FORM)
+        clean = self.read_status()
+        self.assertEqual(self.lib.validate_status_schema(clean), [])
+        edits = {
+            "options": (["A"] * 2, "must be unique"),
+            "options too many": ([f"o{i}" for i in range(7)], "at most 6"),
+            "options unnormalized": ([" A"], "normalized"),
+            "options too long": (["z" * 121], "1 to 120"),
+            "recommended": ("Nope", "one of the options"),
+            "form_error": ("weird", "form_error must be null or one of"),
+            "chosen_option": ("Full", "chosen_option must be null or the offered option"),
+            "other_text": ("free", "other_text must be null or equal to the answer"),
+        }
+        for label, (value, fragment) in edits.items():
+            status = json.loads(json.dumps(clean))
+            key = label.split(" ")[0]
+            status["pending_questions"][0][key] = value
+            errors = self.lib.validate_status_schema(status)
+            self.assertTrue(any(fragment in e for e in errors), (label, errors))
+        status = json.loads(json.dumps(clean))
+        status["pending_questions"][0].update({"form_error": "malformed_json"})
+        errors = self.lib.validate_status_schema(status)
+        self.assertTrue(any("form_error must carry no options" in e for e in errors), errors)
+        status = json.loads(json.dumps(clean))
+        del status["pending_questions"][0]["options"]
+        errors = self.lib.validate_status_schema(status)
+        self.assertTrue(any("exactly the keys" in e for e in errors), errors)
+        # An answered form question whose chosen_option and other_text
+        # disagree with the answer is a hand edit too.
+        self.lib.answer_questions_batch(
+            self.tmp, by="moncy", answers=[{"question_id": clean["pending_questions"][0]["question_id"], "choice": "Full"}])
+        answered = self.read_status()
+        status = json.loads(json.dumps(answered))
+        status["pending_questions"][0]["other_text"] = "Full"
+        errors = self.lib.validate_status_schema(status)
+        self.assertTrue(any("cannot carry both" in e for e in errors), errors)
+        status = json.loads(json.dumps(answered))
+        status["pending_questions"][0]["answer"] = "Concise"
+        errors = self.lib.validate_status_schema(status)
+        self.assertTrue(any("chosen_option" in e for e in errors), errors)
+
+    def test_legacy_46_records_without_the_new_fields_still_validate_and_answer(self):
+        record = self._ask("Old style question")
+        status = self.read_status()
+        legacy = {k: v for k, v in status["pending_questions"][0].items() if k in self.lib.QUESTION_LEGACY_FIELDS}
+        self.assertEqual(set(legacy), self.lib.QUESTION_LEGACY_FIELDS)
+        status["pending_questions"][0] = legacy
+        self.assertEqual(self.lib.validate_status_schema(status), [])
+        self.assertEqual(self.lib.questions_view(status)["by_role"][0]["count"], 1)
+        # Written in place (the next commit re-anchors the event chain).
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(status, indent=2))
+        # A legacy record cannot take a choice (no options) but takes other.
+        with self.assertRaisesRegex(self.lib.QuestionAnswerConflict, "plain text and accepts only other"):
+            self.lib.answer_questions_batch(self.tmp, by="moncy",
+                                            answers=[{"question_id": record["question_id"], "choice": "x"}])
+        answered = self.lib.answer_questions_batch(
+            self.tmp, by="moncy", answers=[{"question_id": record["question_id"], "other": "fine"}])[0]
+        self.assertEqual(set(answered), self.lib.QUESTION_FIELDS)
+        self.assertEqual((answered["answer"], answered["chosen_option"], answered["other_text"]),
+                         ("fine", None, "fine"))
+        self.assertEqual(self.read_status()["status"], "in_progress")
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_open_question_limit_and_id_uniqueness_hold_for_forms(self):
+        ids = set()
+        for i in range(self.lib.MAX_PENDING_QUESTIONS):
+            record = self._ask(json.dumps({"text": f"Q{i}", "options": ["A", "B"], "recommended": "A"}))
+            ids.add(record["question_id"])
+        self.assertEqual(len(ids), self.lib.MAX_PENDING_QUESTIONS)
+        with self.assertRaisesRegex(self.lib.HandsoffError, "at most 16 questions may be open"):
+            self._ask(self.FORM)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    # -- i48-batch-answer ----------------------------------------------------
+
+    def test_batch_records_every_answer_in_one_commit_and_lifts_the_block_once(self):
+        first = self._ask(self.FORM)
+        second = self._ask('{"text": "Region?", "options": ["us-east-1", "eu-west-1"]}')
+        third = self._ask("Anything else?")
+        self.assertEqual(self.read_status()["status"], "blocked")
+        events_before = len(self._events())
+        records = self.lib.answer_questions_batch(self.tmp, by="moncy", answers=[
+            {"question_id": first["question_id"], "choice": "Full"},
+            {"question_id": second["question_id"], "other": "  ap-south-1  please "},
+            {"question_id": third["question_id"], "other": "no"},
+        ])
+        self.assertEqual([r["question_id"] for r in records],
+                         [first["question_id"], second["question_id"], third["question_id"]])
+        self.assertEqual((records[0]["answer"], records[0]["chosen_option"], records[0]["other_text"]),
+                         ("Full", "Full", None))
+        self.assertEqual((records[1]["answer"], records[1]["chosen_option"], records[1]["other_text"]),
+                         ("ap-south-1 please", None, "ap-south-1 please"))
+        self.assertEqual((records[2]["answer"], records[2]["chosen_option"], records[2]["other_text"]),
+                         ("no", None, "no"))
+        self.assertTrue(all(r["answered_by"] == "moncy" and r["answered_at"] for r in records))
+        events = self._events()
+        self.assertEqual(len(events), events_before + 1)
+        recorded = events[-1]
+        self.assertEqual(recorded["kind"], "question_answers_recorded")
+        self.assertEqual(recorded["answers"], [
+            {"question_id": first["question_id"], "choice": "Full", "answered_by": "moncy"},
+            {"question_id": second["question_id"], "other": "ap-south-1 please", "answered_by": "moncy"},
+            {"question_id": third["question_id"], "other": "no", "answered_by": "moncy"},
+        ])
+        self.assertTrue(recorded["block_lifted"])
+        self.assertEqual(recorded["open_blocking_questions"], 0)
+        status = self.read_status()
+        self.assertEqual(status["status"], "in_progress")
+        self.assertEqual(status["next_action"], first["previous_next_action"])
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_block_lifts_only_when_no_blocking_question_remains(self):
+        first = self._ask(self.FORM)
+        second = self._ask(self.FORM)
+        third = self._ask(self.FORM)
+        self.lib.answer_questions_batch(self.tmp, by="moncy", answers=[
+            {"question_id": first["question_id"], "choice": "Concise"},
+            {"question_id": second["question_id"], "choice": "Concise"},
+        ])
+        self.assertEqual(self.read_status()["status"], "blocked")
+        self.assertFalse(self._question_events()[-1]["block_lifted"])
+        self.lib.answer_questions_batch(self.tmp, by="moncy", answers=[
+            {"question_id": third["question_id"], "other": "neither"}])
+        self.assertEqual(self.read_status()["status"], "in_progress")
+        lifted = [e for e in self._question_events() if e.get("block_lifted")]
+        self.assertEqual(len(lifted), 1)
+
+    def test_each_batch_refusal_names_the_index_and_writes_nothing(self):
+        form = self._ask(self.FORM)
+        plain = self._ask("Plain?")
+        answered = self._ask("Done?")
+        self.lib.answer_question(self.tmp, question_id=answered["question_id"], by="moncy", text="yes")
+        before = self._snapshot_files()
+        unknown = "qn-" + "0" * 32
+        cases = [
+            ([], "1 to 16 entries", self.lib.HandsoffError),
+            ("nope", "1 to 16 entries", self.lib.HandsoffError),
+            ([{"question_id": form["question_id"], "choice": "Full"}] * 17, "1 to 16 entries", self.lib.HandsoffError),
+            (["x"], r"answers\[0\] must be an object", self.lib.HandsoffError),
+            ([{"question_id": form["question_id"]}], r"answers\[0\] must have exactly the keys", self.lib.HandsoffError),
+            ([{"question_id": form["question_id"], "choice": "Full", "other": "x"}],
+             r"answers\[0\] must have exactly the keys", self.lib.HandsoffError),
+            ([{"question_id": form["question_id"], "choice": "Full"}, {"question_id": "bad", "other": "x"}],
+             r"answers\[1\]\.question_id is invalid", self.lib.HandsoffError),
+            ([{"question_id": form["question_id"], "choice": "Full"},
+              {"question_id": form["question_id"], "other": "x"}],
+             r"answers\[1\]\.question_id .* listed twice", self.lib.HandsoffError),
+            ([{"question_id": plain["question_id"], "other": "   "}], r"answers\[0\]\.other must not be empty",
+             self.lib.HandsoffError),
+            ([{"question_id": plain["question_id"], "other": "x" * 1025}], r"answers\[0\]\.other must be at most 1024",
+             self.lib.HandsoffError),
+            ([{"question_id": plain["question_id"], "other": 5}], r"answers\[0\]\.other must be a string",
+             self.lib.HandsoffError),
+            ([{"question_id": form["question_id"], "choice": "Full"}, {"question_id": unknown, "other": "x"}],
+             r"answers\[1\]: question qn-0+ was not found", self.lib.QuestionAnswerConflict),
+            ([{"question_id": plain["question_id"], "other": "x"},
+              {"question_id": answered["question_id"], "other": "again"}],
+             r"answers\[1\]: question .* is already answered", self.lib.QuestionAnswerConflict),
+            ([{"question_id": form["question_id"], "choice": "Medium"}],
+             r"answers\[0\]: choice 'Medium' is not offered", self.lib.QuestionAnswerConflict),
+            ([{"question_id": plain["question_id"], "choice": "Full"}],
+             r"answers\[0\]: question .* plain text and accepts only other", self.lib.QuestionAnswerConflict),
+        ]
+        for answers, pattern, exc_type in cases:
+            with self.assertRaisesRegex(exc_type, pattern):
+                self.lib.answer_questions_batch(self.tmp, by="moncy", answers=answers)
+            self.assertEqual(self._snapshot_files(), before, pattern)
+        with self.assertRaisesRegex(self.lib.HandsoffError, 'exactly the key "answers"'):
+            self.lib.question_answers_from_payload({"answers": [], "extra": 1})
+        with self.assertRaisesRegex(self.lib.HandsoffError, 'exactly the key "answers"'):
+            self.lib.question_answers_from_payload([])
+        self.assertEqual(self._snapshot_files(), before)
+        self.assertEqual(self.read_status()["status"], "blocked")
+
+    def test_cli_batch_answers_and_the_single_command_still_works(self):
+        form = self._ask(self.FORM)
+        plain = self._ask("Plain?")
+        r = run(["question-answer", "--batch", self._batch_file([
+            {"question_id": form["question_id"], "choice": "Concise"}]), "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), f"QUESTIONS_ANSWERED: {form['question_id']}")
+        self.assertEqual(self.read_status()["status"], "blocked")
+        # Refusals: bad entry, bad envelope, unreadable file, mixed flags.
+        before = self._snapshot_files()
+        r = run(["question-answer", "--batch", self._batch_file([
+            {"question_id": plain["question_id"], "choice": "Concise"}]), "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SHIP_FEATURE_BLOCKED: answers[0]: question", r.stdout)
+        self.assertIn("accepts only other", r.stdout)
+        envelope = self.tmp / "envelope.json"
+        envelope.write_text(json.dumps([{"question_id": plain["question_id"], "other": "x"}]))
+        r = run(["question-answer", "--batch", str(envelope), "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('SHIP_FEATURE_BLOCKED: question batch must be an object with exactly the key "answers"', r.stdout)
+        envelope.write_text("{not json")
+        r = run(["question-answer", "--batch", str(envelope), "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SHIP_FEATURE_BLOCKED: batch file could not be read as JSON", r.stdout)
+        r = run(["question-answer", "--batch", str(self.tmp / "missing.json"), "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SHIP_FEATURE_BLOCKED: batch file could not be read as JSON", r.stdout)
+        r = run(["question-answer", "--batch", str(envelope), "--id", plain["question_id"], "--text", "x",
+                 "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SHIP_FEATURE_BLOCKED: --batch cannot be combined with --id or --text", r.stdout)
+        r = run(["question-answer", "--id", plain["question_id"], "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SHIP_FEATURE_BLOCKED: question-answer needs --id and --text, or --batch FILE", r.stdout)
+        self.assertEqual(self._snapshot_files(), before)
+        # The #46 single form keeps working and now fills the answer pair.
+        r = run(["question-answer", "--id", plain["question_id"], "--text", "free text", "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), f"QUESTION_ANSWERED: {plain['question_id']}")
+        status = self.read_status()
+        self.assertEqual(status["status"], "in_progress")
+        records = {q["question_id"]: q for q in status["pending_questions"]}
+        self.assertEqual((records[plain["question_id"]]["chosen_option"], records[plain["question_id"]]["other_text"]),
+                         (None, "free text"))
+        self.assertEqual((records[form["question_id"]]["chosen_option"], records[form["question_id"]]["other_text"]),
+                         ("Concise", None))
+        answered_events = [e for e in self._question_events() if e["kind"] == "question_answered"]
+        self.assertEqual(len(answered_events), 1)
+        self.assertEqual((answered_events[0]["answer"], answered_events[0]["chosen_option"],
+                          answered_events[0]["other_text"]), ("free text", None, "free text"))
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_single_answer_naming_an_offered_option_records_it_as_the_choice(self):
+        form = self._ask(self.FORM)
+        record = self.lib.answer_question(self.tmp, question_id=form["question_id"], by="moncy", text="Full")
+        self.assertEqual((record["answer"], record["chosen_option"], record["other_text"]), ("Full", "Full", None))
+        event = self._question_events()[-1]
+        self.assertEqual(event["kind"], "question_answered")
+        self.assertEqual((event["answer"], event["chosen_option"], event["other_text"]), ("Full", "Full", None))
+
+    def test_api_batch_answers_with_400_for_shape_and_409_for_state(self):
+        form = self._ask(self.FORM)
+        plain = self._ask("Plain?")
+        server = self.dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            code, snapshot = self._api(server, "GET", "/api/dashboard")
+            self.assertEqual(code, 200)
+            self.assertEqual(snapshot["input_required"]["kind"], "question")
+            self.assertEqual(snapshot["input_required"]["message"], "Architect: 2 questions waiting")
+            self.assertEqual(snapshot["input_required"]["question_cards"], [{"role": "architect", "count": 2}])
+            self.assertEqual(snapshot["questions"]["by_role"], [
+                {"role": "architect", "count": 2, "blocking": 2,
+                 "question_ids": [form["question_id"], plain["question_id"]]}])
+            before = self._snapshot_files()
+            code, body = self._api(server, "POST", "/api/question-answers",
+                                   body=json.dumps({"answers": [{"question_id": form["question_id"]}]}))
+            self.assertEqual(code, 400, body)
+            self.assertIn("answers[0] must have exactly the keys", body["error"])
+            code, body = self._api(server, "POST", "/api/question-answers",
+                                   body=json.dumps({"answers": [{"question_id": form["question_id"], "choice": "Nope"}]}))
+            self.assertEqual(code, 409, body)
+            self.assertIn("answers[0]: choice 'Nope' is not offered", body["error"])
+            code, body = self._api(server, "POST", "/api/question-answers",
+                                   body=json.dumps({"nope": []}))
+            self.assertEqual(code, 400, body)
+            self.assertEqual(self._snapshot_files(), before)
+            code, body = self._api(server, "POST", "/api/question-answers", body=json.dumps({"answers": [
+                {"question_id": form["question_id"], "choice": "Concise"},
+                {"question_id": plain["question_id"], "other": "fine"}]}))
+            self.assertEqual(code, 200, body)
+            self.assertEqual(body["question_ids"], [form["question_id"], plain["question_id"]])
+            code, snapshot = self._api(server, "GET", "/api/dashboard")
+            self.assertFalse(snapshot["input_required"]["required"])
+            self.assertEqual(snapshot["questions"]["by_role"], [])
+            # Same-origin only, like every other Pilot control.
+            host, port = server.server_address[:2]
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("POST", "/api/question-answers", body="{}",
+                               headers={"Content-Type": "application/json", "Origin": "http://evil.example"})
+            forbidden = connection.getresponse()
+            forbidden.read()
+            self.assertEqual(forbidden.status, 403)
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+        recorded = [e for e in self._question_events() if e["kind"] == "question_answers_recorded"]
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["by"], "Mission Control Pilot")
+        self.assertEqual([a["answered_by"] for a in recorded[0]["answers"]], ["Mission Control Pilot"] * 2)
+        self.assertEqual(self.read_status()["status"], "in_progress")
+
+    def test_banner_names_one_card_per_role_and_a_lone_question_keeps_its_text(self):
+        self._ask(self.FORM)
+        request = self.dashboard._input_request(self.read_status(), self.lib.load_config(self.tmp))
+        self.assertEqual(request["message"], "Architect: 1 question waiting: Which path?")
+        self._ask("Reviewer one?", role="reviewer")
+        self._ask("Reviewer two?", role="reviewer")
+        request = self.dashboard._input_request(self.read_status(), self.lib.load_config(self.tmp))
+        self.assertEqual(request["message"], "Architect: 1 question waiting · Reviewer: 2 questions waiting")
+        self.assertEqual(request["question_cards"], [{"role": "architect", "count": 1}, {"role": "reviewer", "count": 2}])
+        self.assertNotIn("Reviewer one?", request["message"])
+
+    def test_delivery_is_one_section_ordered_by_asked_at_marked_in_that_launch(self):
+        first = self._ask(self.FORM)
+        second = self._ask("Region?")
+        third = self._ask('{"text": "Depth?", "options": ["Shallow", "Deep"], "recommended": "Deep"}')
+        # Answer out of order; delivery still follows asked_at.
+        self.lib.answer_questions_batch(self.tmp, by="moncy", answers=[
+            {"question_id": third["question_id"], "choice": "Deep"},
+            {"question_id": first["question_id"], "other": "Neither, do a spike"},
+            {"question_id": second["question_id"], "other": "us-east-1"},
+        ])
+        events_before = len(self._events())
+        text = self.runtime.build_role_input(self.tmp, "architect", "next task")
+        self.assertEqual(text.count("# Pilot answers to your earlier questions"), 1)
+        section = text[text.index("# Pilot answers to your earlier questions"):]
+        positions = [section.index(q["question_id"]) for q in (first, second, third)]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("Options offered: Concise, Full", section)
+        self.assertIn("A (moncy): Neither, do a spike", section)
+        self.assertIn("A (moncy): Deep (chosen from the offered options)", section)
+        self.assertIn("A (moncy): us-east-1", section)
+        events = self._events()
+        self.assertEqual(len(events), events_before + 1)
+        delivered = events[-1]
+        self.assertEqual(delivered["kind"], "question_answers_delivered")
+        self.assertEqual(sorted(delivered["question_ids"]),
+                         sorted(q["question_id"] for q in (first, second, third)))
+        status = self.read_status()
+        stamps = {q["delivered_at"] for q in status["pending_questions"]}
+        self.assertEqual(len(stamps), 1)
+        self.assertIsNotNone(stamps.pop())
+        again = self.runtime.build_role_input(self.tmp, "architect", "next task")
+        self.assertNotIn("# Pilot answers to your earlier questions", again)
+        self.assertEqual(len(self._events()), events_before + 1)
+
+    # -- i48-legacy-and-prompts ----------------------------------------------
+
+    def test_prompts_carry_the_structured_example_and_the_three_question_rule(self):
+        example = 'HANDSOFF_QUESTION: {"text": "Which path?", "options": ["Concise", "Full"], "recommended": "Concise"}'
+        for role in ("architect", "implementer", "reviewer", "supervisor"):
+            prompt = (ROOT / "prompts" / f"{role}.md").read_text()
+            self.assertIn(example, prompt, role)
+            self.assertIn("Plain text after the prefix still works", prompt, role)
+            self.assertIn("at most three questions, each with options and a recommended answer", prompt, role)
+            self.assertNotIn("\u2014", prompt, role)
+
+    def test_no_record_or_event_carries_prompt_output_or_environment_content(self):
+        secret_env = "HANDSOFF_TEST_SECRET_VALUE_48"
+        with mock.patch.dict(os.environ, {"HANDSOFF_TEST_SECRET": secret_env}):
+            form = self._ask(self.FORM)
+            self.lib.answer_questions_batch(self.tmp, by="moncy", answers=[
+                {"question_id": form["question_id"], "choice": "Full"}])
+            self.runtime.build_role_input(self.tmp, "architect", "private task text 48")
+        status_text = (self.tmp / "handsoff-status.json").read_text()
+        events_text = (self.tmp / "handsoff-events.jsonl").read_text()
+        prompt_text = (ROOT / "prompts" / "architect.md").read_text().splitlines()[0]
+        for haystack in (status_text, events_text):
+            self.assertNotIn(secret_env, haystack)
+            self.assertNotIn("private task text 48", haystack)
+            self.assertNotIn(prompt_text, haystack)
+        for record in self.read_status()["pending_questions"]:
+            self.assertEqual(set(record), self.lib.QUESTION_FIELDS)
+        for event in self._question_events():
+            self.assertFalse(set(event) & {"prompt", "output", "environment", "env", "stdout"}, event)
+
+
 class TestDesignReviewBudgetAuthorizeControl(HandsoffTestCase):
     """#35 follow-up: an exhausted design-review budget shows its own Pilot
     control on Mission Control, and the control records the same

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import sys
 import uuid
 from copy import deepcopy
@@ -2357,12 +2358,32 @@ def cmd_question_raise(args) -> int:
 
 def cmd_question_answer(args) -> int:
     """#46: the Pilot answers; the block lifts once no blocking question is
-    open, and the answer reaches the role on its next launch."""
+    open, and the answer reaches the role on its next launch. #48: `--batch
+    FILE` records several answers ({"answers": [{"question_id", "choice"} |
+    {"question_id", "other"}]}) in one commit; any bad entry refuses the
+    whole file and writes nothing."""
     if not args.by or not args.by.strip():
         print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
         return 1
+    batch = getattr(args, "batch", None)
+    single = args.id is not None or args.text is not None
+    if batch is None and (args.id is None or args.text is None):
+        print("SHIP_FEATURE_BLOCKED: question-answer needs --id and --text, or --batch FILE")
+        return 1
+    if batch is not None and single:
+        print("SHIP_FEATURE_BLOCKED: --batch cannot be combined with --id or --text")
+        return 1
     root = lib.resolve_root(args.root)
     try:
+        if batch is not None:
+            try:
+                payload = json.loads(Path(batch).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise lib.HandsoffError(f"batch file could not be read as JSON: {exc}") from exc
+            records = lib.answer_questions_batch(root, answers=lib.question_answers_from_payload(payload),
+                                                 by=args.by.strip())
+            print(f"QUESTIONS_ANSWERED: {' '.join(r['question_id'] for r in records)}")
+            return 0
         record = lib.answer_question(root, question_id=args.id, by=args.by.strip(), text=args.text)
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}")
@@ -3162,9 +3183,12 @@ def main() -> int:
     question_raise.add_argument("--by", required=True)
     question_raise.add_argument("--session", default=None, help="managed session id the question belongs to")
 
-    question_answer = sub.add_parser("question-answer", help="Pilot answer to an open question (#46, human-only)")
-    question_answer.add_argument("--id", required=True)
-    question_answer.add_argument("--text", required=True)
+    question_answer = sub.add_parser("question-answer", help="Pilot answer to an open question (#46, human-only); "
+                                     "--batch FILE answers several at once (#48)")
+    question_answer.add_argument("--id", default=None)
+    question_answer.add_argument("--text", default=None)
+    question_answer.add_argument("--batch", default=None, metavar="FILE",
+                                 help='JSON file {"answers": [{"question_id", "choice"} | {"question_id", "other"}]}')
     question_answer.add_argument("--by", required=True)
 
     adv = sub.add_parser("advance")
