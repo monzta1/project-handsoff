@@ -125,9 +125,11 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 # #33: every beacon write invalidates the snapshot so the
                 # live strip follows the managed child in near real time.
                 lib.live_beacon_path(root),
+                # #41: the output record, at most one write per second.
+                lib.output_liveness_path(root),
             ]
         except lib.HandsoffError:
-            paths = [root / "handsoff.toml", lib.live_beacon_path(root)]
+            paths = [root / "handsoff.toml", lib.live_beacon_path(root), lib.output_liveness_path(root)]
         signature = []
         for path in paths:
             try:
@@ -239,7 +241,12 @@ def _input_request(status: dict, cfg: dict) -> dict:
         "waiting for user", "waiting on user", "your input", "need your decision",
         "need your approval", "provide credentials", "grant permission", "authorize",
     ))
-    required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing or older_signal
+    # #42: an open amendment always waits on a named decision (review,
+    # revision, or the Pilot's approval); the banner names which.
+    amendment = lib.open_amendment(status)
+    amendment_decision = lib.amendment_pending_decision(amendment)
+    required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
+        or older_signal or bool(amendment)
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
     if regression:
         kind = "regression_approval"
@@ -248,6 +255,20 @@ def _input_request(status: dict, cfg: dict) -> dict:
     elif escalation:
         kind = "escalation"
         message = f"{escalation.get('reason')}. {escalation.get('required_action')}"
+    elif amendment:
+        amendment_id = amendment.get("amendment_id")
+        if amendment_decision == "pilot_approval":
+            kind = "amendment_approval"
+            message = (f"Amendment {amendment_id} is reviewed and approved. Pilot authorization required: "
+                       "record amendment-approve to resume the frozen phase, or escalate it.")
+        elif amendment_decision == "revision":
+            kind = "amendment_revision"
+            message = (f"Amendment {amendment_id} review requested changes. Pending decision: the Architect "
+                       "revises it (amendment-revise) or escalates it to a full redesign.")
+        else:
+            kind = "amendment_review"
+            message = (f"Amendment {amendment_id} is open and frozen. Pending decision: independent "
+                       "amendment review (amendment-review), then Pilot approval.")
     elif approval_missing:
         kind = "deployment_approval"
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
@@ -262,7 +283,9 @@ def _input_request(status: dict, cfg: dict) -> dict:
         message = next_action
     return {"required": required, "kind": kind if required else None,
             "message": message if required else None,
-            "request_id": regression.get("request_id") if regression else None}
+            "request_id": regression.get("request_id") if regression else None,
+            "amendment_id": amendment.get("amendment_id") if amendment else None,
+            "amendment_decision": amendment_decision}
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
@@ -389,8 +412,12 @@ def build_snapshot(root: Path) -> dict:
             audit_errors = [*event_errors]
             if status.get("verification_head") != actual_head:
                 audit_errors.append("Verification ledger tail does not match its anchored head.")
-            stall = lib.stall_warning(status, cfg)
-            activity = lib.activity_note(status, cfg)
+            # #41: one activity reading (output record read once) feeds the
+            # stall warning, the activity note, and the live view, the same
+            # function `status` prints, so CLI and dashboard cannot disagree.
+            activity_view = lib.activity_view(status, cfg, root)
+            stall = activity_view["stall_warning"]
+            activity = activity_view["activity_note"]
             # #33: the live session view, from structured state plus the beacon.
             live = lib.live_status(status, cfg, root)
             # #38: states and hashes only; the bounded output stays in the side file.
@@ -515,6 +542,8 @@ def build_snapshot(root: Path) -> dict:
         "design_evidence": design_evidence,
         # #36: counts and flags of the latest delta packet, never finding text.
         "design_review_packet": lib.design_review_packet_summary(status),
+        # #42: the open amendment (ids, hashes, decisions), never criterion text.
+        "amendment": lib.amendment_view(status, acceptance, cfg, verifications),
         "actors": actors,
         "crew": crew,
         "runtime": {
@@ -574,11 +603,15 @@ def build_snapshot(root: Path) -> dict:
         "settings": _settings_view(cfg),
         "input_required": input_request,
         "activity_note": activity,
+        "activity": activity_view,
         "live": live,
         "supervisor": _supervisor_briefing(display_status, criteria, gate_errors, audit_errors, stall, activity,
                                             latest_event, input_request),
         "events": list(reversed(events[-12:])),
-        "verifications": list(reversed(verifications[-8:])),
+        # #43: every entry carries executed/reused_from, null on a legacy
+        # record written before the verification cache existed.
+        "verifications": [{**record, "executed": record.get("executed"), "reused_from": record.get("reused_from")}
+                          for record in reversed(verifications[-8:])],
     }
 
 

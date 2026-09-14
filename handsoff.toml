@@ -68,16 +68,12 @@ poll_seconds = 30
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
-  "python3 -m unittest tests.test_handsoff_supervisor.TestHumanPauseSuppressesStall -v",
-  "python3 -m unittest tests.test_handsoff_supervisor.TestDesignReviewAttemptBudget -v",
-  "node --test tests/dashboard/design_review_budget.test.js",
-  "python3 -m unittest tests.test_handsoff_supervisor.TestRecommendedCrewDefaults -v",
-  "python3 -m unittest tests.test_handsoff_supervisor.TestDesignEvidenceCache -v",
-  "python3 -m unittest tests.test_handsoff_supervisor.TestDesignReviewPacket -v",
-  "python3 -m unittest tests.test_handsoff_supervisor.TestTieredDesignReviewerProfiles -v",
-  "python3 -m unittest tests.test_handsoff_supervisor.TestRunOwnedDashboardRelease -v",
-  "python3 -m unittest tests.test_handsoff_supervisor.TestLiveSessionStatus -v",
-  "node --test tests/dashboard/live_status.test.js",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestOutputLiveness -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestCriteriaTransaction -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestAmendmentLane -v",
+  "node --test tests/dashboard/amendment.test.js",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestVerificationCache -v",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestBenchmarkHarness -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

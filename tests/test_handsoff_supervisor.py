@@ -5045,8 +5045,8 @@ class TestLiveSessionStatus(HandsoffTestCase):
     def _view(self, status, now=None):
         view = self.lib.live_status(status, self.cfg, self.tmp, now=now or self.NOW)
         self.assertEqual(set(view), {"state", "role", "session_id", "last_activity_at",
-                                     "seconds_since_activity", "process_signal", "detail",
-                                     "ended_at", "exit_code"})
+                                     "seconds_since_activity", "activity_source",
+                                     "process_signal", "detail", "ended_at", "exit_code"})
         self.assertIn(view["state"], self.lib.LIVE_STATES)
         self.assertIn(view["process_signal"], ("fresh", "stale", "none"))
         return view
@@ -5388,6 +5388,1710 @@ class TestLiveSessionStatus(HandsoffTestCase):
         self.assertIn("**Live status.**", readme)
         for key in self.BEACON_KEYS:
             self.assertIn(f"`{key}`", readme)
+
+
+class TestOutputLiveness(HandsoffTestCase):
+    """Issue #41: a managed agent window streaming output was flagged
+    "Signal has gone silent" because both liveness signals were timers and
+    neither `stall_warning` nor `activity_note` read them. Fix: every
+    stdout/stderr chunk of a managed child (stdout now captured for every
+    role) notes `.handsoff-output-liveness.json` (five keys, counters, no
+    content, one write per second), and the stall/activity readings honour
+    that record only while it is bound to the current live session for its
+    role. One `activity_view` feeds both `status` and the dashboard.
+    Criteria i41-output-suppresses-stall, i41-output-is-liveness-only,
+    i41-session-bound-output, i41-cli-dashboard-agree."""
+
+    NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    OUTPUT_KEYS = {"session_id", "role", "output_at", "chunks", "bytes"}
+    LIFECYCLE_KINDS = {"agent_session_launching", "agent_session_running", "agent_session_completed",
+                       "agent_session_failed", "agent_session_timed_out", "agent_session_cancelled",
+                       "agent_session_failed_to_start"}
+
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        self.init("Issue 41 output liveness")
+        sys.path.insert(0, str(BIN))
+        import handsoff_agent
+        import handsoff_dashboard
+        import handsoff_lib
+        self.runtime = handsoff_agent
+        self.dashboard = handsoff_dashboard
+        self.lib = handsoff_lib
+        self.cfg = self.lib.load_config(self.tmp)
+
+    @staticmethod
+    def _sid(number):
+        return f"hs-{number:032x}"
+
+    def _ago(self, seconds):
+        return (self.NOW - timedelta(seconds=seconds)).isoformat()
+
+    @staticmethod
+    def _real_ago(seconds):
+        return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+    def _status(self, **overrides):
+        """Phase-4 in-memory status with BOTH timer signals 30 min stale."""
+        status = {"status": "in_progress", "phase_number": 4, "updated_at": self._ago(1800),
+                  "last_heartbeat_at": self._ago(1800), "next_action": "Implement the feature",
+                  "agent_sessions": {}, "current_agent_sessions": {}}
+        status.update(overrides)
+        return status
+
+    def _session(self, number, role, state, *, ended=None, exit_code=None):
+        sid = self._sid(number)
+        return {"session_id": sid, "role": role, "actor": f"codex-{role}", "adapter": "codex",
+                "requested_model": "default", "reported_model": None,
+                "resolution_source": "configured", "state": state,
+                "started_at": self._ago(300),
+                "running_at": self._ago(240) if state != "launching" else None,
+                "ended_at": self._ago(ended) if ended is not None else None,
+                "exit_code": exit_code, "packet_id": None, "design_hash": None, "tier": None}
+
+    def _with_session(self, number, role, state, **kwargs):
+        session = self._session(number, role, state, **kwargs)
+        return self._status(agent_sessions={session["session_id"]: session},
+                            current_agent_sessions={role: session["session_id"]})
+
+    def _output(self, number, role="implementer", *, age=20, real=False, chunks=3, nbytes=120):
+        """Write the output record directly, `age` seconds old relative to
+        NOW (pure readers) or to the real wall clock (the CLI, the server)."""
+        record = {"session_id": self._sid(number), "role": role,
+                  "output_at": self._real_ago(age) if real else self._ago(age),
+                  "chunks": chunks, "bytes": nbytes}
+        self.lib.output_liveness_path(self.tmp).write_text(json.dumps(record, sort_keys=True) + "\n")
+        return record
+
+    def _write_status(self, status):
+        """Same pattern as TestActivityAwareStallDetection: write the dict
+        directly and re-anchor the event log the way commit() would, so an
+        aged timestamp reads as time passing, not as tampering."""
+        with self.lib.project_lock(self.tmp):
+            self.lib.atomic_write_json(self.lib.status_path(self.tmp, self.cfg), status)
+            self.lib.append_event(self.tmp, self.cfg, "test_backdate",
+                                  "test harness adjusted status timestamps directly")
+
+    def _phase4_running_implementer(self, number=1):
+        """A real Phase-4 run with a current running implementer session and
+        both timer signals 30 min stale, so only output can keep it alive."""
+        self.set_criterion_state("failing", resolved=False)
+        r = self.advance_to(4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        session = self.lib.create_agent_session(
+            self.tmp, role="implementer", actor="claude-implementer", adapter="claude",
+            requested_model="default", resolution_source="configured",
+            id_factory=lambda: self._sid(number),
+        )
+        self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        status = self.read_status()
+        status["updated_at"] = self._real_ago(1800)
+        status["last_heartbeat_at"] = self._real_ago(1800)
+        # The session started before the output it is now producing.
+        status["agent_sessions"][session["session_id"]]["started_at"] = self._real_ago(600)
+        status["agent_sessions"][session["session_id"]]["running_at"] = self._real_ago(590)
+        self._write_status(status)
+        self.assertEqual(self.read_status()["phase_number"], 4)
+        return session["session_id"]
+
+    def _events(self):
+        return [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+
+    def _status_payload(self):
+        r = run(["status"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)
+
+    def _api_dashboard(self, server):
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/api/dashboard")
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        self.assertEqual(response.status, 200, body)
+        return json.loads(body)
+
+    def _real_spec(self, role, code, adapter="claude"):
+        return self.runtime.LaunchSpec(
+            role, adapter, "default", (sys.executable, "-c", code), str(self.tmp),
+            "private task text", "configured",
+        )
+
+    # --- pure readings -----------------------------------------------------------
+
+    def test_fresh_bound_output_suppresses_the_stall_warning(self):
+        cfg = {"stall_minutes": 10}
+        self._output(1, age=20)
+        liveness = self.lib.read_output_liveness(self.tmp)
+        self.assertEqual(set(liveness), self.OUTPUT_KEYS)
+        status = self._with_session(1, "implementer", "running")
+        self.assertIsNone(self.lib.stall_warning(status, cfg, now=self.NOW, output_liveness=liveness))
+        self.assertEqual(self.lib.activity_note(status, cfg, now=self.NOW, output_liveness=liveness),
+                         "Agent active; latest output 20 seconds ago")
+        launching = self._with_session(1, "implementer", "launching")
+        self.assertIsNone(self.lib.stall_warning(launching, cfg, now=self.NOW, output_liveness=liveness))
+        # Legacy: the same status without the record is exactly today's reading.
+        self.assertEqual(self.lib.stall_warning(status, cfg, now=self.NOW),
+                         "no update in 30 minutes (limit 10), consider escalating")
+        self.assertIsNone(self.lib.activity_note(status, cfg, now=self.NOW))
+        # Exactly stall_minutes old still counts (the existing strict '>').
+        boundary = self.lib.read_output_liveness(self.tmp) | {"output_at": self._ago(600)}
+        self.assertIsNone(self.lib.stall_warning(status, cfg, now=self.NOW, output_liveness=boundary))
+        self.assertEqual(self.lib.activity_note(status, cfg, now=self.NOW, output_liveness=boundary),
+                         "Agent active; latest output 600 seconds ago")
+        # A fresh workflow update means no note at all: nothing is ambiguous.
+        progressing = dict(status, updated_at=self._ago(5))
+        self.assertIsNone(self.lib.activity_note(progressing, cfg, now=self.NOW, output_liveness=liveness))
+
+    def test_output_stale_past_stall_minutes_still_warns(self):
+        cfg = {"stall_minutes": 10}
+        self._output(1, age=601)
+        liveness = self.lib.read_output_liveness(self.tmp)
+        status = self._with_session(1, "implementer", "running")
+        self.assertEqual(self.lib.stall_warning(status, cfg, now=self.NOW, output_liveness=liveness),
+                         "no update in 30 minutes (limit 10), consider escalating")
+        self.assertIsNone(self.lib.activity_note(status, cfg, now=self.NOW, output_liveness=liveness))
+
+    def test_output_from_a_terminal_replaced_or_unknown_session_never_counts(self):
+        cfg = {"stall_minutes": 10}
+        self._output(1, age=20)
+        liveness = self.lib.read_output_liveness(self.tmp)
+        cases = {
+            "completed": self._with_session(1, "implementer", "completed", ended=10, exit_code=0),
+            "failed": self._with_session(1, "implementer", "failed", ended=10, exit_code=1),
+            "replaced": self._with_session(2, "implementer", "running"),
+            "unknown": self._status(),
+            "other role current": self._with_session(1, "reviewer", "running"),
+        }
+        for label, status in cases.items():
+            with self.subTest(label=label):
+                self.assertIsNone(self.lib.output_liveness_for(status, liveness))
+                self.assertEqual(self.lib.stall_warning(status, cfg, now=self.NOW, output_liveness=liveness),
+                                 "no update in 30 minutes (limit 10), consider escalating")
+                self.assertIsNone(self.lib.activity_note(status, cfg, now=self.NOW, output_liveness=liveness))
+        bound = self._with_session(1, "implementer", "running")
+        self.assertEqual(self.lib.output_liveness_for(bound, liveness), liveness)
+
+    def test_process_exit_ends_output_liveness_immediately(self):
+        sid = self._phase4_running_implementer()
+        self._output(1, real=True, age=2)
+        before = self._status_payload()
+        self.assertIsNone(before["stall_warning"])
+        self.assertEqual(before["activity"]["source"], "output")
+        self.lib.transition_agent_session(
+            self.tmp, sid, "failed", exit_code=3,
+            failure=self.lib.classify_runtime_failure(exit_code=3),
+        )
+        # The record is untouched and still fresh; only its binding expired.
+        self.assertTrue(self.lib.output_liveness_path(self.tmp).exists())
+        status = self.read_status()
+        status["updated_at"] = self._real_ago(1800)
+        self._write_status(status)
+        liveness = self.lib.read_output_liveness(self.tmp)
+        self.assertIsNone(self.lib.output_liveness_for(self.read_status(), liveness))
+        after = self._status_payload()
+        self.assertIsNotNone(after["stall_warning"])
+        self.assertIn("no update in", after["stall_warning"])
+        self.assertNotEqual(after["activity"]["source"], "output")
+        live = self.lib.live_status(self.read_status(), self.cfg, self.tmp)
+        self.assertEqual((live["state"], live["exit_code"]), ("failed", 3))
+        self.assertNotEqual(live["activity_source"], "output")
+
+    def test_explicit_heartbeat_still_suppresses_with_no_output_file(self):
+        self.assertFalse(self.lib.output_liveness_path(self.tmp).exists())
+        cfg = {"stall_minutes": 10}
+        status = self._with_session(1, "implementer", "running") | {"last_heartbeat_at": self._ago(60)}
+        self.assertIsNone(self.lib.stall_warning(status, cfg, now=self.NOW))
+        self.assertIsNone(self.lib.stall_warning(status, cfg, now=self.NOW, output_liveness=None))
+        self.assertIn("background task active", self.lib.activity_note(status, cfg, now=self.NOW))
+        r = run(["heartbeat", "--by", "impl-1"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aged = self.read_status()
+        aged["updated_at"] = self._real_ago(1800)
+        self._write_status(aged)
+        payload = self._status_payload()
+        self.assertIsNone(payload["stall_warning"])
+        self.assertIn("background task active", payload["activity_note"])
+        self.assertEqual(payload["activity"]["source"], "heartbeat")
+        self.assertEqual(payload["activity"]["at"], aged["last_heartbeat_at"])
+
+    def test_malformed_output_file_reads_as_no_signal(self):
+        cfg = {"stall_minutes": 10}
+        status = self._with_session(1, "implementer", "running")
+        good = self._output(1, age=20)
+        path = self.lib.output_liveness_path(self.tmp)
+        for text in ("not json", "[]", json.dumps({"session_id": self._sid(1)}),
+                     json.dumps(good | {"output_at": "yesterday"}),
+                     json.dumps(good | {"chunks": "3"}),
+                     json.dumps(good | {"bytes": -1}),
+                     json.dumps(good | {"chunks": True}),
+                     json.dumps(good | {"extra": 1}),
+                     json.dumps({k: v for k, v in good.items() if k != "role"})):
+            path.write_text(text)
+            self.assertIsNone(self.lib.read_output_liveness(self.tmp), text)
+            self.assertIsNotNone(self.lib.stall_warning(
+                status, cfg, now=self.NOW, output_liveness=self.lib.read_output_liveness(self.tmp)), text)
+        path.unlink()
+        self.assertIsNone(self.lib.read_output_liveness(self.tmp))
+
+    # --- the writer ----------------------------------------------------------------
+
+    def test_note_output_liveness_is_rate_limited_counts_only_and_never_logs(self):
+        status_before = (self.tmp / "handsoff-status.json").read_bytes()
+        events_before = (self.tmp / "handsoff-events.jsonl").read_bytes()
+        acceptance_before = (self.tmp / "handsoff-acceptance.json").read_bytes()
+        clock = [1000.0]
+        stamp = [self.NOW]
+        writes = 0
+        for n in range(500):
+            clock[0] = 1000.0 + n * (0.999 / 499)  # 500 calls inside one second
+            if self.lib.note_output_liveness(self.tmp, self._sid(1), "implementer", 7,
+                                             now=stamp[0], monotonic=lambda: clock[0]):
+                writes += 1
+        self.assertLessEqual(writes, 2)
+        self.assertGreaterEqual(writes, 1)
+        record = json.loads(self.lib.output_liveness_path(self.tmp).read_text())
+        self.assertEqual(set(record), self.OUTPUT_KEYS, "exactly the five allowed keys")
+        self.assertEqual(record["session_id"], self._sid(1))
+        self.assertEqual(record["role"], "implementer")
+        self.assertEqual(record["output_at"], self.NOW.isoformat())
+        self.assertIsInstance(record["chunks"], int)
+        self.assertIsInstance(record["bytes"], int)
+        # One second later the next chunk writes again, carrying every
+        # chunk counted in between.
+        clock[0] = 1001.5
+        stamp[0] = self.NOW + timedelta(seconds=1)
+        self.assertTrue(self.lib.note_output_liveness(self.tmp, self._sid(1), "implementer", 7,
+                                                      now=stamp[0], monotonic=lambda: clock[0]))
+        record = self.lib.read_output_liveness(self.tmp)
+        self.assertEqual(record["chunks"], 501)
+        self.assertEqual(record["bytes"], 501 * 7)
+        self.assertEqual(record["output_at"], stamp[0].isoformat())
+        self.assertEqual((self.tmp / "handsoff-status.json").read_bytes(), status_before)
+        self.assertEqual((self.tmp / "handsoff-events.jsonl").read_bytes(), events_before)
+        self.assertEqual((self.tmp / "handsoff-acceptance.json").read_bytes(), acceptance_before)
+        self.assertFalse(list(self.tmp.glob(".handsoff-output-liveness.json.tmp-*")))
+        # Best effort: an unwritable path returns False and raises nothing.
+        clock[0] = 1010.0
+        self.assertFalse(self.lib.note_output_liveness(self.tmp / "missing-dir", self._sid(1), "implementer", 1,
+                                                       monotonic=lambda: clock[0]))
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+
+    # --- end to end through execute_launch ---------------------------------------------
+
+    def test_execute_launch_captures_every_role_and_moves_output_at_without_touching_the_run(self):
+        self.set_criterion_state("failing", resolved=False)
+        r = self.advance_to(4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        status_before = self.read_status()
+        acceptance_before = self.read_acceptance()
+        events_before = len(self._events())
+        popen_kwargs = {}
+
+        def popen_factory(argv, **kwargs):
+            popen_kwargs.update(kwargs)
+            return subprocess.Popen(argv, **kwargs)
+
+        code = ("import sys, time\n"
+                "for i in range(10):\n"
+                "    print('tick', i, flush=True)\n"
+                "    time.sleep(0.2)\n"
+                "print('secret-output-token', file=sys.stderr, flush=True)\n")
+        result = {}
+        captured = io.StringIO()
+
+        def launch():
+            try:
+                with mock.patch("sys.stdout", new=captured):
+                    result["code"] = self.runtime.execute_launch(
+                        self._real_spec("implementer", code, adapter="claude"),
+                        session_id_factory=lambda: self._sid(21), popen_factory=popen_factory,
+                        beacon_interval=0.1,
+                    )
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                result["error"] = exc
+
+        worker = threading.Thread(target=launch)
+        worker.start()
+        seen = []
+        deadline = time.monotonic() + 8
+        while worker.is_alive() and time.monotonic() < deadline:
+            record = self.lib.read_output_liveness(self.tmp)
+            if record and (not seen or seen[-1]["output_at"] != record["output_at"]):
+                seen.append(record)
+            time.sleep(0.05)
+        worker.join(timeout=10)
+        self.assertNotIn("error", result, result.get("error"))
+        self.assertEqual(result.get("code"), 0)
+        self.assertEqual(popen_kwargs["stdout"], subprocess.PIPE, "stdout is captured for a non-supervisor role")
+        self.assertGreaterEqual(len(seen), 2, "output_at never moved while the child was printing")
+        self.assertLess(seen[0]["output_at"], seen[-1]["output_at"])
+        for record in seen:
+            self.assertEqual(set(record), self.OUTPUT_KEYS)
+            self.assertEqual(record["session_id"], self._sid(21))
+            self.assertEqual(record["role"], "implementer")
+        final = self.lib.read_output_liveness(self.tmp)
+        self.assertGreaterEqual(final["chunks"], 1)
+        self.assertGreater(final["bytes"], 0)
+        self.assertIn("tick 9", captured.getvalue(), "the child's stdout was streamed through unchanged")
+        self.assertNotIn("tick", self.lib.output_liveness_path(self.tmp).read_text())
+        # The run itself is untouched by output: only the session record moved.
+        status_after = self.read_status()
+        for key in ("updated_at", "phase_number", "phase", "progress", "status",
+                    "requirement_coverage", "last_heartbeat_at"):
+            self.assertEqual(status_after[key], status_before[key], key)
+        self.assertEqual(self.read_acceptance(), acceptance_before)
+        new_events = self._events()[events_before:]
+        self.assertEqual([event["kind"] for event in new_events],
+                         ["agent_session_launching", "agent_session_running", "agent_session_completed"])
+        persisted = "\n".join(path.read_text() for path in (
+            self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
+            self.lib.output_liveness_path(self.tmp)))
+        self.assertNotIn("secret-output-token", persisted)
+        self.assertNotIn("private task text", persisted)
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+        # The session is terminal now, so the fresh record no longer binds.
+        self.assertIsNone(self.lib.output_liveness_for(status_after, final))
+        view = self.lib.live_status(status_after, self.cfg, self.tmp)
+        self.assertEqual((view["state"], view["exit_code"]), ("stopped", 0))
+
+    def test_supervisor_role_is_still_parsed_and_stdout_reads_unchanged(self):
+        import handsoff_broker as broker
+        request = {"actor": "supervisor", "project_root": str(self.tmp.resolve()),
+                   "action": "workflow", "command": "status"}
+        code = ("import json, time\n"
+                f"print({self.runtime.SUPERVISOR_REQUEST_PREFIX!r} + ' ' + json.dumps({request!r}), flush=True)\n")
+        with mock.patch.object(broker, "dispatch_supervisor_request", return_value=0) as dispatch, \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(self.runtime.execute_launch(
+                self._real_spec("supervisor", code, adapter="codex"),
+                session_id_factory=lambda: self._sid(22), beacon_interval=0.1,
+            ), 0)
+        dispatch.assert_called_once_with(self.tmp, request)
+        record = self.lib.read_output_liveness(self.tmp)
+        self.assertEqual((record["session_id"], record["role"]), (self._sid(22), "supervisor"))
+        self.assertNotIn("workflow", self.lib.output_liveness_path(self.tmp).read_text())
+
+    # --- one activity object for the CLI and the dashboard -------------------------------
+
+    def test_status_cli_and_api_dashboard_carry_the_same_activity_object(self):
+        sid = self._phase4_running_implementer()
+        server = self.dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            record = self._output(1, real=True, age=20)
+            payload = self._status_payload()
+            snapshot = self._api_dashboard(server)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+        self.assertEqual(payload["activity"], {
+            "source": "output", "at": record["output_at"], "seconds_ago": 20,
+            "stall_warning": None,
+            "activity_note": "Agent active; latest output 20 seconds ago",
+        })
+        self.assertEqual(payload["stall_warning"], payload["activity"]["stall_warning"])
+        self.assertEqual(payload["activity_note"], payload["activity"]["activity_note"])
+        self.assertEqual(payload["live"]["activity_source"], "output")
+        self.assertEqual(payload["live"]["session_id"], sid)
+        self.assertTrue(snapshot["initialized"], snapshot.get("error"))
+        self.assertEqual(snapshot["activity"], payload["activity"])
+        self.assertEqual(snapshot["activity_note"], payload["activity"]["activity_note"])
+        self.assertEqual(snapshot["live"]["activity_source"], "output")
+        supervisor = snapshot["supervisor"]
+        briefing = " ".join([supervisor["label"], supervisor["headline"], supervisor["summary"]])
+        self.assertNotIn("stalled", briefing.lower())
+        self.assertNotIn("silent", briefing.lower())
+        self.assertIn("Agent active; latest output 20 seconds ago", supervisor["summary"])
+        self.assertFalse(any("no update" in item for item in supervisor["attention"]), supervisor["attention"])
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+        # The same run with the record stale reads the existing warning in both places.
+        self._output(1, real=True, age=1200)
+        stale_payload = self._status_payload()
+        self.assertIn("no update in 30 minutes", stale_payload["stall_warning"])
+        self.assertEqual(stale_payload["activity"]["stall_warning"], stale_payload["stall_warning"])
+        self.assertIsNone(stale_payload["activity_note"])
+        stale_snapshot = self.dashboard.build_snapshot(self.tmp)
+        self.assertEqual(stale_snapshot["activity"]["stall_warning"], stale_payload["stall_warning"])
+        self.assertIn("stalled", stale_snapshot["supervisor"]["headline"].lower())
+
+    def test_activity_view_shape_and_sources(self):
+        view = self.lib.activity_view(self._status(last_heartbeat_at=None), self.cfg, self.tmp, now=self.NOW)
+        self.assertEqual(set(view), {"source", "at", "seconds_ago", "stall_warning", "activity_note"})
+        self.assertEqual((view["source"], view["at"], view["seconds_ago"]), ("workflow", self._ago(1800), 1800))
+        heartbeat = self.lib.activity_view(self._status(last_heartbeat_at=self._ago(900)), self.cfg, self.tmp, now=self.NOW)
+        self.assertEqual((heartbeat["source"], heartbeat["seconds_ago"]), ("heartbeat", 900))
+        self.assertIsNotNone(view["stall_warning"])
+        self.assertIn(view["source"], self.lib.ACTIVITY_SOURCES)
+        paused = self.lib.activity_view(
+            self._status(human_pause={"by": "moncy", "since": self._ago(120), "note": None}),
+            self.cfg, self.tmp, now=self.NOW)
+        self.assertEqual((paused["source"], paused["seconds_ago"], paused["stall_warning"]), ("pause", 120, None))
+        self.assertEqual(paused["activity_note"], "waiting on moncy since 2 min ago")
+        self.assertTrue(self.lib.write_live_beacon(
+            self.tmp, session_id=self._sid(1), role="implementer", state="running", pid=1,
+            now=self.NOW - timedelta(seconds=4)))
+        beaconed = self.lib.activity_view(self._with_session(1, "implementer", "running"), self.cfg, self.tmp, now=self.NOW)
+        self.assertEqual((beaconed["source"], beaconed["seconds_ago"]), ("beacon", 4))
+        self._output(1, age=2)
+        output = self.lib.activity_view(self._with_session(1, "implementer", "running"), self.cfg, self.tmp, now=self.NOW)
+        self.assertEqual((output["source"], output["at"], output["seconds_ago"]), ("output", self._ago(2), 2))
+        self.assertIsNone(output["stall_warning"])
+        session_only = self.lib.activity_view(
+            self._with_session(2, "reviewer", "completed", ended=30, exit_code=0), self.cfg, self.tmp, now=self.NOW)
+        self.assertEqual((session_only["source"], session_only["seconds_ago"]), ("session", 30))
+
+    def test_artifact_signature_tracks_the_output_file(self):
+        before = self.dashboard._artifact_signature(self.tmp)
+        self.assertIn(str(self.lib.output_liveness_path(self.tmp)), [entry[0] for entry in before])
+        self._output(1, age=1)
+        self.assertNotEqual(before, self.dashboard._artifact_signature(self.tmp),
+                            "an output record write invalidates the SSE signature")
+
+    def test_gitignore_and_docs_cover_the_output_file(self):
+        self.assertIn(".handsoff-output-liveness.json", (ROOT / ".gitignore").read_text().splitlines())
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("(#41)", readme)
+        self.assertIn("Agent active; latest output N seconds ago", readme)
+        for key in self.OUTPUT_KEYS:
+            self.assertIn(f"`{key}`", readme)
+
+
+class TestCriteriaTransaction(HandsoffTestCase):
+    """Issue #44: `criteria-apply --file TX.json --by ACTOR [--dry-run]`
+    applies adds, updates and removes as one lock-protected commit with one
+    `criteria_transaction_applied` event, or refuses the whole list with
+    the operation named and nothing written. Criteria i44-one-transaction,
+    i44-all-or-nothing, i44-single-invalidation, i44-preview-and-compat."""
+
+    STATE_FILES = ("handsoff-status.json", "handsoff-acceptance.json",
+                   "handsoff-events.jsonl", "handsoff-verifications.jsonl")
+
+    def setUp(self):
+        super().setUp()
+        self._extra_dirs = []
+        sys.path.insert(0, str(BIN))
+        import handsoff_broker
+        import handsoff_lib
+        self.lib = handsoff_lib
+        self.broker = handsoff_broker
+        self._configure_checks(self.tmp)
+
+    def tearDown(self):
+        for path in self._extra_dirs:
+            shutil.rmtree(path, ignore_errors=True)
+        super().tearDown()
+
+    # -- fixture helpers ---------------------------------------------------
+
+    def _configure_checks(self, root, commands=("true", "false")):
+        toml = root / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", f"commands = {json.dumps(list(commands))}", 1))
+
+    def _second_fixture(self):
+        other = Path(tempfile.mkdtemp(prefix="handsoff-test-tx-"))
+        self._extra_dirs.append(other)
+        shutil.copy(ROOT / "handsoff.toml", other / "handsoff.toml")
+        normalize_fixture_config(other / "handsoff.toml")
+        shutil.copytree(ROOT / "schemas", other / "schemas")
+        self._configure_checks(other)
+        return other
+
+    def _write_tx(self, operations, root=None, name="tx.json"):
+        path = (root or self.tmp) / name
+        path.write_text(json.dumps({"operations": operations}))
+        return path
+
+    def _apply(self, operations, *extra, root=None, by="architect-1"):
+        path = self._write_tx(operations, root=root)
+        return run(["criteria-apply", "--file", str(path), "--by", by, *extra], cwd=root or self.tmp)
+
+    def _events(self, root=None):
+        path = (root or self.tmp) / "handsoff-events.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def _snapshot(self, root=None):
+        root = root or self.tmp
+        return {name: (root / name).read_bytes() if (root / name).exists() else None
+                for name in self.STATE_FILES}
+
+    def _criteria_by_id(self, root=None):
+        path = (root or self.tmp) / "handsoff-acceptance.json"
+        return {c["id"]: c for c in json.loads(path.read_text())["criteria"]}
+
+    def _write_status(self, status):
+        cfg = self.lib.load_config(self.tmp)
+        with self.lib.project_lock(self.tmp):
+            self.lib.atomic_write_json(self.lib.status_path(self.tmp, cfg), status)
+            self.lib.append_event(self.tmp, cfg, "test_backdate", "test harness adjusted status fields directly")
+
+    @staticmethod
+    def _add(cid, requirement=None, verification="automated", tests=("true",), ctype="supporting"):
+        return {"op": "add", "criterion": {
+            "id": cid, "type": ctype, "requirement": requirement or f"#44 criterion {cid}",
+            "verification": verification, "tests": list(tests),
+        }}
+
+    def _init_with_base(self, root=None, automated=("true", "false")):
+        """A fixture with a real primary (REQ-001) and three supporting
+        criteria, built by the single commands so both halves of the
+        equivalence test start byte-identical."""
+        root = root or self.tmp
+        r = run(["init", "Issue 44 fixture"], cwd=root)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["criterion-update", "REQ-001", "--requirement", "#44 the primary outcome",
+                 "--test", automated[0]], cwd=root)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for cid, verification, test in (("REQ-002", "automated", automated[1]), ("REQ-003", "manual", "walk through"),
+                                        ("REQ-004", "browser", "open the page")):
+            r = run(["criterion-add", cid, "--type", "supporting", "--requirement", f"#44 criterion {cid}",
+                     "--verification", verification, "--test", test], cwd=root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    # -- i44-one-transaction -----------------------------------------------
+
+    def test_mixed_transaction_equals_the_single_command_sequence_with_one_event(self):
+        singles = self.tmp
+        batched = self._second_fixture()
+        self._init_with_base(singles)
+        self._init_with_base(batched)
+        self.assertEqual(self._criteria_by_id(singles), self._criteria_by_id(batched))
+
+        for args in (
+            ["criterion-update", "REQ-001", "--requirement", "#44 the primary outcome, revised"],
+            ["criterion-add", "REQ-005", "--type", "supporting", "--requirement", "#44 criterion REQ-005",
+             "--verification", "automated", "--test", "true"],
+            ["criterion-update", "REQ-002", "--verification", "manual", "--test", "check by hand"],
+            ["criterion-remove", "REQ-004"],
+            ["criterion-add", "REQ-006", "--type", "supporting", "--requirement", "#44 criterion REQ-006",
+             "--verification", "manual", "--test", "observe"],
+        ):
+            r = run(args, cwd=singles)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        events_before = len(self._events(batched))
+        r = self._apply([
+            {"op": "update", "id": "REQ-001", "fields": {"requirement": "#44 the primary outcome, revised"}},
+            self._add("REQ-005"),
+            {"op": "update", "id": "REQ-002", "fields": {"verification": "manual", "tests": ["check by hand"]}},
+            {"op": "remove", "id": "REQ-004"},
+            self._add("REQ-006", verification="manual", tests=["observe"]),
+        ], root=batched)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("CRITERIA_TRANSACTION_APPLIED", r.stdout)
+
+        sort = lambda root: json.dumps(sorted(self._criteria_by_id(root).values(), key=lambda c: c["id"]),
+                                       sort_keys=True, indent=2).encode()
+        self.assertEqual(sort(singles), sort(batched))
+        self.assertEqual(sorted(self._criteria_by_id(batched)), ["REQ-001", "REQ-002", "REQ-003", "REQ-005", "REQ-006"])
+        new_events = self._events(batched)[events_before:]
+        self.assertEqual([e["kind"] for e in new_events], ["criteria_transaction_applied"])
+        self.assertEqual(len([e for e in self._events(singles)
+                              if e["kind"] in {"criterion_added", "criterion_updated", "criterion_removed"}]), 9)
+        for root in (singles, batched):
+            check = run(["verify-log"], cwd=root)
+            self.assertEqual(check.returncode, 0, check.stdout)
+
+    def test_event_carries_every_hash(self):
+        self._init_with_base()
+        before = self._criteria_by_id()
+        before_registry = self.lib.acceptance_hash(list(before.values()))
+        r = self._apply([
+            {"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 criterion REQ-002, revised"}},
+            self._add("REQ-005"),
+            {"op": "remove", "id": "REQ-003"},
+        ])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        after = self._criteria_by_id()
+        event = self._events()[-1]
+        self.assertEqual(event["kind"], "criteria_transaction_applied")
+        self.assertEqual(event["by"], "architect-1")
+        self.assertEqual(event["operation_count"], 3)
+        self.assertEqual(event["registry_hash_before"], before_registry)
+        self.assertEqual(event["registry_hash_after"], self.lib.acceptance_hash(list(after.values())))
+        self.assertEqual(event["design_hash_after"], self.lib.design_hash(list(after.values())))
+        self.assertEqual(event["operations"], [
+            {"op": "update", "id": "REQ-002", "previous_hash": self.lib.criterion_spec_hash(before["REQ-002"]),
+             "resulting_hash": self.lib.criterion_spec_hash(after["REQ-002"])},
+            {"op": "add", "id": "REQ-005", "previous_hash": None,
+             "resulting_hash": self.lib.criterion_spec_hash(after["REQ-005"])},
+            {"op": "remove", "id": "REQ-003", "previous_hash": self.lib.criterion_spec_hash(before["REQ-003"]),
+             "resulting_hash": None},
+        ])
+        self.assertNotEqual(event["operations"][0]["previous_hash"], event["operations"][0]["resulting_hash"])
+        for forbidden in ("requirement", "tests", "output"):
+            self.assertNotIn(forbidden, event)
+        self.assertEqual(after["REQ-002"]["state"], "not_tested")
+        self.assertEqual(after["REQ-002"]["evidence"], [])
+
+    # -- i44-all-or-nothing ------------------------------------------------
+
+    def test_one_bad_operation_among_five_refuses_everything_with_nothing_written(self):
+        # Focused checks with narrow footprints plus a regression group, so
+        # the footprint gate has something to capture.
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace(
+            'commands = ["true", "false"]', 'commands = ["python3 tests/test_a.py", "python3 tests/test_b.py"]', 1)
+            + '\n[[regressions]]\nname = "python-full"\ncommands = ["python3 tests/test_everything.py"]\n')
+        self._init_with_base(automated=("python3 tests/test_a.py", "python3 tests/test_b.py"))
+        good = [
+            {"op": "update", "id": "REQ-001", "fields": {"requirement": "#44 the primary outcome, revised"}},
+            self._add("REQ-005", tests=["python3 tests/test_a.py"]),
+            {"op": "update", "id": "REQ-003", "fields": {"tests": ["walk through twice"]}},
+            {"op": "remove", "id": "REQ-004"},
+        ]
+        cases = {
+            "unknown id": ({"op": "update", "id": "REQ-404", "fields": {"requirement": "x"}}, "unknown criterion"),
+            "duplicate id on add": (self._add("REQ-002"), "criterion already exists"),
+            "id twice in one transaction": ({"op": "update", "id": "REQ-005", "fields": {"requirement": "#44 x"}},
+                                            "earlier operation"),
+            "unlisted automated test": (self._add("REQ-006", tests=["pytest -q"]), "not one of [checks].commands"),
+            "unlisted automated test on a policy change": (
+                {"op": "update", "id": "REQ-003", "fields": {"verification": "automated"}},
+                "not one of [checks].commands"),
+            "whole-suite spelling of a gated group": (
+                self._add("REQ-006", tests=["python3 tests/test_everything.py"]), "not one of [checks].commands"),
+            "two primary_fix": (self._add("REQ-006", ctype="primary_fix", tests=["python3 tests/test_a.py"]),
+                                "2 primary_fix criteria"),
+            "malformed operation": ({"op": "update", "id": "REQ-002", "fields": {"requirement": "x"}, "extra": 1},
+                                    "exactly 'op', 'id' and 'fields'"),
+            "unknown op": ({"op": "rename", "id": "REQ-002"}, "'op' must be one of"),
+            "add sets state": ({"op": "add", "criterion": {**self._add("REQ-006", tests=["python3 tests/test_a.py"])["criterion"],
+                                                         "state": "failing"}},
+                               "exactly id, type, requirement, verification, tests"),
+            "bad field value": ({"op": "update", "id": "REQ-002", "fields": {"state": "passing"}},
+                                "'state' must be one of"),
+        }
+        for label, (bad, reason) in cases.items():
+            with self.subTest(case=label):
+                before = self._snapshot()
+                operations = good[:2] + [bad] + good[2:]
+                r = self._apply(operations)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertTrue(r.stdout.startswith("SHIP_FEATURE_BLOCKED: operation 3 ("), r.stdout)
+                self.assertIn(reason, r.stdout)
+                self.assertEqual(self._snapshot(), before)
+        # Zero primary_fix: removing the only primary is attributed to that operation.
+        before = self._snapshot()
+        r = self._apply(good[1:2] + [{"op": "remove", "id": "REQ-001"}] + good[2:])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("SHIP_FEATURE_BLOCKED: operation 2 (remove REQ-001): "), r.stdout)
+        self.assertIn("0 primary_fix criteria", r.stdout)
+        self.assertEqual(self._snapshot(), before)
+        # The good operations alone still apply, so the refusals above were the bad operation's doing.
+        r = self._apply(good)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_schema_failure_of_the_resulting_registry_is_refused(self):
+        self._init_with_base()
+        cfg = self.lib.load_config(self.tmp)
+        status, acceptance = self.read_status(), self.read_acceptance()
+        # A legacy registry flaw the field validator cannot see on the way
+        # in: an untouched criterion with neither tests nor evidence.
+        next(c for c in acceptance["criteria"] if c["id"] == "REQ-004")["tests"] = []
+        with self.lib.project_lock(self.tmp):
+            self.lib.commit(self.tmp, cfg, status=status, acceptance=acceptance,
+                            event_kind="test_legacy_flaw", event_message="legacy registry flaw fixture")
+        before = self._snapshot()
+        r = self._apply([self._add("REQ-005"), {"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 x"}}])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("SHIP_FEATURE_BLOCKED: operation 2 (update REQ-002): "), r.stdout)
+        self.assertIn("resulting registry fails validation", r.stdout)
+        self.assertIn("REQ-004", r.stdout)
+        self.assertEqual(self._snapshot(), before)
+        # Repairing the flaw in the same transaction is accepted.
+        r = self._apply([self._add("REQ-005"), {"op": "update", "id": "REQ-004", "fields": {"tests": ["open it"]}}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_transaction_file_bounds_are_enforced_before_anything_is_written(self):
+        self._init_with_base()
+        before = self._snapshot()
+        path = self.tmp / "tx.json"
+        cases = {
+            "zero operations": json.dumps({"operations": []}),
+            "sixty-five operations": json.dumps({"operations": [self._add(f"REQ-{n:03d}") for n in range(100, 165)]}),
+            "extra top-level key": json.dumps({"operations": [self._add("REQ-005")], "note": "x"}),
+            "not an object": json.dumps([self._add("REQ-005")]),
+            "over 256 KiB": json.dumps({"operations": [self._add("REQ-005", requirement="#44 " + "x" * 300000)]}),
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                path.write_text(text)
+                r = run(["criteria-apply", "--file", str(path), "--by", "architect-1"], cwd=self.tmp)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertTrue(r.stdout.startswith("SHIP_FEATURE_BLOCKED: transaction file: "), r.stdout)
+                self.assertEqual(self._snapshot(), before)
+        r = run(["criteria-apply", "--file", str(path), "--by", " "], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--by must be a non-empty string", r.stdout)
+        self.assertEqual(self._snapshot(), before)
+        # Sixty-four operations are the documented maximum and apply.
+        path.write_text(json.dumps({"operations": [self._add(f"REQ-{n:03d}") for n in range(100, 164)]}))
+        r = run(["criteria-apply", "--file", str(path), "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len(self._criteria_by_id()), 68)
+
+    def test_launched_regression_locks_the_transaction_out(self):
+        self._init_with_base()
+        status = self.read_status()
+        status["regression_requests"] = [{"request_id": "rr-test", "state": "launched"}]
+        self._write_status(status)
+        before = self._snapshot()
+        r = self._apply([self._add("REQ-005")])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("SHIP_FEATURE_BLOCKED: regression rr-test is running", r.stdout)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_concurrent_readers_never_observe_an_intermediate_registry(self):
+        self._init_with_base()
+        acceptance_path = self.tmp / "handsoff-acceptance.json"
+        before = acceptance_path.read_bytes()
+        path = self._write_tx([self._add(f"REQ-{n:03d}", requirement="#44 " + "filler " * 40) for n in range(100, 160)]
+                              + [{"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 revised"}}])
+        observed = []
+        errors = []
+        finished = threading.Event()
+
+        def reader():
+            # At least 200 reads, and keep reading until the writer has exited,
+            # so the window in which the replace lands is always covered.
+            while len(observed) < 200 or not finished.is_set():
+                try:
+                    raw = acceptance_path.read_bytes()
+                    json.loads(raw)
+                    observed.append(raw)
+                except Exception as exc:  # pragma: no cover - the assertion below reports it
+                    errors.append(repr(exc))
+                time.sleep(0.002)
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        try:
+            r = run(["criteria-apply", "--file", str(path), "--by", "architect-1"], cwd=self.tmp)
+        finally:
+            finished.set()
+        thread.join(timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        after = acceptance_path.read_bytes()
+        self.assertNotEqual(before, after)
+        self.assertEqual(errors, [])
+        self.assertGreaterEqual(len(observed), 200)
+        self.assertEqual(set(observed) - {before, after}, set())
+        self.assertIn(before, observed)
+        self.assertIn(after, observed)
+        for _ in range(3):
+            status = run(["status"], cwd=self.tmp)
+            self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        self.assertEqual(len(self._criteria_by_id()), 64)
+
+    # -- i44-single-invalidation --------------------------------------------
+
+    def test_decisions_are_invalidated_once_and_a_flagged_run_rolls_back_to_phase_2(self):
+        self._init_with_base()
+        advanced = self.advance_to(3)
+        self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+        status = self.read_status()
+        self.assertEqual(status["phase_number"], 3)
+        self.assertIsNotNone(status["design_approved"])
+        self.assertIsNotNone(status["design_review"])
+        now = datetime.now(timezone.utc).isoformat()
+        digest = self.lib.acceptance_hash(self.read_acceptance()["criteria"])
+        status["review"] = {"by": "reviewer-1", "at": now, "acceptance_hash": digest}
+        status["reviewed_by"] = "reviewer-1"
+        status["deployment_approved"] = {"by": "pilot", "at": now, "acceptance_hash": digest}
+        status["live_verification_id"] = "vr-fixture"
+        self._write_status(status)
+        events_before = len(self._events())
+
+        r = self._apply([
+            {"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 criterion REQ-002, revised"}},
+            self._add("REQ-005"),
+            {"op": "remove", "id": "REQ-004"},
+        ])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        after = self.read_status()
+        self.assertIsNone(after["design_approved"])
+        self.assertIsNone(after["design_review"])
+        self.assertIsNone(after["review"])
+        self.assertIsNone(after["reviewed_by"])
+        self.assertIsNone(after["deployment_approved"])
+        self.assertIsNone(after["live_verification_id"])
+        self.assertEqual(after["phase_number"], 2)
+        self.assertEqual(after["phase"], self.lib.PHASES[2])
+        self.assertEqual(after["status"], "in_progress")
+        self.assertLessEqual(after["progress"], 20)
+        new_events = self._events()[events_before:]
+        self.assertEqual([e["kind"] for e in new_events], ["criteria_transaction_applied"])
+        self.assertEqual(new_events[0]["registry_hash_after"],
+                         self.lib.acceptance_hash(self.read_acceptance()["criteria"]))
+        self.assertEqual(new_events[0]["design_hash_after"],
+                         self.lib.design_hash(self.read_acceptance()["criteria"]))
+        check = run(["verify-log"], cwd=self.tmp)
+        self.assertEqual(check.returncode, 0, check.stdout)
+        # The rollback landed in the same write: Phase 3 needs a fresh design decision now.
+        blocked = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(blocked.returncode, 1, blocked.stdout + blocked.stderr)
+
+    def test_a_changed_primary_resets_the_original_symptom_binding(self):
+        self._init_with_base()
+        self.set_criterion_state("passing", resolved=True)
+        self.assertTrue(self.read_status()["requirement_coverage"]["original_symptom_resolved"])
+        r = self._apply([{"op": "update", "id": "REQ-003", "fields": {"requirement": "#44 supporting only"}}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.read_status()["requirement_coverage"]["original_symptom_resolved"])
+        r = self._apply([{"op": "update", "id": "REQ-001", "fields": {"requirement": "#44 primary, respecified"}}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        status = self.read_status()
+        self.assertFalse(status["requirement_coverage"]["original_symptom_resolved"])
+        self.assertIsNone(status["original_symptom_evidence_id"])
+        self.assertEqual(self._criteria_by_id()["REQ-001"]["state"], "not_tested")
+
+    # -- i44-preview-and-compat ---------------------------------------------
+
+    def test_dry_run_prints_the_plan_and_writes_nothing(self):
+        self._init_with_base()
+        self.advance_to(2)
+        review = approve_design_review(self.tmp)
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
+        operations = [
+            {"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 criterion REQ-002, revised"}},
+            self._add("REQ-005"),
+            {"op": "remove", "id": "REQ-004"},
+        ]
+        before = self._snapshot()
+        preview = self._apply(operations, "--dry-run")
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        self.assertEqual(self._snapshot(), before)
+        plan = json.loads(preview.stdout)
+        self.assertEqual(plan["would_invalidate"], {"design": True, "review": False, "deployment": False, "live": False})
+        self.assertIsNone(plan["would_roll_back_to_phase"])
+        self.assertEqual(plan["operation_count"], 3)
+        self.assertEqual(set(plan), {
+            "operations", "operation_count", "registry_hash_before", "registry_hash_after",
+            "design_hash_before", "design_hash_after", "work_items_after", "work_item_scope_changed",
+            "would_invalidate", "would_roll_back_to_phase",
+        })
+        for key in ("registry_hash_before", "registry_hash_after", "design_hash_before", "design_hash_after"):
+            self.assertRegex(plan[key], r"^[0-9a-f]{64}$")
+        self.assertEqual(plan["work_items_after"], ["ask-issue-44-fixture"])
+        # A refused dry run reads exactly like a refused apply.
+        refused = self._apply(operations + [{"op": "remove", "id": "REQ-404"}], "--dry-run")
+        self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+        self.assertTrue(refused.stdout.startswith("SHIP_FEATURE_BLOCKED: operation 4 (remove REQ-404): "), refused.stdout)
+        self.assertEqual(self._snapshot(), before)
+
+        applied = self._apply(operations)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        event = self._events()[-1]
+        self.assertEqual(event["kind"], "criteria_transaction_applied")
+        for key in ("operations", "registry_hash_before", "registry_hash_after", "design_hash_after", "operation_count"):
+            self.assertEqual(event[key], plan[key], key)
+        self.assertIsNone(self.read_status()["design_review"])
+
+    def test_added_criteria_take_exact_keys_and_start_not_tested_with_empty_evidence(self):
+        self._init_with_base()
+        criterion = self._add("REQ-005", verification="automated_and_browser", tests=["true"])["criterion"]
+        for extra in ({"state": "failing"}, {"evidence": []}, {"authored_by": "x"}):
+            with self.subTest(extra=extra):
+                r = self._apply([{"op": "add", "criterion": {**criterion, **extra}}])
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("exactly id, type, requirement, verification, tests", r.stdout)
+        for missing in ("type", "tests", "verification"):
+            with self.subTest(missing=missing):
+                r = self._apply([{"op": "add", "criterion": {k: v for k, v in criterion.items() if k != missing}}])
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        r = self._apply([{"op": "add", "criterion": {**criterion, "tests": []}}])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("'tests' must be a non-empty list", r.stdout)
+        r = self._apply([{"op": "add", "criterion": criterion}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        added = self._criteria_by_id()["REQ-005"]
+        self.assertEqual(added, {**criterion, "state": "not_tested", "evidence": []})
+        # An update's explicit state is kept, an implicit one resets to not_tested with cleared evidence.
+        r = self._apply([{"op": "update", "id": "REQ-005", "fields": {"state": "blocked"}}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self._criteria_by_id()["REQ-005"]["state"], "blocked")
+        r = self._apply([{"op": "update", "id": "REQ-005", "fields": {"requirement": "#44 revised"}}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self._criteria_by_id()["REQ-005"]["state"], "not_tested")
+        r = self._apply([{"op": "update", "id": "REQ-005", "fields": {}}])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("non-empty object", r.stdout)
+
+    def test_single_commands_share_the_validator_and_keep_working(self):
+        self._init_with_base()
+        problems = self.lib.validate_criterion_fields({"id": "X", "type": "supporting", "requirement": "r",
+                                                       "verification": "automated", "tests": ["true"]},
+                                                      require_all=True)
+        self.assertEqual(problems, [])
+        self.assertTrue(self.lib.validate_criterion_fields({"requirement": " "}))
+        self.assertTrue(self.lib.validate_criterion_fields({"tests": []}))
+        self.assertTrue(self.lib.validate_criterion_fields({"type": "bonus"}))
+        self.assertTrue(self.lib.validate_criterion_fields({"state": "passing"}))
+        self.assertTrue(self.lib.validate_criterion_fields({"colour": "red"}))
+        self.assertTrue(self.lib.validate_criterion_fields({"id": "X", "type": "supporting"}, require_all=True))
+        blank = run(["criterion-update", "REQ-002", "--requirement", "  "], cwd=self.tmp)
+        self.assertEqual(blank.returncode, 1, blank.stdout + blank.stderr)
+        self.assertIn("'requirement' must be a non-empty string", blank.stdout)
+        blank = run(["criterion-add", "REQ-005", "--type", "supporting", "--requirement", " ",
+                     "--verification", "manual", "--test", "look"], cwd=self.tmp)
+        self.assertEqual(blank.returncode, 1, blank.stdout + blank.stderr)
+        self.assertIn("'requirement' must be a non-empty string", blank.stdout)
+        r = self._apply([self._add("REQ-005"), {"op": "remove", "id": "REQ-004"}])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for args, marker in (
+            (["criterion-add", "REQ-006", "--type", "supporting", "--requirement", "#44 after the transaction",
+              "--verification", "manual", "--test", "look"], "CRITERION_ADDED"),
+            (["criterion-update", "REQ-005", "--requirement", "#44 revised after the transaction"], "CRITERION_UPDATED"),
+            (["criterion-remove", "REQ-003"], "CRITERION_REMOVED"),
+        ):
+            r = run(args, cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(marker, r.stdout)
+        self.assertEqual(sorted(self._criteria_by_id()), ["REQ-001", "REQ-002", "REQ-005", "REQ-006"])
+        check = run(["verify-log"], cwd=self.tmp)
+        self.assertEqual(check.returncode, 0, check.stdout)
+
+    def test_legacy_registry_without_work_items_round_trips(self):
+        self._init_with_base()
+        cfg = self.lib.load_config(self.tmp)
+        status, acceptance = self.read_status(), self.read_acceptance()
+        acceptance.pop("work_items")
+        for criterion in acceptance["criteria"]:
+            criterion.pop("authored_by", None)
+        for key in ("design_review_attempts", "design_review_authorization", "recovery_attempts",
+                    "recovery_lease", "regression_requests", "active_work_item"):
+            status.pop(key, None)
+        with self.lib.project_lock(self.tmp):
+            self.lib.commit(self.tmp, cfg, status=status, acceptance=acceptance,
+                            event_kind="test_legacy", event_message="legacy registry fixture")
+        r = self._apply([
+            {"op": "update", "id": "REQ-001", "fields": {"requirement": "#44 the primary outcome, revised"}},
+            self._add("REQ-005"),
+            {"op": "remove", "id": "REQ-004"},
+        ])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        after = self.read_acceptance()
+        self.assertNotIn("work_items", after)
+        self.assertEqual(sorted(c["id"] for c in after["criteria"]), ["REQ-001", "REQ-002", "REQ-003", "REQ-005"])
+        self.assertEqual(self._events()[-1]["kind"], "criteria_transaction_applied")
+        check = run(["verify-log"], cwd=self.tmp)
+        self.assertEqual(check.returncode, 0, check.stdout)
+        status = run(["status"], cwd=self.tmp)
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        r = run(["criterion-update", "REQ-005", "--requirement", "#44 single command after a legacy transaction"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_thirty_criterion_registry_is_revised_with_one_transaction_and_one_event(self):
+        self.init("Issue 44 representative fixture")
+        setup = self._apply([{"op": "update", "id": "REQ-001", "fields": {
+            "requirement": "#44 the primary outcome", "tests": ["true"]}}]
+            + [self._add(f"REQ-{n:03d}", verification=("automated", "manual", "browser")[n % 3],
+                         tests=[("true", "walk through", "open the page")[n % 3]]) for n in range(2, 31)])
+        self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+        self.assertEqual(len(self._criteria_by_id()), 30)
+        before = self._criteria_by_id()
+        count_before = sum(e["kind"] == "criteria_transaction_applied" for e in self._events())
+
+        adds = [f"REQ-{n:03d}" for n in range(31, 36)]
+        updates = ["REQ-002", "REQ-007", "REQ-013", "REQ-020", "REQ-029"]
+        removes = ["REQ-005", "REQ-018"]
+        r = self._apply([self._add(cid) for cid in adds]
+                        + [{"op": "update", "id": cid, "fields": {"requirement": f"#44 {cid} revised"}} for cid in updates]
+                        + [{"op": "remove", "id": cid} for cid in removes])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        after = self._criteria_by_id()
+        self.assertEqual(sum(e["kind"] == "criteria_transaction_applied" for e in self._events()), count_before + 1)
+        self.assertEqual(len(after), 33)
+        self.assertEqual(sorted(after), sorted((set(before) | set(adds)) - set(removes)))
+        for cid in updates:
+            self.assertEqual(after[cid]["requirement"], f"#44 {cid} revised")
+            self.assertEqual(after[cid]["state"], "not_tested")
+        for cid in set(before) - set(updates) - set(removes):
+            self.assertEqual(after[cid], before[cid])
+        event = self._events()[-1]
+        self.assertEqual(event["operation_count"], 12)
+        self.assertEqual([op["op"] for op in event["operations"]], ["add"] * 5 + ["update"] * 5 + ["remove"] * 2)
+        check = run(["verify-log"], cwd=self.tmp)
+        self.assertEqual(check.returncode, 0, check.stdout)
+
+    def test_footprint_gate_mirrors_run_checks_for_automated_tests(self):
+        self._init_with_base()
+        cfg = self.lib.load_config(self.tmp)
+        acceptance = self.read_acceptance()
+        # A config load_config would refuse (a focused check that captures a
+        # gated group, a check with a control operator): the planner still
+        # refuses the operation rather than registering a test verify cannot run.
+        cfg["check_commands"] = ["true", "python3 tests/test_a.py", "python3 tests/test_a.py; echo done"]
+        cfg["regressions"] = [{"name": "python-full", "commands": ["python3 tests/test_a.py"]}]
+        for test, reason in (("true", "captures gated regression group"),
+                             ("python3 tests/test_a.py", "captures gated regression group"),
+                             ("python3 tests/test_a.py; echo done", "control operators"),
+                             ("python3 tests/test_b.py", "not one of [checks].commands")):
+            with self.subTest(test=test):
+                with self.assertRaises(self.lib.CriteriaTransactionError) as refused:
+                    self.lib.plan_criteria_transaction(acceptance, cfg, [self._add("REQ-005", tests=[test])], root=self.tmp)
+                self.assertTrue(str(refused.exception).startswith("operation 1 (add REQ-005): "), str(refused.exception))
+                self.assertIn(reason, str(refused.exception))
+        # Manual and browser entries are attestation descriptions, never gated commands.
+        plan = self.lib.plan_criteria_transaction(
+            acceptance, cfg, [self._add("REQ-005", verification="manual", tests=["walk through; twice"])], root=self.tmp)
+        self.assertEqual(plan["operation_count"], 1)
+
+    def test_planner_is_importable_and_pure(self):
+        self._init_with_base()
+        cfg = self.lib.load_config(self.tmp)
+        acceptance = self.read_acceptance()
+        frozen = json.dumps(acceptance, sort_keys=True)
+        operations = [self._add("REQ-005"), {"op": "remove", "id": "REQ-004"}]
+        plan = self.lib.plan_criteria_transaction(acceptance, cfg, operations, root=self.tmp)
+        self.assertEqual(json.dumps(acceptance, sort_keys=True), frozen)
+        self.assertEqual([op["id"] for op in plan["operations"]], ["REQ-005", "REQ-004"])
+        self.assertEqual(plan["registry_hash_before"], self.lib.acceptance_hash(acceptance["criteria"]))
+        self.assertEqual(plan["registry_hash_after"], self.lib.acceptance_hash(plan["criteria_after"]))
+        self.assertEqual(plan["design_hash_after"], self.lib.design_hash(plan["criteria_after"]))
+        self.assertFalse(plan["resets_original_symptom"])
+        with self.assertRaises(self.lib.CriteriaTransactionError) as refused:
+            self.lib.plan_criteria_transaction(acceptance, cfg, [{"op": "remove", "id": "nope"}], root=self.tmp)
+        self.assertEqual(str(refused.exception), "operation 1 (remove nope): unknown criterion")
+        self.lib.apply_criteria_plan(acceptance, plan)
+        self.assertEqual(sorted(c["id"] for c in acceptance["criteria"]), ["REQ-001", "REQ-002", "REQ-003", "REQ-005"])
+        with self.assertRaises(self.lib.HandsoffError):
+            self.lib.apply_criteria_plan(acceptance, plan)
+
+    def test_broker_allows_criteria_apply_for_the_supervisor(self):
+        self._init_with_base()
+        root_text = str(self.tmp.resolve())
+        base = {"actor": "supervisor", "project_root": root_text, "action": "workflow",
+                "command": "criteria-apply", "by": "supervisor-1", "file": "tx.json"}
+        argv = self.broker._workflow_argv(self.tmp.resolve(), base)
+        self.assertEqual(argv[argv.index("criteria-apply"):],
+                         ["criteria-apply", "--file", "tx.json", "--by", "supervisor-1"])
+        argv = self.broker._workflow_argv(self.tmp.resolve(), {**base, "dry_run": True})
+        self.assertEqual(argv[-1], "--dry-run")
+        for request in (
+            {k: v for k, v in base.items() if k != "file"},
+            {**base, "dry_run": "yes"},
+            {**base, "operations": []},
+        ):
+            with self.subTest(request=request):
+                with self.assertRaises(self.lib.HandsoffError):
+                    self.broker._workflow_argv(self.tmp.resolve(), request)
+
+    def test_readme_documents_the_transaction(self):
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("(#44)", readme)
+        self.assertIn("### Criteria transactions", readme)
+        self.assertIn("criteria-apply --file", readme)
+        self.assertIn("criteria_transaction_applied", readme)
+        section = readme[readme.index("### Criteria transactions"):readme.index("## Work items and the per-item")]
+        self.assertIn('{"operations": [', section)
+        self.assertNotIn("\u2014", section)
+
+
+class TestAmendmentLane(HandsoffTestCase):
+    """Issue #42: the scoped post-approval amendment lane. `amendment-open`
+    plans a criteria transaction with the #44 planner, classifies it
+    (scoped or full_redesign; the caller cannot choose), applies a scoped
+    delta with the changed criteria reset and the phase frozen, and only
+    `amendment-review --approve` plus the Pilot's `amendment-approve` on
+    the exact amendment hash rewrites the design hashes and resumes.
+    Criteria i42-scoped-amendment, i42-frozen-until-approved,
+    i42-full-redesign-escalation, i42-multi-item-isolation,
+    i42-fail-closed, i42-dashboard."""
+
+    STATE_FILES = ("handsoff-status.json", "handsoff-acceptance.json",
+                   "handsoff-events.jsonl", "handsoff-verifications.jsonl")
+    ARCHITECT = "architect-1"
+    REVIEWER = "amendment-reviewer-1"
+    PILOT = "pilot-moncy"
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(BIN))
+        import handsoff_broker
+        import handsoff_dashboard
+        import handsoff_lib
+        self.lib = handsoff_lib
+        self.broker = handsoff_broker
+        self.dashboard = handsoff_dashboard
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1)
+                        .replace("live_commands = []", 'live_commands = ["true"]', 1))
+
+    # -- fixture helpers ---------------------------------------------------
+
+    def _write_tx(self, operations, name="tx.json"):
+        path = self.tmp / name
+        path.write_text(json.dumps({"operations": operations}))
+        return path
+
+    def _events(self):
+        path = self.tmp / "handsoff-events.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def _kinds(self):
+        return [event["kind"] for event in self._events()]
+
+    def _snapshot(self):
+        return {name: (self.tmp / name).read_bytes() if (self.tmp / name).exists() else None
+                for name in self.STATE_FILES}
+
+    def _criteria(self):
+        return {c["id"]: c for c in self.read_acceptance()["criteria"]}
+
+    def _open(self, operations, *extra, by=None, name="tx.json"):
+        path = self._write_tx(operations, name=name)
+        return run(["amendment-open", "--file", str(path), "--by", by or self.ARCHITECT, *extra], cwd=self.tmp)
+
+    def _revise(self, operations, by=None):
+        path = self._write_tx(operations, name="tx-revise.json")
+        return run(["amendment-revise", "--file", str(path), "--by", by or self.ARCHITECT], cwd=self.tmp)
+
+    def _review(self, decision="--approve", by=None, summary="Scoped correction reviewed"):
+        return run(["amendment-review", "--by", by or self.REVIEWER, decision, "--summary", summary], cwd=self.tmp)
+
+    def _approve(self, by=None):
+        return run(["amendment-approve", "--by", by or self.PILOT], cwd=self.tmp)
+
+    def _ok(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def _update(self, cid, **fields):
+        return {"op": "update", "id": cid, "fields": fields}
+
+    def _phase_4_run(self, combined_last=False):
+        """A Phase-4 run with four criteria across two derived work items
+        (`[#101]` REQ-001/REQ-002, `[#102]` REQ-003/REQ-004), every
+        criterion evidenced and the original symptom resolved. With
+        `combined_last`, REQ-004 is `automated_and_browser` (both halves
+        evidenced) so a verification downgrade can be attempted."""
+        self.init("Close #101 and #102")
+        self._ok(run(["criterion-update", "REQ-001", "--requirement", "[#101] the primary outcome",
+                      "--test", "true"], cwd=self.tmp))
+        for cid, requirement in (("REQ-002", "[#101] REQ-002 builds on REQ-001"),
+                                 ("REQ-003", "[#102] the second item's outcome"),
+                                 ("REQ-004", "[#102] REQ-004 rounds out the second item")):
+            verification = "automated_and_browser" if combined_last and cid == "REQ-004" else "automated"
+            self._ok(run(["criterion-add", cid, "--type", "supporting", "--requirement", requirement,
+                          "--verification", verification, "--test", "true"], cwd=self.tmp))
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-101", "issue-102"])
+        self._ok(self.advance_to(4))
+        verified = self._ok(run(["verify", "--criterion", "REQ-001", "--criterion", "REQ-002", "--criterion", "REQ-003",
+                                 "--criterion", "REQ-004", "--by", "implementer-1"], cwd=self.tmp))
+        run_id = json.loads(verified.stdout)["criteria"]["REQ-001"]["run_id"]
+        self._ok(run(["record-symptom-resolved", "--evidence", run_id, "--by", "implementer-1"], cwd=self.tmp))
+        if combined_last:
+            self._ok(run(["record-evidence", "REQ-004", "--kind", "browser", "--by", "implementer-1",
+                          "--description", "Opened the page and saw the outcome"], cwd=self.tmp))
+        status = self.read_status()
+        self.assertEqual(status["phase_number"], 4)
+        self.assertTrue(all(c["state"] == "passing" for c in self._criteria().values()))
+        self.assertTrue(status["requirement_coverage"]["original_symptom_resolved"])
+        self.assertEqual(self._kinds().count("design_approved"), 1)
+        return status
+
+    # -- i42-scoped-amendment / i42-frozen-until-approved --------------------
+
+    def test_scoped_amendment_freezes_the_run_until_reviewed_and_approved(self):
+        before_status = self._phase_4_run()
+        before = self._criteria()
+        base_design = self.lib.design_hash(list(before.values()))
+        self.assertEqual(before_status["design_approved"]["design_hash"], base_design)
+
+        opened = self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 builds on REQ-001, revised")],
+                                     "--summary", "Tighten REQ-002 after the implementer's finding"))
+        self.assertIn("AMENDMENT_OPENED", opened.stdout)
+        status = self.read_status()
+        amendment = status["amendment"]
+        self.assertEqual(amendment["state"], "open")
+        self.assertEqual(amendment["classification"], "scoped")
+        self.assertEqual(amendment["classification_reasons"], [])
+        self.assertRegex(amendment["amendment_id"], r"^am-[0-9a-f]{32}$")
+        self.assertEqual(amendment["base_design_hash"], base_design)
+        self.assertEqual(amendment["changed_ids"], ["REQ-002"])
+        self.assertEqual(amendment["dependent_ids"], [])
+        self.assertEqual(amendment["affected_work_items"], ["issue-101"])
+        self.assertEqual(amendment["frozen_phase"], 4)
+        self.assertEqual(amendment["frozen_progress"], 40)
+        self.assertEqual(amendment["operations"], [{
+            "op": "update", "id": "REQ-002",
+            "previous_hash": self.lib.criterion_spec_hash(before["REQ-002"]),
+            "resulting_hash": self.lib.criterion_spec_hash(self._criteria()["REQ-002"]),
+        }])
+        self.assertEqual(amendment["amendment_hash"],
+                         self.lib.amendment_hash(base_design, amendment["operations"]))
+        after = self._criteria()
+        self.assertEqual(amendment["resulting_design_hash"], self.lib.design_hash(list(after.values())))
+        self.assertEqual(after["REQ-002"]["state"], "not_tested")
+        self.assertEqual(after["REQ-002"]["evidence"], [])
+        for cid in ("REQ-001", "REQ-003", "REQ-004"):
+            self.assertEqual(json.dumps(after[cid], sort_keys=True), json.dumps(before[cid], sort_keys=True), cid)
+            self.assertEqual(after[cid]["state"], "passing")
+        # Design decisions stay on file on their base hash; the run still validates.
+        self.assertEqual(status["design_approved"]["design_hash"], base_design)
+        self.assertEqual(status["design_review"]["design_hash"], base_design)
+        self.assertEqual(status["phase_number"], 4)
+        self.assertIsNone(status["review"])
+        self.assertEqual(self._kinds()[-1], "amendment_opened")
+        event = self._events()[-1]
+        self.assertEqual(event["classification"], "scoped")
+        self.assertEqual(event["changed_ids"], ["REQ-002"])
+        for forbidden in ("requirement", "tests", "fields"):
+            self.assertNotIn(forbidden, event)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+        # Frozen: forward, backward, review, deployment, live, and every mutation refused.
+        events_at_open = len(self._events())
+        frozen = self._snapshot()
+        advanced = run(["advance", "5", "50"], cwd=self.tmp)
+        self.assertEqual(advanced.returncode, 1, advanced.stdout)
+        self.assertIn(f"amendment gate: amendment {amendment['amendment_id']} is open", advanced.stdout)
+        self.assertEqual(run(["advance", "3", "40"], cwd=self.tmp).returncode, 1)
+        review = run(["record-review", "--by", "reviewer-1"], cwd=self.tmp)
+        self.assertEqual(review.returncode, 1, review.stdout)
+        self.assertIn("amendment gate", review.stdout)
+        gate = run(["deployment-gate", "--approve", "--by", self.PILOT], cwd=self.tmp)
+        self.assertEqual(gate.returncode, 1, gate.stdout)
+        self.assertIn("amendment gate", gate.stdout)
+        live = run(["verify-live", "--by", "supervisor-1"], cwd=self.tmp)
+        self.assertEqual(live.returncode, 1, live.stdout)
+        self.assertIn("amendment gate", live.stdout)
+        for args in (["criterion-update", "REQ-003", "--requirement", "[#102] changed underneath"],
+                     ["criterion-add", "REQ-009", "--type", "supporting", "--requirement", "[#102] more",
+                      "--verification", "automated", "--test", "true"],
+                     ["criterion-remove", "REQ-004"],
+                     ["criteria-apply", "--file", str(self._write_tx([{"op": "remove", "id": "REQ-004"}], "mut.json")),
+                      "--by", self.ARCHITECT]):
+            with self.subTest(command=args[0]):
+                refused = run(args, cwd=self.tmp)
+                self.assertEqual(refused.returncode, 1, refused.stdout)
+                self.assertIn(f"amendment gate: close or escalate amendment {amendment['amendment_id']}", refused.stdout)
+        self.assertEqual(self._snapshot(), frozen)
+
+        # The correction can still be evidenced while frozen.
+        verified = self._ok(run(["verify", "--criterion", "REQ-002", "--by", "implementer-1"], cwd=self.tmp))
+        self.assertTrue(json.loads(verified.stdout)["ok"])
+        self.assertEqual(self._criteria()["REQ-002"]["state"], "passing")
+        self.assertEqual(self.read_status()["amendment"]["amendment_id"], amendment["amendment_id"])
+
+        # Pilot approval before review is refused; review binds the hash; approval resumes.
+        early = self._approve()
+        self.assertEqual(early.returncode, 1, early.stdout)
+        self.assertIn("no review yet", early.stdout)
+        reviewed = self._ok(self._review())
+        self.assertIn("AMENDMENT_REVIEW_APPROVED", reviewed.stdout)
+        self.assertEqual(self.read_status()["amendment"]["review"]["amendment_hash"], amendment["amendment_hash"])
+        approved = self._ok(self._approve())
+        self.assertIn("AMENDMENT_APPROVED", approved.stdout)
+        status = self.read_status()
+        self.assertIsNone(status["amendment"])
+        self.assertEqual(len(status["amendments"]), 1)
+        closed = status["amendments"][0]
+        self.assertEqual(closed["state"], "approved")
+        self.assertIsNotNone(closed["closed_at"])
+        self.assertEqual(closed["pilot_approval"]["by"], self.PILOT)
+        self.assertEqual(closed["pilot_approval"]["amendment_hash"], amendment["amendment_hash"])
+        new_design = self.lib.design_hash(self.read_acceptance()["criteria"])
+        self.assertNotEqual(new_design, base_design)
+        self.assertEqual(status["design_approved"]["design_hash"], new_design)
+        self.assertEqual(status["design_review"]["design_hash"], new_design)
+        self.assertEqual(status["design_approved"]["amended_by"], [amendment["amendment_id"]])
+        self.assertEqual(status["design_review"]["amended_by"], [amendment["amendment_id"]])
+        self.assertEqual(status["design_approved"]["scope_hash"],
+                         self.lib.work_item_scope_hash(self.read_acceptance()["work_items"]))
+        self.assertEqual((status["phase_number"], status["progress"]), (4, 40))
+        kinds_since_open = self._kinds()[events_at_open:]
+        self.assertNotIn("phase_advanced", kinds_since_open)
+        self.assertEqual(kinds_since_open, ["checks_run", "amendment_reviewed", "amendment_approved"])
+        self.assertEqual(self._kinds().count("design_approved"), 1)
+        self._ok(run(["advance", "5", "50"], cwd=self.tmp))
+        self.assertEqual(self._kinds()[-1], "phase_advanced")
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+
+    # -- i42-full-redesign-escalation --------------------------------------
+
+    def test_full_redesign_deltas_refuse_to_open_and_the_ordinary_path_lands_phase_2(self):
+        self._phase_4_run(combined_last=True)
+        add = {"op": "add", "criterion": {"id": "REQ-009", "type": "supporting",
+                                          "requirement": "[#101] a brand new outcome",
+                                          "verification": "automated", "tests": ["true"]}}
+        cases = {
+            "add operation": ([add], "add operation is added scope"),
+            "primary_fix type change": ([self._update("REQ-001", type="supporting"),
+                                         self._update("REQ-002", type="primary_fix")],
+                                        "changes which criterion is the primary_fix"),
+            "automated_and_browser to automated": ([self._update("REQ-004", verification="automated")],
+                                                   "verification downgrade automated_and_browser -> automated"),
+            "automated to manual": ([self._update("REQ-003", verification="manual", tests=["walk through"])],
+                                    "verification downgrade automated -> manual"),
+            "cross-item change": ([self._update("REQ-002", requirement="[#101] REQ-002 revised"),
+                                   self._update("REQ-003", requirement="[#102] REQ-003 revised")],
+                                  "span more than one work item (issue-101, issue-102)"),
+        }
+        before = self._snapshot()
+        for label, (operations, reason) in cases.items():
+            with self.subTest(case=label):
+                refused = self._open(operations)
+                self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+                self.assertTrue(refused.stdout.startswith("AMENDMENT_REFUSED: full_redesign"), refused.stdout)
+                self.assertIn(reason, refused.stdout)
+                self.assertIn("criteria-apply", refused.stdout)
+                self.assertEqual(self._snapshot(), before)
+        forced = self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")], "--request-full-redesign")
+        self.assertEqual(forced.returncode, 1, forced.stdout)
+        self.assertIn("--request-full-redesign was passed", forced.stdout)
+        self.assertEqual(self._snapshot(), before)
+        self.assertIsNone(self.read_status()["amendment"])
+        self.assertNotIn("amendment_opened", self._kinds())
+
+        # The same transaction takes the ordinary path: design cleared, Phase 2.
+        applied = self._ok(run(["criteria-apply", "--file", str(self._write_tx(cases["add operation"][0])),
+                                "--by", self.ARCHITECT], cwd=self.tmp))
+        self.assertIn("CRITERIA_TRANSACTION_APPLIED", applied.stdout)
+        status = self.read_status()
+        self.assertEqual(status["phase_number"], 2)
+        self.assertIsNone(status["design_approved"])
+        self.assertIsNone(status["design_review"])
+        self.assertIn("REQ-009", self._criteria())
+
+    def test_escalate_takes_the_full_path_with_design_decisions_cleared(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")]))
+        amendment_id = self.read_status()["amendment"]["amendment_id"]
+        self._ok(self._review("--request-changes", summary="The revision needs a second criterion"))
+        # A revise that widens the delta into a second work item refuses and names escalation.
+        widened = self._revise([self._update("REQ-003", requirement="[#102] REQ-003 revised too")])
+        self.assertEqual(widened.returncode, 1, widened.stdout)
+        self.assertTrue(widened.stdout.startswith("AMENDMENT_REFUSED: full_redesign"), widened.stdout)
+        self.assertIn("amendment-escalate", widened.stdout)
+        self.assertEqual(self.read_status()["amendment"]["review"]["decision"], "changes_requested")
+        escalated = self._ok(run(["amendment-escalate", "--by", self.REVIEWER,
+                                  "--reason", "The correction spans both items"], cwd=self.tmp))
+        self.assertIn("AMENDMENT_ESCALATED", escalated.stdout)
+        status = self.read_status()
+        self.assertIsNone(status["amendment"])
+        self.assertEqual(status["amendments"][-1]["amendment_id"], amendment_id)
+        self.assertEqual(status["amendments"][-1]["state"], "escalated")
+        self.assertIsNotNone(status["amendments"][-1]["closed_at"])
+        self.assertEqual(status["phase_number"], 2)
+        self.assertEqual(status["phase"], self.lib.PHASES[2])
+        self.assertIsNone(status["design_approved"])
+        self.assertIsNone(status["design_review"])
+        self.assertEqual(self._kinds()[-1], "amendment_escalated")
+        self.assertNotIn("phase_advanced", self._kinds()[-4:])
+        # The amended registry stays; nothing waits on the closed amendment.
+        self.assertEqual(self._criteria()["REQ-002"]["requirement"], "[#101] REQ-002 revised")
+        self.assertEqual(run(["amendment-escalate", "--by", self.REVIEWER, "--reason", "again"], cwd=self.tmp).returncode, 1)
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    # -- i42-fail-closed -----------------------------------------------------
+
+    def test_identity_order_and_stale_hash_are_refused_without_writing(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")]))
+        before = self._snapshot()
+        for reviewer in (self.ARCHITECT, "test-architect", "ARCHITECT-1"):
+            with self.subTest(reviewer=reviewer):
+                refused = self._review(by=reviewer)
+                self.assertEqual(refused.returncode, 1, refused.stdout)
+                self.assertIn("no self-review", refused.stdout)
+                self.assertEqual(self._snapshot(), before)
+        early = self._approve()
+        self.assertEqual(early.returncode, 1, early.stdout)
+        self.assertIn("no review yet", early.stdout)
+        self.assertEqual(self._snapshot(), before)
+        self_approve = self._approve(by=self.ARCHITECT)
+        self.assertEqual(self_approve.returncode, 1, self_approve.stdout)
+        self.assertEqual(self._snapshot(), before)
+
+        self._ok(self._review())
+        # The registry moves between review and approval (an audited commit,
+        # so the ledger stays intact and only the amendment hash can catch it).
+        cfg = self.lib.load_config(self.tmp)
+        status, acceptance = self.read_status(), self.read_acceptance()
+        next(c for c in acceptance["criteria"] if c["id"] == "REQ-002")["requirement"] = "[#101] REQ-002 moved again"
+        with self.lib.project_lock(self.tmp):
+            self.lib.commit(self.tmp, cfg, status=status, acceptance=acceptance,
+                            event_kind="test_drift", event_message="registry moved after amendment review")
+        drifted = self._snapshot()
+        stale = self._approve()
+        self.assertEqual(stale.returncode, 1, stale.stdout)
+        self.assertTrue(stale.stdout.startswith("SHIP_FEATURE_BLOCKED\n"), stale.stdout)
+        self.assertIn("amendment hash", stale.stdout)
+        self.assertIn("REQ-002 no longer matches the reviewed amendment", stale.stdout)
+        self.assertEqual(self._snapshot(), drifted)
+        self.assertEqual(self.read_status()["amendment"]["state"], "open")
+        self.assertNotIn("amended_by", self.read_status()["design_approved"])
+
+    def test_restart_and_concurrent_mutation_stay_closed_while_verify_stays_open(self):
+        self._phase_4_run(combined_last=True)
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")]))
+        amendment_id = self.read_status()["amendment"]["amendment_id"]
+        # Every command is a fresh process: the record on disk is the only memory.
+        self.assertEqual(self.lib.open_amendment(self.read_status())["amendment_id"], amendment_id)
+        fresh = run(["advance", "5", "50"], cwd=self.tmp)
+        self.assertEqual(fresh.returncode, 1, fresh.stdout)
+        self.assertIn(f"amendment gate: amendment {amendment_id} is open", fresh.stdout)
+        lower = run(["advance", "3", "40"], cwd=self.tmp)
+        self.assertEqual(lower.returncode, 1, lower.stdout)
+        status_view = json.loads(run(["status"], cwd=self.tmp).stdout)
+        self.assertEqual(status_view["amendment"]["amendment_id"], amendment_id)
+        self.assertEqual(status_view["amendment"]["pending_decision"], "review")
+        self.assertEqual(status_view["errors"], [])
+        # A concurrent criterion mutation under the same lock is refused, verify is not.
+        before = self._snapshot()
+        mutation = run(["criterion-update", "REQ-001", "--requirement", "[#101] primary respecified"], cwd=self.tmp)
+        self.assertEqual(mutation.returncode, 1, mutation.stdout)
+        self.assertIn("amendment gate: close or escalate", mutation.stdout)
+        self.assertEqual(self._snapshot(), before)
+        self._ok(run(["verify", "--criterion", "REQ-002", "--by", "implementer-1"], cwd=self.tmp))
+        self.assertEqual(self.read_status()["amendment"]["amendment_id"], amendment_id)
+        self.assertEqual(self._criteria()["REQ-002"]["state"], "passing")
+        # record-evidence stays open too (a browser attestation on the combined criterion).
+        recorded = self._ok(run(["record-evidence", "REQ-004", "--kind", "browser", "--by", "implementer-1",
+                                 "--description", "Opened the page again while the amendment is open"], cwd=self.tmp))
+        self.assertIn("EVIDENCE_RECORDED", recorded.stdout)
+        self.assertEqual(self.read_status()["amendment"]["amendment_id"], amendment_id)
+        self.assertEqual(self._kinds()[-2:], ["checks_run", "evidence_recorded"])
+
+    def test_dependents_are_same_item_criteria_naming_a_changed_id(self):
+        self._phase_4_run()
+        acceptance = self.read_acceptance()
+        registry = acceptance["work_items"]
+        criteria = acceptance["criteria"]
+        # REQ-002 names REQ-001 in the same item; REQ-004 names nothing changed.
+        self.assertEqual(self.lib.amendment_dependent_ids(criteria, ["REQ-001"], registry), ["REQ-002"])
+        self.assertEqual(self.lib.amendment_dependent_ids(criteria, ["REQ-002"], registry), [])
+        # A same-text mention in the OTHER item is not a dependency, and a changed id is never its own dependent.
+        cross = [dict(c, requirement="[#102] mentions REQ-001 from afar") if c["id"] == "REQ-003" else c
+                 for c in criteria]
+        self.assertEqual(self.lib.amendment_dependent_ids(cross, ["REQ-001"], registry), ["REQ-002"])
+        self.assertEqual(self.lib.amendment_dependent_ids(criteria, ["REQ-001", "REQ-002"], registry), [])
+        # REQ-0011 is not REQ-001.
+        padded = [dict(c, requirement="[#101] see REQ-0011") if c["id"] == "REQ-002" else c for c in criteria]
+        self.assertEqual(self.lib.amendment_dependent_ids(padded, ["REQ-001"], registry), [])
+        opened = self._ok(self._open([self._update("REQ-001", requirement="[#101] the primary outcome, sharpened")]))
+        self.assertIn("AMENDMENT_OPENED", opened.stdout)
+        amendment = self.read_status()["amendment"]
+        self.assertEqual(amendment["dependent_ids"], ["REQ-002"])
+        self.assertEqual(self._criteria()["REQ-002"]["state"], "passing")
+        # A primary_fix respecification also unbinds the original-symptom evidence.
+        self.assertFalse(self.read_status()["requirement_coverage"]["original_symptom_resolved"])
+
+    def test_malformed_amendment_state_refuses_every_gate(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")]))
+        good = self.read_status()
+        self.assertEqual(self.lib.validate_status_schema(good), [])
+        record = good["amendment"]
+        cases = {
+            "closed record in the open slot": {"amendment": {**record, "state": "approved", "closed_at": record["opened_at"]}},
+            "bad id": {"amendment": {**record, "amendment_id": "am-nope"}},
+            "missing key": {"amendment": {k: v for k, v in record.items() if k != "frozen_phase"}},
+            "extra key": {"amendment": {**record, "note": "x"}},
+            "bad classification": {"amendment": {**record, "classification": "partial"}},
+            "bad review": {"amendment": {**record, "review": {"by": "r", "decision": "approved"}}},
+            "open record in history": {"amendments": [record]},
+            "seventeen closed": {"amendments": [{**record, "state": "escalated", "closed_at": record["opened_at"],
+                                                 "amendment_id": f"am-{index:032x}"} for index in range(17)]},
+            "bad amended_by": {"design_approved": {**good["design_approved"], "amended_by": ["x"]}},
+        }
+        for label, patch in cases.items():
+            with self.subTest(case=label):
+                errors = self.lib.validate_status_schema({**good, **patch})
+                self.assertTrue(errors, label)
+                self.assertTrue(all(e.startswith("status: ") for e in errors), errors)
+        self.assertEqual(self.lib.validate_status_schema({**good, "amendment": None, "amendments": []}), [])
+        legacy = {k: v for k, v in good.items() if k not in ("amendment", "amendments")}
+        self.assertEqual(self.lib.validate_status_schema(legacy), [])
+
+    # -- i42-multi-item-isolation --------------------------------------------
+
+    def test_two_items_amend_independently_with_one_design_approval(self):
+        self._phase_4_run()
+        before = self._criteria()
+        item_two_before = {cid: json.dumps(before[cid], sort_keys=True) for cid in ("REQ-003", "REQ-004")}
+        design_review_before = self.read_status()["design_review"]
+
+        # Amendment one: #101 only. Item two is untouched byte for byte.
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 builds on REQ-001, revised")]))
+        first = self.read_status()["amendment"]["amendment_id"]
+        self.assertEqual(self.read_status()["amendment"]["affected_work_items"], ["issue-101"])
+        after_open = self._criteria()
+        for cid, frozen in item_two_before.items():
+            self.assertEqual(json.dumps(after_open[cid], sort_keys=True), frozen)
+        view = json.loads(run(["status"], cwd=self.tmp).stdout)["amendment"]
+        self.assertEqual(view["retained_evidence_count"], 3)
+        self.assertEqual(view["changed_ids"], ["REQ-002"])
+        self._ok(run(["verify", "--criterion", "REQ-002", "--by", "implementer-1"], cwd=self.tmp))
+        self._ok(self._review())
+        self._ok(self._approve())
+
+        # Amendment two: #102 only, with a dependent named in the same item.
+        self._ok(self._open([self._update("REQ-004", requirement="[#102] REQ-004 rounds out the second item, revised")]))
+        second = self.read_status()["amendment"]
+        self.assertNotEqual(second["amendment_id"], first)
+        self.assertEqual(second["affected_work_items"], ["issue-102"])
+        self.assertEqual(second["changed_ids"], ["REQ-004"])
+        self.assertEqual(second["dependent_ids"], [])
+        item_one = self._criteria()
+        self.assertEqual(item_one["REQ-001"]["state"], "passing")
+        self.assertEqual(item_one["REQ-002"]["state"], "passing")
+        self.assertEqual(item_one["REQ-003"]["state"], "passing")
+        self._ok(run(["verify", "--criterion", "REQ-004", "--by", "implementer-1"], cwd=self.tmp))
+        self._ok(self._review())
+        self._ok(self._approve())
+
+        status = self.read_status()
+        self.assertIsNone(status["amendment"])
+        self.assertEqual([item["state"] for item in status["amendments"]], ["approved", "approved"])
+        self.assertEqual(status["design_approved"]["amended_by"], [first, second["amendment_id"]])
+        self.assertEqual(status["design_review"]["amended_by"], [first, second["amendment_id"]])
+        self.assertEqual(status["design_review"]["by"], design_review_before["by"])
+        self.assertEqual(status["design_approved"]["design_hash"], self.lib.design_hash(self.read_acceptance()["criteria"]))
+        kinds = self._kinds()
+        self.assertEqual(kinds.count("design_approved"), 1)
+        self.assertEqual(kinds.count("design_review_approved"), 1)
+        self.assertEqual(kinds.count("amendment_approved"), 2)
+        self.assertEqual(kinds.count("amendment_opened"), 2)
+        self.assertEqual(kinds.count("phase_advanced"), 3)
+        self.assertEqual(status["phase_number"], 4)
+        self.assertTrue(all(c["state"] == "passing" for c in self._criteria().values()))
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+        # A change the reviewer rejected never closes: approval is refused,
+        # and only a revision (re-reviewed) or an escalation can end it.
+        self._ok(self._open([self._update("REQ-003", requirement="[#102] the second item's outcome, weakened")]))
+        third = self.read_status()["amendment"]["amendment_id"]
+        self._ok(self._review("--request-changes", summary="Do not weaken the outcome"))
+        rejected = self._approve()
+        self.assertEqual(rejected.returncode, 1, rejected.stdout)
+        self.assertIn("requested changes", rejected.stdout)
+        self.assertEqual(self.read_status()["amendment"]["amendment_id"], third)
+        self.assertEqual(self.read_status()["amendment"]["state"], "open")
+        self.assertEqual(run(["advance", "5", "50"], cwd=self.tmp).returncode, 1)
+        # Revising clears the stale review; approval still needs a fresh one.
+        revised = self._ok(self._revise([self._update("REQ-003", requirement="[#102] the second item's outcome, sharpened")]))
+        self.assertIn("AMENDMENT_REVISED", revised.stdout)
+        reopened = self.read_status()["amendment"]
+        self.assertEqual(reopened["amendment_id"], third)
+        self.assertIsNone(reopened["review"])
+        self.assertEqual(len(reopened["operations"]), 2)
+        self.assertEqual(reopened["amendment_hash"],
+                         self.lib.amendment_hash(reopened["base_design_hash"], reopened["operations"]))
+        self.assertEqual(self._approve().returncode, 1)
+        self.assertEqual(len(self.read_status()["amendments"]), 2)
+        self.assertEqual(self._kinds().count("amendment_approved"), 2)
+
+    # -- i42-dashboard -------------------------------------------------------
+
+    def test_snapshot_and_banner_name_the_pending_amendment_decision(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")]))
+        snapshot = self.dashboard.build_snapshot(self.tmp)
+        amendment_id = self.read_status()["amendment"]["amendment_id"]
+        view = snapshot["amendment"]
+        self.assertEqual(view["amendment_id"], amendment_id)
+        self.assertEqual(view["changed_ids"], ["REQ-002"])
+        self.assertEqual(view["dependent_ids"], [])
+        self.assertEqual(view["affected_work_items"], ["issue-101"])
+        self.assertEqual(view["retained_evidence_count"], 3)
+        self.assertEqual(view["classification"], "scoped")
+        self.assertEqual(view["classification_reasons"], [])
+        self.assertEqual([d["decision"] for d in view["required_decisions"]], ["review", "pilot_approval"])
+        self.assertEqual([d["status"] for d in view["required_decisions"]], ["pending", "pending"])
+        self.assertEqual(view["pending_decision"], "review")
+        self.assertNotIn("requirement", json.dumps(view))
+        banner = snapshot["input_required"]
+        self.assertTrue(banner["required"])
+        self.assertEqual(banner["kind"], "amendment_review")
+        self.assertIn(amendment_id, banner["message"])
+        self.assertIn("amendment review", banner["message"])
+        self.assertEqual(snapshot["audit"]["gate_errors"], [])
+
+        self._ok(self._review())
+        snapshot = self.dashboard.build_snapshot(self.tmp)
+        self.assertEqual(snapshot["amendment"]["pending_decision"], "pilot_approval")
+        self.assertEqual(snapshot["amendment"]["required_decisions"][0]["status"], "approved")
+        self.assertEqual(snapshot["input_required"]["kind"], "amendment_approval")
+        self.assertIn("amendment-approve", snapshot["input_required"]["message"])
+        self._ok(self._approve())
+        snapshot = self.dashboard.build_snapshot(self.tmp)
+        self.assertIsNone(snapshot["amendment"])
+        self.assertFalse(snapshot["input_required"]["required"])
+
+    def test_broker_routes_the_lane_and_keeps_approval_human_only(self):
+        self._phase_4_run()
+        root_text = str(self.tmp.resolve())
+        base = {"actor": "supervisor", "project_root": root_text, "action": "workflow"}
+        argv = self.broker._workflow_argv(self.tmp.resolve(), {**base, "command": "amendment-open",
+                                                               "by": self.ARCHITECT, "file": "tx.json",
+                                                               "summary": "s", "request_full_redesign": False})
+        self.assertEqual(argv[argv.index("amendment-open"):],
+                         ["amendment-open", "--file", "tx.json", "--by", self.ARCHITECT, "--summary", "s"])
+        argv = self.broker._workflow_argv(self.tmp.resolve(), {**base, "command": "amendment-open",
+                                                               "by": self.ARCHITECT, "file": "tx.json",
+                                                               "request_full_redesign": True})
+        self.assertEqual(argv[-1], "--request-full-redesign")
+        argv = self.broker._workflow_argv(self.tmp.resolve(), {**base, "command": "amendment-review",
+                                                               "by": self.REVIEWER, "decision": "request-changes",
+                                                               "summary": "needs work"})
+        self.assertEqual(argv[argv.index("amendment-review"):],
+                         ["amendment-review", "--by", self.REVIEWER, "--request-changes", "--summary", "needs work"])
+        argv = self.broker._workflow_argv(self.tmp.resolve(), {**base, "command": "amendment-revise",
+                                                               "by": self.ARCHITECT, "file": "tx2.json"})
+        self.assertEqual(argv[-4:], ["--file", "tx2.json", "--by", self.ARCHITECT])
+        argv = self.broker._workflow_argv(self.tmp.resolve(), {**base, "command": "amendment-escalate",
+                                                               "by": self.REVIEWER, "reason": "too wide"})
+        self.assertEqual(argv[-4:], ["--by", self.REVIEWER, "--reason", "too wide"])
+        self.assertIn("amendment-approve", self.broker.HUMAN_ONLY_COMMANDS)
+        with self.assertRaisesRegex(self.lib.HandsoffError, "human-only command: amendment-approve"):
+            self.broker._workflow_argv(self.tmp.resolve(), {**base, "command": "amendment-approve", "by": self.PILOT})
+        for request in (
+            {**base, "command": "amendment-open", "by": self.ARCHITECT},
+            {**base, "command": "amendment-open", "by": self.ARCHITECT, "file": "tx.json", "request_full_redesign": "yes"},
+            {**base, "command": "amendment-review", "by": self.REVIEWER, "decision": "reject", "summary": "x"},
+            {**base, "command": "amendment-revise", "by": self.ARCHITECT, "file": "tx.json", "summary": "x"},
+            {**base, "command": "amendment-escalate", "by": self.REVIEWER},
+        ):
+            with self.subTest(request=request):
+                with self.assertRaises(self.lib.HandsoffError):
+                    self.broker._workflow_argv(self.tmp.resolve(), request)
+
+    def test_lane_refuses_before_design_approval(self):
+        self.init("Close #101 and #102")
+        self._ok(run(["criterion-update", "REQ-001", "--requirement", "[#101] the primary outcome",
+                      "--test", "true"], cwd=self.tmp))
+        before = self._snapshot()
+        early = self._open([self._update("REQ-001", requirement="[#101] the primary outcome, revised")])
+        self.assertEqual(early.returncode, 1, early.stdout)
+        self.assertIn("Phase 3 or later", early.stdout)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_only_one_amendment_is_open_at_a_time(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")]))
+        before = self._snapshot()
+        second = self._open([self._update("REQ-001", requirement="[#101] the primary outcome, revised")], name="tx2.json")
+        self.assertEqual(second.returncode, 1, second.stdout)
+        self.assertIn("is already open", second.stdout)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_readme_documents_the_lane(self):
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("(#42)", readme)
+        self.assertIn("### Amendment lane", readme)
+        section = readme[readme.index("### Amendment lane"):readme.index("## Work items and the per-item")]
+        for name in ("amendment-open", "amendment-review", "amendment-approve", "amendment-escalate",
+                     "amendment-revise", "full_redesign", "amendment_opened", "amendment_approved"):
+            self.assertIn(name, section)
+        self.assertNotIn("\u2014", section)
 
 
 class TestArchitectDesignReview(HandsoffTestCase):
@@ -8687,6 +10391,758 @@ class TestAgentReplacement(HandsoffTestCase):
         self.assertEqual({key: status_after.get(key) for key in governed},
                          {key: status_before.get(key) for key in governed})
         self.assertEqual((self.tmp / "handsoff-acceptance.json").read_bytes(), acceptance_before)
+
+
+class TestVerificationCache(HandsoffTestCase):
+    """Issue #43: `verify` binds every launched command to the exact state
+    it proves something about (command, repository digest including dirty
+    state, verification_config_hash, the specs of the criteria verified
+    with it) and reuses an eligible executed, passing record of the same
+    binding within the run instead of launching again. Criteria
+    i43-batch-once, i43-cache-hit-and-invalidation,
+    i43-never-reuse-failures-live-regression, i43-concurrency-and-fixture."""
+
+    COUNTER = "\n".join([
+        "import pathlib, sys, time",
+        "log = pathlib.Path(sys.argv[1])",
+        "code = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+        "delay = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0",
+        "chars = int(sys.argv[4]) if len(sys.argv) > 4 else 0",
+        "with log.open('a') as fh:",
+        "    fh.write('launch\\n')",
+        "if delay:",
+        "    time.sleep(delay)",
+        "if chars:",
+        "    sys.stdout.write('x' * chars)",
+        "sys.exit(code)",
+        "",
+    ])
+
+    def setUp(self):
+        super().setUp()
+        # AC8: every archive write this class could trigger lands in a
+        # temp dir, and the real Documents archive is counted before and
+        # after so an accidental write there would fail the test.
+        self.archive_dir = Path(tempfile.mkdtemp(prefix="handsoff-archive-cache-"))
+        self._old_env = os.environ.get("HANDSOFF_ARCHIVE_DIR")
+        os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
+        self.documents_archive = Path.home() / "Documents" / "Handsoff-Archive"
+        self.documents_count_before = self._documents_archive_count()
+        # The launch log lives OUTSIDE the project root: a file written into
+        # the root would itself change the repository digest and hide what
+        # the cache is being tested for.
+        self.counter_dir = Path(tempfile.mkdtemp(prefix="handsoff-launches-"))
+        (self.tmp / "tests").mkdir()
+        (self.tmp / "tests" / "count.py").write_text(self.COUNTER)
+        (self.tmp / "src").mkdir()
+        (self.tmp / "src" / "app.py").write_text("VERSION = 1\n")
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib
+        import handsoff_supervisor
+        self.lib = handsoff_lib
+        self.supervisor = handsoff_supervisor
+
+    def tearDown(self):
+        self.assertEqual(self._documents_archive_count(), self.documents_count_before,
+                         "the real ~/Documents/Handsoff-Archive must never be written by a test")
+        if self._old_env is None:
+            os.environ.pop("HANDSOFF_ARCHIVE_DIR", None)
+        else:
+            os.environ["HANDSOFF_ARCHIVE_DIR"] = self._old_env
+        shutil.rmtree(self.archive_dir, ignore_errors=True)
+        shutil.rmtree(self.counter_dir, ignore_errors=True)
+        super().tearDown()
+
+    # -- fixture helpers ---------------------------------------------------
+
+    def _documents_archive_count(self):
+        if not self.documents_archive.exists():
+            return 0
+        return sum(1 for _ in self.documents_archive.iterdir())
+
+    def _command(self, name, exit_code=0, delay=0, chars=0):
+        parts = ["python3", "tests/count.py", str(self.counter_dir / f"{name}.log")]
+        if exit_code or delay or chars:
+            parts.append(str(exit_code))
+        if delay or chars:
+            parts.append(str(delay))
+        if chars:
+            parts.append(str(chars))
+        return " ".join(parts)
+
+    def _launches(self, name):
+        log = self.counter_dir / f"{name}.log"
+        return log.read_text().count("launch") if log.exists() else 0
+
+    def _configure(self, commands, extra_toml="", timeout=None):
+        toml = self.tmp / "handsoff.toml"
+        text = toml.read_text().replace("commands = []", f"commands = {json.dumps(list(commands))}", 1)
+        if timeout is not None:
+            text = text.replace("timeout_seconds = 600", f"timeout_seconds = {timeout}", 1)
+        toml.write_text(text + extra_toml)
+
+    def _git_init(self):
+        shutil.copy(ROOT / ".gitignore", self.tmp / ".gitignore")
+        for args in (["git", "init", "-q"],
+                     ["git", "config", "user.email", "test@example.com"],
+                     ["git", "config", "user.name", "Cache Test"],
+                     ["git", "add", "."],
+                     ["git", "commit", "-qm", "fixture"]):
+            subprocess.run(args, cwd=self.tmp, check=True, capture_output=True)
+
+    def _add(self, cid, test, verification="automated"):
+        added = run(["criterion-add", cid, "--type", "supporting",
+                     "--requirement", f"#43 fixture outcome {cid}",
+                     "--verification", verification, "--test", test], cwd=self.tmp)
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+
+    def _bind_first(self, test):
+        bound = run(["criterion-update", "REQ-001", "--test", test], cwd=self.tmp)
+        self.assertEqual(bound.returncode, 0, bound.stdout + bound.stderr)
+
+    def _verify(self, *criteria, by="runner", expect=0, extra=()):
+        args = ["verify"]
+        for cid in criteria:
+            args += ["--criterion", cid]
+        args += ["--by", by, *extra]
+        result = run(args, cwd=self.tmp)
+        self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def _records(self):
+        records, problems = self.lib.load_verifications(self.tmp, self.lib.load_config(self.tmp))
+        self.assertEqual(problems, [])
+        return records
+
+    def _last_event(self, kind):
+        events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()
+                  if line.strip()]
+        return next(event for event in reversed(events) if event.get("kind") == kind)
+
+    # -- i43-batch-once ----------------------------------------------------
+
+    def test_five_criteria_naming_one_command_launch_it_once(self):
+        command = self._command("a")
+        self._configure([command])
+        self.init("Cache fixture")
+        self._bind_first(command)
+        ids = ["REQ-001"]
+        for n in range(2, 6):
+            self._add(f"REQ-00{n}", command)
+            ids.append(f"REQ-00{n}")
+        payload = self._verify(*ids)
+        self.assertEqual(self._launches("a"), 1)
+        self.assertEqual(payload["launched"], [command])
+        self.assertEqual(payload["reused"], {})
+        self.assertEqual(len(payload["criteria"]), 5)
+        records = [r for r in self._records() if r["kind"] == "checks"]
+        self.assertEqual(len(records), 5)
+        self.assertEqual({r["criteria"][0] for r in records}, set(ids))
+        for record in records:
+            self.assertTrue(record["ok"])
+            self.assertIs(record["executed"], True)
+            self.assertIsNone(record["reused_from"])
+            self.assertEqual(set(record["binding"]), {command})
+            self.assertRegex(record["binding"][command], r"^[0-9a-f]{64}$")
+            self.assertRegex(record["feature_hash"], r"^[0-9a-f]{64}$")
+            self.assertEqual([r["command"] for r in record["results"]], [command])
+            self.assertIs(record["results"][0]["timed_out"], False)
+            self.assertIs(record["results"][0]["truncated"], False)
+            self.assertNotIn("output_tail", record["results"][0])
+        self.assertEqual({c["state"] for c in self.read_acceptance()["criteria"]}, {"passing"})
+        event = self._last_event("checks_run")
+        self.assertEqual((event["launched_count"], event["reused_count"]), (1, 0))
+        for cid in ids:
+            self.assertIs(event["criteria"][cid]["executed"], True)
+
+    # -- i43-cache-hit-and-invalidation ------------------------------------
+
+    def test_second_verify_against_unchanged_state_launches_nothing(self):
+        command = self._command("a")
+        self._configure([command])
+        self.init("Cache fixture")
+        self._bind_first(command)
+        self._add("REQ-002", command)
+        first = self._verify("REQ-001", "REQ-002")
+        original = first["criteria"]["REQ-001"]["run_id"]
+        second = self._verify("REQ-001", "REQ-002")
+        self.assertEqual(self._launches("a"), 1)
+        self.assertEqual(second["launched"], [])
+        self.assertEqual(set(second["reused"]), {command})
+        self.assertIn(second["reused"][command], {original, first["criteria"]["REQ-002"]["run_id"]})
+        for cid in ("REQ-001", "REQ-002"):
+            self.assertIs(second["criteria"][cid]["executed"], False)
+            self.assertEqual(second["criteria"][cid]["reused_from"], second["reused"][command])
+        records = self._records()
+        reused = [r for r in records if r.get("executed") is False]
+        self.assertEqual(len(reused), 2)
+        source = next(r for r in records if r["run_id"] == second["reused"][command])
+        for record in reused:
+            self.assertEqual(record["reused_from"], source["run_id"])
+            self.assertEqual(record["binding"], source["binding"])
+            self.assertEqual(
+                [{k: v for k, v in r.items() if k != "reused_from"} for r in record["results"]],
+                source["results"])
+            self.assertEqual(record["results"][0]["reused_from"], source["run_id"])
+        event = self._last_event("checks_run")
+        self.assertEqual((event["launched_count"], event["reused_count"]), (0, 1))
+        self.assertEqual({c["state"] for c in self.read_acceptance()["criteria"]}, {"passing"})
+        # --no-cache launches again even though an eligible record exists.
+        forced = self._verify("REQ-001", "REQ-002", extra=("--no-cache",))
+        self.assertEqual(self._launches("a"), 2)
+        self.assertEqual(forced["launched"], [command])
+        self.assertIs(forced["criteria"]["REQ-001"]["executed"], True)
+
+    def test_each_bound_input_change_causes_a_fresh_launch(self):
+        command = self._command("a")
+        self._configure([command])
+        self._git_init()
+        self.init("Cache fixture")
+        self._bind_first(command)
+        self._verify("REQ-001")
+        self.assertEqual(self._launches("a"), 1)
+        expected = 1
+
+        def expect_launch(label, expected):
+            payload = self._verify("REQ-001")
+            self.assertEqual(self._launches("a"), expected, f"{label}: expected a fresh launch")
+            self.assertEqual(payload["launched"], [command], label)
+            self.assertIs(payload["criteria"]["REQ-001"]["executed"], True, label)
+            # The new state is now cached: an immediate repeat reuses it.
+            repeat = self._verify("REQ-001")
+            self.assertEqual(self._launches("a"), expected, f"{label}: repeat must reuse")
+            self.assertIs(repeat["criteria"]["REQ-001"]["executed"], False, label)
+
+        with self.subTest(change="editing a tracked file"):
+            (self.tmp / "src" / "app.py").write_text("VERSION = 2\n")
+            expected += 1
+            expect_launch("tracked edit", expected)
+        with self.subTest(change="creating an untracked file"):
+            (self.tmp / "src" / "new_module.py").write_text("NEW = True\n")
+            expected += 1
+            expect_launch("untracked file", expected)
+        with self.subTest(change="changing the command list in toml"):
+            toml = self.tmp / "handsoff.toml"
+            toml.write_text(toml.read_text().replace(
+                f"commands = {json.dumps([command])}", f"commands = {json.dumps([command, self._command('b')])}", 1))
+            expected += 1
+            expect_launch("command list", expected)
+        with self.subTest(change="changing a governance config value"):
+            toml = self.tmp / "handsoff.toml"
+            text = toml.read_text()
+            self.assertIn("max_review_rounds = ", text)
+            toml.write_text(re.sub(r"^max_review_rounds = \d+$", "max_review_rounds = 9", text, count=1, flags=re.M))
+            expected += 1
+            expect_launch("governance value", expected)
+        with self.subTest(change="criterion-update of the bound criterion"):
+            changed = run(["criterion-update", "REQ-001", "--requirement", "#43 the bound claim, revised"],
+                          cwd=self.tmp)
+            self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+            expected += 1
+            expect_launch("criterion spec", expected)
+
+    def test_digest_and_config_hash_bind_exactly_what_the_design_names(self):
+        command = self._command("a")
+        self._configure([command])
+        self.init("Cache fixture")
+        cfg = self.lib.load_config(self.tmp)
+        # Non-git root: Handsoff's own generated files never churn the digest.
+        before = self.lib.repository_digest(self.tmp, cfg)
+        self._bind_first(command)
+        self._verify("REQ-001")
+        self.assertEqual(self.lib.repository_digest(self.tmp, cfg), before,
+                         "evidence writes and the in-flight lock directory must not change the digest")
+        (self.tmp / "src" / "app.py").write_text("VERSION = 2\n")
+        self.assertNotEqual(self.lib.repository_digest(self.tmp, cfg), before)
+        # verification_config_hash: governance keys, check commands, the
+        # timeout, and regression groups are bound; agent/model/paths not.
+        base = self.lib.verification_config_hash(cfg)
+        self.assertNotEqual(base, self.lib.config_hash(cfg))
+        for key, value in (("check_commands", cfg["check_commands"] + ["true"]),
+                           ("check_timeout_seconds", cfg["check_timeout_seconds"] + 1),
+                           ("regressions", [{"name": "full", "commands": ["python3 tests/test_everything.py"]}]),
+                           ("max_review_rounds", cfg["max_review_rounds"] + 1)):
+            with self.subTest(bound=key):
+                self.assertNotEqual(self.lib.verification_config_hash({**cfg, key: value}), base)
+        for key, value in (("agents", {"implementer": "codex"}), ("models", {"implementer": "x"}),
+                           ("status_file", "elsewhere.json"), ("live_check_commands", ["true"]),
+                           ("recovery", {"enabled": False}), ("tickets", [{"number": 1}])):
+            with self.subTest(unbound=key):
+                self.assertEqual(self.lib.verification_config_hash({**cfg, key: value}), base)
+        binding = self.lib.verification_binding(command, "r", "c", ["h2", "h1"])
+        self.assertEqual(binding, self.lib.verification_binding(command, "r", "c", ["h1", "h2"]))
+        self.assertNotEqual(binding, self.lib.verification_binding(command, "r", "c", ["h1"]))
+        self.assertNotEqual(binding, self.lib.verification_binding(command + " ", "r", "c", ["h1", "h2"]))
+        status = self.read_status()
+        events = self.lib.read_events(self.tmp, cfg)
+        self.assertEqual(self.lib.feature_hash(status, events),
+                         hashlib.sha256((status["feature"] + events[0]["at"]).encode()).hexdigest())
+
+    # -- i43-never-reuse-failures-live-regression ----------------------------
+
+    def test_failed_timed_out_and_truncated_results_are_never_reused(self):
+        failing = self._command("f", exit_code=1)
+        hanging = self._command("t", delay=5)
+        chatty = self._command("c", chars=self.lib.CHECK_OUTPUT_TAIL_CHARS + 1)
+        self._configure([failing, hanging, chatty], timeout=1)
+        self.init("Cache fixture")
+        self._bind_first(failing)
+        self._add("REQ-002", hanging)
+        self._add("REQ-003", chatty)
+        first = self._verify("REQ-001", expect=1)
+        self.assertFalse(first["criteria"]["REQ-001"]["ok"])
+        second = self._verify("REQ-001", expect=1)
+        self.assertEqual(self._launches("f"), 2, "a failed record is never reused")
+        self.assertEqual(second["launched"], [failing])
+        (self.tmp / "src" / "app.py").write_text("VERSION = 2\n")
+        self._verify("REQ-001", expect=1)
+        self.assertEqual(self._launches("f"), 3)
+        timed = self._verify("REQ-002", expect=1)
+        self.assertEqual(timed["results"][0]["exit_code"], 124)
+        self.assertIs(timed["results"][0]["timed_out"], True)
+        self._verify("REQ-002", expect=1)
+        self.assertEqual(self._launches("t"), 2, "a timed-out (124) record is never reused")
+        big = self._verify("REQ-003")
+        self.assertIs(big["results"][0]["truncated"], True)
+        self.assertEqual(big["results"][0]["exit_code"], 0)
+        self._verify("REQ-003")
+        self.assertEqual(self._launches("c"), 2, "a truncated record is never reused even when it passed")
+        records = self._records()
+        self.assertTrue(all(r["executed"] is True for r in records if r["kind"] == "checks"))
+        run_hash = records[-1]["feature_hash"]
+        for record in records:
+            for command in record["binding"]:
+                self.assertIsNone(self.lib.reusable_check_record(records, command, record["binding"][command], run_hash))
+
+    def test_reused_and_legacy_records_are_never_reuse_sources(self):
+        command = self._command("a")
+        self._configure([command])
+        self.init("Cache fixture")
+        self._bind_first(command)
+        self._verify("REQ-001")
+        self._verify("REQ-001")
+        records = self._records()
+        executed, reused = records[-2], records[-1]
+        self.assertIs(reused["executed"], False)
+        binding = executed["binding"][command]
+        run_hash = executed["feature_hash"]
+        self.assertEqual(self.lib.reusable_check_record(records, command, binding, run_hash)["run_id"], executed["run_id"])
+        self.assertIsNone(self.lib.reusable_check_record([reused], command, binding, run_hash))
+        self.assertIsNone(self.lib.reusable_check_record(records, command, binding, "another-run"))
+        self.assertIsNone(self.lib.reusable_check_record(records, command, "other-binding", run_hash))
+        # A record from before #43 carries none of the four fields: it must
+        # load cleanly, count as evidence, and never be a reuse source.
+        legacy = {k: v for k, v in executed.items()
+                  if k not in {"binding", "executed", "reused_from", "feature_hash", "hash", "prev_hash"}}
+        legacy["run_id"] = "vr-" + "0" * 32
+        legacy["prev_hash"] = records[-1]["hash"]
+        legacy["hash"] = hashlib.sha256(
+            (self.lib._canonical(legacy) + legacy["prev_hash"]).encode("utf-8")).hexdigest()
+        ledger = self.tmp / "handsoff-verifications.jsonl"
+        ledger.write_text(ledger.read_text() + self.lib._canonical(legacy) + "\n")
+        loaded, problems = self.lib.load_verifications(self.tmp, self.lib.load_config(self.tmp))
+        self.assertEqual(problems, [])
+        self.assertEqual(loaded[-1]["run_id"], legacy["run_id"])
+        self.assertIsNone(self.lib.reusable_check_record([loaded[-1]], command, binding, run_hash))
+        # And a hand-edited "executed" or a source on an executed record is refused.
+        tampered = dict(legacy, run_id="vr-" + "1" * 32, executed="yes", prev_hash=legacy["hash"])
+        tampered["hash"] = hashlib.sha256(
+            (self.lib._canonical(tampered) + tampered["prev_hash"]).encode("utf-8")).hexdigest()
+        ledger.write_text(ledger.read_text() + self.lib._canonical(tampered) + "\n")
+        _, problems = self.lib.load_verifications(self.tmp, self.lib.load_config(self.tmp))
+        self.assertTrue(any("'executed' must be a boolean" in p for p in problems), problems)
+
+    def test_verify_live_launches_every_time(self):
+        command = self._command("a")
+        live = self._command("live")
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("deployment_requires_explicit_approval = true",
+                                                 "deployment_requires_explicit_approval = false")
+                        .replace("live_commands = []", f"live_commands = {json.dumps([live])}", 1))
+        self._configure([command])
+        self.init("Cache fixture")
+        self._bind_first(command)
+        first = self._verify("REQ-001")
+        symptom = run(["record-symptom-resolved", "--evidence", first["criteria"]["REQ-001"]["run_id"],
+                       "--by", "runner"], cwd=self.tmp)
+        self.assertEqual(symptom.returncode, 0, symptom.stdout + symptom.stderr)
+        reached = self.advance_to(7, implemented_by="impl", reviewed_by="reviewer")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        for attempt in (1, 2):
+            result = run(["verify-live", "--by", "monitor"], cwd=self.tmp)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self._launches("live"), attempt, "the live check launches every time")
+            payload = json.loads(result.stdout)
+            self.assertNotIn("reused", payload)
+        live_records = [r for r in self._records() if r["kind"] == "live"]
+        self.assertEqual(len(live_records), 2)
+        self.assertTrue(all(r["executed"] is True and r["reused_from"] is None for r in live_records))
+
+    def test_cached_targeted_record_cannot_satisfy_a_regression_group(self):
+        command = self._command("a")
+        self._configure([command], extra_toml=(
+            '\n[[regressions]]\nname = "python-full"\ncommands = ["python3 tests/test_everything.py"]\n'))
+        self._git_init()
+        self.init("Cache fixture")
+        self._bind_first(command)
+        self._verify("REQ-001")
+        self._verify("REQ-001")
+        self.assertEqual(self._launches("a"), 1)
+        ledger_before = (self.tmp / "handsoff-verifications.jsonl").read_bytes()
+        requested = run(["regression-request", "--group", "python-full", "--by", "codex-supervisor"], cwd=self.tmp)
+        self.assertEqual(requested.returncode, 0, requested.stdout + requested.stderr)
+        item = self.read_status()["regression_requests"][-1]
+        accepted = run(["regression-decide", "--request-id", item["request_id"], "--accept",
+                        "--by", "Mission-Control-Pilot"], cwd=self.tmp)
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        args = __import__("argparse").Namespace(root=str(self.tmp), request_id=item["request_id"], by="runner")
+        launched = [{"command": item["commands"][0], "exit_code": 0, "output_sha256": "0" * 64,
+                     "duration_s": 0.01, "timed_out": False, "truncated": False, "output_bytes": 2,
+                     "output_tail": "ok"}]
+        with mock.patch.object(self.lib, "run_checks", return_value=launched) as runner, \
+                __import__("contextlib").redirect_stdout(io.StringIO()):
+            self.assertEqual(self.supervisor.cmd_regression_run(args), 0)
+        runner.assert_called_once_with(self.lib.load_config(self.tmp), self.tmp.resolve(),
+                                       commands=item["commands"], allow_regression=True)
+        final = self.read_status()["regression_requests"][-1]
+        self.assertEqual(final["state"], "completed")
+        self.assertNotIn("output_tail", final["results"][0])
+        self.assertEqual((self.tmp / "handsoff-verifications.jsonl").read_bytes(), ledger_before,
+                         "regression-run neither reads nor writes the targeted verification cache")
+        # The regression command itself can never be a targeted check.
+        with self.assertRaisesRegex(self.lib.HandsoffError, "full regression blocked"):
+            self.lib.run_checks(self.lib.load_config(self.tmp), self.tmp, commands=["python3 tests/test_everything.py"])
+
+    # -- i43-concurrency-and-fixture ---------------------------------------
+
+    def test_two_concurrent_verifies_of_one_binding_launch_once(self):
+        command = self._command("a", delay=1.5)
+        self._configure([command])
+        self.init("Cache fixture")
+        self._bind_first(command)
+        outcomes = {}
+
+        def worker(actor):
+            outcomes[actor] = run(["verify", "--criterion", "REQ-001", "--by", actor], cwd=self.tmp)
+
+        threads = [threading.Thread(target=worker, args=(actor,)) for actor in ("runner-1", "runner-2")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        for actor, result in outcomes.items():
+            self.assertEqual(result.returncode, 0, f"{actor}: {result.stdout}{result.stderr}")
+        self.assertEqual(self._launches("a"), 1)
+        payloads = {actor: json.loads(result.stdout) for actor, result in outcomes.items()}
+        executed = [p for p in payloads.values() if p["criteria"]["REQ-001"]["executed"] is True]
+        reused = [p for p in payloads.values() if p["criteria"]["REQ-001"]["executed"] is False]
+        self.assertEqual((len(executed), len(reused)), (1, 1))
+        original = executed[0]["criteria"]["REQ-001"]["run_id"]
+        self.assertEqual(reused[0]["criteria"]["REQ-001"]["reused_from"], original)
+        self.assertEqual(reused[0]["reused"], {command: original})
+        records = [r for r in self._records() if r["kind"] == "checks"]
+        self.assertEqual(len(records), 2)
+        self.assertEqual({r["reused_from"] for r in records}, {None, original})
+        self.assertTrue((self.tmp / self.lib.VERIFY_INFLIGHT_DIR).is_dir())
+        self.assertTrue(self.lib.verify_inflight_lock_path(self.tmp, records[0]["binding"][command]).exists())
+
+    def test_ten_criteria_over_three_commands_verified_twice_launch_three_times(self):
+        commands = [self._command(name) for name in ("a", "b", "c")]
+        self._configure(commands)
+        self.init("Cache fixture")
+        self._bind_first(commands[0])
+        ids = ["REQ-001"]
+        for n in range(2, 11):
+            cid = f"REQ-{n:03d}"
+            self._add(cid, commands[n % 3])
+            ids.append(cid)
+        self._add("REQ-011", "walk through the fixture", verification="manual")
+        first = self._verify(*ids)
+        self.assertEqual(first["launched"], commands)
+        self.assertEqual(sum(self._launches(name) for name in ("a", "b", "c")), 3)
+        # An unrelated evidence write in between: it appends to the ledger
+        # and changes acceptance state but not the bound state.
+        attested = run(["record-evidence", "REQ-011", "--kind", "manual", "--by", "tester",
+                        "--description", "Walked through the fixture"], cwd=self.tmp)
+        self.assertEqual(attested.returncode, 0, attested.stdout + attested.stderr)
+        second = self._verify(*ids)
+        total = sum(self._launches(name) for name in ("a", "b", "c"))
+        self.assertEqual(total, 3, "the second verify must launch nothing")
+        naive = 2 * len(commands)
+        self.assertLessEqual(total, naive * 0.6, "at least 40 percent fewer launches than one per command per verify")
+        self.assertEqual(second["launched"], [])
+        self.assertEqual(set(second["reused"]), set(commands))
+        self.assertEqual({cid: v["ok"] for cid, v in first["criteria"].items()},
+                         {cid: v["ok"] for cid, v in second["criteria"].items()})
+        self.assertTrue(all(v["executed"] is False for v in second["criteria"].values()))
+        self.assertEqual({c["state"] for c in self.read_acceptance()["criteria"]}, {"passing"})
+        event = self._last_event("checks_run")
+        self.assertEqual((event["launched_count"], event["reused_count"]), (0, 3))
+        # Mission Control's snapshot carries executed/reused_from per entry.
+        import handsoff_dashboard as dashboard
+        snapshot = dashboard.build_snapshot(self.tmp)
+        states = {entry["executed"] for entry in snapshot["verifications"]}
+        self.assertIn(False, states)
+        self.assertTrue(all("reused_from" in entry for entry in snapshot["verifications"]))
+
+    def test_archive_dir_is_the_temp_dir_and_documents_archive_untouched(self):
+        self.assertEqual(self.lib.archive_dir(), self.archive_dir)
+        self.init("Cache fixture")
+        cfg = self.lib.load_config(self.tmp)
+        status, acceptance = self.read_status(), self.read_acceptance()
+        written = self.lib.archive_run(self.tmp, cfg, status, acceptance, [], self.lib.read_events(self.tmp, cfg))
+        self.assertEqual(written.parent, self.archive_dir)
+        self.assertEqual(sum(1 for _ in self.archive_dir.iterdir()), 1)
+        self.assertEqual(self._documents_archive_count(), self.documents_count_before)
+
+
+class TestBenchmarkHarness(HandsoffTestCase):
+    """Issue #45: `tools/benchmark_design_phase.py --stub` drives the
+    baseline and tranche arms against a fixture revision with a
+    deterministic stub adapter and writes run.json per arm plus
+    summary.json (medians, percent deltas, seeded-defect retention, the
+    commands used, mode "stub"), and no real adapter is ever invoked.
+    Criterion i45-harness-stub-run; the report (i45-report-and-method) and
+    the live measurement (i45-live-measurement) are manual."""
+
+    HARNESS = ROOT / "tools" / "benchmark_design_phase.py"
+    TRAP = "#!/bin/sh\necho REAL_ADAPTER_INVOKED >> \"$HANDSOFF_TEST_TRAP_LOG\"\nexit 1\n"
+
+    def setUp(self):
+        super().setUp()
+        self.archive_dir = Path(tempfile.mkdtemp(prefix="handsoff-archive-bench-"))
+        self._old_env = os.environ.get("HANDSOFF_ARCHIVE_DIR")
+        os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
+        self.documents_archive = Path.home() / "Documents" / "Handsoff-Archive"
+        self.documents_count_before = self._documents_archive_count()
+        # A fixture repository of its own: prompts, one source file for the
+        # design evidence to measure, one commit. The harness runs THIS
+        # checkout's bin/ against a fresh clone of it per arm.
+        self.fixture_repo = Path(tempfile.mkdtemp(prefix="handsoff-bench-fixture-"))
+        shutil.copytree(ROOT / "prompts", self.fixture_repo / "prompts")
+        (self.fixture_repo / "src").mkdir()
+        (self.fixture_repo / "src" / "hello.py").write_text('def hello():\n    return "hi"\n')
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "-m", "fixture"]):
+            subprocess.run(["git", *args], cwd=self.fixture_repo, check=True, capture_output=True)
+        # "Real" adapters on PATH are traps: any invocation logs and fails.
+        self.trap_dir = Path(tempfile.mkdtemp(prefix="handsoff-bench-trap-"))
+        self.trap_log = self.trap_dir / "trap.log"
+        for name in ("claude", "codex"):
+            path = self.trap_dir / name
+            path.write_text(self.TRAP)
+            path.chmod(0o755)
+        self.out_dir = Path(tempfile.mkdtemp(prefix="handsoff-bench-out-"))
+        self.fixture_json = self.out_dir / "fixture.json"
+        self.task_file = self.out_dir / "task.md"
+        self.task_file.write_text("Design the export command.\n")
+        sys.path.insert(0, str(ROOT / "tools"))
+        import benchmark_design_phase
+        self.harness = benchmark_design_phase
+
+    def tearDown(self):
+        self.assertEqual(self._documents_archive_count(), self.documents_count_before,
+                         "the real ~/Documents/Handsoff-Archive must never be written by the harness")
+        if self._old_env is None:
+            os.environ.pop("HANDSOFF_ARCHIVE_DIR", None)
+        else:
+            os.environ["HANDSOFF_ARCHIVE_DIR"] = self._old_env
+        for path in (self.archive_dir, self.fixture_repo, self.trap_dir, self.out_dir):
+            shutil.rmtree(path, ignore_errors=True)
+        super().tearDown()
+
+    def _documents_archive_count(self):
+        if not self.documents_archive.exists():
+            return 0
+        return sum(1 for _ in self.documents_archive.iterdir())
+
+    def _write_fixture(self, **overrides):
+        fixture = {
+            "feature": "Benchmark harness fixture",
+            "profiles": {
+                "architect": {"adapter": "claude", "model": "claude-opus-5"},
+                "supervisor": {"adapter": "claude", "model": "claude-opus-5"},
+                "implementer": {"adapter": "claude", "model": "claude-opus-5"},
+                "reviewer": {"adapter": "codex", "model": "default"},
+                "reviewer_followup": {"adapter": "claude", "model": "claude-haiku"},
+            },
+            "criteria_transaction": {"operations": [
+                {"op": "update", "id": "REQ-001", "fields": {
+                    "requirement": "The export writes one bundle", "verification": "automated", "tests": ["true"]}},
+                {"op": "add", "criterion": {"id": "REQ-002", "type": "supporting",
+                                            "requirement": "The bundle carries no raw output",
+                                            "verification": "automated", "tests": ["true"]}},
+            ]},
+            "seeded_defects": [
+                {"id": "SD-1", "reveals": "read without the lock", "keywords": ["project lock"]},
+                {"id": "SD-2", "reveals": "non-atomic write", "keywords": ["atomic"]},
+                {"id": "SD-3", "reveals": "raw output in the bundle", "keywords": ["stdout"]},
+            ],
+            "design_evidence": [{"id": "src-lines", "command": "wc -l src/hello.py", "inputs": ["src/*.py"]}],
+        }
+        fixture.update(overrides)
+        self.fixture_json.write_text(json.dumps(fixture, indent=2))
+
+    def _run(self, *extra, out="run"):
+        out_dir = self.out_dir / out
+        env = dict(os.environ)
+        git_dir = str(Path(shutil.which("git")).resolve().parent)
+        env["PATH"] = os.pathsep.join([str(self.trap_dir), git_dir, "/usr/bin", "/bin"])
+        env["HANDSOFF_TEST_TRAP_LOG"] = str(self.trap_log)
+        env["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
+        proc = subprocess.run(
+            [sys.executable, str(self.HARNESS), "--stub", "--fixture-repo", str(self.fixture_repo),
+             "--fixture", str(self.fixture_json), "--task-file", str(self.task_file),
+             "--out", str(out_dir), "--stub-sleep", "0.05", *extra],
+            capture_output=True, text=True, timeout=120, env=env, cwd=str(self.out_dir),
+        )
+        return proc, out_dir
+
+    def test_stub_run_writes_both_arms_and_a_summary_without_real_adapters(self):
+        self._write_fixture()
+        started = time.monotonic()
+        proc, out_dir = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertLess(time.monotonic() - started, 60.0)
+        summary = json.loads((out_dir / "summary.json").read_text())
+        self.assertEqual(json.loads(proc.stdout), summary)
+        # Schema.
+        self.assertEqual(summary["mode"], "stub")
+        self.assertFalse(summary["measurement"])
+        for key in ("schema_version", "generated_at", "fixture", "options", "arms", "deltas_percent",
+                    "thresholds", "defect_retention", "thresholds_met", "commands"):
+            self.assertIn(key, summary)
+        self.assertEqual(summary["thresholds"]["wall_clock_reduction_percent"], 30.0)
+        self.assertEqual(summary["thresholds"]["tokens_reduction_percent"], 40.0)
+        self.assertEqual(set(summary["arms"]), {"baseline", "tranche"})
+        for arm in ("baseline", "tranche"):
+            record = summary["arms"][arm]
+            self.assertEqual(record["outcomes"], ["approved"])
+            self.assertEqual(record["attempts"], [2])
+            self.assertEqual(record["authorized_attempts"], [None])
+            self.assertEqual(record["sessions"], 4)
+            self.assertIsInstance(record["median_wall_clock_seconds"], float)
+            self.assertIsInstance(record["median_design_phase_tokens"], float)
+        self.assertIsInstance(summary["deltas_percent"]["wall_clock"], float)
+        self.assertIsInstance(summary["deltas_percent"]["tokens"], float)
+        self.assertIn(summary["thresholds_met"], (True, False))
+        self.assertTrue(any("benchmark_design_phase.py --stub" in c for c in summary["commands"]["reproduce"]))
+        # Deterministic defect retention: the stub reviewer names every
+        # seeded defect in both arms, so retention holds with nothing missing.
+        retention = summary["defect_retention"]
+        self.assertEqual(retention["baseline_found"], ["SD-1", "SD-2", "SD-3"])
+        self.assertEqual(retention["tranche_found"], ["SD-1", "SD-2", "SD-3"])
+        self.assertEqual(retention["missing_in_tranche"], [])
+        self.assertTrue(retention["retained"])
+        # Per-arm run.json: settings, sessions with the recorded fields, and
+        # the tranche's packet, follow-up tier, and design-evidence cache hit.
+        baseline = json.loads((out_dir / "baseline" / "run.json").read_text())
+        tranche = json.loads((out_dir / "tranche" / "run.json").read_text())
+        self.assertEqual(baseline["settings"], {"reviewer_followup": False, "design_evidence": False, "packets": False})
+        self.assertEqual(tranche["settings"], {"reviewer_followup": True, "design_evidence": True, "packets": True})
+        for arm_record in (baseline, tranche):
+            self.assertEqual(arm_record["mode"], "stub")
+            repeat = arm_record["repeats"][0]
+            self.assertEqual(repeat["outcome"], "approved")
+            self.assertTrue(repeat["tokens_complete"])
+            self.assertIsInstance(repeat["design_phase_tokens"], int)
+            self.assertEqual([s["role"] for s in repeat["sessions"]],
+                             ["architect", "reviewer", "architect", "reviewer"])
+            for session in repeat["sessions"]:
+                for key in ("role", "adapter", "requested_model", "reported_model", "attempt", "input_tokens",
+                            "output_tokens", "started_at", "ended_at", "seconds", "design_evidence", "command",
+                            "session_id", "state", "tier", "packet_id", "usage_source"):
+                    self.assertIn(key, session)
+                self.assertEqual(session["state"], "completed")
+                self.assertEqual(session["usage_source"], "runner")
+                self.assertIsInstance(session["input_tokens"], int)
+                self.assertIsInstance(session["output_tokens"], int)
+                self.assertIn(session["adapter"], ("claude", "codex"))
+                # The adapter came from the harness's stub directory, never
+                # from PATH, where the traps sit first.
+                self.assertTrue(session["command"][0].startswith(arm_record["adapter_directory"]), session["command"])
+                self.assertFalse(session["command"][0].startswith(str(self.trap_dir)))
+                if session["adapter"] == "claude":
+                    self.assertEqual(session["command"][-2:], ["--output-format", "json"])
+                else:
+                    self.assertEqual(session["command"][-2:], ["--json", "-"])
+            names = [c["command"][3] for c in repeat["commands"]]
+            self.assertEqual(names[:3], ["init", "criteria-apply", "advance"])
+            self.assertEqual(names.count("record-design-review"), 2)
+            self.assertEqual(names.count("design-review-authorize"), 0)
+            self.assertEqual([r["decision"] for r in repeat["reviews"]], ["changes_requested", "approved"])
+        baseline_names = [c["command"][3] for c in baseline["repeats"][0]["commands"]]
+        tranche_names = [c["command"][3] for c in tranche["repeats"][0]["commands"]]
+        self.assertNotIn("design-review-packet", baseline_names)
+        self.assertNotIn("design-evidence", baseline_names)
+        self.assertEqual(tranche_names.count("design-review-packet"), 1)
+        self.assertEqual(tranche_names.count("design-evidence"), 2)
+        tranche_sessions = tranche["repeats"][0]["sessions"]
+        self.assertEqual([s["tier"] for s in tranche_sessions], [None, "primary", None, "followup"])
+        self.assertIsNone(tranche_sessions[1]["packet_id"])
+        self.assertRegex(tranche_sessions[3]["packet_id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(tranche_sessions[3]["adapter"], "claude")
+        self.assertEqual(tranche_sessions[3]["requested_model"], "claude-haiku")
+        self.assertEqual(tranche_sessions[0]["design_evidence_run"], {"attempt": 1, "executed": 1, "reused": 0})
+        self.assertEqual(tranche_sessions[2]["design_evidence_run"], {"attempt": 2, "executed": 0, "reused": 1})
+        self.assertEqual(tranche_sessions[2]["design_evidence"]["states"], {"src-lines": "current"})
+        self.assertIsNone(baseline["repeats"][0]["sessions"][0]["design_evidence"])
+        # No real adapter ran, nothing landed in the archive, and this
+        # checkout's own state files were not touched.
+        self.assertFalse(self.trap_log.exists(), "a PATH adapter was invoked")
+        self.assertEqual(sum(1 for _ in self.archive_dir.iterdir()), 0)
+        self.assertFalse((out_dir / "archive").exists())
+        self.assertFalse((self.fixture_repo / "handsoff-status.json").exists())
+
+    def test_budget_exhaustion_authorizes_exactly_one_extra_attempt_and_records_it(self):
+        self._write_fixture(max_autonomous_design_reviews=1)
+        proc, out_dir = self._run("--arms", "baseline", out="budget")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        run = json.loads((out_dir / "baseline" / "run.json").read_text())["repeats"][0]
+        self.assertEqual(run["outcome"], "approved")
+        self.assertEqual(run["authorized_attempt"], 2)
+        names = [c["command"][3] for c in run["commands"]]
+        self.assertEqual(names.count("design-review-authorize"), 1)
+        self.assertLess(names.index("design-review-authorize"), len(names) - 1)
+        summary = json.loads((out_dir / "summary.json").read_text())
+        self.assertEqual(summary["arms"]["baseline"]["authorized_attempts"], [2])
+        self.assertNotIn("tranche", summary["arms"])
+        self.assertIsNone(summary["thresholds_met"])
+        self.assertIsNone(summary["defect_retention"]["retained"])
+        self.assertFalse((out_dir / "tranche").exists())
+        self.assertFalse(self.trap_log.exists())
+
+    def test_runner_usage_parser_reads_both_shapes_and_never_estimates(self):
+        parse = self.harness.parse_runner_output
+        claude = parse(json.dumps({"type": "result", "result": "DESIGN_APPROVED",
+                                   "usage": {"input_tokens": 12, "output_tokens": 3},
+                                   "modelUsage": {"claude-opus-5": {}}}))
+        self.assertEqual((claude["input_tokens"], claude["output_tokens"]), (12, 3))
+        self.assertEqual(claude["reported_model"], "claude-opus-5")
+        self.assertEqual(claude["text"], "DESIGN_APPROVED")
+        self.assertEqual(claude["usage_source"], "runner")
+        codex = parse("\n".join([
+            json.dumps({"type": "thread.started"}),
+            json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "FINDING: x\nDESIGN_CHANGES_REQUESTED"}}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 40, "cached_input_tokens": 0, "output_tokens": 9}}),
+        ]))
+        self.assertEqual((codex["input_tokens"], codex["output_tokens"]), (40, 9))
+        self.assertIsNone(codex["reported_model"])
+        self.assertEqual(self.harness.review_decision(codex["text"]), "changes_requested")
+        self.assertEqual(self.harness.extract_findings(codex["text"]), ["x"])
+        plain = parse("Some prose with no structured output.\nDESIGN_APPROVED\n")
+        self.assertIsNone(plain["input_tokens"])
+        self.assertIsNone(plain["output_tokens"])
+        self.assertEqual(plain["usage_source"], "none")
+        self.assertEqual(self.harness.review_decision(plain["text"]), "approved")
+        self.assertIsNone(self.harness.review_decision("no verdict here"))
+        pretty = parse(json.dumps({"result": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}}, indent=2))
+        self.assertEqual(pretty["input_tokens"], 1)
+        # Retention rule: an id or a fixture keyword counts, nothing else.
+        defects = [{"id": "SD-1", "keywords": ["project lock"]}, {"id": "SD-2", "keywords": ["atomic"]}]
+        self.assertEqual(self.harness.defects_found("reads without the Project Lock", defects), ["SD-1"])
+        self.assertEqual(self.harness.defects_found("sd-2 and an atomic replace", defects), ["SD-2"])
+        self.assertEqual(self.harness.defects_found("nothing relevant", defects), [])
 
 
 if __name__ == "__main__":

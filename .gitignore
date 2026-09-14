@@ -13,3 +13,6 @@ handsoff-design-evidence.json
 .handsoff-archive/
 .handsoff-dashboard-owner.json
 .handsoff-live.json
+.handsoff-output-liveness.json
+.handsoff-verify-inflight/
+benchmark/

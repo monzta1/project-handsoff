@@ -147,6 +147,7 @@ def cmd_init(args) -> int:
             "requires_design_approval": True, "design_approved": None,
             "requires_design_review": True, "design_review": None,
             "design_review_attempts": 0, "design_review_authorization": None,
+            "amendment": None, "amendments": [],
             "review": None, "live_verification_id": None, "original_symptom_evidence_id": None,
             "verification_head": "GENESIS",
             "requirement_coverage": {"passing": 0, "failing": 1, "not_tested": 0, "blocked": 0,
@@ -173,8 +174,10 @@ def cmd_status(args) -> int:
             return 1
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems)
-        warning = lib.stall_warning(status, cfg)
-        activity = lib.activity_note(status, cfg)
+        # #41: the same activity reading the dashboard snapshot carries.
+        activity_view = lib.activity_view(status, cfg, root)
+        warning = activity_view["stall_warning"]
+        activity = activity_view["activity_note"]
         live = lib.live_status(status, cfg, root)
         budget = lib.design_review_budget(status, cfg)
         reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
@@ -192,11 +195,12 @@ def cmd_status(args) -> int:
         "design_review": status.get("design_review"),
         "design_review_attempts": budget["attempts"], "design_review_budget": budget,
         "design_reviewer_selection": reviewer_selection,
+        "amendment": lib.amendment_view(status, acceptance, cfg, verifications),
         "reviewed_by": status.get("reviewed_by"),
         "live_verification_id": status.get("live_verification_id"),
         "verification_runs": len(verifications),
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
-        "stall_warning": warning, "activity_note": activity, "live": live,
+        "stall_warning": warning, "activity_note": activity, "activity": activity_view, "live": live,
         "crew": lib.crew_view(cfg),
         "event_log_intact": not log_problems, "event_log_problems": log_problems,
     }, indent=2))
@@ -439,6 +443,10 @@ def cmd_deployment_gate(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        refusal = lib.amendment_decision_refusal(status, "deployment approval")
+        if refusal:
+            print(f"DEPLOYMENT_BLOCKED\n- {refusal}")
+            return 1
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems)
         if errors:
@@ -860,7 +868,16 @@ def cmd_verify(args) -> int:
     two independent verification records: an unrelated criterion's failing
     test must never fail this one, and an unrelated passing command must
     never satisfy it either. The union of needed commands is still run only
-    once per invocation, for efficiency when criteria share a test."""
+    once per invocation, for efficiency when criteria share a test.
+
+    #43: each needed command is bound to the exact state it proves
+    something about (lib.verification_binding). A command whose binding
+    already has an eligible executed, passing record in this run is not
+    launched again unless --no-cache is passed; its criterion gets a
+    record marked executed false with reused_from naming the source. The
+    binding locks under .handsoff-verify-inflight/ serialize concurrent
+    verifies of one binding so the second re-reads the ledger and reuses
+    instead of launching a duplicate."""
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     if not args.by or not args.by.strip():
@@ -896,45 +913,89 @@ def cmd_verify(args) -> int:
         before = {c["id"]: lib.criterion_spec_hash(c) for c in criteria}
         needed_set = {test for c in criteria for test in c.get("tests", [])}
         needed = [cmd for cmd in cfg["check_commands"] if cmd in needed_set]
-    results = lib.run_checks(cfg, root, commands=needed)
-    results_by_command = {r["command"]: r for r in results}
-    with lib.project_lock(root):
-        status, acceptance, existing_records, verification_problems = _load_all(root, cfg)
-        audit_errors = _audit_errors(root, cfg, status, existing_records, verification_problems)
-        if audit_errors:
-            return _print_audit_block(audit_errors)
-        criteria = [_criterion(acceptance, cid) for cid in args.criterion]
-        if any(c is None for c in criteria) or any(lib.criterion_spec_hash(c) != before[c["id"]] for c in criteria):
-            print("SHIP_FEATURE_BLOCKED: criterion changed while checks were running; run verify again")
-            return 1
-        per_criterion = {}
-        for criterion in criteria:
-            own_results = [results_by_command[t] for t in criterion.get("tests", [])]
-            own_ok = bool(own_results) and all(r["exit_code"] == 0 for r in own_results)
-            record = lib.append_verification(root, cfg, kind="checks", ok=own_ok, by=args.by,
-                                             criteria=[criterion], results=_durable_results(own_results))
-            status["verification_head"] = record["hash"]
-            if record["run_id"] not in criterion["evidence"]:
-                criterion["evidence"].append(record["run_id"])
-            if not own_ok:
-                criterion["state"] = "failing"
-            elif lib.criterion_fully_evidenced(criterion, existing_records + [record]):
-                criterion["state"] = "passing"
-            else:
-                criterion["state"] = "not_tested"
-            per_criterion[criterion["id"]] = {"run_id": record["run_id"], "ok": own_ok}
-        lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status)
-        review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
-        status["updated_at"] = datetime.now(timezone.utc).isoformat()
-        lib.commit(root, cfg, status=status, acceptance=acceptance,
-                  event_kind="checks_run", event_message="Ran and attached configured checks",
-                  criteria=per_criterion,
-                  review_attempt_refreshed=review_refresh,
-                  results=[{"command": r["command"], "exit_code": r["exit_code"],
-                            "output_sha256": r["output_sha256"]} for r in results])
+        # #43: bind before launching, so the binding describes the state
+        # the command actually ran against, not whatever it left behind.
+        run_hash = lib.feature_hash(status, lib.read_events(root, cfg))
+        repo_digest = lib.repository_digest(root, cfg)
+        config_digest = lib.verification_config_hash(cfg)
+        bindings = {
+            cmd: lib.verification_binding(cmd, repo_digest, config_digest,
+                                          [before[c["id"]] for c in criteria if cmd in c.get("tests", [])])
+            for cmd in needed
+        }
+    use_cache = not getattr(args, "no_cache", False)
+    with lib.verify_inflight_lock(root, list(bindings.values())):
+        reused: dict[str, dict] = {}
+        if use_cache:
+            with lib.project_lock(root):
+                # Re-read under the binding lock: a concurrent verify of the
+                # same binding that held it before us has appended by now.
+                ledger_records, _ = lib.load_verifications(root, cfg)
+            for cmd in needed:
+                source = lib.reusable_check_record(ledger_records, cmd, bindings[cmd], run_hash)
+                if source is not None:
+                    reused[cmd] = source
+        launched = [cmd for cmd in needed if cmd not in reused]
+        results = lib.run_checks(cfg, root, commands=launched) if launched else []
+        results_by_command = {r["command"]: r for r in results}
+        for cmd, source in reused.items():
+            copied = next(r for r in source["results"] if r.get("command") == cmd)
+            results_by_command[cmd] = {**copied, "reused_from": source["run_id"]}
+        results = [results_by_command[cmd] for cmd in needed]
+        with lib.project_lock(root):
+            status, acceptance, existing_records, verification_problems = _load_all(root, cfg)
+            audit_errors = _audit_errors(root, cfg, status, existing_records, verification_problems)
+            if audit_errors:
+                return _print_audit_block(audit_errors)
+            criteria = [_criterion(acceptance, cid) for cid in args.criterion]
+            if any(c is None for c in criteria) or any(lib.criterion_spec_hash(c) != before[c["id"]] for c in criteria):
+                print("SHIP_FEATURE_BLOCKED: criterion changed while checks were running; run verify again")
+                return 1
+            per_criterion = {}
+            for criterion in criteria:
+                own_tests = list(criterion.get("tests", []))
+                own_results = [results_by_command[t] for t in own_tests]
+                own_ok = bool(own_results) and all(r["exit_code"] == 0 for r in own_results)
+                own_sources = {reused[t]["run_id"] for t in own_tests if t in reused}
+                # A record is executed only when every one of its commands
+                # was launched here; a partially reused multi-command record
+                # is not a reuse source, and names its source only when all
+                # of its reused results came from the same record (each
+                # copied result carries its own reused_from regardless).
+                executed = not own_sources
+                reused_from = next(iter(own_sources)) if len(own_sources) == 1 else None
+                record = lib.append_verification(
+                    root, cfg, kind="checks", ok=own_ok, by=args.by,
+                    criteria=[criterion], results=_durable_results(own_results),
+                    binding={t: bindings[t] for t in own_tests}, executed=executed,
+                    reused_from=reused_from, feature_hash=run_hash)
+                status["verification_head"] = record["hash"]
+                if record["run_id"] not in criterion["evidence"]:
+                    criterion["evidence"].append(record["run_id"])
+                if not own_ok:
+                    criterion["state"] = "failing"
+                elif lib.criterion_fully_evidenced(criterion, existing_records + [record]):
+                    criterion["state"] = "passing"
+                else:
+                    criterion["state"] = "not_tested"
+                per_criterion[criterion["id"]] = {"run_id": record["run_id"], "ok": own_ok,
+                                                  "executed": executed, "reused_from": reused_from}
+            lib.sync_coverage(status, acceptance)
+            _invalidate_decisions(status)
+            review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
+            status["updated_at"] = datetime.now(timezone.utc).isoformat()
+            lib.commit(root, cfg, status=status, acceptance=acceptance,
+                      event_kind="checks_run", event_message="Ran and attached configured checks",
+                      criteria=per_criterion,
+                      review_attempt_refreshed=review_refresh,
+                      launched_count=len(launched), reused_count=len(reused),
+                      results=[{"command": r["command"], "exit_code": r["exit_code"],
+                                "output_sha256": r["output_sha256"]} for r in results])
     overall_ok = all(v["ok"] for v in per_criterion.values())
-    print(__import__("json").dumps({"ok": overall_ok, "criteria": per_criterion, "results": results}, indent=2))
+    print(__import__("json").dumps({
+        "ok": overall_ok, "criteria": per_criterion, "results": results,
+        "launched": launched, "reused": {cmd: source["run_id"] for cmd, source in reused.items()},
+    }, indent=2))
     return 0 if overall_ok else 1
 
 
@@ -1610,6 +1671,8 @@ def cmd_record_review(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if _refuse_if_amendment_open(status, action="independent review"):
+            return 1
         if status.get("phase_number", 0) < 5:
             print("SHIP_FEATURE_BLOCKED: independent review can only be recorded in Phase 5 or later")
             return 1
@@ -1699,6 +1762,8 @@ def cmd_verify_live(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if _refuse_if_amendment_open(status, action="live verification"):
+            return 1
         approval_required = cfg.get("deployment_requires_explicit_approval", True)
         if status.get("phase_number") != 7 or (approval_required and not status.get("deployment_approved")):
             print("SHIP_FEATURE_BLOCKED: live verification requires Phase 7"
@@ -1747,18 +1812,7 @@ def cmd_verify_live(args) -> int:
 
 def _sync_registry_from_criteria(acceptance: dict, cfg: dict) -> bool:
     """Append newly declared criterion identities without deleting stable promises."""
-    existing = acceptance.get("work_items")
-    if not isinstance(existing, list):
-        return False
-    known = {item.get("id") for item in existing}
-    changed = False
-    for item in lib.derive_work_item_registry(acceptance, cfg):
-        if item["id"] not in known:
-            existing.append(item)
-            known.add(item["id"])
-            changed = True
-    existing.sort(key=lambda item: (item["kind"] != "issue", item.get("number") or 0, item["id"]))
-    return changed
+    return lib.sync_work_item_registry(acceptance, cfg)
 
 
 def _criterion_needs_item_warning(criterion: dict, acceptance: dict, cfg: dict) -> bool:
@@ -1774,12 +1828,22 @@ def cmd_criterion_update(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if _refuse_if_amendment_open(status):
+            return 1
         criterion = _criterion(acceptance, args.criterion)
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
         if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state")):
             print("SHIP_FEATURE_BLOCKED: criterion-update requires at least one change")
+            return 1
+        fields = {field: getattr(args, field) for field in ("requirement", "verification", "type", "state")
+                  if getattr(args, field) is not None}
+        if args.test is not None:
+            fields["tests"] = args.test
+        problems = lib.validate_criterion_fields(fields)
+        if problems:
+            print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
         was_primary = criterion.get("type") == "primary_fix"
         before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
@@ -1832,8 +1896,17 @@ def cmd_criterion_add(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if _refuse_if_amendment_open(status):
+            return 1
         if _criterion(acceptance, args.criterion):
             print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} already exists")
+            return 1
+        problems = lib.validate_criterion_fields({
+            "id": args.criterion, "type": args.type, "requirement": args.requirement,
+            "verification": args.verification, "tests": args.test or [],
+        }, require_all=True)
+        if problems:
+            print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
         before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
         acceptance["criteria"].append({
@@ -1876,6 +1949,12 @@ def cmd_criterion_remove(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if _refuse_if_amendment_open(status):
+            return 1
+        problems = lib.validate_criterion_fields({"id": args.criterion})
+        if problems:
+            print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
+            return 1
         if not _criterion(acceptance, args.criterion):
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
@@ -1898,6 +1977,403 @@ def cmd_criterion_remove(args) -> int:
                   event_kind="criterion_removed", event_message="Acceptance criterion removed",
                   criterion=args.criterion)
     print("CRITERION_REMOVED")
+    return 0
+
+
+def cmd_criteria_apply(args) -> int:
+    """#44: apply a whole list of add/update/remove operations as one
+    lock-protected commit, or refuse the whole list with nothing written.
+    The planner (lib.plan_criteria_transaction) does every check on a deep
+    copy; only a complete plan reaches the single commit() below, which
+    carries status, acceptance, and one criteria_transaction_applied event.
+    Decisions are invalidated exactly once, the same way one
+    criterion-update does it (design cleared, flagged Phase 3+ run back to
+    Phase 2 in the same status write, no phase_advanced event)."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    operations = lib.load_criteria_transaction(Path(args.file))
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        lib.ensure_no_launched_regression(status)
+        if _refuse_if_amendment_open(status):
+            return 1
+        plan = lib.plan_criteria_transaction(acceptance, cfg, operations, root=root)
+        if args.dry_run:
+            print(__import__("json").dumps(lib.criteria_plan_preview(plan, status), indent=2, sort_keys=True))
+            return 0
+        lib.apply_criteria_plan(acceptance, plan)
+        if plan["resets_original_symptom"]:
+            status["requirement_coverage"]["original_symptom_resolved"] = False
+            status["original_symptom_evidence_id"] = None
+        untagged = [record["id"] for record in plan["operations"] if record["op"] != "remove"
+                    and _criterion_needs_item_warning(_criterion(acceptance, record["id"]), acceptance, cfg)]
+        lib.migrate_review_ledger(status)
+        abandoned = lib.abandon_stale_review_attempt(status, acceptance)
+        lib.sync_coverage(status, acceptance)
+        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
+                  "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
+        lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
+                  event_kind="criteria_transaction_applied",
+                  event_message=f"Acceptance criteria transaction applied ({plan['operation_count']} operations)",
+                  by=args.by, operations=plan["operations"],
+                  registry_hash_before=plan["registry_hash_before"],
+                  registry_hash_after=plan["registry_hash_after"],
+                  design_hash_after=plan["design_hash_after"],
+                  operation_count=plan["operation_count"],
+                  work_item_scope_changed=plan["work_item_scope_changed"])
+    if untagged:
+        print(f"WORK_ITEM_WARNING: untagged criteria in a multi-item run: {', '.join(untagged)}")
+    print(f"CRITERIA_TRANSACTION_APPLIED: {plan['operation_count']} operations, "
+          f"registry {plan['registry_hash_after'][:12]}")
+    return 0
+
+
+
+def _refuse_if_amendment_open(status: dict, *, action: str | None = None) -> int | None:
+    """#42: the freeze. Criterion mutations (no `action`) and the decision
+    commands (`action` named) are refused while an amendment is open;
+    verify and record-evidence are deliberately not routed through here."""
+    message = lib.amendment_decision_refusal(status, action) if action else lib.amendment_mutation_refusal(status)
+    if message is None:
+        return None
+    print(f"SHIP_FEATURE_BLOCKED: {message}")
+    return 1
+
+
+def _amendment_event_fields(record: dict) -> dict:
+    """What every amendment event carries: ids, hashes, classification,
+    never criterion text or test commands."""
+    return {
+        "amendment_id": record["amendment_id"], "amendment_hash": record["amendment_hash"],
+        "base_design_hash": record["base_design_hash"], "resulting_design_hash": record["resulting_design_hash"],
+        "changed_ids": list(record["changed_ids"]), "dependent_ids": list(record["dependent_ids"]),
+        "affected_work_items": list(record["affected_work_items"]),
+        "classification": record["classification"], "classification_reasons": list(record["classification_reasons"]),
+        "operation_count": len(record["operations"]),
+    }
+
+
+def _print_full_redesign_refusal(record: dict, *, revise: bool) -> int:
+    print("AMENDMENT_REFUSED: full_redesign")
+    print("\n".join(f"- {reason}" for reason in record["classification_reasons"]))
+    if revise:
+        print("This follow-up widens the open amendment beyond a scoped correction. Run "
+              f"`amendment-escalate --by ACTOR --reason TEXT` on {record['amendment_id']}, which takes the full "
+              "path (design decisions cleared, Phase 2), then apply the change with criteria-apply.")
+    else:
+        print("A scoped amendment cannot carry this change. Use the ordinary path instead: "
+              "`criteria-apply --file TX.json --by ACTOR` (or criterion-update), which invalidates the design "
+              "approval and returns the run to Phase 2 for a full redesign.")
+    return 1
+
+
+def _close_amendment(status: dict, record: dict, *, state: str, now: str) -> None:
+    record["state"] = state
+    record["closed_at"] = now
+    history = [item for item in (status.get("amendments") or []) if isinstance(item, dict)]
+    history.append(record)
+    status["amendments"] = history[-lib.MAX_AMENDMENT_HISTORY:]
+    status["amendment"] = None
+
+
+def cmd_amendment_open(args) -> int:
+    """#42: open a scoped post-approval amendment. The #44 planner builds
+    the delta, `lib.classify_amendment` decides scoped or full_redesign
+    (the caller cannot choose), and only a scoped delta is applied: the
+    changed criteria reset to not_tested with evidence cleared, review/
+    deployment/live decisions invalidated (design decisions kept on their
+    base hash), the phase frozen, one commit, one `amendment_opened`."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    operations = lib.load_criteria_transaction(Path(args.file))
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        lib.ensure_no_launched_regression(status)
+        planned = lib.plan_amendment(status, acceptance, cfg, operations, by=args.by, root=root,
+                                     request_full_redesign=bool(args.request_full_redesign))
+        record, plan = planned["record"], planned["plan"]
+        if record["classification"] != "scoped":
+            return _print_full_redesign_refusal(record, revise=False)
+        lib.apply_criteria_plan(acceptance, plan)
+        lib.reset_amended_criteria(acceptance, record["changed_ids"])
+        if plan["resets_original_symptom"]:
+            status["requirement_coverage"]["original_symptom_resolved"] = False
+            status["original_symptom_evidence_id"] = None
+        lib.migrate_review_ledger(status)
+        abandoned = lib.abandon_stale_review_attempt(status, acceptance)
+        lib.sync_coverage(status, acceptance)
+        _invalidate_decisions(status)
+        record["frozen_phase"] = int(status.get("phase_number", 0) or 0)
+        record["frozen_progress"] = status.get("progress", 0)
+        status["amendment"] = record
+        status.setdefault("amendments", [])
+        status["next_action"] = (f"Amendment {record['amendment_id']} is open: record amendment-review, then "
+                                 "the Pilot records amendment-approve (or escalate it).")
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        errors = lib.validate_status_schema(status) + lib.validate_acceptance_schema(acceptance)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
+            return 1
+        summary = args.summary.strip() if args.summary and args.summary.strip() else None
+        extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
+                  "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
+        lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
+                  event_kind="amendment_opened",
+                  event_message=summary or f"Scoped amendment {record['amendment_id']} opened "
+                                           f"({len(record['changed_ids'])} criteria changed)",
+                  by=record["by"], frozen_phase=record["frozen_phase"], frozen_progress=record["frozen_progress"],
+                  registry_hash_before=plan["registry_hash_before"], registry_hash_after=plan["registry_hash_after"],
+                  **_amendment_event_fields(record))
+    print(f"AMENDMENT_OPENED: {record['amendment_id']} scoped, {len(record['changed_ids'])} criteria changed, "
+          f"frozen at Phase {record['frozen_phase']}")
+    return 0
+
+
+def cmd_amendment_revise(args) -> int:
+    """#42: a follow-up transaction on the open amendment after the reviewer
+    requested changes (or before any review). Same classification over the
+    cumulative delta; an expansion to full_redesign refuses and points at
+    amendment-escalate. Recomputes the amendment hash and clears the stale
+    review in the same commit."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    operations = lib.load_criteria_transaction(Path(args.file))
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        lib.ensure_no_launched_regression(status)
+        if lib.open_amendment(status) is None:
+            print("SHIP_FEATURE_BLOCKED: no amendment is open; use amendment-open")
+            return 1
+        planned = lib.plan_amendment_revision(status, acceptance, cfg, operations, root=root)
+        record, plan = planned["record"], planned["plan"]
+        if record["classification"] != "scoped":
+            return _print_full_redesign_refusal(record, revise=True)
+        lib.apply_criteria_plan(acceptance, plan)
+        lib.reset_amended_criteria(acceptance, record["changed_ids"])
+        if plan["resets_original_symptom"]:
+            status["requirement_coverage"]["original_symptom_resolved"] = False
+            status["original_symptom_evidence_id"] = None
+        lib.migrate_review_ledger(status)
+        abandoned = lib.abandon_stale_review_attempt(status, acceptance)
+        lib.sync_coverage(status, acceptance)
+        _invalidate_decisions(status)
+        status["amendment"] = record
+        status["next_action"] = (f"Amendment {record['amendment_id']} was revised: record amendment-review again, "
+                                 "then the Pilot records amendment-approve (or escalate it).")
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        errors = lib.validate_status_schema(status) + lib.validate_acceptance_schema(acceptance)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED\n" + "\n".join(f"- {e}" for e in errors))
+            return 1
+        extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
+                  "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
+        lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
+                  event_kind="amendment_revised",
+                  event_message=f"Amendment {record['amendment_id']} revised "
+                                f"({plan['operation_count']} more operations; review cleared)",
+                  by=args.by.strip(),
+                  registry_hash_before=plan["registry_hash_before"], registry_hash_after=plan["registry_hash_after"],
+                  **_amendment_event_fields(record))
+    print(f"AMENDMENT_REVISED: {record['amendment_id']} now {len(record['changed_ids'])} criteria changed; "
+          "review cleared")
+    return 0
+
+
+def cmd_amendment_review(args) -> int:
+    """#42: the independent review of the open amendment, bound to the
+    amendment hash recomputed from the registry on disk. The reviewer must
+    differ from the amendment's author and from the architect on record."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    if not args.summary or not args.summary.strip():
+        print("SHIP_FEATURE_BLOCKED: --summary must be a non-empty string")
+        return 1
+    reviewer = args.by.strip()
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        amendment = lib.open_amendment(status)
+        if amendment is None:
+            print("SHIP_FEATURE_BLOCKED: no amendment is open")
+            return 1
+        architects = {amendment.get("by")}
+        for field in ("design_approved", "design_review"):
+            record = status.get(field)
+            if isinstance(record, dict) and record.get("architect"):
+                architects.add(record["architect"])
+        if any(isinstance(a, str) and a.strip().casefold() == reviewer.casefold() for a in architects):
+            print("SHIP_FEATURE_BLOCKED: amendment reviewer must differ from the amendment's author and the "
+                  "architect on record, no self-review")
+            return 1
+        recomputed, problems = lib.recompute_amendment_hash(amendment, acceptance.get("criteria", []))
+        if recomputed is None:
+            print("SHIP_FEATURE_BLOCKED")
+            print("\n".join(f"- amendment hash: {p}" for p in problems))
+            return 1
+        now = datetime.now(timezone.utc).isoformat()
+        decision = "approved" if args.approve else "changes_requested"
+        amendment["review"] = {"by": reviewer, "at": now, "decision": decision,
+                               "summary": args.summary.strip(), "amendment_hash": recomputed}
+        if decision == "approved":
+            status["next_action"] = (f"Amendment {amendment['amendment_id']} review approved: the Pilot records "
+                                     "amendment-approve to resume the frozen phase.")
+        else:
+            status["next_action"] = (f"Amendment {amendment['amendment_id']} review requested changes: the "
+                                     "Architect applies amendment-revise or escalates with amendment-escalate.")
+        status["updated_at"] = now
+        lib.commit(root, cfg, status=status, event_kind="amendment_reviewed",
+                  event_message=f"Amendment {amendment['amendment_id']} review {decision.replace('_', ' ')}: "
+                                f"{args.summary.strip()}",
+                  by=reviewer, decision=decision, amendment_id=amendment["amendment_id"],
+                  amendment_hash=recomputed)
+    print("AMENDMENT_REVIEW_APPROVED" if args.approve else "AMENDMENT_CHANGES_REQUESTED")
+    return 0
+
+
+def cmd_amendment_approve(args) -> int:
+    """#42: the Pilot's approval of the reviewed amendment (human-only; the
+    broker refuses it). Requires an approved review bound to the hash
+    recomputed from the registry on disk right now; on success the design
+    decisions are rewritten to the resulting design hash with the
+    amendment id appended to their `amended_by` trail, the amendment
+    closes into the history, and the run resumes the frozen phase and
+    progress with no phase_advanced event."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    pilot = args.by.strip()
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        amendment = lib.open_amendment(status)
+        if amendment is None:
+            print("SHIP_FEATURE_BLOCKED: no amendment is open")
+            return 1
+        if isinstance(amendment.get("by"), str) and amendment["by"].strip().casefold() == pilot.casefold():
+            print("SHIP_FEATURE_BLOCKED: approver must differ from the amendment's author, no self-approval")
+            return 1
+        review = amendment.get("review")
+        if not isinstance(review, dict):
+            print("SHIP_FEATURE_BLOCKED: the amendment has no review yet; record amendment-review first")
+            return 1
+        if review.get("decision") != "approved":
+            print("SHIP_FEATURE_BLOCKED: the amendment review requested changes; revise (amendment-revise) "
+                  "or escalate (amendment-escalate)")
+            return 1
+        recomputed, problems = lib.recompute_amendment_hash(amendment, acceptance.get("criteria", []))
+        if recomputed is None or recomputed != review.get("amendment_hash"):
+            problems = problems or ["the reviewed amendment hash does not match the recomputed hash"]
+            return _print_audit_block([f"amendment hash: {p}" for p in problems]
+                                      + ["amendment approval refused; record a new amendment-review against "
+                                         "the registry on disk, or escalate"])
+        now = datetime.now(timezone.utc).isoformat()
+        scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
+        rewritten = []
+        for field in ("design_approved", "design_review"):
+            record = status.get(field)
+            if not isinstance(record, dict):
+                continue
+            record["design_hash"] = amendment["resulting_design_hash"]
+            if "scope_hash" in record:
+                record["scope_hash"] = scope
+            trail = list(record.get("amended_by") or [])
+            trail.append(amendment["amendment_id"])
+            record["amended_by"] = trail[-lib.MAX_AMENDMENT_HISTORY:]
+            rewritten.append(field)
+        amendment["pilot_approval"] = {"by": pilot, "at": now, "amendment_hash": recomputed}
+        closed = deepcopy(amendment)
+        _close_amendment(status, closed, state="approved", now=now)
+        frozen_phase = int(closed["frozen_phase"])
+        status["phase_number"] = frozen_phase
+        status["phase"] = lib.PHASES[frozen_phase]
+        status["progress"] = closed["frozen_progress"]
+        status["next_action"] = lib.NEXT_ACTION_DEFAULTS.get(frozen_phase, status.get("next_action"))
+        status["updated_at"] = now
+        errors = lib.compute_errors(status, acceptance, cfg, verifications=records,
+                                    verification_problems=verification_problems)
+        if errors:
+            print("SHIP_FEATURE_BLOCKED")
+            print("\n".join(f"- {x}" for x in errors))
+            return 1
+        lib.commit(root, cfg, status=status, event_kind="amendment_approved",
+                  event_message=f"Amendment {closed['amendment_id']} approved by the Pilot; design decisions "
+                                f"rewritten to the amended design, Phase {frozen_phase} resumed",
+                  by=pilot, reviewer=review.get("by"), rewritten=rewritten,
+                  frozen_phase=frozen_phase, frozen_progress=closed["frozen_progress"],
+                  **_amendment_event_fields(closed))
+    print(f"AMENDMENT_APPROVED: {closed['amendment_id']} closed; Phase {frozen_phase} resumed")
+    return 0
+
+
+def cmd_amendment_escalate(args) -> int:
+    """#42: give up on the scoped lane. The amendment closes as
+    `escalated` and the run takes the full path: design decisions cleared
+    and, for a flagged run, Phase 2 (the same rollback a criterion
+    mutation performs). The amended registry stays as it is."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    if not args.reason or not args.reason.strip():
+        print("SHIP_FEATURE_BLOCKED: --reason must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        lib.ensure_no_launched_regression(status)
+        amendment = lib.open_amendment(status)
+        if amendment is None:
+            print("SHIP_FEATURE_BLOCKED: no amendment is open")
+            return 1
+        now = datetime.now(timezone.utc).isoformat()
+        closed = deepcopy(amendment)
+        _close_amendment(status, closed, state="escalated", now=now)
+        lib.migrate_review_ledger(status)
+        abandoned = lib.abandon_stale_review_attempt(status, acceptance)
+        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        status["next_action"] = ("Amendment escalated to a full redesign: revise the design, request a new "
+                                 "independent design review and human approval, then advance to Phase 3.")
+        status["updated_at"] = now
+        extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
+                  "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
+        lib.commit(root, cfg, status=status, extra_events=extra, event_kind="amendment_escalated",
+                  event_message=f"Amendment {closed['amendment_id']} escalated to a full redesign: "
+                                f"{args.reason.strip()}",
+                  by=args.by.strip(), reason=args.reason.strip(),
+                  phase_number=status["phase_number"], **_amendment_event_fields(closed))
+    print(f"AMENDMENT_ESCALATED: {closed['amendment_id']} closed; run at Phase {status['phase_number']}")
     return 0
 
 
@@ -2388,6 +2864,8 @@ def main() -> int:
     verify.add_argument("--criterion", action="append", required=True,
                         help="criterion id to bind this run to; repeat for more than one")
     verify.add_argument("--by", required=True)
+    verify.add_argument("--no-cache", action="store_true",
+                        help="launch every needed command even when an eligible record for its binding exists")
 
     regression_request = sub.add_parser("regression-request")
     regression_request.add_argument("--group", required=True)
@@ -2602,6 +3080,44 @@ def main() -> int:
     criterion_remove = sub.add_parser("criterion-remove")
     criterion_remove.add_argument("criterion")
 
+    criteria_apply = sub.add_parser("criteria-apply", help="apply a list of add/update/remove criterion "
+                                    "operations from a JSON file as one all-or-nothing commit (#44)")
+    criteria_apply.add_argument("--file", required=True, help="TX.json: {\"operations\": [...]}")
+    criteria_apply.add_argument("--by", required=True)
+    criteria_apply.add_argument("--dry-run", action="store_true",
+                                help="validate and print the plan as JSON; write nothing")
+
+    amendment_open = sub.add_parser("amendment-open", help="open a scoped post-approval amendment from a "
+                                    "criteria transaction file; the planner classifies it and refuses a "
+                                    "full redesign (#42)")
+    amendment_open.add_argument("--file", required=True, help="TX.json: {\"operations\": [...]}")
+    amendment_open.add_argument("--by", required=True, help="the Architect opening the amendment")
+    amendment_open.add_argument("--summary", default=None)
+    amendment_open.add_argument("--request-full-redesign", action="store_true",
+                                help="force the full_redesign classification (the command then refuses to open)")
+
+    amendment_revise = sub.add_parser("amendment-revise", help="apply a follow-up transaction to the open "
+                                      "amendment; recomputes its hash and clears the stale review (#42)")
+    amendment_revise.add_argument("--file", required=True)
+    amendment_revise.add_argument("--by", required=True)
+
+    amendment_review = sub.add_parser("amendment-review", help="record the independent review of the open "
+                                      "amendment, bound to its hash (#42)")
+    amendment_review.add_argument("--by", required=True)
+    amendment_review_decision = amendment_review.add_mutually_exclusive_group(required=True)
+    amendment_review_decision.add_argument("--approve", action="store_true")
+    amendment_review_decision.add_argument("--request-changes", action="store_true")
+    amendment_review.add_argument("--summary", required=True)
+
+    amendment_approve = sub.add_parser("amendment-approve", help="Pilot approval of the reviewed amendment: "
+                                       "rewrites the design hashes and resumes the frozen phase (#42, human-only)")
+    amendment_approve.add_argument("--by", required=True)
+
+    amendment_escalate = sub.add_parser("amendment-escalate", help="close the open amendment as escalated and "
+                                        "take the full redesign path (#42)")
+    amendment_escalate.add_argument("--by", required=True)
+    amendment_escalate.add_argument("--reason", required=True)
+
     adv = sub.add_parser("advance")
     adv.add_argument("phase", type=int)
     adv.add_argument("progress", type=int)
@@ -2667,6 +3183,12 @@ def main() -> int:
         "criterion-update": cmd_criterion_update,
         "criterion-add": cmd_criterion_add,
         "criterion-remove": cmd_criterion_remove,
+        "criteria-apply": cmd_criteria_apply,
+        "amendment-open": cmd_amendment_open,
+        "amendment-revise": cmd_amendment_revise,
+        "amendment-review": cmd_amendment_review,
+        "amendment-approve": cmd_amendment_approve,
+        "amendment-escalate": cmd_amendment_escalate,
     }
     try:
         return handlers[args.command](args)

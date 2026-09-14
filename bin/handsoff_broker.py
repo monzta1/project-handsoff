@@ -24,6 +24,7 @@ MAX_REQUEST_BYTES = 65536
 HUMAN_ONLY_COMMANDS = {
     "design-approve", "deployment-gate", "design-review-authorize", "design-review-escalate",
     "review-cap-override", "recovery-acknowledge", "regression-decide", "regression-finalize",
+    "amendment-approve",
 }
 _SUPERVISOR_HOST_CAPABILITY = object()
 
@@ -221,6 +222,46 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     if command == "record-symptom-resolved":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "evidence"})
         base.extend(["--evidence", _text(request, "evidence"), "--by", _text(request, "by")])
+        return base
+    if command == "criteria-apply":
+        # #44: the Supervisor may apply (or preview) a criteria transaction
+        # file; every operation is validated by the supervisor's planner
+        # and refused before anything is written.
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "file"}, {"dry_run"})
+        base.extend(["--file", _text(request, "file"), "--by", _text(request, "by")])
+        if request.get("dry_run") is True:
+            base.append("--dry-run")
+        elif "dry_run" in request and request["dry_run"] is not False:
+            raise lib.HandsoffError("broker criteria-apply.dry_run must be boolean")
+        return base
+    if command == "amendment-open":
+        # #42: the Supervisor may open a scoped amendment from a transaction
+        # file; the supervisor's planner classifies it and refuses a full
+        # redesign before anything is written. Approval stays human-only.
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "file"},
+                      {"summary", "request_full_redesign"})
+        base.extend(["--file", _text(request, "file"), "--by", _text(request, "by")])
+        if "summary" in request:
+            base.extend(["--summary", _text(request, "summary")])
+        if request.get("request_full_redesign") is True:
+            base.append("--request-full-redesign")
+        elif "request_full_redesign" in request and request["request_full_redesign"] is not False:
+            raise lib.HandsoffError("broker amendment-open.request_full_redesign must be boolean")
+        return base
+    if command == "amendment-revise":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "file"})
+        base.extend(["--file", _text(request, "file"), "--by", _text(request, "by")])
+        return base
+    if command == "amendment-review":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "decision", "summary"})
+        decision = _text(request, "decision")
+        if decision not in {"approve", "request-changes"}:
+            raise lib.HandsoffError("broker amendment-review decision is invalid")
+        base.extend(["--by", _text(request, "by"), f"--{decision}", "--summary", _text(request, "summary")])
+        return base
+    if command == "amendment-escalate":
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "reason"})
+        base.extend(["--by", _text(request, "by"), "--reason", _text(request, "reason")])
         return base
     if command == "design-evidence":
         # #38: both actions are non-human-only. `run` refreshes (or reuses)

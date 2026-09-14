@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import os
@@ -303,6 +304,40 @@ def _terminalize_runner_io_failure(root: Path, session_id: str, process, *, stop
         )
 
 
+class _ChunkReader:
+    """#41: read a child's text pipe as output ARRIVES, not in 4096-character
+    blocks. `TextIOWrapper.read(n)` blocks until n characters or EOF, so a
+    child printing a short line every few seconds looked silent until it
+    exited. The underlying buffer's `read1` returns whatever is available;
+    an incremental decoder keeps a multibyte character split across two
+    reads intact. A stream without a buffer (test doubles) falls back to
+    `read(4096)` unchanged."""
+
+    def __init__(self, stream, size: int = 4096):
+        self.stream = stream
+        self.size = size
+        buffer = getattr(stream, "buffer", None)
+        self.read1 = getattr(buffer, "read1", None) if buffer is not None else None
+        if callable(self.read1):
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            errors = getattr(stream, "errors", None) or "strict"
+            self.decoder = codecs.getincrementaldecoder(encoding)(errors)
+        else:
+            self.read1 = None
+            self.decoder = None
+
+    def read(self) -> str:
+        """Empty only at EOF: a read that lands mid-character yields no text
+        yet, so keep reading rather than mistake it for the end."""
+        if self.read1 is None:
+            return self.stream.read(self.size)
+        while True:
+            data = self.read1(self.size)
+            text = self.decoder.decode(data, final=not data)
+            if text or not data:
+                return text
+
+
 def _process_pid(process) -> int | None:
     pid = getattr(process, "pid", None)
     return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
@@ -369,7 +404,13 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     """Run one managed session and record its lifecycle without payload data.
 
     `beacon_interval` (seconds) paces the #33 liveness beacon; tests inject
-    a short one. The beacon never gates or alters the lifecycle below."""
+    a short one. The beacon never gates or alters the lifecycle below.
+
+    #41: stdout is captured for EVERY role (claude and codex children write
+    their work to stdout) and streamed to this process's stdout unchanged;
+    only the supervisor role's lines are parsed for broker requests. Each
+    stdout/stderr chunk notes output liveness, a counter file that never
+    carries content and never reaches a ledger."""
     capture_supervisor = spec.role == "supervisor"
     root = Path(spec.cwd).resolve()
     actor = lib.validate_agent_actor(actor or lib.default_agent_actor(spec.adapter, spec.role))
@@ -392,7 +433,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             list(spec.argv),
             cwd=spec.cwd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE if capture_supervisor else None,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             shell=False,
@@ -442,21 +483,37 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             threading.Event().wait(liveness_interval)
 
     threading.Thread(target=publish_liveness, daemon=True).start()
+
+    def note_output(chunk: str) -> None:
+        # #41: identifiers and counters only, rate limited inside lib, every
+        # OSError swallowed there; a failure here must never reach the
+        # reader thread, the child, or the session record.
+        try:
+            nbytes = len(chunk) if isinstance(chunk, bytes) else len(chunk.encode("utf-8", "replace"))
+            lib.note_output_liveness(root, session_id, spec.role, nbytes)
+        except Exception:
+            pass
+
     reader = None
     stderr_reader = None
     reader_errors: list[BaseException] = []
-    if capture_supervisor:
+    stream_label = "Supervisor output stream" if capture_supervisor else "agent output stream"
+    if getattr(process, "stdout", None) is not None:
         def stream_and_parse() -> None:
             try:
                 pending = ""
                 discarding = False
+                chunks = _ChunkReader(process.stdout)
                 while True:
-                    chunk = process.stdout.read(4096)
+                    chunk = chunks.read()
                     if not chunk:
                         break
                     sys.stdout.write(chunk)
                     sys.stdout.flush()
+                    note_output(chunk)
                     stdout_tail[0] = (stdout_tail[0] + chunk)[-8192:]
+                    if not capture_supervisor:
+                        continue
                     if discarding:
                         if "\n" in chunk:
                             _, pending = chunk.split("\n", 1)
@@ -473,10 +530,16 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                             protocol_errors.append("Supervisor broker request exceeded 65536 bytes")
                         pending = ""
                         discarding = True
-                if pending and not discarding:
+                if capture_supervisor and pending and not discarding:
                     _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
             except BaseException as exc:
                 reader_errors.append(exc)
+            finally:
+                # Drained to EOF: release the pipe instead of leaving it to GC.
+                try:
+                    process.stdout.close()
+                except Exception:
+                    pass
 
         try:
             reader = threading.Thread(target=stream_and_parse, daemon=True)
@@ -484,17 +547,19 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         except Exception as exc:
             _terminalize_runner_io_failure(root, session_id, process, stop_first=True)
             raise AgentLaunchError(
-                f"Supervisor output stream failed to start: {type(exc).__name__}", session_id,
+                f"{stream_label} failed to start: {type(exc).__name__}", session_id,
             ) from exc
     if getattr(process, "stderr", None) is not None:
         def stream_stderr() -> None:
             try:
+                chunks = _ChunkReader(process.stderr)
                 while True:
-                    chunk = process.stderr.read(4096)
+                    chunk = chunks.read()
                     if not chunk:
                         break
                     sys.stderr.write(chunk)
                     sys.stderr.flush()
+                    note_output(chunk)
                     stderr_tail[0] = (stderr_tail[0] + chunk)[-8192:]
             except BaseException as exc:
                 reader_errors.append(exc)
@@ -513,7 +578,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 f"agent error stream failed to start: {type(exc).__name__}", session_id,
             ) from exc
     try:
-        if capture_supervisor or stderr_reader:
+        if reader or stderr_reader:
             process.stdin.write(spec.stdin)
             process.stdin.close()
             process.wait(timeout=timeout)
@@ -570,15 +635,15 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         except Exception as exc:
             _terminalize_runner_io_failure(root, session_id, process, stop_first=True)
             raise AgentLaunchError(
-                f"Supervisor output stream failed: {type(exc).__name__}", session_id,
+                f"{stream_label} failed: {type(exc).__name__}", session_id,
             ) from exc
         if reader_alive:
             _terminalize_runner_io_failure(root, session_id, process, stop_first=True)
-            raise AgentLaunchError("Supervisor output stream did not close", session_id)
+            raise AgentLaunchError(f"{stream_label} did not close", session_id)
         if reader_errors:
             _terminalize_runner_io_failure(root, session_id, process, stop_first=False)
             raise AgentLaunchError(
-                f"Supervisor output stream failed: {type(reader_errors[0]).__name__}", session_id,
+                f"{stream_label} failed: {type(reader_errors[0]).__name__}", session_id,
             ) from reader_errors[0]
     if stderr_reader:
         try:

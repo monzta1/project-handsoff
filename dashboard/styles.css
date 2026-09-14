@@ -263,6 +263,11 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .ticket-state.in_review { color: #c8a8ff; border-color: rgba(200,168,255,.3); background: rgba(120,70,180,.14); }
 .ticket-state.awaiting_approval, .ticket-state.recovering { color: var(--amber); border-color: rgba(255,194,92,.3); background: rgba(255,194,92,.1); }
 .design-evidence-panel { margin: 16px 0; }
+.amendment-panel { margin: 16px 0; padding: 24px; border-left: 3px solid #d9a441; }
+.amendment-headline { margin: 0 0 6px; color: #e6efe9; font: 700 12px/1.4 var(--mono); overflow-wrap: anywhere; }
+.amendment-decision { margin: 0 0 10px; color: #d9a441; font: 700 11px/1.4 var(--mono); }
+.amendment-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; color: var(--muted); font: 11px/1.5 var(--mono); }
+.amendment-list li { overflow-wrap: anywhere; }
 .design-evidence-list { display: grid; gap: 8px; }
 .design-evidence-item { display: grid; grid-template-columns: 92px 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 9px; background: #101815; }
 .design-evidence-item strong { display: block; color: #e6efe9; font: 700 12px/1.3 var(--mono); overflow-wrap: anywhere; }
@@ -333,6 +338,9 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .event p, .verification p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .verification-status { color: var(--green); }
 .verification-status.failed { color: var(--red); }
+.execution-pill { display: inline-block; margin-left: 6px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 700 10px/1.4 var(--sans); text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
+.execution-pill.executed { color: var(--emerald); border-color: rgba(61, 220, 132, .28); background: var(--emerald-soft); }
+.execution-pill.reused { color: var(--amber); border-color: rgba(255, 203, 122, .3); background: var(--amber-soft); }
 .empty-row { padding: 22px 0; border-top: 1px solid var(--line); color: var(--faint); font-size: 13px; }
 
 .empty-state { min-height: calc(100vh - 84px); display: grid; place-content: center; justify-items: start; max-width: 720px; }

@@ -30,7 +30,9 @@ const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 // runtime/crew/replacement
 // labels, eventDetail, designEvidenceState, designEvidenceDetail,
 // profileSourceLabel, autoDetectOptionLabel, resolveAgentSelectValue,
-// ALLOWED_ADAPTERS, liveStatusView, liveAgeLabel, and the fallback-list helpers come from
+// ALLOWED_ADAPTERS, liveStatusView, liveAgeLabel, the amendment helpers
+// (showAmendmentPanel, amendmentHeadline, amendmentDecisionLabel, ...), the verification
+// execution helpers (verificationExecutionState, verificationExecutionLabel), and the fallback-list helpers come from
 // lib/dashboard-logic.js (loaded before this file) so they stay testable
 // with plain `node --test` and no DOM.
 
@@ -526,6 +528,33 @@ function renderDesignEvidence(artifacts) {
     </div>`).join("");
 }
 
+function renderAmendment(amendment) {
+  const panel = $("amendment-panel");
+  const visible = showAmendmentPanel(amendment);
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) {
+    $("amendment-headline").textContent = amendmentHeadline(null);
+    $("amendment-decision").textContent = amendmentDecisionLabel(null);
+    $("amendment-list").innerHTML = "";
+    return;
+  }
+  const pending = amendmentPendingDecision(amendment);
+  $("amendment-state").textContent = `PENDING ${String(pending || "decision").replaceAll("_", " ").toUpperCase()}`;
+  $("amendment-headline").textContent = amendmentHeadline(amendment);
+  $("amendment-decision").textContent = amendmentDecisionLabel(amendment);
+  const rows = [
+    amendmentIdsLabel(amendment.changed_ids, "Changed criteria"),
+    amendmentIdsLabel(amendment.dependent_ids, "Dependent criteria"),
+    amendmentIdsLabel(amendment.affected_work_items, "Affected work items"),
+    amendmentEvidenceLabel(amendment),
+    ...amendmentDecisionsView(amendment).map((line) => `Decision · ${line}`),
+    `Classification: ${String(amendment.classification || "scoped").replaceAll("_", " ")}`,
+    ...amendmentReasonsView(amendment).map((reason) => `Reason · ${reason}`),
+    `Base design ${String(amendment.base_design_hash || "").slice(0, 12)} · amended ${String(amendment.resulting_design_hash || "").slice(0, 12)} · amendment hash ${String(amendment.amendment_hash || "").slice(0, 12)}`,
+  ];
+  $("amendment-list").innerHTML = rows.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+}
+
 function renderAttention(items) {
   $("attention-count").textContent = items.length;
   $("attention-list").innerHTML = items.length
@@ -620,7 +649,7 @@ function renderVerifications(records, total) {
     <div class="verification">
       <time datetime="${escapeHtml(record.at)}">${escapeHtml(relativeTime(record.at))}</time>
       <div>
-        <strong class="verification-status ${record.ok ? "" : "failed"}">${record.ok ? "PASS" : "FAIL"} · ${escapeHtml(cleanKind(record.kind))}</strong>
+        <strong class="verification-status ${record.ok ? "" : "failed"}">${record.ok ? "PASS" : "FAIL"} · ${escapeHtml(cleanKind(record.kind))}${verificationExecutionState(record) ? ` <span class="execution-pill ${escapeHtml(verificationExecutionState(record))}">${escapeHtml(verificationExecutionLabel(record))}</span>` : ""}</strong>
         <p>${escapeHtml((record.criteria || []).join(", ") || "No criterion")} · ${escapeHtml(record.by || "Unknown actor")}</p>
       </div>
     </div>`).join("") : '<div class="empty-row">No diagnostic evidence recorded.</div>';
@@ -708,6 +737,7 @@ function render(snapshot) {
   renderCriteria(acceptance.criteria);
   renderWorkItems(snapshot.work_items || { items: [], multi: false });
   renderDesignEvidence(snapshot.design_evidence || []);
+  renderAmendment(snapshot.amendment || null);
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
   renderReplacements(state.replacements, snapshot.recovery?.attempts || []);

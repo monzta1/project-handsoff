@@ -336,6 +336,91 @@ function serializeFallbackDraft(fallbackDraft, roles) {
   ]));
 }
 
+// #42: the open post-approval amendment, derived from snapshot.amendment
+// only (ids, counts, hashes; the snapshot never carries criterion text).
+// A null or legacy snapshot without the field reads as no amendment.
+const AMENDMENT_DECISIONS = ["review", "revision", "pilot_approval"];
+
+function amendmentPendingDecision(amendment) {
+  if (!amendment || typeof amendment !== "object" || amendment.state !== "open") return null;
+  if (AMENDMENT_DECISIONS.includes(amendment.pending_decision)) return amendment.pending_decision;
+  const review = Array.isArray(amendment.required_decisions)
+    ? amendment.required_decisions.find((item) => item && item.decision === "review")
+    : null;
+  if (!review || review.status === "pending") return "review";
+  return review.status === "approved" ? "pilot_approval" : "revision";
+}
+
+function showAmendmentPanel(amendment) {
+  return Boolean(amendment && typeof amendment === "object" && amendment.state === "open");
+}
+
+function amendmentHeadline(amendment) {
+  if (!showAmendmentPanel(amendment)) return "No amendment open";
+  const changed = Array.isArray(amendment.changed_ids) ? amendment.changed_ids.length : 0;
+  const items = Array.isArray(amendment.affected_work_items) ? amendment.affected_work_items : [];
+  const classification = String(amendment.classification || "scoped").replaceAll("_", " ").toUpperCase();
+  const phase = Number.isInteger(amendment.frozen_phase) ? ` · frozen at Phase ${amendment.frozen_phase}` : "";
+  const scope = items.length ? ` · ${items.join(", ")}` : "";
+  return `${amendment.amendment_id || "amendment"} · ${classification} · ${changed} criteri${changed === 1 ? "on" : "a"} changed${scope}${phase}`;
+}
+
+function amendmentDecisionLabel(amendment) {
+  const pending = amendmentPendingDecision(amendment);
+  if (pending === "review") return "PENDING: independent amendment review, then Pilot approval";
+  if (pending === "revision") return "PENDING: reviewer requested changes; Architect revises or escalates";
+  if (pending === "pilot_approval") return "PENDING: Pilot approval (amendment-approve)";
+  return "No decision pending";
+}
+
+function amendmentDecisionsView(amendment) {
+  const rows = Array.isArray(amendment?.required_decisions) ? amendment.required_decisions : [];
+  return rows.map((row) => {
+    const decision = String(row?.decision || "decision").replaceAll("_", " ");
+    const status = String(row?.status || "pending").replaceAll("_", " ");
+    const by = row?.by ? ` by ${row.by}` : "";
+    return `${decision}: ${status}${by}`;
+  });
+}
+
+function amendmentIdsLabel(ids, noun) {
+  const list = Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : [];
+  if (!list.length) return `${noun}: none`;
+  return `${noun}: ${list.join(", ")}`;
+}
+
+function amendmentEvidenceLabel(amendment) {
+  const retained = Number.isInteger(amendment?.retained_evidence_count) ? amendment.retained_evidence_count : 0;
+  const changed = Array.isArray(amendment?.changed_ids) ? amendment.changed_ids.length : 0;
+  return `${retained} criteri${retained === 1 ? "on" : "a"} outside the change keep valid evidence · ${changed} reset to not tested`;
+}
+
+function amendmentReasonsView(amendment) {
+  const reasons = Array.isArray(amendment?.classification_reasons) ? amendment.classification_reasons : [];
+  return reasons.filter((reason) => typeof reason === "string" && reason);
+}
+
+// #43: a verification record is either executed (its commands were
+// launched for it) or reused (its results were copied from an earlier
+// executed record of the same binding within the run, named by
+// reused_from). A legacy record without the field gets no pill.
+function verificationExecutionState(record) {
+  if (record?.executed === true) return "executed";
+  if (record?.executed === false) return "reused";
+  return null;
+}
+
+function verificationExecutionLabel(record) {
+  const state = verificationExecutionState(record);
+  if (state === "executed") return "EXECUTED";
+  if (state === "reused") {
+    const source = typeof record.reused_from === "string" && record.reused_from
+      ? ` · from ${record.reused_from.slice(0, 11)}` : "";
+    return `REUSED${source}`;
+  }
+  return "";
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     adapterLabel,
@@ -374,5 +459,16 @@ if (typeof module !== "undefined" && module.exports) {
     removeFallbackEntry,
     buildFallbackDraft,
     serializeFallbackDraft,
+    AMENDMENT_DECISIONS,
+    amendmentPendingDecision,
+    showAmendmentPanel,
+    amendmentHeadline,
+    amendmentDecisionLabel,
+    amendmentDecisionsView,
+    amendmentIdsLabel,
+    amendmentEvidenceLabel,
+    amendmentReasonsView,
+    verificationExecutionState,
+    verificationExecutionLabel,
   };
 }

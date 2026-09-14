@@ -1,0 +1,66 @@
+{
+  "feature": "Benchmark #45: run-export design phase",
+  "task_file": "task.md",
+  "max_autonomous_design_reviews": 2,
+  "profiles": {
+    "architect": {"adapter": "claude", "model": "claude-opus-5"},
+    "supervisor": {"adapter": "claude", "model": "claude-opus-5"},
+    "implementer": {"adapter": "claude", "model": "claude-opus-5"},
+    "reviewer": {"adapter": "codex", "model": "default"},
+    "reviewer_followup": {"adapter": "claude", "model": "claude-haiku-4-5-20251001"}
+  },
+  "check_commands": ["true"],
+  "criteria_transaction": {
+    "operations": [
+      {"op": "update", "id": "REQ-001", "fields": {
+        "requirement": "run-export writes one JSON bundle for a finished run that carries status, acceptance, the event log, and the verification ledger, and the bundle round-trips through validate_status_schema and validate_acceptance_schema",
+        "verification": "automated",
+        "tests": ["true"]
+      }},
+      {"op": "add", "criterion": {
+        "id": "REQ-002", "type": "supporting",
+        "requirement": "run-export reads every state file under the project lock and the event chain it copies verifies against the same head the bundle records",
+        "verification": "automated", "tests": ["true"]
+      }},
+      {"op": "add", "criterion": {
+        "id": "REQ-003", "type": "supporting",
+        "requirement": "The bundle never carries prompts, raw agent output, credentials, or environment values; only identifiers, hashes, counters, and timestamps from the ledgers",
+        "verification": "automated", "tests": ["true"]
+      }},
+      {"op": "add", "criterion": {
+        "id": "REQ-004", "type": "supporting",
+        "requirement": "A crash during run-export leaves either the previous bundle or the new one on disk, never a truncated file",
+        "verification": "automated", "tests": ["true"]
+      }}
+    ]
+  },
+  "seeded_defects": [
+    {
+      "id": "SD-1",
+      "reveals": "the state files are read without the project lock, so a concurrent commit can hand the export a status file from one transaction and an event log from another",
+      "keywords": ["project lock", "project_lock", "without the lock", "under the lock", "unlocked read"]
+    },
+    {
+      "id": "SD-2",
+      "reveals": "the bundle carries per-session stdout and stderr tails, which the secret-safety boundary forbids: ledgers and exports carry identifiers and hashes, never raw agent output",
+      "keywords": ["stdout", "stderr", "raw output", "secret", "8192"]
+    },
+    {
+      "id": "SD-3",
+      "reveals": "the bundle is written in place with open(PATH, 'w'), so a crash mid-write leaves a truncated file, unlike every other Handsoff state write which is an atomic replace",
+      "keywords": ["atomic", "truncated", "in place", "temporary file", "rename"]
+    }
+  ],
+  "design_evidence": [
+    {
+      "id": "state-writers",
+      "command": "grep -n 'def atomic_write_json\\|def commit\\|def project_lock' bin/handsoff_lib.py",
+      "inputs": ["bin/handsoff_lib.py"]
+    },
+    {
+      "id": "supervisor-commands",
+      "command": "grep -c 'add_parser(' bin/handsoff_supervisor.py",
+      "inputs": ["bin/handsoff_supervisor.py"]
+    }
+  ]
+}

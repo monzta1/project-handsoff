@@ -31,6 +31,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -108,6 +109,18 @@ LIVE_BEACON_KEYS = ("session_id", "role", "state", "pid", "beacon_at", "ended_at
 LIVE_BEACON_INTERVAL_SECONDS = 5.0
 LIVE_BEACON_FRESH_SECONDS = 15.0
 LIVE_STATES = ("idle", "started", "running", "waiting", "stalled", "stopped", "failed", "complete")
+#: #41: output liveness. Every stdout/stderr chunk a managed child writes
+#: bumps this file (gitignored, never hashed, never logged, never read by
+#: a gate): identifiers, one timestamp, and two counters, never content.
+#: It is what lets `stall_warning` see a child that is streaming output
+#: while the workflow and heartbeat timestamps sit idle. Writes are rate
+#: limited to one per second per session; chunks in between only bump the
+#: counters. The file only counts while bound to the current session for
+#: its role in a live state, so a process exit expires the signal at once.
+OUTPUT_LIVENESS_FILE = ".handsoff-output-liveness.json"
+OUTPUT_LIVENESS_KEYS = ("session_id", "role", "output_at", "chunks", "bytes")
+OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS = 1.0
+ACTIVITY_SOURCES = ("workflow", "heartbeat", "output", "beacon", "session", "pause")
 #: #40: a dashboard launched with `--owned-by-run` writes this pointer file
 #: in the project root so run completion can find and release it. It is
 #: generated state (gitignored), a pointer and never the authority: the
@@ -2338,8 +2351,17 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
                         by: str, criteria: list[dict], results: list[dict] | None = None,
                         description: str | None = None,
                         acceptance_digest: str | None = None,
-                        config_digest: str | None = None) -> dict:
+                        config_digest: str | None = None,
+                        binding: dict | None = None, executed: bool = True,
+                        reused_from: str | None = None,
+                        feature_hash: str | None = None) -> dict:
     """Append a hash-chained evidence record. Caller must hold project_lock.
+
+    #43: `binding` (command to verification_binding hash), `executed`,
+    `reused_from`, and `feature_hash` are part of the hashed record so a
+    reused record cannot later be passed off as an executed one. Legacy
+    records written before these fields existed simply lack them and are
+    never reuse sources.
 
     The chain proves a record was not altered AFTER it was written; it says
     nothing about whether the record was meaningful WHEN it was written.
@@ -2353,6 +2375,14 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
         raise HandsoffError(f"verification record: 'kind' must be one of {sorted(VERIFICATION_KINDS)}")
     if not criteria or not all(isinstance(c, dict) and c.get("id") for c in criteria):
         raise HandsoffError("verification record: 'criteria' must be a non-empty list of criteria with ids")
+    if binding is not None and not isinstance(binding, dict):
+        raise HandsoffError("verification record: 'binding' must be an object or null")
+    if not isinstance(executed, bool):
+        raise HandsoffError("verification record: 'executed' must be a boolean")
+    if reused_from is not None and (not isinstance(reused_from, str) or not reused_from.strip()):
+        raise HandsoffError("verification record: 'reused_from' must be a run id or null")
+    if executed and reused_from is not None:
+        raise HandsoffError("verification record: an executed record cannot name a reuse source")
     path = verification_log_path(root, cfg)
     prev_hash = _last_hash(path)
     record = {
@@ -2367,6 +2397,10 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
         "description": description or "",
         "acceptance_hash": acceptance_digest,
         "config_hash": config_digest,
+        "binding": binding,
+        "executed": executed,
+        "reused_from": reused_from,
+        "feature_hash": feature_hash,
         "prev_hash": prev_hash,
     }
     record["hash"] = hashlib.sha256((_canonical(record) + prev_hash).encode("utf-8")).hexdigest()
@@ -2419,6 +2453,20 @@ def load_verifications(root: Path, cfg: dict) -> tuple[list[dict], list[str]]:
             problems.append(f"verification line {lineno}: 'criteria' must be a non-empty list of criterion ids")
         if not isinstance(record.get("ok"), bool):
             problems.append(f"verification line {lineno}: 'ok' must be a boolean")
+        # #43 fields: absent on legacy records (tolerated, never reusable),
+        # typed when present so a hand-edited "executed": "yes" or a reuse
+        # source on an executed record is refused rather than half-trusted.
+        if "executed" in record and not isinstance(record.get("executed"), bool):
+            problems.append(f"verification line {lineno}: 'executed' must be a boolean")
+        if record.get("binding") is not None and not isinstance(record.get("binding"), dict):
+            problems.append(f"verification line {lineno}: 'binding' must be an object or null")
+        reused_from = record.get("reused_from")
+        if reused_from is not None and (not isinstance(reused_from, str) or not reused_from.strip()):
+            problems.append(f"verification line {lineno}: 'reused_from' must be a run id or null")
+        if record.get("executed") is True and reused_from is not None:
+            problems.append(f"verification line {lineno}: an executed record cannot name a reuse source")
+        if record.get("feature_hash") is not None and not isinstance(record.get("feature_hash"), str):
+            problems.append(f"verification line {lineno}: 'feature_hash' must be a string or null")
         records.append(record)
         prev_hash = claimed_hash or prev_hash
     return records, problems
@@ -3298,6 +3346,9 @@ def validate_status_schema(status: dict) -> list[str]:
                         errors.append("status: agent replacement handoff state is invalid")
                 elif record.get("state") != "pilot_pause" or record.get("handoff") is not None:
                     errors.append("status: paused agent replacement is invalid")
+    # #42: the open amendment and its closed history, plus the amended_by
+    # trail on the design decisions it rewrote.
+    errors.extend(amendment_status_errors(status))
     return errors
 
 
@@ -3455,6 +3506,20 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
     return errors
 
 
+def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bool:
+    """A design decision is current when its hash is the registry's design
+    hash, or (#42) while a scoped amendment is open: the decision still
+    carries the amendment's base hash and the registry is exactly the
+    amended one. Approving the amendment rewrites the decision to the
+    resulting hash; escalating it clears the decision."""
+    current = design_hash(acceptance.get("criteria", []))
+    if recorded == current:
+        return True
+    amendment = open_amendment(status)
+    return bool(amendment) and amendment.get("base_design_hash") == recorded \
+        and amendment.get("resulting_design_hash") == current
+
+
 def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
     """The Architect gate: Phase 3+ requires a recorded human design
     approval, for any run `requires_design_approval` (a run a NEW init
@@ -3467,7 +3532,7 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
     approval = status.get("design_approved")
     if not isinstance(approval, dict):
         return ["design gate: Phase 3+ requires a recorded human design approval"]
-    if approval.get("design_hash") != design_hash(acceptance.get("criteria", [])):
+    if not _design_hash_current(approval.get("design_hash"), status, acceptance):
         errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
     if approval.get("config_hash") != config_hash(cfg):
         errors.append("design gate: workflow policy changed since design approval; record a new approval")
@@ -3496,7 +3561,7 @@ def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str
     errors: list[str] = []
     if review.get("decision") != "approved":
         errors.append("design review gate: the current design review requested changes")
-    if review.get("design_hash") != design_hash(acceptance.get("criteria", [])):
+    if not _design_hash_current(review.get("design_hash"), status, acceptance):
         errors.append("design review gate: criteria changed since design review; record a new design review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("design review gate: workflow policy changed since design review; record a new design review")
@@ -3757,6 +3822,9 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     if phase >= 3:
         errors.extend(_design_review_errors(status, acceptance, cfg))
         errors.extend(_design_errors(status, acceptance, cfg))
+    # #42: an open amendment pins the run to the phase and progress it was
+    # opened at, forward and back, until it is approved or escalated.
+    errors.extend(amendment_freeze_errors(status))
 
     if phase >= 6 and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("phase gate: every criterion and the original symptom must have verified evidence before Phase 6+")
@@ -4105,19 +4173,25 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
             "recovery_id": rid, "attempt": record["attempt"], "cap": cap}
 
 
-def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None) -> str | None:
+def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None,
+                  output_liveness: dict | None = None) -> str | None:
     """Advisory only, never blocks a call: a stalled run should surface for
     escalation, not lock the operator out of even reading status.
 
-    Reads the FRESHEST of two signals, not `updated_at` alone: `updated_at`
+    Reads the FRESHEST of three signals, not `updated_at` alone: `updated_at`
     (bumped by any progress-making call: advance, verify, record-evidence,
-    ...) and `last_heartbeat_at` (bumped only by the `heartbeat` command, a
+    ...), `last_heartbeat_at` (bumped only by the `heartbeat` command, a
     pure liveness ping for a run doing legitimate long background work that
-    has no progress to report yet). A run flagged stalled here has NEITHER
-    signal current -- genuinely no activity, not merely no status-file
+    has no progress to report yet), and, when the caller passes the
+    `.handsoff-output-liveness.json` record (#41), the `output_at` of the
+    current live managed session, so a child that is streaming output is
+    never flagged silent. A run flagged stalled here has NONE of the
+    signals current -- genuinely no activity, not merely no status-file
     write. `last_heartbeat_at` may be entirely absent (any status.json
     written before this field existed); that reads as 'no heartbeat', the
-    same as if it were missing today, never as an error.
+    same as if it were missing today, never as an error. `output_liveness`
+    omitted (pure callers, legacy callers) or unbound to the current live
+    session for its role reads as 'no output', exactly today's behaviour.
 
     An open human pause (`human_pause` set by `human-pause-start`) also
     suppresses the warning, for as long as it stays open: nothing is
@@ -4133,27 +4207,43 @@ def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None) -> st
     if updated_minutes is None:
         return None
     heartbeat_minutes = _minutes_since(status.get("last_heartbeat_at"), now)
+    bound = output_liveness_for(status, output_liveness)
+    output_minutes = _minutes_since(bound["output_at"], now) if bound else None
     limit = float(cfg.get("stall_minutes", 10))
-    freshest = min(m for m in (updated_minutes, heartbeat_minutes) if m is not None)
+    freshest = min(m for m in (updated_minutes, heartbeat_minutes, output_minutes) if m is not None)
     if freshest > limit:
         return f"no update in {updated_minutes:.0f} minutes (limit {limit:.0f}), consider escalating"
     return None
 
 
-def activity_note(status: dict, cfg: dict, *, now: datetime | None = None) -> str | None:
+def _output_seconds_ago(bound: dict | None, now: datetime) -> int | None:
+    """Whole seconds since a bound output record's `output_at`, truncated
+    (never rounded, so two readers a few hundred milliseconds apart agree)
+    and clamped at zero; None when there is no bound record."""
+    seconds = _seconds_since(bound["output_at"], now) if bound else None
+    if seconds is None:
+        return None
+    return max(int(seconds), 0)
+
+
+def activity_note(status: dict, cfg: dict, *, now: datetime | None = None,
+                  output_liveness: dict | None = None) -> str | None:
     """The other half of the same signal: a run that is alive but not
-    currently progressing. Fires only in the specific case that would
+    currently progressing. Fires only in the specific cases that would
     otherwise look ambiguous -- `updated_at` is stale past `stall_minutes`,
-    but `last_heartbeat_at` is fresh -- so a caller (the dashboard, `status`)
+    but the current live managed session produced output within
+    `stall_minutes` (#41, 'Agent active; latest output N seconds ago'), or
+    `last_heartbeat_at` is fresh -- so a caller (the dashboard, `status`)
     can say 'busy on a long background task' instead of leaving the
     operator to guess between 'stalled' and 'on course'. Mutually exclusive
     with `stall_warning`: whenever this returns non-None, `stall_warning`
-    is guaranteed None, since a fresh heartbeat is exactly what suppresses
-    it.
+    is guaranteed None, since fresh output or a fresh heartbeat is exactly
+    what suppresses it. The output reading comes before the heartbeat one;
+    `output_liveness` omitted or unbound reads as 'no output'.
 
-    An open human pause takes precedence over the heartbeat reading and
-    renders as 'waiting on <by> since <n> min ago[: <note>]', the one
-    rendering both `status` and the dashboard snapshot show."""
+    An open human pause takes precedence over both readings and renders as
+    'waiting on <by> since <n> min ago[: <note>]', the one rendering both
+    `status` and the dashboard snapshot show."""
     now = now or datetime.now(timezone.utc)
     if status.get("status") not in ("in_progress",):
         return None
@@ -4165,10 +4255,15 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None) -> st
         suffix = f": {note}" if isinstance(note, str) else ""
         return f"waiting on {pause.get('by')} since {since}{suffix}"
     updated_minutes = _minutes_since(status.get("updated_at"), now)
+    limit = float(cfg.get("stall_minutes", 10))
+    bound = output_liveness_for(status, output_liveness)
+    output_minutes = _minutes_since(bound["output_at"], now) if bound else None
+    if (updated_minutes is not None and updated_minutes > limit
+            and output_minutes is not None and output_minutes <= limit):
+        return f"Agent active; latest output {_output_seconds_ago(bound, now)} seconds ago"
     heartbeat_minutes = _minutes_since(status.get("last_heartbeat_at"), now)
     if updated_minutes is None or heartbeat_minutes is None:
         return None
-    limit = float(cfg.get("stall_minutes", 10))
     if updated_minutes > limit and heartbeat_minutes <= limit:
         return (f"background task active (heartbeat {heartbeat_minutes:.0f} min ago); "
                 f"no status update in {updated_minutes:.0f} minutes, but the run is alive")
@@ -4422,6 +4517,853 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# #44: atomic acceptance-criteria transactions. One validator serves
+# criterion-add/update/remove and criteria-apply; the planner applies a
+# whole operation list to a deep copy of the registry and either returns a
+# complete plan (per-operation spec hashes, registry and design hashes
+# before and after, derived work items) or raises with the offending
+# operation named, so the caller writes everything or nothing.
+# --------------------------------------------------------------------------
+
+CRITERION_TYPES = ("primary_fix", "supporting")
+CRITERION_SETTABLE_STATES = ("failing", "not_tested", "blocked")
+CRITERION_ADD_FIELDS = ("id", "type", "requirement", "verification", "tests")
+CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "state")
+CRITERIA_TRANSACTION_OPS = ("add", "update", "remove")
+MAX_CRITERIA_TRANSACTION_OPERATIONS = 64
+MAX_CRITERIA_TRANSACTION_BYTES = 256 * 1024
+
+
+class CriteriaTransactionError(HandsoffError):
+    """A refused operation. `str()` yields the documented refusal text
+    `operation N (<op> <id>): <reason>`, with N counted from 1 in file
+    order, so the supervisor's generic SHIP_FEATURE_BLOCKED prefix
+    completes the message without a second formatting path."""
+
+    def __init__(self, index: int, op: object, criterion_id: object, reason: str):
+        self.index = index
+        self.op = op if isinstance(op, str) and op else "?"
+        self.criterion_id = criterion_id if isinstance(criterion_id, str) and criterion_id else "?"
+        self.reason = reason
+        super().__init__(f"operation {index} ({self.op} {self.criterion_id}): {reason}")
+
+
+def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> list[str]:
+    """The one field validator behind criterion-add, criterion-update, and
+    criteria-apply. `require_all` is the add form: id, type, requirement,
+    verification, and a non-empty tests list must all be present. Without
+    it (the update and remove forms) any subset of the fields is checked,
+    `id` included; whether a subset may be empty is the caller's rule.
+    Returns a list of problems."""
+    if not isinstance(fields, dict):
+        return ["criterion fields must be an object"]
+    allowed = set(CRITERION_ADD_FIELDS) | set(CRITERION_UPDATE_FIELDS)
+    unknown = sorted(set(fields) - allowed)
+    if unknown:
+        return [f"unknown criterion field(s): {', '.join(unknown)}"]
+    errors: list[str] = []
+    if require_all:
+        missing = [field for field in CRITERION_ADD_FIELDS if field not in fields]
+        if missing:
+            errors.append(f"missing criterion field(s): {', '.join(missing)}")
+        if "state" in fields:
+            errors.append("a new criterion may not set 'state'; it starts not_tested")
+    if "id" in fields and (not isinstance(fields["id"], str) or not fields["id"].strip()):
+        errors.append("'id' must be a non-empty string")
+    if "type" in fields and fields["type"] not in CRITERION_TYPES:
+        errors.append(f"'type' must be one of {', '.join(CRITERION_TYPES)}")
+    if "requirement" in fields and (not isinstance(fields["requirement"], str)
+                                    or not fields["requirement"].strip()):
+        errors.append("'requirement' must be a non-empty string")
+    if "verification" in fields and fields["verification"] not in VERIFICATION_REQUIREMENTS:
+        errors.append(f"'verification' must be one of {', '.join(VERIFICATION_REQUIREMENTS)}")
+    if "tests" in fields:
+        tests = fields["tests"]
+        if not isinstance(tests, list) or not tests \
+                or not all(isinstance(test, str) and test.strip() for test in tests):
+            errors.append("'tests' must be a non-empty list of non-empty strings")
+    if "state" in fields and fields["state"] not in CRITERION_SETTABLE_STATES:
+        errors.append(f"'state' must be one of {', '.join(CRITERION_SETTABLE_STATES)}")
+    return errors
+
+
+def sync_work_item_registry(acceptance: dict, cfg: dict) -> bool:
+    """Append newly declared criterion identities to a persisted registry
+    without deleting stable promises. A legacy registry (no persisted
+    `work_items`) is left alone: its items stay derived on read."""
+    existing = acceptance.get("work_items")
+    if not isinstance(existing, list):
+        return False
+    known = {item.get("id") for item in existing}
+    changed = False
+    for item in derive_work_item_registry(acceptance, cfg):
+        if item["id"] not in known:
+            existing.append(item)
+            known.add(item["id"])
+            changed = True
+    existing.sort(key=lambda item: (item["kind"] != "issue", item.get("number") or 0, item["id"]))
+    return changed
+
+
+def load_criteria_transaction(path: Path) -> list[dict]:
+    """Read TX.json: an object with exactly `operations`, 1 to 64 entries,
+    at most 256 KiB, duplicate keys refused. Operation shapes are checked
+    by the planner, which names the offending operation."""
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise HandsoffError(f"transaction file: cannot read {path}: {exc}") from exc
+    if size > MAX_CRITERIA_TRANSACTION_BYTES:
+        raise HandsoffError(f"transaction file: {path} exceeds {MAX_CRITERIA_TRANSACTION_BYTES} bytes")
+    body = load_unique_json(path)
+    if not isinstance(body, dict) or set(body) != {"operations"}:
+        raise HandsoffError("transaction file: top-level value must be an object with exactly 'operations'")
+    operations = body["operations"]
+    if not isinstance(operations, list):
+        raise HandsoffError("transaction file: 'operations' must be an array")
+    if not 1 <= len(operations) <= MAX_CRITERIA_TRANSACTION_OPERATIONS:
+        raise HandsoffError(
+            f"transaction file: 'operations' must contain 1 to {MAX_CRITERIA_TRANSACTION_OPERATIONS} entries"
+        )
+    return operations
+
+
+def _transaction_test_gate(index: int, op: str, criterion: dict, cfg: dict, root: Path) -> None:
+    """For a criterion `verify` will run (its policy requires `checks`):
+    every tests entry must be one of [checks].commands, the rule `verify`
+    applies at run time, and must pass the #28 footprint gate exactly as
+    `run_checks` applies it (no shell control operators, never a command
+    that captures a gated regression group), so a transaction can never
+    register a test that verification would later refuse. Manual and
+    browser criteria carry attestation descriptions, never commands, and
+    are not gated here, matching the single commands."""
+    if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+        return
+    regression_commands = configured_regression_commands(cfg)
+    for test in criterion.get("tests", []):
+        if test not in cfg.get("check_commands", []):
+            raise CriteriaTransactionError(
+                index, op, criterion.get("id"),
+                f"automated test {test!r} is not one of [checks].commands",
+            )
+        try:
+            footprint = normalized_test_footprint(test, root)
+        except HandsoffError as exc:
+            raise CriteriaTransactionError(index, op, criterion.get("id"), f"test {test!r}: {exc}") from exc
+        for gated in regression_commands:
+            gated_footprint = normalized_test_footprint(gated, root)
+            if "*" in footprint or ("*" not in gated_footprint and gated_footprint <= set(footprint)):
+                raise CriteriaTransactionError(
+                    index, op, criterion.get("id"),
+                    f"test {test!r} captures gated regression group commands; "
+                    "full regressions go through regression-request",
+                )
+
+
+def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict], *,
+                              root: Path | None = None) -> dict:
+    """Apply `operations` in order to a deep copy of `acceptance` and return
+    the plan, or raise CriteriaTransactionError (HandsoffError) naming the
+    first refused operation. Nothing passed in is mutated.
+
+    The plan carries `operations` ([{op, id, previous_hash, resulting_hash}]),
+    `operation_count`, `registry_hash_before`/`registry_hash_after`
+    (`acceptance_hash`), `design_hash_before`/`design_hash_after`,
+    `work_items_after` (effective work item ids), `work_item_scope_changed`,
+    `resets_original_symptom` (a primary_fix spec was added or changed),
+    and the full `criteria_after` and `work_items_registry_after` that
+    `apply_criteria_plan` writes. `root` is where test footprints resolve
+    their globs; it defaults to the current directory."""
+    root = root if root is not None else Path.cwd()
+    if not isinstance(operations, list) or not 1 <= len(operations) <= MAX_CRITERIA_TRANSACTION_OPERATIONS:
+        raise HandsoffError(
+            f"transaction: 'operations' must contain 1 to {MAX_CRITERIA_TRANSACTION_OPERATIONS} entries"
+        )
+    before_criteria = acceptance.get("criteria")
+    if not isinstance(before_criteria, list):
+        raise HandsoffError("transaction: acceptance registry has no criteria list")
+    planned = deepcopy(acceptance)
+    criteria: list[dict] = planned["criteria"]
+    before_items, _ = effective_work_items(acceptance, cfg)
+    before_scope = work_item_scope_hash(before_items)
+    seen_ids: set[str] = set()
+    records: list[dict] = []
+    resets_symptom = False
+    last_primary_touch: int | None = None
+
+    def lookup(criterion_id: str) -> dict | None:
+        return next((c for c in criteria if c.get("id") == criterion_id), None)
+
+    for position, operation in enumerate(operations, start=1):
+        if not isinstance(operation, dict):
+            raise CriteriaTransactionError(position, None, None, "operation must be an object")
+        op = operation.get("op")
+        if op not in CRITERIA_TRANSACTION_OPS:
+            raise CriteriaTransactionError(position, op, operation.get("id"),
+                                           f"'op' must be one of {', '.join(CRITERIA_TRANSACTION_OPS)}")
+        if op == "add":
+            if set(operation) != {"op", "criterion"}:
+                raise CriteriaTransactionError(position, op, None,
+                                               "an add operation has exactly 'op' and 'criterion'")
+            spec = operation["criterion"]
+            if not isinstance(spec, dict) or set(spec) != set(CRITERION_ADD_FIELDS):
+                raise CriteriaTransactionError(
+                    position, op, spec.get("id") if isinstance(spec, dict) else None,
+                    "an add criterion has exactly id, type, requirement, verification, tests",
+                )
+            criterion_id = spec.get("id")
+            problems = validate_criterion_fields(spec, require_all=True)
+            if problems:
+                raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
+            if criterion_id in seen_ids:
+                raise CriteriaTransactionError(position, op, criterion_id,
+                                               "criterion id appears in an earlier operation")
+            if lookup(criterion_id) is not None:
+                raise CriteriaTransactionError(position, op, criterion_id, "criterion already exists")
+            seen_ids.add(criterion_id)
+            criterion = {
+                "id": criterion_id, "type": spec["type"], "requirement": spec["requirement"],
+                "verification": spec["verification"], "tests": list(spec["tests"]),
+                "evidence": [], "state": "not_tested",
+            }
+            _transaction_test_gate(position, op, criterion, cfg, root)
+            criteria.append(criterion)
+            if criterion["type"] == "primary_fix":
+                resets_symptom = True
+                last_primary_touch = position
+            records.append({"op": op, "id": criterion_id, "previous_hash": None,
+                            "resulting_hash": criterion_spec_hash(criterion)})
+            continue
+        criterion_id = operation.get("id")
+        if not isinstance(criterion_id, str) or not criterion_id.strip():
+            raise CriteriaTransactionError(position, op, criterion_id, "'id' must be a non-empty string")
+        if op == "update":
+            if set(operation) != {"op", "id", "fields"}:
+                raise CriteriaTransactionError(position, op, criterion_id,
+                                               "an update operation has exactly 'op', 'id' and 'fields'")
+        elif set(operation) != {"op", "id"}:
+            raise CriteriaTransactionError(position, op, criterion_id,
+                                           "a remove operation has exactly 'op' and 'id'")
+        if criterion_id in seen_ids:
+            raise CriteriaTransactionError(position, op, criterion_id,
+                                           "criterion id appears in an earlier operation")
+        seen_ids.add(criterion_id)
+        criterion = lookup(criterion_id)
+        if criterion is None:
+            raise CriteriaTransactionError(position, op, criterion_id, "unknown criterion")
+        previous_hash = criterion_spec_hash(criterion)
+        if op == "remove":
+            if len(criteria) == 1:
+                raise CriteriaTransactionError(position, op, criterion_id,
+                                               "acceptance registry must retain at least one criterion")
+            if criterion.get("type") == "primary_fix":
+                last_primary_touch = position
+            criteria[:] = [c for c in criteria if c is not criterion]
+            records.append({"op": op, "id": criterion_id, "previous_hash": previous_hash,
+                            "resulting_hash": None})
+            continue
+        fields = operation["fields"]
+        if not isinstance(fields, dict) or not fields or set(fields) - set(CRITERION_UPDATE_FIELDS):
+            raise CriteriaTransactionError(
+                position, op, criterion_id,
+                "'fields' must be a non-empty object with keys among requirement, verification, tests, type, state",
+            )
+        problems = validate_criterion_fields(fields)
+        if problems:
+            raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
+        was_primary = criterion.get("type") == "primary_fix"
+        spec_changed = False
+        for field in ("requirement", "verification", "type"):
+            if field in fields and criterion.get(field) != fields[field]:
+                criterion[field] = fields[field]
+                spec_changed = True
+        if "tests" in fields:
+            criterion["tests"] = list(fields["tests"])
+            spec_changed = True
+        if "state" in fields:
+            criterion["state"] = fields["state"]
+        if spec_changed or "state" in fields:
+            criterion["evidence"] = []
+            if "state" not in fields:
+                criterion["state"] = "not_tested"
+        if "tests" in fields or "verification" in fields:
+            _transaction_test_gate(position, op, criterion, cfg, root)
+        if spec_changed and (was_primary or criterion.get("type") == "primary_fix"):
+            resets_symptom = True
+        if was_primary or criterion.get("type") == "primary_fix":
+            last_primary_touch = position
+        records.append({"op": op, "id": criterion_id, "previous_hash": previous_hash,
+                        "resulting_hash": criterion_spec_hash(criterion)})
+
+    primary_count = sum(1 for c in criteria if c.get("type") == "primary_fix")
+    if primary_count != 1:
+        culprit = last_primary_touch or len(operations)
+        culprit_record = records[culprit - 1]
+        raise CriteriaTransactionError(
+            culprit, culprit_record["op"], culprit_record["id"],
+            f"the resulting registry would have {primary_count} primary_fix criteria; exactly one is required",
+        )
+    errors = validate_acceptance_schema(planned)
+    if errors:
+        culprit = len(operations)
+        for record in reversed(records):
+            if any(f"criterion {record['id']} " in error for error in errors):
+                culprit = records.index(record) + 1
+                break
+        culprit_record = records[culprit - 1]
+        raise CriteriaTransactionError(culprit, culprit_record["op"], culprit_record["id"],
+                                       "resulting registry fails validation: " + "; ".join(errors))
+    registry_changed = sync_work_item_registry(planned, cfg)
+    after_items, _ = effective_work_items(planned, cfg)
+    return {
+        "operations": records,
+        "operation_count": len(records),
+        "registry_hash_before": acceptance_hash(before_criteria),
+        "registry_hash_after": acceptance_hash(criteria),
+        "design_hash_before": design_hash(before_criteria),
+        "design_hash_after": design_hash(criteria),
+        "work_items_after": [item["id"] for item in after_items],
+        "work_item_scope_changed": registry_changed or before_scope != work_item_scope_hash(after_items),
+        "resets_original_symptom": resets_symptom,
+        "criteria_after": criteria,
+        "work_items_registry_after": planned.get("work_items") if isinstance(planned.get("work_items"), list) else None,
+    }
+
+
+def criteria_plan_preview(plan: dict, status: dict) -> dict:
+    """The dry-run view: the plan's hashes and operations plus what an apply
+    would invalidate on this status, never the bulky registry itself."""
+    flagged = bool(status.get("requires_design_approval") or status.get("requires_design_review"))
+    return {
+        "operations": deepcopy(plan["operations"]),
+        "operation_count": plan["operation_count"],
+        "registry_hash_before": plan["registry_hash_before"],
+        "registry_hash_after": plan["registry_hash_after"],
+        "design_hash_before": plan["design_hash_before"],
+        "design_hash_after": plan["design_hash_after"],
+        "work_items_after": list(plan["work_items_after"]),
+        "work_item_scope_changed": plan["work_item_scope_changed"],
+        "would_invalidate": {
+            "design": bool(status.get("design_approved") or status.get("design_review")),
+            "review": status.get("review") is not None,
+            "deployment": status.get("deployment_approved") is not None,
+            "live": status.get("live_verification_id") is not None,
+        },
+        "would_roll_back_to_phase": 2 if flagged and int(status.get("phase_number", 1) or 1) >= 3 else None,
+    }
+
+
+def apply_criteria_plan(acceptance: dict, plan: dict) -> None:
+    """Write a plan's resulting registry into `acceptance` in place. Refuses
+    a plan built against a different registry than the one on hand, so a
+    stale plan (the file changed between plan and apply) can never land."""
+    current = acceptance_hash(acceptance.get("criteria", []))
+    if current != plan.get("registry_hash_before"):
+        raise HandsoffError("transaction: the acceptance registry changed since the plan was built")
+    acceptance["criteria"] = deepcopy(plan["criteria_after"])
+    if plan.get("work_items_registry_after") is not None:
+        acceptance["work_items"] = deepcopy(plan["work_items_registry_after"])
+
+
+# --------------------------------------------------------------------------
+# #42: the scoped post-approval amendment lane. After a design is approved
+# and the run has left Phase 2, a small correction to already-approved
+# criteria no longer has to throw the whole design away. `plan_amendment`
+# reuses the #44 planner for the operation delta and then CLASSIFIES it:
+# `scoped` (apply, freeze the phase, review, Pilot approval, resume) or
+# `full_redesign` (refuse to open; the ordinary criteria-apply path with
+# its Phase 2 rollback is the only way through). The planner decides;
+# the caller cannot choose the classification.
+# --------------------------------------------------------------------------
+
+AMENDMENT_ID_PATTERN = re.compile(r"^am-[0-9a-f]{32}$")
+AMENDMENT_STATES = ("open", "approved", "escalated", "rejected")
+AMENDMENT_CLASSIFICATIONS = ("scoped", "full_redesign")
+AMENDMENT_REVIEW_DECISIONS = ("approved", "changes_requested")
+MAX_AMENDMENT_HISTORY = 16
+MAX_AMENDMENT_LIST = 1024
+AMENDMENT_FIELDS = {
+    "amendment_id", "opened_at", "by", "base_design_hash", "base_scope_hash",
+    "changed_ids", "dependent_ids", "affected_work_items", "operations",
+    "amendment_hash", "resulting_design_hash", "classification", "classification_reasons",
+    "frozen_phase", "frozen_progress", "review", "pilot_approval", "state", "closed_at",
+}
+AMENDMENT_REVIEW_FIELDS = {"by", "at", "decision", "summary", "amendment_hash"}
+AMENDMENT_PILOT_APPROVAL_FIELDS = {"by", "at", "amendment_hash"}
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def open_amendment(status: dict) -> dict | None:
+    """The open amendment record on `status`, or None. Only state `open`
+    counts; a closed record left in `status["amendment"]` by a hand edit is
+    a schema error, never a silent freeze."""
+    record = status.get("amendment") if isinstance(status, dict) else None
+    return record if isinstance(record, dict) and record.get("state") == "open" else None
+
+
+def amendment_hash(base_design_hash: str, operations: list[dict]) -> str:
+    """sha256 of the base design hash concatenated with the canonical
+    operation records ({op, id, previous_hash, resulting_hash}, in order).
+    Bound into the review and the Pilot approval, and recomputed at approve
+    time, so a delta that drifted after review can never be approved."""
+    return hashlib.sha256(
+        (str(base_design_hash) + _canonical({"operations": operations})).encode("utf-8")
+    ).hexdigest()
+
+
+def criterion_work_item(criterion: dict, registry: list[dict]) -> str:
+    """The work item a criterion belongs to, by the same rule
+    derive_work_items renders: its leading tag, else the only item of a
+    single-item run, else `unattributed`."""
+    item_id = criterion_work_item_id(criterion)
+    if item_id is None and len(registry) == 1:
+        return registry[0]["id"]
+    known = {item.get("id") for item in registry}
+    return item_id if item_id in known else "unattributed"
+
+
+def _amendment_changed_ids(operations: list[dict]) -> list[str]:
+    return [record["id"] for record in operations if record.get("op") in ("update", "remove")]
+
+
+def amendment_dependent_ids(criteria: list[dict], changed_ids: list[str], registry: list[dict]) -> list[str]:
+    """Criteria in the same work item as a changed criterion whose
+    requirement text names a changed criterion id. A cheap, deterministic
+    dependency signal (documented as such): it flags what the Reviewer
+    should re-read, it never widens the freeze or the evidence reset."""
+    by_id = {c.get("id"): c for c in criteria}
+    changed = [cid for cid in changed_ids if cid in by_id]
+    changed_items = {criterion_work_item(by_id[cid], registry) for cid in changed}
+    dependents = []
+    for criterion in criteria:
+        cid = criterion.get("id")
+        if cid in changed_ids or criterion_work_item(criterion, registry) not in changed_items:
+            continue
+        text = str(criterion.get("requirement") or "")
+        if any(re.search(r"(?<![A-Za-z0-9_-])" + re.escape(other) + r"(?![A-Za-z0-9_-])", text)
+               for other in changed):
+            dependents.append(cid)
+    return dependents
+
+
+def _verification_downgrade(before: dict, after: dict) -> str | None:
+    """Gate weakening, by policy level: `automated_and_browser` to anything
+    else, `automated` to `manual` or `browser`, or an automated criterion
+    losing tests with none added (a proper subset of the earlier list, or
+    an empty list)."""
+    old_policy, new_policy = before.get("verification"), after.get("verification")
+    if old_policy == "automated_and_browser" and new_policy != old_policy:
+        return f"verification downgrade {old_policy} -> {new_policy}"
+    if old_policy == "automated" and new_policy in ("manual", "browser"):
+        return f"verification downgrade {old_policy} -> {new_policy}"
+    old_tests, new_tests = list(before.get("tests") or []), list(after.get("tests") or [])
+    if "checks" in VERIFICATION_REQUIREMENTS.get(new_policy, set()) and old_tests \
+            and (not new_tests or (set(new_tests) < set(old_tests))):
+        return "tests removed without replacement"
+    return None
+
+
+def classify_amendment(acceptance: dict, cfg: dict, plan: dict, *,
+                       cumulative_changed_ids: list[str] | None = None,
+                       request_full_redesign: bool = False) -> tuple[str, list[str]]:
+    """Decide `scoped` or `full_redesign` for a planned delta, and say why.
+    `full_redesign` when any of: an add (added scope); an operation
+    touching a primary_fix criterion's type or changing which criterion is
+    primary; a verification downgrade; the changed criteria spanning more
+    than one derived work item (over `cumulative_changed_ids` on a revise,
+    so a second transaction cannot smuggle in a second item); the
+    work-item scope changing; or `--request-full-redesign`. Otherwise
+    `scoped`. Deterministic and pure."""
+    before_by_id = {c.get("id"): c for c in acceptance.get("criteria", [])}
+    after_by_id = {c.get("id"): c for c in plan["criteria_after"]}
+    registry, _ = effective_work_items(acceptance, cfg)
+    reasons: list[str] = []
+    for position, record in enumerate(plan["operations"], start=1):
+        op, cid = record.get("op"), record.get("id")
+        label = f"operation {position} ({op} {cid})"
+        if op == "add":
+            reasons.append(f"{label}: an add operation is added scope")
+            continue
+        before = before_by_id.get(cid) or {}
+        if op == "remove":
+            if before.get("type") == "primary_fix":
+                reasons.append(f"{label}: removes the primary_fix criterion")
+            continue
+        after = after_by_id.get(cid) or {}
+        if before.get("type") != after.get("type"):
+            reasons.append(f"{label}: changes which criterion is the primary_fix "
+                           f"({before.get('type')} -> {after.get('type')})")
+        downgrade = _verification_downgrade(before, after)
+        if downgrade:
+            reasons.append(f"{label}: {downgrade}")
+    changed = list(dict.fromkeys([*(cumulative_changed_ids or []), *_amendment_changed_ids(plan["operations"])]))
+    items = []
+    for cid in changed:
+        criterion = after_by_id.get(cid) or before_by_id.get(cid)
+        if criterion is None:
+            continue
+        item = criterion_work_item(criterion, registry)
+        if item not in items:
+            items.append(item)
+    if len(items) > 1:
+        reasons.append(f"changed criteria span more than one work item ({', '.join(items)})")
+    if plan.get("work_item_scope_changed"):
+        reasons.append("the work-item scope would change")
+    if request_full_redesign:
+        reasons.append("--request-full-redesign was passed")
+    return ("full_redesign" if reasons else "scoped"), reasons[:MAX_AMENDMENT_LIST]
+
+
+def amendment_affected_work_items(before_criteria: list[dict], after_criteria: list[dict],
+                                  changed_ids: list[str], registry: list[dict]) -> list[str]:
+    """Work items of the changed criteria, read from the amended registry
+    (a removed criterion is read from the registry it was removed from)."""
+    items = []
+    after_by_id = {c.get("id"): c for c in after_criteria}
+    before_by_id = {c.get("id"): c for c in before_criteria}
+    for cid in changed_ids:
+        criterion = after_by_id.get(cid) or before_by_id.get(cid)
+        if criterion is None:
+            continue
+        item = criterion_work_item(criterion, registry)
+        if item not in items:
+            items.append(item)
+    return items
+
+
+def plan_amendment(status: dict, acceptance: dict, cfg: dict, operations: list[dict], *,
+                   by: str, root: Path | None = None, request_full_redesign: bool = False,
+                   now: str | None = None, id_factory=None) -> dict:
+    """Plan a NEW amendment against the current registry and the design
+    approval on record. Returns {"plan", "record"}; the record is complete
+    (state `open`) but nothing is written. Raises HandsoffError when the
+    run is not in a state that can open one, or CriteriaTransactionError
+    from the #44 planner. A `full_redesign` classification is returned in
+    the record, not raised: the caller refuses to open and prints the
+    reasons."""
+    if not isinstance(by, str) or not by.strip():
+        raise HandsoffError("amendment: --by must be a non-empty string")
+    phase = int(status.get("phase_number", 0) or 0)
+    if phase < 3:
+        raise HandsoffError(f"amendment: the lane opens at Phase 3 or later (currently Phase {phase}); "
+                            "before design approval, revise criteria with criteria-apply")
+    if open_amendment(status) is not None:
+        raise HandsoffError(f"amendment: {open_amendment(status)['amendment_id']} is already open; "
+                            "close or escalate it first")
+    approval = status.get("design_approved")
+    if not isinstance(approval, dict) or not approval.get("design_hash"):
+        raise HandsoffError("amendment: no design approval is on record; use criteria-apply")
+    problems = _design_errors(status, acceptance, cfg) + _design_review_errors(status, acceptance, cfg)
+    if approval.get("design_hash") != design_hash(acceptance.get("criteria", [])):
+        problems.append("design gate: the recorded design approval does not match the current criteria")
+    if problems:
+        raise HandsoffError("amendment: the design approval on record is not valid for the current "
+                            "criteria (" + "; ".join(problems) + "); use criteria-apply")
+    plan = plan_criteria_transaction(acceptance, cfg, operations, root=root)
+    classification, reasons = classify_amendment(acceptance, cfg, plan,
+                                                 request_full_redesign=request_full_redesign)
+    registry, _ = effective_work_items(acceptance, cfg)
+    changed_ids = _amendment_changed_ids(plan["operations"])
+    existing = {item.get("amendment_id") for item in (status.get("amendments") or []) if isinstance(item, dict)}
+    record = {
+        "amendment_id": _new_bounded_id("am", AMENDMENT_ID_PATTERN, existing, id_factory),
+        "opened_at": now or datetime.now(timezone.utc).isoformat(),
+        "by": by.strip(),
+        "base_design_hash": plan["design_hash_before"],
+        "base_scope_hash": work_item_scope_hash(registry),
+        "changed_ids": changed_ids,
+        "dependent_ids": amendment_dependent_ids(plan["criteria_after"], changed_ids, registry),
+        "affected_work_items": amendment_affected_work_items(
+            acceptance.get("criteria", []), plan["criteria_after"], changed_ids, registry),
+        "operations": deepcopy(plan["operations"]),
+        "amendment_hash": amendment_hash(plan["design_hash_before"], plan["operations"]),
+        "resulting_design_hash": plan["design_hash_after"],
+        "classification": classification,
+        "classification_reasons": reasons,
+        "frozen_phase": phase,
+        "frozen_progress": status.get("progress", 0),
+        "review": None,
+        "pilot_approval": None,
+        "state": "open",
+        "closed_at": None,
+    }
+    return {"plan": plan, "record": record}
+
+
+def plan_amendment_revision(status: dict, acceptance: dict, cfg: dict, operations: list[dict], *,
+                            root: Path | None = None) -> dict:
+    """Plan a follow-up transaction on the OPEN amendment: the same
+    classification rules over the cumulative delta (operations appended,
+    changed ids unioned, cross-item judged over the union). Returns
+    {"plan", "record"} where `record` is the updated open record with the
+    hash recomputed and the stale review cleared; nothing is written."""
+    current = open_amendment(status)
+    if current is None:
+        raise HandsoffError("amendment: no amendment is open")
+    plan = plan_criteria_transaction(acceptance, cfg, operations, root=root)
+    classification, reasons = classify_amendment(
+        acceptance, cfg, plan, cumulative_changed_ids=list(current.get("changed_ids") or []))
+    registry, _ = effective_work_items(acceptance, cfg)
+    cumulative_operations = list(current.get("operations") or []) + deepcopy(plan["operations"])
+    changed_ids = list(dict.fromkeys([*(current.get("changed_ids") or []),
+                                      *_amendment_changed_ids(plan["operations"])]))
+    record = deepcopy(current)
+    record.update({
+        "changed_ids": changed_ids,
+        "dependent_ids": amendment_dependent_ids(plan["criteria_after"], changed_ids, registry),
+        "affected_work_items": amendment_affected_work_items(
+            acceptance.get("criteria", []), plan["criteria_after"], changed_ids, registry),
+        "operations": cumulative_operations,
+        "amendment_hash": amendment_hash(current.get("base_design_hash"), cumulative_operations),
+        "resulting_design_hash": plan["design_hash_after"],
+        "classification": classification,
+        "classification_reasons": reasons,
+        "review": None,
+    })
+    return {"plan": plan, "record": record}
+
+
+def reset_amended_criteria(acceptance: dict, changed_ids: list[str]) -> None:
+    """Registry mutation on open and revise: every changed criterion reads
+    `not_tested` with `evidence` cleared (its old ledger records stay in
+    the ledger but no longer bind, the spec hash changed); every other
+    criterion is left byte for byte."""
+    for criterion in acceptance.get("criteria", []):
+        if criterion.get("id") in changed_ids:
+            criterion["state"] = "not_tested"
+            criterion["evidence"] = []
+
+
+def recompute_amendment_hash(amendment: dict, criteria: list[dict]) -> tuple[str | None, list[str]]:
+    """Recompute the open amendment's hash from the CURRENT registry: every
+    operation's resulting spec hash must match the criterion on disk
+    (absent for a remove), the registry's design hash must equal
+    `resulting_design_hash`, and the base plus the recorded operations must
+    reproduce `amendment_hash`. Returns (hash or None, problems)."""
+    by_id = {c.get("id"): c for c in criteria}
+    problems = []
+    for record in amendment.get("operations") or []:
+        cid = record.get("id")
+        current = by_id.get(cid)
+        if record.get("op") == "remove":
+            if current is not None:
+                problems.append(f"criterion {cid} was removed by the amendment but is present again")
+            continue
+        if current is None:
+            problems.append(f"criterion {cid} named by the amendment is missing")
+        elif criterion_spec_hash(current) != record.get("resulting_hash"):
+            problems.append(f"criterion {cid} no longer matches the reviewed amendment (spec changed)")
+    current_design = design_hash(criteria)
+    if current_design != amendment.get("resulting_design_hash"):
+        problems.append("the registry's design hash differs from the amendment's resulting design hash")
+    recomputed = amendment_hash(amendment.get("base_design_hash"), amendment.get("operations") or [])
+    if recomputed != amendment.get("amendment_hash"):
+        problems.append("the recorded amendment hash does not reproduce from its base and operations")
+    return (None if problems else recomputed), problems
+
+
+def amendment_freeze_errors(status: dict) -> list[str]:
+    """The compute_errors rule: while an amendment is open the run is
+    pinned to the phase and progress it was opened at (after the review,
+    deployment, and live decisions were invalidated). Any other proposed
+    phase or progress is refused, forward or back."""
+    amendment = open_amendment(status)
+    if amendment is None:
+        return []
+    phase = int(status.get("phase_number", 0) or 0)
+    progress = float(status.get("progress", 0) or 0)
+    if phase != amendment.get("frozen_phase") or progress != float(amendment.get("frozen_progress", 0) or 0):
+        return [f"amendment gate: amendment {amendment.get('amendment_id')} is open; "
+                "record its review and Pilot approval first"]
+    return []
+
+
+def amendment_mutation_refusal(status: dict) -> str | None:
+    amendment = open_amendment(status)
+    if amendment is None:
+        return None
+    return f"amendment gate: close or escalate amendment {amendment.get('amendment_id')} before mutating criteria"
+
+
+def amendment_decision_refusal(status: dict, action: str) -> str | None:
+    amendment = open_amendment(status)
+    if amendment is None:
+        return None
+    return (f"amendment gate: amendment {amendment.get('amendment_id')} is open; {action} is refused until "
+            "its review and Pilot approval are recorded (or it is escalated)")
+
+
+def amendment_pending_decision(amendment: dict | None) -> str | None:
+    """Which decision the open amendment waits on: `review` (no review yet),
+    `revision` (the reviewer requested changes; Architect revises or
+    escalates), or `pilot_approval` (review approved). None when closed."""
+    if not isinstance(amendment, dict) or amendment.get("state") != "open":
+        return None
+    review = amendment.get("review")
+    if not isinstance(review, dict):
+        return "review"
+    if review.get("decision") == "approved":
+        return "pilot_approval"
+    return "revision"
+
+
+def amendment_view(status: dict, acceptance: dict, cfg: dict, verifications: list[dict]) -> dict | None:
+    """The dashboard/status view of the open amendment: ids, affected work
+    items, the retained evidence count (criteria outside changed_ids that
+    still hold valid evidence), the required decisions and which is
+    pending, the classification and reasons. Hashes only, never criterion
+    text. None when no amendment is open; `history` counts closed ones."""
+    history = [item for item in (status.get("amendments") or []) if isinstance(item, dict)]
+    amendment = open_amendment(status)
+    if amendment is None:
+        return None
+    criteria = acceptance.get("criteria", [])
+    changed = set(amendment.get("changed_ids") or [])
+    retained = sum(1 for c in criteria if c.get("id") not in changed and valid_evidence_kinds(c, verifications))
+    review = amendment.get("review") if isinstance(amendment.get("review"), dict) else None
+    pilot = amendment.get("pilot_approval") if isinstance(amendment.get("pilot_approval"), dict) else None
+    return {
+        "amendment_id": amendment.get("amendment_id"),
+        "state": amendment.get("state"),
+        "by": amendment.get("by"),
+        "opened_at": amendment.get("opened_at"),
+        "classification": amendment.get("classification"),
+        "classification_reasons": list(amendment.get("classification_reasons") or []),
+        "changed_ids": list(amendment.get("changed_ids") or []),
+        "dependent_ids": list(amendment.get("dependent_ids") or []),
+        "affected_work_items": list(amendment.get("affected_work_items") or []),
+        "operation_count": len(amendment.get("operations") or []),
+        "retained_evidence_count": retained,
+        "frozen_phase": amendment.get("frozen_phase"),
+        "frozen_progress": amendment.get("frozen_progress"),
+        "base_design_hash": amendment.get("base_design_hash"),
+        "resulting_design_hash": amendment.get("resulting_design_hash"),
+        "amendment_hash": amendment.get("amendment_hash"),
+        "required_decisions": [
+            {"decision": "review",
+             "status": (review or {}).get("decision") or "pending",
+             "by": (review or {}).get("by"), "at": (review or {}).get("at")},
+            {"decision": "pilot_approval",
+             "status": "recorded" if pilot else "pending",
+             "by": (pilot or {}).get("by"), "at": (pilot or {}).get("at")},
+        ],
+        "pending_decision": amendment_pending_decision(amendment),
+        "history_count": len(history),
+    }
+
+
+def _amendment_record_errors(record: object, label: str, *, must_be_open: bool) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(record, dict):
+        return [f"status: '{label}' must be an object"]
+    if set(record) != AMENDMENT_FIELDS:
+        return [f"status: '{label}' must have exactly the keys {sorted(AMENDMENT_FIELDS)}"]
+    aid = record.get("amendment_id")
+    if not isinstance(aid, str) or not AMENDMENT_ID_PATTERN.fullmatch(aid):
+        errors.append(f"status: '{label}.amendment_id' must match am-<32 hex>")
+    if not isinstance(record.get("by"), str) or not record["by"].strip():
+        errors.append(f"status: '{label}.by' must be a non-empty string")
+    for sub in ("opened_at", "closed_at"):
+        value = record.get(sub)
+        if value is None and sub == "closed_at":
+            continue
+        try:
+            parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
+            if parsed is None or parsed.tzinfo is None:
+                raise ValueError
+        except ValueError:
+            errors.append(f"status: '{label}.{sub}' must be a timezone-aware ISO-8601 timestamp"
+                          + (" or null" if sub == "closed_at" else ""))
+    for sub in ("base_design_hash", "base_scope_hash", "amendment_hash", "resulting_design_hash"):
+        if not isinstance(record.get(sub), str) or not _HEX64.fullmatch(record[sub]):
+            errors.append(f"status: '{label}.{sub}' must be a sha256 hex digest")
+    for sub in ("changed_ids", "dependent_ids", "affected_work_items", "classification_reasons"):
+        value = record.get(sub)
+        if not isinstance(value, list) or len(value) > MAX_AMENDMENT_LIST \
+                or any(not isinstance(item, str) or not item.strip() for item in value):
+            errors.append(f"status: '{label}.{sub}' must be a list of non-empty strings")
+    operations = record.get("operations")
+    if not isinstance(operations, list) or not operations \
+            or len(operations) > MAX_AMENDMENT_LIST \
+            or any(not isinstance(op, dict) or set(op) != {"op", "id", "previous_hash", "resulting_hash"}
+                   or op.get("op") not in CRITERIA_TRANSACTION_OPS
+                   or not isinstance(op.get("id"), str) or not op["id"].strip()
+                   or any(op.get(h) is not None and (not isinstance(op.get(h), str) or not _HEX64.fullmatch(op[h]))
+                          for h in ("previous_hash", "resulting_hash"))
+                   for op in operations):
+        errors.append(f"status: '{label}.operations' must be a non-empty list of "
+                      "{op, id, previous_hash, resulting_hash} records")
+    if record.get("classification") not in AMENDMENT_CLASSIFICATIONS:
+        errors.append(f"status: '{label}.classification' must be one of {', '.join(AMENDMENT_CLASSIFICATIONS)}")
+    if record.get("frozen_phase") not in PHASES or isinstance(record.get("frozen_phase"), bool):
+        errors.append(f"status: '{label}.frozen_phase' must be a phase number")
+    progress = record.get("frozen_progress")
+    if not _is_number(progress) or not 0 <= progress <= 100:
+        errors.append(f"status: '{label}.frozen_progress' must be a number from 0 to 100")
+    state = record.get("state")
+    if state not in AMENDMENT_STATES:
+        errors.append(f"status: '{label}.state' must be one of {', '.join(AMENDMENT_STATES)}")
+    elif must_be_open and state != "open":
+        errors.append(f"status: '{label}' must be open (a closed amendment belongs in 'amendments')")
+    elif not must_be_open and state == "open":
+        errors.append(f"status: '{label}' must be closed (an open amendment belongs in 'amendment')")
+    if state == "open" and record.get("closed_at") is not None:
+        errors.append(f"status: '{label}.closed_at' must be null while open")
+    if state != "open" and state in AMENDMENT_STATES and record.get("closed_at") is None:
+        errors.append(f"status: '{label}.closed_at' is required once closed")
+    review = record.get("review")
+    if review is not None:
+        if not isinstance(review, dict) or set(review) != AMENDMENT_REVIEW_FIELDS \
+                or review.get("decision") not in AMENDMENT_REVIEW_DECISIONS \
+                or not all(isinstance(review.get(k), str) and review[k].strip()
+                           for k in ("by", "at", "summary", "amendment_hash")):
+            errors.append(f"status: '{label}.review' must be null or {{by, at, decision, summary, amendment_hash}}")
+    pilot = record.get("pilot_approval")
+    if pilot is not None:
+        if not isinstance(pilot, dict) or set(pilot) != AMENDMENT_PILOT_APPROVAL_FIELDS \
+                or not all(isinstance(pilot.get(k), str) and pilot[k].strip()
+                           for k in ("by", "at", "amendment_hash")):
+            errors.append(f"status: '{label}.pilot_approval' must be null or {{by, at, amendment_hash}}")
+    if state == "approved" and (pilot is None or not isinstance(review, dict)
+                                or review.get("decision") != "approved"):
+        errors.append(f"status: '{label}' approved requires an approved review and a pilot approval")
+    return errors
+
+
+def amendment_status_errors(status: dict) -> list[str]:
+    """Schema rules for `amendment` (null or one OPEN record) and
+    `amendments` (closed history, at most 16, unique ids). Both are absent
+    on any status.json written before the lane existed and stay optional;
+    a present-but-malformed value refuses the whole state."""
+    errors: list[str] = []
+    seen: set[str] = set()
+    if "amendment" in status and status["amendment"] is not None:
+        errors.extend(_amendment_record_errors(status["amendment"], "amendment", must_be_open=True))
+        if isinstance(status["amendment"], dict) and isinstance(status["amendment"].get("amendment_id"), str):
+            seen.add(status["amendment"]["amendment_id"])
+    if "amendments" in status:
+        history = status["amendments"]
+        if not isinstance(history, list) or len(history) > MAX_AMENDMENT_HISTORY:
+            errors.append(f"status: 'amendments' must be a list of at most {MAX_AMENDMENT_HISTORY} closed amendments")
+        else:
+            for index, item in enumerate(history):
+                errors.extend(_amendment_record_errors(item, f"amendments[{index}]", must_be_open=False))
+                aid = item.get("amendment_id") if isinstance(item, dict) else None
+                if isinstance(aid, str):
+                    if aid in seen:
+                        errors.append(f"status: amendment id {aid} appears more than once")
+                    seen.add(aid)
+    for field in ("design_approved", "design_review"):
+        record = status.get(field)
+        if isinstance(record, dict) and "amended_by" in record:
+            value = record["amended_by"]
+            if not isinstance(value, list) or len(value) > MAX_AMENDMENT_HISTORY \
+                    or any(not isinstance(aid, str) or not AMENDMENT_ID_PATTERN.fullmatch(aid) for aid in value):
+                errors.append(f"status: '{field}.amended_by' must be a list of amendment ids")
+    return errors
+
+
+# --------------------------------------------------------------------------
 # #33: live session status. A managed child beacons `.handsoff-live.json`
 # every few seconds; `live_status` folds that liveness signal into the
 # structured state (run status, human pause, the ledger-bound session
@@ -4484,6 +5426,102 @@ def read_live_beacon(root: Path) -> dict | None:
     return beacon
 
 
+# --------------------------------------------------------------------------
+# #41: output liveness. The managed child's stdout/stderr readers note every
+# chunk here; nothing below ever records content, appends an event, or
+# touches the session record.
+# --------------------------------------------------------------------------
+
+def output_liveness_path(root: Path) -> Path:
+    return Path(root) / OUTPUT_LIVENESS_FILE
+
+
+def read_output_liveness(root: Path) -> dict | None:
+    """The output record if it exists and is well-formed (exactly the five
+    keys: two identifiers, one timestamp, two non-negative counters);
+    anything else, including no file, reads as no signal, never as an
+    error."""
+    path = output_liveness_path(root)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or set(record) != set(OUTPUT_LIVENESS_KEYS):
+        return None
+    for key in ("session_id", "role", "output_at"):
+        if not isinstance(record[key], str) or not record[key]:
+            return None
+    for key in ("chunks", "bytes"):
+        if not isinstance(record[key], int) or isinstance(record[key], bool) or record[key] < 0:
+            return None
+    if _minutes_since(record["output_at"], datetime.now(timezone.utc)) is None:
+        return None
+    return record
+
+
+_OUTPUT_LIVENESS_LOCK = threading.Lock()
+_OUTPUT_LIVENESS_COUNTERS: dict[str, dict] = {}
+_MAX_OUTPUT_LIVENESS_SESSIONS = 64
+
+
+def note_output_liveness(root: Path, session_id: str, role: str, nbytes: int, *,
+                         now: datetime | None = None, monotonic=time.monotonic) -> bool:
+    """Count one output chunk for `session_id` and, at most once per
+    OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS per session, write the five-key
+    record. Chunks between writes only bump the in-memory counters, which
+    the next write carries. Returns True only when the file was written.
+    Best effort throughout: an OSError is swallowed and nothing here can
+    change the child's lifecycle, the session record, or any ledger.
+    `monotonic` (the rate-limit clock) and `now` (the stamped time) are
+    injectable for tests."""
+    if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
+        nbytes = 0
+    with _OUTPUT_LIVENESS_LOCK:
+        counters = _OUTPUT_LIVENESS_COUNTERS.get(session_id)
+        if counters is None:
+            while len(_OUTPUT_LIVENESS_COUNTERS) >= _MAX_OUTPUT_LIVENESS_SESSIONS:
+                _OUTPUT_LIVENESS_COUNTERS.pop(next(iter(_OUTPUT_LIVENESS_COUNTERS)))
+            counters = _OUTPUT_LIVENESS_COUNTERS[session_id] = {"chunks": 0, "bytes": 0, "written_at": None}
+        counters["chunks"] += 1
+        counters["bytes"] += nbytes
+        tick = monotonic()
+        if (counters["written_at"] is not None
+                and tick - counters["written_at"] < OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS):
+            return False
+        counters["written_at"] = tick
+        record = {
+            "session_id": session_id, "role": role,
+            "output_at": (now or datetime.now(timezone.utc)).isoformat(),
+            "chunks": counters["chunks"], "bytes": counters["bytes"],
+        }
+    try:
+        _atomic_write_text(output_liveness_path(root), json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def output_liveness_for(status: dict, liveness: dict | None) -> dict | None:
+    """The output record only when it is bound to the run: its `session_id`
+    is the recorded current session for its `role` AND that session is in
+    a live state (launching, running). Output from a completed, failed,
+    replaced, or unknown session, or from an unknown role, reads as None,
+    which is how a process exit expires the signal at once."""
+    if not isinstance(liveness, dict):
+        return None
+    current = current_agent_sessions(status).get(liveness.get("role"))
+    if not isinstance(current, dict):
+        return None
+    if current.get("session_id") != liveness.get("session_id"):
+        return None
+    if current.get("state") not in AGENT_SESSION_LIVE_STATES:
+        return None
+    return liveness
+
+
+_READ_OUTPUT_LIVENESS = object()
+
+
 def _live_focus_session(status: dict) -> dict | None:
     """The one session the live view is about: a live (launching/running)
     current session first, else the most recently ended terminal one."""
@@ -4497,7 +5535,8 @@ def _live_focus_session(status: dict) -> dict | None:
     return None
 
 
-def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = None) -> dict:
+def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = None,
+                output_liveness=_READ_OUTPUT_LIVENESS) -> dict:
     """Derive one of LIVE_STATES from structured state plus the beacon.
 
     Precedence: a complete run; a run waiting on a person (blocked, open
@@ -4507,9 +5546,16 @@ def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = N
     current terminal session, reported from the ledger-bound record
     (`ended_at`, `exit_code`) with the beacon informing `process_signal`
     only; else idle. `last_activity_at` is the freshest of updated_at,
-    last_heartbeat_at, the matching beacon, and the session timestamps."""
+    last_heartbeat_at, the bound output record (#41), the matching beacon,
+    the session timestamps, and an open pause's `since`; `activity_source`
+    names which of ACTIVITY_SOURCES that was. `output_liveness` defaults to
+    reading `.handsoff-output-liveness.json` from `root`; `activity_view`
+    passes the record it already read so one reading feeds every field."""
     now = now or datetime.now(timezone.utc)
     beacon = read_live_beacon(root)
+    if output_liveness is _READ_OUTPUT_LIVENESS:
+        output_liveness = read_output_liveness(root)
+    output = output_liveness_for(status, output_liveness)
     session = _live_focus_session(status)
     session_id = session.get("session_id") if session else None
     role = session.get("role") if session else None
@@ -4522,19 +5568,28 @@ def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = N
     else:
         process_signal = "stale"
 
-    candidates = [status.get("updated_at"), status.get("last_heartbeat_at")]
+    # Ordered so an exact tie goes to the more specific signal.
+    pause = status.get("human_pause")
+    candidates = [("pause", pause.get("since") if isinstance(pause, dict) else None)]
+    if output:
+        candidates.append(("output", output["output_at"]))
+    candidates.append(("heartbeat", status.get("last_heartbeat_at")))
     if matching:
-        candidates.append(matching["beacon_at"])
+        candidates.append(("beacon", matching["beacon_at"]))
     if session:
-        candidates.extend(session.get(key) for key in ("started_at", "running_at", "ended_at"))
-    stamped = [(c, _seconds_since(c, now)) for c in candidates if isinstance(c, str)]
-    stamped = [(c, age) for c, age in stamped if age is not None]
-    last_activity_at = min(stamped, key=lambda item: item[1])[0] if stamped else None
-    seconds_since_activity = int(round(min(age for _, age in stamped))) if stamped else None
+        candidates.extend(("session", session.get(key)) for key in ("started_at", "running_at", "ended_at"))
+    candidates.append(("workflow", status.get("updated_at")))
+    stamped = [(source, c, _seconds_since(c, now)) for source, c in candidates if isinstance(c, str)]
+    stamped = [(source, c, age) for source, c, age in stamped if age is not None]
+    freshest = min(stamped, key=lambda item: item[2]) if stamped else None
+    activity_source = freshest[0] if freshest else None
+    last_activity_at = freshest[1] if freshest else None
+    seconds_since_activity = int(round(freshest[2])) if freshest else None
 
     view = {
         "state": "idle", "role": role, "session_id": session_id,
         "last_activity_at": last_activity_at, "seconds_since_activity": seconds_since_activity,
+        "activity_source": activity_source,
         "process_signal": process_signal, "detail": "no managed process is running",
         "ended_at": None, "exit_code": None,
     }
@@ -4582,6 +5637,26 @@ def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = N
     return view
 
 
+def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None = None) -> dict:
+    """#41: the one activity reading both `status` and the dashboard show,
+    so the CLI and Mission Control cannot disagree. Reads the output
+    record once and feeds that same reading to `live_status`,
+    `stall_warning`, and `activity_note`. Exactly five keys: `source` (one
+    of ACTIVITY_SOURCES or None), `at`, `seconds_ago` (whole seconds,
+    truncated), `stall_warning`, `activity_note`."""
+    now = now or datetime.now(timezone.utc)
+    liveness = read_output_liveness(root)
+    live = live_status(status, cfg, root, now=now, output_liveness=liveness)
+    seconds = _seconds_since(live["last_activity_at"], now)
+    return {
+        "source": live["activity_source"],
+        "at": live["last_activity_at"],
+        "seconds_ago": max(int(seconds), 0) if seconds is not None else None,
+        "stall_warning": stall_warning(status, cfg, now=now, output_liveness=liveness),
+        "activity_note": activity_note(status, cfg, now=now, output_liveness=liveness),
+    }
+
+
 # --------------------------------------------------------------------------
 # check execution: close the loop between a claimed state and reality
 # --------------------------------------------------------------------------
@@ -4617,13 +5692,204 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
             stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
             stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
             output = stdout + stderr + f"\nHANDSOFF: command timed out after {timeout} seconds"
-        output_hash = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()
+        raw = output.encode("utf-8", "replace")
+        output_hash = hashlib.sha256(raw).hexdigest()
+        # #43: the three flags the verification cache reads. A timed-out
+        # (124) or truncated result is real evidence of what happened but
+        # never a reusable proof that the command passes.
         results.append({
             "command": cmd, "exit_code": returncode, "output_sha256": output_hash,
             "duration_s": round(time.time() - started, 2),
-            "output_tail": output[-2000:],
+            "timed_out": returncode == 124,
+            "truncated": len(output) > CHECK_OUTPUT_TAIL_CHARS,
+            "output_bytes": len(raw),
+            "output_tail": output[-CHECK_OUTPUT_TAIL_CHARS:],
         })
     return results
+
+
+# --------------------------------------------------------------------------
+# #43: batch and cache hash-bound targeted verification. `verify` already
+# runs the union of needed commands once per invocation; this binds every
+# launch to the exact state it proved something about (command, repository
+# content including dirty state, the verification-relevant configuration,
+# and the specs of the criteria verified with it) so an identical later
+# request within the same run reuses the ledger record instead of
+# launching again. The ledger itself is the cache: no side file, and the
+# reused record chains and hashes like any other.
+# --------------------------------------------------------------------------
+
+CHECK_OUTPUT_TAIL_CHARS = 2000
+VERIFY_INFLIGHT_DIR = ".handsoff-verify-inflight"
+# Handsoff's own generated state, never part of the repository digest in
+# either mode: the ledgers, anchors, locks, beacons, and the in-flight
+# directory would otherwise churn the digest on every evidence write.
+HANDSOFF_GENERATED_NAMES = frozenset({
+    ".handsoff.lock", ".handsoff-event-head.json", ".handsoff-writeahead.json",
+    ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
+    LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE,
+    ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR,
+    "__pycache__", ".git",
+})
+
+
+def _digest_excluded(relative: str, state_files: set[str]) -> bool:
+    parts = relative.split("/")
+    if relative in state_files:
+        return True
+    if any(part in HANDSOFF_GENERATED_NAMES for part in parts):
+        return True
+    return parts[-1].endswith(".pyc")
+
+
+def _digest_entry(root: Path, relative: str) -> str | None:
+    path = root / relative
+    if path.is_symlink():
+        return hashlib.sha256(("symlink:" + os.readlink(path)).encode("utf-8", "replace")).hexdigest()
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def repository_digest(root: Path, cfg: dict | None = None) -> str:
+    """sha256 over the sorted (relative path, file sha256) pairs of every
+    tracked file plus every untracked-not-ignored file when `root` is a git
+    checkout (dirty state included by construction: the working tree
+    content is hashed, not HEAD). A root that is not a git checkout hashes
+    every file under it minus Handsoff's generated names. A tracked file
+    deleted from the working tree contributes a null hash, so a deletion
+    changes the digest too."""
+    names = cfg or DEFAULT_CONFIG
+    state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
+    listed: list[str] | None = None
+    try:
+        probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=str(root), shell=False,
+                               text=True, capture_output=True, timeout=10, check=False)
+        if probe.returncode == 0 and probe.stdout.strip() == "true":
+            tracked = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), shell=False,
+                                     capture_output=True, timeout=30, check=True).stdout
+            untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=str(root),
+                                       shell=False, capture_output=True, timeout=30, check=True).stdout
+            listed = [entry.decode("utf-8", "replace") for entry in (tracked + untracked).split(b"\0") if entry]
+    except (OSError, subprocess.SubprocessError):
+        listed = None
+    if listed is None:
+        listed = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            relative_dir = Path(dirpath).relative_to(root).as_posix()
+            dirnames[:] = sorted(d for d in dirnames if d not in HANDSOFF_GENERATED_NAMES)
+            for filename in filenames:
+                listed.append(filename if relative_dir == "." else f"{relative_dir}/{filename}")
+    pairs = []
+    for relative in sorted(set(listed)):
+        if _digest_excluded(relative, state_files):
+            continue
+        pairs.append([relative, _digest_entry(root, relative)])
+    return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
+
+
+def verification_config_hash(cfg: dict) -> str:
+    """The configuration that changes what a targeted check proves: the
+    governance keys, [checks].commands, the per-command timeout, and the
+    regression groups. Distinct from config_hash (which binds decisions to
+    governance policy alone) and deliberately blind to file paths,
+    [agents], [models], [fallback_policy], [recovery], [design_evidence]
+    and tickets, none of which alter a check's meaning."""
+    bound = {key: cfg.get(key) for key in GOVERNANCE_CONFIG_KEYS}
+    bound["check_commands"] = list(cfg.get("check_commands", []))
+    bound["check_timeout_seconds"] = cfg.get("check_timeout_seconds")
+    bound["regressions"] = [{"name": group.get("name"), "commands": list(group.get("commands", []))}
+                            for group in cfg.get("regressions", [])]
+    return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
+
+
+def verification_binding(command: str, repo_digest: str, config_digest: str,
+                         criterion_hashes: list[str]) -> str:
+    """The cache key for one command: any change to the command, the
+    repository content, the verification configuration, or the spec of a
+    criterion being verified with it produces a different binding."""
+    return hashlib.sha256(_canonical({
+        "command": command,
+        "repository_digest": repo_digest,
+        "verification_config_hash": config_digest,
+        "criterion_hashes": sorted(criterion_hashes),
+    }).encode("utf-8")).hexdigest()
+
+
+def feature_hash(status: dict, events: list[dict]) -> str:
+    """Identity of the current run: sha256 of the feature text plus the
+    timestamp of the run's first event (the `initialized` record), the same
+    anchor the regression gate uses for its run id. A record from an
+    earlier run of the same feature therefore never satisfies this one."""
+    initialized_at = str(events[0].get("at") or "") if events else ""
+    return hashlib.sha256((str(status.get("feature") or "") + initialized_at).encode("utf-8")).hexdigest()
+
+
+def check_result_reusable(result: object) -> bool:
+    return (isinstance(result, dict) and result.get("exit_code") == 0
+            and result.get("timed_out") is False and result.get("truncated") is False)
+
+
+def reusable_check_record(records: list[dict], command: str, binding: str,
+                          feature_hash: str) -> dict | None:
+    """The latest ledger record that proves `command` passed against this
+    exact binding within the current run. Eligibility is all of: kind
+    checks, ok, executed (a reused record is never itself a source), the
+    same feature hash, the record's binding for this command equal, and
+    every result in the record exit 0, not timed out, not truncated. One
+    bad result anywhere in the record disqualifies the whole record."""
+    for record in reversed(records):
+        if not isinstance(record, dict) or record.get("kind") != "checks":
+            continue
+        if record.get("ok") is not True or record.get("executed") is not True:
+            continue
+        if record.get("feature_hash") != feature_hash:
+            continue
+        bindings = record.get("binding")
+        if not isinstance(bindings, dict) or bindings.get(command) != binding:
+            continue
+        results = record.get("results")
+        if not isinstance(results, list) or not results:
+            continue
+        if not all(check_result_reusable(result) for result in results):
+            continue
+        if not any(result.get("command") == command for result in results):
+            continue
+        return record
+    return None
+
+
+def verify_inflight_lock_path(root: Path, binding: str) -> Path:
+    return root / VERIFY_INFLIGHT_DIR / f"{binding}.lock"
+
+
+@contextmanager
+def verify_inflight_lock(root: Path, bindings: list[str]):
+    """Serialize concurrent launches of the same bindings. Locks are taken
+    in sorted order (no two callers can wait on each other) and held until
+    the caller has appended its records, so the second verify of a binding
+    finds the first one's record when it re-reads the ledger. Best effort
+    without fcntl, like project_lock."""
+    if fcntl is None or not bindings:
+        yield
+        return
+    directory = root / VERIFY_INFLIGHT_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    handles = []
+    try:
+        for binding in sorted(set(bindings)):
+            path = verify_inflight_lock_path(root, binding)
+            path.touch(exist_ok=True)
+            fh = path.open("r+")
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            handles.append(fh)
+        yield
+    finally:
+        for fh in reversed(handles):
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
 
 
 # --------------------------------------------------------------------------
