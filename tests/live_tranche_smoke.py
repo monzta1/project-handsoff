@@ -8,6 +8,7 @@ running the new code (it answers with the fields the tranche added).
 import json
 import subprocess
 import urllib.request
+from pathlib import Path
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
                       check=True).stdout.strip()
@@ -18,11 +19,20 @@ remote = subprocess.run(["git", "rev-parse", "origin/main"], cwd=ROOT, capture_o
                         text=True, check=True).stdout.strip()
 assert head == remote, f"HEAD {head[:12]} is not origin/main {remote[:12]}"
 
-with urllib.request.urlopen("http://127.0.0.1:8765/api/dashboard", timeout=5) as response:
+owner_path = Path(ROOT) / ".handsoff-dashboard-owner.json"
+port = 8765
+if owner_path.is_file():
+    owner = json.loads(owner_path.read_text(encoding="utf-8"))
+    candidate = owner.get("port")
+    assert isinstance(candidate, int) and 1 <= candidate <= 65535
+    port = candidate
+
+with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/dashboard", timeout=5) as response:
     assert response.status == 200
     snapshot = json.load(response)
 
 assert snapshot["initialized"] is True
+assert snapshot["root"] == ROOT
 assert snapshot["status"]["deployment_approved"]
 assert snapshot["live"]["state"]                               # #33
 assert "design_review_attempts" in snapshot["policy"]          # #35
@@ -30,4 +40,7 @@ assert "design_reviewer_selection" in snapshot["policy"]       # #37
 assert "design_evidence" in snapshot                           # #38
 assert "design_review_packet" in snapshot                      # #36
 assert "crew" in snapshot["settings"]                          # #39
+assert "progress" in snapshot["work_items"]["aggregate"]      # #47
+assert all("lane" in item and "progress" in item for item in snapshot["work_items"]["items"])
+assert snapshot["recovery"]["assessment"]["state"] == "not_applicable"  # #51
 print("HANDSOFF_LIVE_TRANCHE_OK")
