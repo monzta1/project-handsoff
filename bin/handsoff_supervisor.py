@@ -358,6 +358,9 @@ def cmd_advance(args) -> int:
                 })
                 proposed["review_round"] = number
 
+        if "work_item_delivery" in proposed:
+            proposed["progress"] = lib.overall_item_progress(proposed, acceptance, cfg)
+
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems)
         if errors:
@@ -692,6 +695,10 @@ def cmd_work_items_sync(args) -> int:
             status.update(phase_number=2, phase=lib.PHASES[2], progress=min(status.get("progress", 0), 20),
                           status="in_progress", next_action="Review and approve the changed work-item scope.")
         status.setdefault("active_work_item", None)
+        if not isinstance(status.get("work_item_delivery"), dict):
+            status["work_item_delivery"] = lib.new_work_item_delivery(persisted, "full")
+            for record in status["work_item_delivery"].values():
+                record["implemented_by"] = status.get("implemented_by")
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         errors = lib.validate_acceptance_schema(acceptance) + lib.validate_status_schema(status)
         if errors:

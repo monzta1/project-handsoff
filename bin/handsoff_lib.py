@@ -1369,6 +1369,12 @@ def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dic
     or a second caller of commit(). Each entry is {"kind": ..., "message":
     ..., **extra}. Returns the hash of the PRIMARY event only; callers that
     need an extra event's own hash should read it back from the log."""
+    if status is not None and "work_item_delivery" in status:
+        progress_acceptance = acceptance
+        if progress_acceptance is None and acceptance_path(root, cfg).is_file():
+            progress_acceptance = load_unique_json(acceptance_path(root, cfg))
+        if isinstance(progress_acceptance, dict):
+            status["progress"] = overall_item_progress(status, progress_acceptance, cfg)
     write_ahead(root, status=status, acceptance=acceptance)
     if acceptance is not None:
         atomic_write_json(acceptance_path(root, cfg), acceptance)
