@@ -256,6 +256,7 @@ DEFAULT_CONFIG = {
     "analysis": {
         "enabled": True, "max_tickets_per_scan": 5, "dedupe_days": 30,
         "design_phase_hours_threshold": 1.0, "archive_dir": None, "filing": "gh",
+        "framework_repo": "monzta1/project-handsoff",
     },
 }
 ANALYSIS_FILING_MODES = ("gh", "report_only")
@@ -671,6 +672,11 @@ def _validate_analysis_config(analysis: dict) -> dict:
     if archive is not None and (not isinstance(archive, str) or not archive.strip()):
         raise HandsoffError("handsoff.toml: analysis.archive_dir must be a non-empty string when set")
     cfg["archive_dir"] = archive.strip() if isinstance(archive, str) else None
+    framework_repo = analysis.get("framework_repo", cfg["framework_repo"])
+    if not isinstance(framework_repo, str) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", framework_repo.strip()):
+        raise HandsoffError("handsoff.toml: analysis.framework_repo must be an owner/repository slug")
+    cfg["framework_repo"] = framework_repo.strip()
     filing = analysis.get("filing", cfg["filing"])
     if filing not in ANALYSIS_FILING_MODES:
         raise HandsoffError("handsoff.toml: analysis.filing must be exactly 'gh' or 'report_only'")
@@ -2849,6 +2855,14 @@ def validate_status_schema(status: dict) -> list[str]:
                     errors.append("status: 'last_heartbeat_at' must include a timezone")
             except ValueError:
                 errors.append("status: 'last_heartbeat_at' must be an ISO-8601 timestamp")
+    heartbeat_owner = status.get("last_heartbeat_owner")
+    if heartbeat_owner is not None and (not isinstance(heartbeat_owner, str) or not heartbeat_owner.strip()):
+        errors.append("status: 'last_heartbeat_owner' must be a non-empty string or null")
+    background_wait = status.get("background_wait")
+    if background_wait is not None and (not isinstance(background_wait, dict)
+                                        or not isinstance(background_wait.get("since"), str)
+                                        or not isinstance(background_wait.get("by"), str)):
+        errors.append("status: 'background_wait' must be an owned wait record or null")
     # 'human_pause' is the durable record of an open human-pause-start
     # (#34): absent or null on any status.json written before the field
     # existed, or whenever no pause is open. When PRESENT it must be a
@@ -4120,6 +4134,26 @@ def _latest_event_kind(events: list[dict], kinds: set[str]) -> str | None:
     return None
 
 
+def bound_heartbeat_at(status: dict) -> str | None:
+    """Return a heartbeat only while its declared owner is still current.
+
+    Managed heartbeats are leases owned by one live session. Background
+    waits use their explicit persisted wait record. Legacy/unowned pings are
+    deliberately ignored so a detached shell cannot keep a dead role green.
+    """
+    stamped = status.get("last_heartbeat_at")
+    owner = status.get("last_heartbeat_owner")
+    if not isinstance(stamped, str) or not isinstance(owner, str):
+        return None
+    if owner == "background_wait":
+        return stamped if isinstance(status.get("background_wait"), dict) else None
+    return stamped if any(
+        isinstance(session, dict) and session.get("session_id") == owner
+        and session.get("state") in AGENT_SESSION_LIVE_STATES
+        for session in current_agent_sessions(status).values()
+    ) else None
+
+
 def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
                         events: list[dict] | None = None,
                         now: datetime | None = None) -> dict:
@@ -4171,7 +4205,7 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         if not managed_for_role:
             result["reason"] = "no_managed_session"
             return result
-        timestamps = [status.get("updated_at"), status.get("last_heartbeat_at")]
+        timestamps = [status.get("updated_at"), bound_heartbeat_at(status)]
         ages = [_minutes_since(value, now) for value in timestamps]
         ages = [age for age in ages if age is not None]
         silent = min(ages) if ages else float("inf")
@@ -4372,7 +4406,7 @@ def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None,
     updated_minutes = _minutes_since(status.get("updated_at"), now)
     if updated_minutes is None:
         return None
-    heartbeat_minutes = _minutes_since(status.get("last_heartbeat_at"), now)
+    heartbeat_minutes = _minutes_since(bound_heartbeat_at(status), now)
     bound = output_liveness_for(status, output_liveness)
     output_minutes = _minutes_since(bound["output_at"], now) if bound else None
     limit = float(cfg.get("stall_minutes", 10))
@@ -4427,7 +4461,7 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None,
     if (updated_minutes is not None and updated_minutes > limit
             and output_minutes is not None and output_minutes <= limit):
         return f"Agent active; latest output {_output_seconds_ago(bound, now)} seconds ago"
-    heartbeat_minutes = _minutes_since(status.get("last_heartbeat_at"), now)
+    heartbeat_minutes = _minutes_since(bound_heartbeat_at(status), now)
     if updated_minutes is None or heartbeat_minutes is None:
         return None
     if updated_minutes > limit and heartbeat_minutes <= limit:
@@ -5896,7 +5930,7 @@ def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = N
     candidates = [("pause", pause.get("since") if isinstance(pause, dict) else None)]
     if output:
         candidates.append(("output", output["output_at"]))
-    candidates.append(("heartbeat", status.get("last_heartbeat_at")))
+    candidates.append(("heartbeat", bound_heartbeat_at(status)))
     if matching:
         candidates.append(("beacon", matching["beacon_at"]))
     if session:
@@ -6789,10 +6823,10 @@ def design_review_packet_summary(status: dict) -> dict | None:
 
 
 # --------------------------------------------------------------------------
-# runtime failure classification: lets the Supervisor eventually distinguish
+# runtime failure classification: lets the Supervisor distinguish
 # a launched agent that is working from one that failed, exhausted quota or
-# context, or was cancelled/timed out -- WITHOUT wiring into the launcher
-# yet (see handsoff_agent.py; that wiring is deferred to a follow-up issue).
+# context, or was cancelled/timed out. The public launcher routes classified
+# failures through execute_with_recovery in handsoff_agent.py.
 # Deliberately diverges from run_checks() above: that function keeps a raw
 # output_tail because check-command output is trusted, first-party text.
 # Third-party agent stderr/stdout is not -- it can be credential-bearing --

@@ -195,7 +195,11 @@ class HandsoffTestCase(unittest.TestCase):
                 review = run(["record-review", "--by", str(reviewed_by)], cwd=self.tmp)
                 if review.returncode:
                     return review
-            args = ["advance", str(n), str(n * 10)]
+            # Evidence can legitimately move the progress meter ahead of the
+            # phase fixture's nominal percentage. Never ask production to
+            # move progress backwards while walking the phase gates.
+            progress = max(int(self.read_status().get("progress", 0)), n * 10)
+            args = ["advance", str(n), str(progress)]
             for k, v in extra.items():
                 args += [f"--{k.replace('_', '-')}", str(v)]
             last = run(args, cwd=self.tmp)
@@ -1998,6 +2002,45 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "agent_session_launching", "agent_session_running", "agent_session_completed",
         ])
         self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+
+    def test_public_launch_uses_recovery_and_preserves_the_actor(self):
+        spec = self._spec()
+        with mock.patch.object(self.runtime, "build_launch_spec", return_value=spec), \
+                mock.patch.object(self.runtime, "execute_with_recovery", return_value=0) as recover, \
+                mock.patch.object(sys, "argv", [
+                    "handsoff_agent.py", "--root", str(self.tmp), "launch", "implementer",
+                    "--task", "targeted task", "--by", "codex-implementer",
+                ]):
+            self.assertEqual(self.runtime.main(), 0)
+        recover.assert_called_once_with(spec, timeout=3600, actor="codex-implementer")
+
+    def test_heartbeat_is_bound_to_the_current_live_managed_session(self):
+        session = self.lib.create_agent_session(
+            self.tmp, role="implementer", actor="codex-implementer", adapter="codex",
+            requested_model="default", resolution_source="configured", id_factory=lambda: self._sid(21),
+        )
+        self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        missing = run(["heartbeat", "--by", "codex-implementer"], cwd=self.tmp)
+        self.assertNotEqual(missing.returncode, 0)
+        wrong = run(["heartbeat", "--by", "codex-implementer", "--session", self._sid(22)], cwd=self.tmp)
+        self.assertNotEqual(wrong.returncode, 0)
+        recorded = run(["heartbeat", "--by", "codex-implementer", "--session", self._sid(21)], cwd=self.tmp)
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        status = self.read_status()
+        self.assertEqual(status["last_heartbeat_owner"], self._sid(21))
+        status["updated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        self.assertIsNone(self.lib.stall_warning(status, {"stall_minutes": 10}))
+        self.lib.transition_agent_session(
+            self.tmp, self._sid(21), "failed", exit_code=1,
+            failure=self.lib.classify_runtime_failure(exit_code=1),
+        )
+        terminal = self.read_status()
+        terminal["updated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        self.assertIsNotNone(self.lib.stall_warning(terminal, {"stall_minutes": 10}))
+
+        unbound = dict(terminal, last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+                       last_heartbeat_owner=None)
+        self.assertIsNotNone(self.lib.stall_warning(unbound, {"stall_minutes": 10}))
 
         class Pipe:
             def __init__(self, *, broken=False):
@@ -4768,7 +4811,9 @@ class TestActivityAwareStallDetection(HandsoffTestCase):
         sys.path.insert(0, str(BIN))
         import handsoff_lib as lib
         cfg = {"stall_minutes": 10}
-        status = {"status": "in_progress", "updated_at": self._ago(260), "last_heartbeat_at": self._ago(2)}
+        status = {"status": "in_progress", "updated_at": self._ago(260),
+                  "last_heartbeat_at": self._ago(2), "last_heartbeat_owner": "background_wait",
+                  "background_wait": {"by": "test", "since": self._ago(3), "note": "review"}}
         self.assertIsNone(lib.stall_warning(status, cfg, now=self.NOW))
         note = lib.activity_note(status, cfg, now=self.NOW)
         self.assertIsNotNone(note)
@@ -4810,6 +4855,8 @@ class TestActivityAwareStallDetection(HandsoffTestCase):
         s2 = self.read_status()
         s2["updated_at"] = self._real_ago(20)
         s2["last_heartbeat_at"] = self._real_ago(1)
+        s2["last_heartbeat_owner"] = "background_wait"
+        s2["background_wait"] = {"by": "test", "since": self._real_ago(2), "note": "review"}
         self._write_status(s2)
         status_r2 = run(["status"], cwd=self.tmp)
         self.assertEqual(status_r2.returncode, 0, status_r2.stdout + status_r2.stderr)
@@ -4821,8 +4868,16 @@ class TestActivityAwareStallDetection(HandsoffTestCase):
 
     def test_heartbeat_command_records_liveness_without_mutating_progress(self):
         self.init()
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        session = lib.create_agent_session(
+            self.tmp, role="architect", actor="impl-1", adapter="codex",
+            requested_model="default", resolution_source="configured",
+        )
+        lib.transition_agent_session(self.tmp, session["session_id"], "running")
         before = self.read_status()
-        r = run(["heartbeat", "--by", "impl-1", "--note", "long design review running"], cwd=self.tmp)
+        r = run(["heartbeat", "--by", "impl-1", "--session", session["session_id"],
+                 "--note", "long design review running"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("HEARTBEAT_RECORDED", r.stdout)
         after = self.read_status()
@@ -4849,6 +4904,8 @@ class TestActivityAwareStallDetection(HandsoffTestCase):
         s = self.read_status()
         s["updated_at"] = self._real_ago(20)
         s["last_heartbeat_at"] = self._real_ago(1)
+        s["last_heartbeat_owner"] = "background_wait"
+        s["background_wait"] = {"by": "test", "since": self._real_ago(2), "note": "review"}
         self._write_status(s)
         snapshot = dash.build_snapshot(self.tmp)
         self.assertTrue(snapshot["initialized"])
@@ -5709,11 +5766,17 @@ class TestOutputLiveness(HandsoffTestCase):
     def test_explicit_heartbeat_still_suppresses_with_no_output_file(self):
         self.assertFalse(self.lib.output_liveness_path(self.tmp).exists())
         cfg = {"stall_minutes": 10}
-        status = self._with_session(1, "implementer", "running") | {"last_heartbeat_at": self._ago(60)}
+        status = self._with_session(1, "implementer", "running") | {
+            "last_heartbeat_at": self._ago(60), "last_heartbeat_owner": self._sid(1)}
         self.assertIsNone(self.lib.stall_warning(status, cfg, now=self.NOW))
         self.assertIsNone(self.lib.stall_warning(status, cfg, now=self.NOW, output_liveness=None))
         self.assertIn("background task active", self.lib.activity_note(status, cfg, now=self.NOW))
-        r = run(["heartbeat", "--by", "impl-1"], cwd=self.tmp)
+        session = self.lib.create_agent_session(
+            self.tmp, role="architect", actor="impl-1", adapter="codex",
+            requested_model="default", resolution_source="configured",
+        )
+        self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        r = run(["heartbeat", "--by", "impl-1", "--session", session["session_id"]], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         aged = self.read_status()
         aged["updated_at"] = self._real_ago(1800)
@@ -5931,7 +5994,10 @@ class TestOutputLiveness(HandsoffTestCase):
         view = self.lib.activity_view(self._status(last_heartbeat_at=None), self.cfg, self.tmp, now=self.NOW)
         self.assertEqual(set(view), {"source", "at", "seconds_ago", "stall_warning", "activity_note"})
         self.assertEqual((view["source"], view["at"], view["seconds_ago"]), ("workflow", self._ago(1800), 1800))
-        heartbeat = self.lib.activity_view(self._status(last_heartbeat_at=self._ago(900)), self.cfg, self.tmp, now=self.NOW)
+        heartbeat = self.lib.activity_view(self._status(
+            last_heartbeat_at=self._ago(900), last_heartbeat_owner="background_wait",
+            background_wait={"by": "test", "since": self._ago(1000), "note": "review"}),
+            self.cfg, self.tmp, now=self.NOW)
         self.assertEqual((heartbeat["source"], heartbeat["seconds_ago"]), ("heartbeat", 900))
         self.assertIsNotNone(view["stall_warning"])
         self.assertIn(view["source"], self.lib.ACTIVITY_SOURCES)
@@ -12502,6 +12568,75 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         self.assertEqual(self.analyzer.normalize_timestamp("2026-09-01T12:00:00Z"), "2026-09-01T12:00:00+00:00")
         self.assertEqual(self.analyzer.normalize_timestamp("2026-09-01T14:00:00+02:00"), "2026-09-01T12:00:00+00:00")
 
+    def test_cache_diagnostics_name_real_eligibility_instead_of_raw_launches(self):
+        def row(command, binding, *, executed=True, reused_from=None, truncated=False,
+                timed_out=False, exit_code=0, output="a", duration=1.0):
+            return {
+                "kind": "checks", "ok": exit_code == 0, "executed": executed,
+                "reused_from": reused_from, "feature_hash": "feature",
+                "binding": {command: binding},
+                "results": [{"command": command, "exit_code": exit_code,
+                             "timed_out": timed_out, "truncated": truncated,
+                             "output_sha256": output, "duration_s": duration}],
+            }
+        verifications = [
+            row("truncated", "t", truncated=True),
+            row("truncated", "t", truncated=True, output="b"),
+            row("reused", "r", output="c"),
+            row("reused", "r", executed=False, reused_from="vr-source", output="c"),
+            row("missed", "m", output="d"),
+            row("missed", "m", output="e"),
+            row("changed", "one", output="f"),
+            row("changed", "two", output="g"),
+        ]
+        facts = self.analyzer.run_facts({"status": {"status": "complete"},
+                                         "events": [], "verifications": verifications})
+        self.assertEqual(facts["cache_observation_source"], "verification_ledger")
+        self.assertEqual(facts["cache_first_executions"], 4)
+        self.assertEqual(facts["cache_ineligible_truncated"], 1)
+        self.assertEqual(facts["cache_binding_changes"], 1)
+        self.assertEqual(facts["cache_reuse_opportunities"], 2)
+        self.assertEqual((facts["cache_reuse_hits"], facts["cache_reuse_misses"]), (1, 1))
+
+        missed = {**facts, "cache_reuse_opportunities": 1,
+                  "cache_reuse_hits": 0, "cache_reuse_misses": 1}
+        findings = self.analyzer.evaluate_rules(
+            {f"run-{n}.json": dict(missed) for n in range(3)}, self._cfg())
+        self.assertEqual([(item["rule"], item["numbers"]["reuse_percent"]) for item in findings],
+                         [("R4", 0.0)])
+
+    def test_miner_routes_and_dedupes_against_each_destination(self):
+        self._seed()
+        product = self.FakeGhClient(issues=[{
+            "number": 91, "title": "irrelevant", "body": "<!-- handsoff-analysis rule:R3 -->",
+            "state": "OPEN", "closed_at": None,
+        }])
+        framework = self.FakeGhClient(issues=[{
+            "number": 92, "title": "framework duplicate", "body": "<!-- handsoff-analysis rule:R3 -->",
+            "state": "OPEN", "closed_at": None,
+        }])
+        report = self.analyzer.scan(
+            self.tmp, self._cfg(max_tickets_per_scan=50),
+            client={"product": product, "framework": framework}, now=self.T0,
+        )
+        self.assertTrue(all(item["owner"] == "product" for item in report["filed"]
+                            if item["rule"] == "R7"))
+        self.assertTrue(all(item["owner"] == "framework" for item in report["filed"]
+                            if item["rule"] != "R7"))
+        r3 = next(item for item in report["suppressed"] if item["rule"] == "R3")
+        self.assertEqual((r3["issue"], r3["destination"]), (92, "monzta1/project-handsoff"))
+        self.assertTrue(any(call[0] == "create_issue" for call in product.calls))
+        self.assertTrue(any(call[0] == "create_issue" for call in framework.calls))
+
+        with mock.patch.dict(self.analyzer.RULE_OWNERS, {"R7": "ambiguous"}):
+            ambiguous = self.analyzer.scan(
+                self.tmp, self._cfg(max_tickets_per_scan=50),
+                client={"product": self.FakeGhClient(), "framework": self.FakeGhClient()}, now=self.T0,
+            )
+        self.assertFalse(any(item["rule"] == "R7" for item in ambiguous["filed"]))
+        self.assertTrue(all(item["reason"] == "ambiguous_owner"
+                            for item in ambiguous["not_filed"] if item["rule"] == "R7"))
+
     # -- rules -------------------------------------------------------------
 
     def test_seeded_archives_produce_exactly_the_seeded_findings_in_order(self):
@@ -12648,6 +12783,9 @@ class TestArchiveAnalyzer(HandsoffTestCase):
             "design_review_attempt_authorized", "criteria_mutations_after_approval", "recovery_escalated",
             "agent_sessions", "question_raised", "pilot_notes", "checks_run_events", "checks_run_measured", "checks_launched",
             "checks_reused", "verify_live_failures", "review_cap_overrides",
+            "cache_observation_source", "cache_reuse_opportunities", "cache_reuse_hits",
+            "cache_reuse_misses", "cache_first_executions", "cache_binding_changes",
+            "cache_ineligible_failed", "cache_ineligible_timed_out", "cache_ineligible_truncated",
         }
         for facts in report["facts"].values():
             self.assertEqual(set(facts), allowed)
@@ -12714,7 +12852,8 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         self.assertEqual(len(report["drafts"]), 8)
         client = self.FakeGhClient(available=False)
         report = self.analyzer.scan(self.tmp, self._cfg(), client=client, now=self.T0)
-        self.assertEqual((report["filed"], client.calls, report["filing"]["mode"]), ([], [("available",)], "gh_missing"))
+        self.assertEqual((report["filed"], client.calls, report["filing"]["mode"]),
+                         ([], [("available",), ("available",)], "gh_missing"))
         self.assertIn("gh executable not found", report["filing"]["note"])
         report = self.analyzer.scan(self.tmp, self._cfg(filing="report_only"), client=self.FakeGhClient(), now=self.T0)
         self.assertEqual(report["filing"]["mode"], "report_only")
@@ -12756,7 +12895,7 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         cfg = self.lib.load_config(self.tmp)
         self.assertEqual(cfg["analysis"], {"enabled": True, "max_tickets_per_scan": 5, "dedupe_days": 30,
                                            "design_phase_hours_threshold": 1.0, "archive_dir": None,
-                                           "filing": "gh"})
+                                           "filing": "gh", "framework_repo": "monzta1/project-handsoff"})
         toml = self.tmp / "handsoff.toml"
         base = toml.read_text()
         toml.write_text(base + '\n[analysis]\nenabled = false\nmax_tickets_per_scan = 50\ndedupe_days = 0\n'
@@ -12764,7 +12903,7 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         cfg = self.lib.load_config(self.tmp)
         self.assertEqual(cfg["analysis"], {"enabled": False, "max_tickets_per_scan": 50, "dedupe_days": 0,
                                            "design_phase_hours_threshold": 2.5, "archive_dir": "~/somewhere",
-                                           "filing": "report_only"})
+                                           "filing": "report_only", "framework_repo": "monzta1/project-handsoff"})
         for body, fragment in (
             ('enabled = "yes"', "analysis.enabled must be boolean"),
             ("max_tickets_per_scan = 51", "analysis.max_tickets_per_scan must be an integer from 0 to 50"),
@@ -12775,6 +12914,7 @@ class TestArchiveAnalyzer(HandsoffTestCase):
             ('design_phase_hours_threshold = "1"', "analysis.design_phase_hours_threshold"),
             ('archive_dir = ""', "analysis.archive_dir"),
             ('filing = "email"', "analysis.filing"),
+            ('framework_repo = "not-a-slug"', "analysis.framework_repo"),
             ("unknown = 1", "analysis has unknown keys: unknown"),
         ):
             toml.write_text(base + f"\n[analysis]\n{body}\n")
@@ -12896,6 +13036,9 @@ class TestArchiveAnalyzer(HandsoffTestCase):
 
     def _complete_a_run(self, feature="Analyzer trigger feature", after_init=None):
         self.init(feature)
+        item = self.read_acceptance()["work_items"][0]["id"]
+        activated = run(["work-item-activate", item, "--by", "test-supervisor"], cwd=self.tmp)
+        self.assertEqual(activated.returncode, 0, activated.stdout + activated.stderr)
         if after_init is not None:
             after_init()
         self.set_criterion_state("passing", resolved=True)

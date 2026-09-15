@@ -8,6 +8,17 @@
     "progress": {"type": "number", "minimum": 0, "maximum": 100},
     "status": {"enum": ["in_progress", "blocked", "ready_to_deploy", "awaiting_approval", "complete"]},
     "updated_at": {"type": "string", "format": "date-time"},
+    "last_heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
+    "last_heartbeat_owner": {"type": ["string", "null"], "minLength": 1},
+    "background_wait": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["by", "since", "note"],
+      "properties": {
+        "by": {"type": "string", "minLength": 1},
+        "since": {"type": "string", "format": "date-time"},
+        "note": {"type": ["string", "null"]}
+      }
+    },
     "next_action": {"type": "string"},
     "design_round": {"type": "integer", "minimum": 0},
     "review_round": {"type": "integer", "minimum": 0},

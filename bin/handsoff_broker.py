@@ -83,8 +83,8 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             base.extend(["--authorization-hold", hold])
         return base
     if command == "heartbeat":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"note"})
-        base.extend(["--by", _text(request, "by")])
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "session"}, {"note"})
+        base.extend(["--by", _text(request, "by"), "--session", _text(request, "session")])
         if "note" in request:
             base.extend(["--note", _text(request, "note")])
         return base

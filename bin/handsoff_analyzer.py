@@ -60,6 +60,15 @@ RULE_TITLES = {
     "R8": "Pilot authorizations past the design-review budget recur",
     "R9": "Review cap overrides recur",
 }
+# Framework rules diagnose the Handsoff engine itself. Pilot notes are
+# intentionally product-owned: they describe the active project's work.
+# Unknown future rules fail closed as ambiguous and are report-only.
+RULE_OWNERS = {
+    "R1": "framework", "R2": "framework", "R3": "framework",
+    "R4": "framework", "R5": "framework", "R6": "framework",
+    "R7": "product", "R8": "framework", "R9": "framework",
+}
+FINDING_OWNERS = frozenset({"framework", "product", "ambiguous"})
 
 
 class GateWeakening(NamedTuple):
@@ -188,6 +197,15 @@ def run_facts(record: dict) -> dict:
         "checks_run_measured": 0,
         "checks_launched": 0,
         "checks_reused": 0,
+        "cache_observation_source": "events",
+        "cache_reuse_opportunities": 0,
+        "cache_reuse_hits": 0,
+        "cache_reuse_misses": 0,
+        "cache_first_executions": 0,
+        "cache_binding_changes": 0,
+        "cache_ineligible_failed": 0,
+        "cache_ineligible_timed_out": 0,
+        "cache_ineligible_truncated": 0,
         "verify_live_failures": 0,
         "review_cap_overrides": 0,
     }
@@ -244,7 +262,83 @@ def run_facts(record: dict) -> dict:
     end = _parse(design_end)
     if start is not None and end is not None:
         facts["design_phase_hours"] = round((end - start).total_seconds() / 3600, 3)
+    diagnostics = verification_cache_diagnostics(record.get("verifications"))
+    if diagnostics is not None:
+        facts.update(diagnostics)
     return facts
+
+
+def verification_cache_diagnostics(value: object) -> dict | None:
+    """Classify structural cache opportunities without reading check output.
+
+    Archive records can contain one verification row per criterion even when
+    one command was launched once. Rows carrying the same binding and durable
+    result fingerprint are therefore collapsed into one execution before the
+    sequence is measured. Legacy archives without cache-era records return
+    None so their event counters retain the old fallback behavior.
+    """
+    if not isinstance(value, list):
+        return None
+    observations: list[dict] = []
+    seen_rows: set[tuple] = set()
+    for record in value:
+        if not isinstance(record, dict) or record.get("kind") != "checks" \
+                or not isinstance(record.get("binding"), dict):
+            continue
+        results = record.get("results") if isinstance(record.get("results"), list) else []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            command = result.get("command")
+            binding = record["binding"].get(command) if isinstance(command, str) else None
+            if not isinstance(binding, str):
+                continue
+            at_bucket = str(record.get("at") or "").split(".", 1)[0]
+            fingerprint = (
+                record.get("feature_hash"), command, binding, result.get("output_sha256"),
+                result.get("exit_code"), result.get("timed_out"), result.get("truncated"),
+                result.get("duration_s"), record.get("reused_from"), at_bucket,
+            )
+            if fingerprint in seen_rows:
+                continue
+            seen_rows.add(fingerprint)
+            observations.append({
+                "command": command, "binding": binding,
+                "reused": record.get("executed") is False and isinstance(record.get("reused_from"), str),
+                "ok": record.get("ok") is True and result.get("exit_code") == 0,
+                "timed_out": result.get("timed_out") is True,
+                "truncated": result.get("truncated") is True,
+            })
+    if not observations:
+        return None
+    counts = {
+        "cache_observation_source": "verification_ledger",
+        "cache_reuse_opportunities": 0, "cache_reuse_hits": 0, "cache_reuse_misses": 0,
+        "cache_first_executions": 0, "cache_binding_changes": 0,
+        "cache_ineligible_failed": 0, "cache_ineligible_timed_out": 0,
+        "cache_ineligible_truncated": 0,
+    }
+    previous: dict[str, dict] = {}
+    for current in observations:
+        prior = previous.get(current["command"])
+        if prior is None:
+            counts["cache_first_executions"] += 1
+        elif prior["binding"] != current["binding"]:
+            counts["cache_binding_changes"] += 1
+        elif prior["timed_out"]:
+            counts["cache_ineligible_timed_out"] += 1
+        elif prior["truncated"]:
+            counts["cache_ineligible_truncated"] += 1
+        elif not prior["ok"]:
+            counts["cache_ineligible_failed"] += 1
+        else:
+            counts["cache_reuse_opportunities"] += 1
+            if current["reused"]:
+                counts["cache_reuse_hits"] += 1
+            else:
+                counts["cache_reuse_misses"] += 1
+        previous[current["command"]] = current
+    return counts
 
 
 # --------------------------------------------------------------------------
@@ -295,9 +389,16 @@ def evaluate_rules(facts_by_run: dict, cfg: dict) -> list[dict]:
             "agent_session_events": 0,
         }))
 
-    r4 = [run for run in runs if facts_by_run[run].get("checks_run_measured", 0) >= 2]
-    launched = sum(facts_by_run[run].get("checks_launched", 0) for run in r4)
-    reused = sum(facts_by_run[run].get("checks_reused", 0) for run in r4)
+    ledger_runs = [run for run in runs
+                   if facts_by_run[run].get("cache_observation_source") == "verification_ledger"]
+    if ledger_runs:
+        r4 = [run for run in ledger_runs if facts_by_run[run].get("cache_reuse_opportunities", 0) > 0]
+        launched = sum(facts_by_run[run].get("cache_reuse_misses", 0) for run in r4)
+        reused = sum(facts_by_run[run].get("cache_reuse_hits", 0) for run in r4)
+    else:
+        r4 = [run for run in runs if facts_by_run[run].get("checks_run_measured", 0) >= 2]
+        launched = sum(facts_by_run[run].get("checks_launched", 0) for run in r4)
+        reused = sum(facts_by_run[run].get("checks_reused", 0) for run in r4)
     if len(r4) >= 3 and launched + reused > 0:
         ratio = reused / (launched + reused)
         if ratio < 0.20:
@@ -500,7 +601,7 @@ def draft_issue(finding: dict) -> dict:
     return {
         "rule": rule, "marker": finding["marker"], "weight": finding["weight"],
         "title": finding["title"], "body": body, "labels": list(ISSUE_LABELS),
-        "run_ids": list(finding["run_ids"]),
+        "run_ids": list(finding["run_ids"]), "owner": RULE_OWNERS.get(rule, "ambiguous"),
     }
 
 
@@ -558,8 +659,10 @@ class GhClient:
     """The default GitHub client: wraps the gh CLI. `available()` is False
     when no gh executable is on PATH, in which case nothing is filed."""
 
-    def __init__(self, root: Path, *, runner=subprocess.run, which=shutil.which):
+    def __init__(self, root: Path, *, repo: str | None = None,
+                 runner=subprocess.run, which=shutil.which):
         self.root = Path(root)
+        self.repo = repo
         self._runner = runner
         self._which = which
 
@@ -567,6 +670,8 @@ class GhClient:
         return self._which("gh") is not None
 
     def _run(self, args: list[str]) -> str:
+        if self.repo:
+            args = [*args, "--repo", self.repo]
         result = self._runner(["gh", *args], cwd=str(self.root), shell=False, text=True,
                               capture_output=True, timeout=GH_TIMEOUT_SECONDS, check=False)
         if result.returncode != 0:
@@ -641,37 +746,64 @@ def scan(root: Path, cfg: dict, *, archive_directory: Path | str | None = None, 
     findings = evaluate_rules(facts_by_run, cfg)
     excluded = [f for f in findings if f["excluded"]]
     drafts = [draft_issue(f) for f in findings if not f["excluded"] and f["run_ids"]]
+    ambiguous = [d for d in drafts if d["owner"] == "ambiguous"]
+    filable_drafts = [d for d in drafts if d["owner"] != "ambiguous"]
 
     filing = {"mode": None, "note": None, "cap": analysis["max_tickets_per_scan"]}
     filed, suppressed, not_filed = [], [], []
-    to_file = list(drafts)
+    to_file = list(filable_drafts)
+    not_filed.extend({"rule": d["rule"], "title": d["title"], "run_ids": d["run_ids"],
+                      "reason": "ambiguous_owner", "owner": d["owner"]} for d in ambiguous)
     if dry_run:
         filing["mode"] = "dry_run"
         filing["note"] = "dry run: nothing was filed and no GitHub client was consulted"
     elif analysis.get("filing") == "report_only":
         filing["mode"] = "report_only"
         filing["note"] = "analysis.filing is report_only: nothing was filed and no GitHub client was consulted"
-    elif not drafts:
+    elif not filable_drafts:
         filing["mode"] = "nothing_to_file"
         filing["note"] = "no filable findings"
     else:
-        gh = client if client is not None else GhClient(root)
-        if not gh.available():
-            filing["mode"] = "gh_missing"
-            filing["note"] = "gh executable not found: nothing was filed"
-        else:
-            filing["mode"] = "gh"
-            existing = gh.list_issues()
-            to_file, suppressed = dedupe(drafts, existing, analysis["dedupe_days"], now=now)
-            to_file.sort(key=lambda d: -d["weight"])
-            cap = analysis["max_tickets_per_scan"]
-            for draft in to_file[:cap]:
+        filing["mode"] = "gh"
+        groups = {"framework": [], "product": []}
+        for draft in filable_drafts:
+            groups[draft["owner"]].append(draft)
+        cap = analysis["max_tickets_per_scan"]
+        remaining = cap
+        missing = False
+        # A single injected client preserves the original test/integration API.
+        shared_client = client if client is not None and not isinstance(client, dict) else None
+        for owner in ("product", "framework"):
+            group = groups[owner]
+            if not group:
+                continue
+            gh = shared_client or ((client or {}).get(owner) if isinstance(client, dict) else None)
+            destination = "active_product_repository" if owner == "product" else analysis["framework_repo"]
+            gh = gh or GhClient(root, repo=None if owner == "product" else analysis["framework_repo"])
+            if not gh.available():
+                missing = True
+                not_filed.extend({"rule": d["rule"], "title": d["title"], "run_ids": d["run_ids"],
+                                  "reason": "gh_missing", "owner": owner,
+                                  "destination": destination} for d in group)
+                continue
+            candidates, group_suppressed = dedupe(group, gh.list_issues(), analysis["dedupe_days"], now=now)
+            suppressed.extend({**item, "owner": owner, "destination": destination}
+                              for item in group_suppressed)
+            candidates.sort(key=lambda d: -d["weight"])
+            for draft in candidates[:remaining]:
                 url = gh.create_issue(draft["title"], draft["body"], draft["labels"])
                 filed.append({"rule": draft["rule"], "title": draft["title"], "url": url,
-                              "run_ids": draft["run_ids"]})
-            not_filed = [{"rule": d["rule"], "title": d["title"], "run_ids": d["run_ids"], "reason": "cap"}
-                         for d in to_file[cap:]]
-            filing["note"] = f"filed {len(filed)} of {len(to_file)} deduplicated drafts (cap {cap})"
+                              "run_ids": draft["run_ids"], "owner": owner,
+                              "destination": destination})
+            not_filed.extend({"rule": d["rule"], "title": d["title"], "run_ids": d["run_ids"],
+                              "reason": "cap", "owner": owner, "destination": destination}
+                             for d in candidates[remaining:])
+            remaining = max(0, remaining - len(candidates[:remaining]))
+        if missing and not filed:
+            filing["mode"] = "gh_missing"
+            filing["note"] = "gh executable not found for any destination: nothing was filed"
+        else:
+            filing["note"] = f"filed {len(filed)} destination-routed drafts (cap {cap})"
 
     report = {
         "generated_at": now.astimezone(timezone.utc).isoformat(),
@@ -680,6 +812,7 @@ def scan(root: Path, cfg: dict, *, archive_directory: Path | str | None = None, 
             "max_tickets_per_scan": analysis["max_tickets_per_scan"],
             "dedupe_days": analysis["dedupe_days"],
             "design_phase_hours_threshold": analysis["design_phase_hours_threshold"],
+            "framework_repo": analysis["framework_repo"],
         },
         "runs": {
             "product": [item["run_id"] for item in loaded["readable"]],

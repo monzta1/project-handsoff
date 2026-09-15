@@ -139,6 +139,7 @@ def cmd_init(args) -> int:
         status = {
             "feature": args.feature, "phase_number": 1, "phase": lib.PHASES[1], "progress": 0,
             "status": "in_progress", "updated_at": now, "last_heartbeat_at": None,
+            "last_heartbeat_owner": None, "background_wait": None,
             "next_action": lib.NEXT_ACTION_DEFAULTS[1],
             "design_round": 0, "review_round": 0, "retry_count": 0, "summary": "", "reassurance": "",
             "legacy_review_round_offset": 0, "review_attempts": [],
@@ -2777,12 +2778,13 @@ def cmd_recovery_acknowledge(args) -> int:
     return 0
 
 
-def _record_heartbeat(status: dict) -> None:
+def _record_heartbeat(status: dict, owner: str) -> None:
     """The exact liveness update `heartbeat` performs, factored out so
     background-wait-start/end can feed the SAME signal stall_warning/
     activity_note already read, instead of growing a second, parallel
     stall mechanism just for background waits."""
     status["last_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+    status["last_heartbeat_owner"] = owner
 
 
 def cmd_heartbeat(args) -> int:
@@ -2805,7 +2807,14 @@ def cmd_heartbeat(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
-        _record_heartbeat(status)
+        session_id = args.session
+        current = lib.current_agent_sessions(status)
+        session = next((item for item in current.values()
+                        if isinstance(item, dict) and item.get("session_id") == session_id), None)
+        if not isinstance(session, dict) or session.get("state") not in lib.AGENT_SESSION_LIVE_STATES:
+            print("SHIP_FEATURE_BLOCKED: --session must name the current live managed session")
+            return 1
+        _record_heartbeat(status, session_id)
         message = args.note.strip() if args.note and args.note.strip() else "Heartbeat: run is active"
         lib.commit(root, cfg, status=status,
                   event_kind="heartbeat", event_message=message, by=args.by)
@@ -2852,7 +2861,11 @@ def cmd_background_wait_start(args) -> int:
             status["next_action"] = message
             status["updated_at"] = datetime.now(timezone.utc).isoformat()
             status.pop("authorization_hold", None)
-        _record_heartbeat(status)
+        status["background_wait"] = {
+            "by": args.by.strip(), "since": datetime.now(timezone.utc).isoformat(),
+            "note": message,
+        }
+        _record_heartbeat(status, "background_wait")
         lib.commit(root, cfg, status=status,
                   event_kind="background_wait_started", event_message=message, by=args.by)
     print("BACKGROUND_WAIT_STARTED")
@@ -2878,7 +2891,8 @@ def cmd_background_wait_end(args) -> int:
         if _most_recent_kind(events, {"background_wait_started", "background_wait_ended"}) != "background_wait_started":
             print("SHIP_FEATURE_BLOCKED: no open background wait to end")
             return 1
-        _record_heartbeat(status)
+        status["background_wait"] = None
+        _record_heartbeat(status, "background_wait")
         message = args.note.strip() if args.note and args.note.strip() else "Background task wait ended"
         lib.commit(root, cfg, status=status,
                   event_kind="background_wait_ended", event_message=message, by=args.by)
@@ -3382,6 +3396,8 @@ def main() -> int:
     heartbeat = sub.add_parser("heartbeat", help="record a liveness signal for a run doing long "
                                "background work, without advancing phase or progress")
     heartbeat.add_argument("--by", required=True)
+    heartbeat.add_argument("--session", required=True,
+                           help="current live managed session id that owns this heartbeat")
     heartbeat.add_argument("--note", default=None, help="optional one-line description of the background activity")
 
     bg_start = sub.add_parser("background-wait-start", help="mark the start of a wait on a background "

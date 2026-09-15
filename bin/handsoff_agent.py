@@ -714,6 +714,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
 def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
                           from_session_id: str | None = None,
                           quality_finding_id: str | None = None,
+                          actor: str | None = None,
                           popen_factory=subprocess.Popen, which=shutil.which,
                           snapshotter=lib.repository_snapshot) -> int:
     """Run and, only on authenticated recoverable outcomes, consume CAS reservations."""
@@ -729,7 +730,8 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
     while True:
         if source_id is None:
             try:
-                return execute_launch(current_spec, timeout=timeout, popen_factory=popen_factory)
+                return execute_launch(current_spec, timeout=timeout, actor=actor,
+                                      popen_factory=popen_factory)
             except AgentLaunchError as exc:
                 source_id = exc.session_id
         replacement = lib.reserve_agent_replacement(
@@ -828,7 +830,7 @@ def main() -> int:
             return 0
         if args.timeout <= 0:
             raise lib.HandsoffError("--timeout must be positive")
-        return execute_launch(spec, timeout=args.timeout, actor=args.by)
+        return execute_with_recovery(spec, timeout=args.timeout, actor=args.by)
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}", file=sys.stderr)
         return 1
