@@ -122,8 +122,20 @@ def run(args, cwd):
     # violate its monotonic-progress invariant.
     if len(args) >= 3 and args[0] == "advance":
         try:
-            current = json.loads((Path(cwd) / "handsoff-status.json").read_text())["progress"]
+            status = json.loads((Path(cwd) / "handsoff-status.json").read_text())
+            current = status["progress"]
             args[2] = str(max(int(args[2]), int(current)))
+            if "--implemented-by" in args and status.get("active_work_item") is None:
+                acceptance = json.loads((Path(cwd) / "handsoff-acceptance.json").read_text())
+                items = acceptance.get("work_items") or []
+                if items:
+                    activated = subprocess.run(
+                        [sys.executable, str(BIN / "handsoff_supervisor.py"),
+                         "work-item-activate", items[0]["id"], "--by", "test-supervisor"],
+                        cwd=cwd, capture_output=True, text=True, timeout=30,
+                    )
+                    if activated.returncode:
+                        return activated
         except (OSError, ValueError, KeyError, TypeError):
             pass
     return subprocess.run([sys.executable, str(BIN / "handsoff_supervisor.py"), *args],
@@ -5386,6 +5398,7 @@ class TestLiveSessionStatus(HandsoffTestCase):
         status = self._with_session(1, "implementer", "running", started=300, running=240)
         status["updated_at"] = self._ago(200)
         status["last_heartbeat_at"] = self._ago(100)
+        status["last_heartbeat_owner"] = self._sid(1)
         view = self._view(status)
         self.assertEqual(view["last_activity_at"], self._ago(100))
         self.assertEqual(view["seconds_since_activity"], 100)
@@ -6814,7 +6827,7 @@ class TestAmendmentLane(HandsoffTestCase):
         self.assertEqual(amendment["dependent_ids"], [])
         self.assertEqual(amendment["affected_work_items"], ["issue-101"])
         self.assertEqual(amendment["frozen_phase"], 4)
-        self.assertEqual(amendment["frozen_progress"], 40)
+        self.assertEqual(amendment["frozen_progress"], before_status["progress"])
         self.assertEqual(amendment["operations"], [{
             "op": "update", "id": "REQ-002",
             "previous_hash": self.lib.criterion_spec_hash(before["REQ-002"]),
@@ -6901,7 +6914,8 @@ class TestAmendmentLane(HandsoffTestCase):
         self.assertEqual(status["design_review"]["amended_by"], [amendment["amendment_id"]])
         self.assertEqual(status["design_approved"]["scope_hash"],
                          self.lib.work_item_scope_hash(self.read_acceptance()["work_items"]))
-        self.assertEqual((status["phase_number"], status["progress"]), (4, 40))
+        self.assertEqual((status["phase_number"], status["progress"]),
+                         (4, before_status["progress"]))
         kinds_since_open = self._kinds()[events_at_open:]
         self.assertNotIn("phase_advanced", kinds_since_open)
         self.assertEqual(kinds_since_open, ["checks_run", "amendment_reviewed", "amendment_approved"])
@@ -7534,7 +7548,8 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         # Legacy compatibility: an absent (default) key must leave every
         # already-recorded decision's config_hash byte-identical, or
         # upgrading bin/ would invalidate in-flight runs everywhere.
-        legacy_keys = tuple(k for k in self.lib.GOVERNANCE_CONFIG_KEYS if k != "max_autonomous_design_reviews")
+        legacy_keys = tuple(k for k in self.lib.GOVERNANCE_CONFIG_KEYS
+                            if k not in self.lib._LEGACY_OPTIONAL_GOVERNANCE_KEYS)
         legacy_hash = self.lib.hashlib.sha256(
             self.lib._canonical({k: cfg.get(k) for k in legacy_keys}).encode("utf-8")).hexdigest()
         self.assertEqual(self.lib.config_hash(cfg), legacy_hash)

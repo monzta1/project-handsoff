@@ -1375,7 +1375,11 @@ def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dic
     or a second caller of commit(). Each entry is {"kind": ..., "message":
     ..., **extra}. Returns the hash of the PRIMARY event only; callers that
     need an extra event's own hash should read it back from the log."""
-    if status is not None and "work_item_delivery" in status:
+    # A scoped amendment deliberately freezes both phase and progress.
+    # Recomputing item progress while its changed criteria are temporarily
+    # reset would make the just-written amendment contradict its own frozen
+    # snapshot and render an otherwise valid run invalid.
+    if status is not None and "work_item_delivery" in status and open_amendment(status) is None:
         progress_acceptance = acceptance
         if progress_acceptance is None and acceptance_path(root, cfg).is_file():
             progress_acceptance = load_unique_json(acceptance_path(root, cfg))
@@ -4774,8 +4778,9 @@ def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> di
     if global_review.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])):
         reviewed = True
     approval = status.get("deployment_approved") or {}
-    deployed = approval.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", []))
-    live = bool(status.get("live_verification_id"))
+    deployed = (not cfg.get("deployment_requires_explicit_approval", True)
+                or approval.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])))
+    live = not cfg.get("require_live_verification", True) or bool(status.get("live_verification_id"))
     gates = {"lane": lane_gate, "implemented": implemented, "reviewed": reviewed,
              "deployed": deployed, "live": live}
     value = min(100, max(0, int(math.floor(criteria_points + 8 * sum(gates.values()) + 0.5))))
