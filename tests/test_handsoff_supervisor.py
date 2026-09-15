@@ -173,6 +173,14 @@ class HandsoffTestCase(unittest.TestCase):
 
     def advance_to(self, phase, **extra):
         """Step one phase at a time up to `phase`, as the one-step rule requires."""
+        status = self.read_status()
+        if status.get("active_work_item") is None:
+            items = self.read_acceptance().get("work_items") or []
+            if items:
+                activated = run(["work-item-activate", items[0]["id"], "--by", "test-supervisor"],
+                                cwd=self.tmp)
+                if activated.returncode:
+                    return activated
         current = self.read_status()["phase_number"]
         last = None
         reviewed_by = extra.pop("reviewed_by", None)
@@ -4258,6 +4266,7 @@ class TestRunArchive(HandsoffTestCase):
         try:
             for name in ("handsoff.toml",):
                 shutil.copy(ROOT / name, other / name)
+            normalize_fixture_config(other / "handsoff.toml")
             shutil.copytree(ROOT / "schemas", other / "schemas")
             real_tmp, self.tmp = self.tmp, other
             self._complete_a_run(feature="Second repo run")
