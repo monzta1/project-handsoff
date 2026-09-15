@@ -157,6 +157,7 @@ python3 tests/test_handsoff_supervisor.py -v
 - **A role left unset launches with the recommended crew, and says so (#39).** With no `[agents].<role>`/`[models].<role>` key (or the legacy `configure-me` placeholder) a role resolves to `handsoff_lib.RECOMMENDED_CREW` (Architect, Supervisor, Implementer: `claude`/`claude-opus-5`; Reviewer: `codex`/`default`); an explicit value for one role never changes the other three, and an explicit `auto` keeps the older auto-detect path. Every report of the profile (`status` `crew`, the dashboard settings view, audited review profiles, session telemetry via `resolution_source: "recommended"`) carries the provenance, `available` in `crew_view` means executable discovery only, and a launch whose adapter is not on `PATH` is refused before a session exists with a message naming the role and the remedies. See "Default crew" below.
 - **A role's question reaches the Pilot without Supervisor relay (#46).** A managed Architect, Implementer, Reviewer, or Supervisor prints one line `HANDSOFF_QUESTION: <text>`; `handsoff_agent.py` records it the moment it is read (bounded text, role, session id, timestamps; never prompt, output, or environment content) as `status.pending_questions[]` with a `question_raised` event. A question from the role's CURRENT live session sets `status` to `blocked` with the question as `next_action`, so the existing input-required alert, tab flash, and notification fire; a question from a completed, replaced, or unknown session is recorded and shown but never holds the run. `question-answer --id --by --text` (human-only in the broker; also the Answer control in Mission Control's Questions panel, recorded as `Mission Control Pilot`) audits the answer and lifts the block once no blocking question remains, restoring the previous `next_action`; the answer is handed to that role exactly once, at its next launch, under "Pilot answers to your earlier questions", with a `question_answers_delivered` event. `question-raise` exists for a Supervisor raising a question on a role's behalf. Tests: `TestRoleQuestions`, `tests/dashboard/questions.test.js`.
 - **Structured questions with options, answered as one form per role (#48).** After `HANDSOFF_QUESTION:` a candidate that begins with `{` is parsed as a JSON form: `{"text": "Which path?", "options": ["Concise", "Full"], "recommended": "Concise"}` (text 1 to 1024 characters, 1 to 6 unique options of up to 120 characters, optional `recommended` equal to one option). Any other candidate is kept verbatim as plain text with `form_error` naming the rule it broke (`malformed_json`, `not_object`, `unknown_keys`, `missing_keys`, `text_bounds`, `options_bounds`, `duplicate_options`, `recommended_not_offered`), so nothing a role asked is lost; text without a leading brace is a #46 plain-text question. Records carry `options`, `recommended`, `form_error`, `chosen_option` and `other_text` (older records without them still validate). `question-answer --batch FILE` and `POST /api/question-answers` take `{"answers": [{"question_id", "choice"} | {"question_id", "other"}]}` (1 to 16 entries, no duplicate ids; plain-text questions accept only `other`); any bad entry refuses the whole batch by index and writes nothing, and success is one commit with one `question_answers_recorded` event, lifting the block exactly once. `question_answered` events keep `answer` and gain `chosen_option` and `other_text`. Mission Control renders all open questions of a role as one numbered form (radio row per question, recommended preselected, an Other radio revealing a one-line field, answered rows collapsed to one muted line, one Send answers button per role) and the input-required banner shows one card per role naming the count. The role prompts ask for at most three questions per turn, each with options and a recommended answer. Tests: `TestStructuredQuestions`, `tests/dashboard/questions.test.js`.
+- **Completed runs are mined for evidenced patterns, and the analyzer can never loosen a gate (#49).** Landing Phase 8 complete scans the run archive right after the archive write and files improvement tickets through `gh` only for the fixed rules R1 to R7, each with run ids and numbers read from ledger records alone; R8 and R9 (the two patterns whose natural remedy is raising a cap) are report entries only, with no configuration to change that; fixture and `run_kind: test` archives are never mined; a scan failure prints `HANDSOFF_ANALYSIS_FAILED` and never fails the advance. See "Archive analysis".
 - **A run-owned dashboard is released on completion, and nothing else ever is (#40).** `dashboard --owned-by-run` mints a random `run_token` and the sha256 of the resolved project root, keeps both in memory, and writes them with the pid and port to `.handsoff-dashboard-owner.json`; a server started without the flag writes nothing and reports `owned: false`. When `advance 8` lands `complete`, `release_run_dashboard` reads only the port and token from that file, computes the root hash from its own resolved root, and asks `GET /api/ownership`; it sends `POST /api/shutdown` (both values, re-checked by the server against its in-memory copies, 403 on any mismatch) only when the answer is owned with the same token and the same root hash, then waits until the port refuses connections and removes the file. A refused connection, an unowned server, a foreign token, another root, or a malformed answer removes the stale file and touches no process; no PID is ever signalled. Open SSE clients close because every event loop checks the server's stop flag, and the server's own exit removes the owner file only while it still carries that server's token. The event log records `dashboard_released` (port, pid, reason) or `dashboard_release_skipped` (reason); a repeated completion is a no-op with the skipped reason, and neither outcome can fail the already-committed advance.
 - **Design evidence is measured once and reused only while its inputs are provably unchanged (#38).** Each `[[design_evidence]]` table in `handsoff.toml` names a trusted measurement command and the globs it depends on. `design-evidence run --by ACTOR` executes a command only when no record exists, when the cache identity (`sha256(command + "\n" + canonical JSON of the declared inputs list)`) or the input hash (sha256 over the sorted `(path, file sha256)` pairs the globs match) differs from the stored record, or when the stored run exited non-zero; otherwise the record is reused and the runner is never invoked. Editing a declared file, the command, or the glob list reruns it; editing an undeclared file does not; a new commit leaves the artifact `current` but `commit_matches_head` turns false so the exact commit it was measured at is always visible. `--force` reruns regardless (the reviewer's challenge path). Records bind the command sha, identity sha, input hash, head, branch, and dirty flag, and keep at most 8192 bytes of output with the sha256 and byte count of the full output (`truncated` when cut). `design_evidence_view` reports every artifact as `current`, `stale`, `failed`, or `missing`; the dashboard snapshot and the Architect/Reviewer role input show output for `current` artifacts only, and the `design_evidence_recorded` event carries hashes and metadata, never output. See "Design evidence" below.
 - **After the first full design review, a follow-up reviewer gets a bounded delta packet, and only for the exact design it was built for (#36).** `record-design-review` accepts repeatable `--finding "text"` (at most 32 per review, 512 characters each, ids `F<attempt>.<n>`), stores them with the record's `attempt` and the commit `head`, and appends a bounded `design_review_history` entry (last 8: attempt, decision, reviewer, design_hash, head, sorted `criteria_ids`, per-criterion spec hashes, `structural_blocker`, findings). `design-review-packet --by ACTOR [--disposition ID=resolved|rejected|unresolved[:note]]...` (Phase 2 only; refused with nothing written while `design_review_attempts` is 0, so the first review always receives the full task) builds `lib.build_design_review_packet`: a deterministic, canonical, sorted packet with the criteria delta against the last recorded review (`added`/`removed` by id, `changed` by spec hash), every prior finding with its disposition (an omitted finding is `unresolved` with a null note, so silence never reads as resolved; `rejected` requires a note; an unknown, duplicate, or malformed disposition is refused before anything is written), `new_findings_since`, the `design_evidence_view` entries with `stale_for_packet`, the repository identity, and `stale`/`stale_reasons` (set when the previous review's head is unknown or differs from HEAD, in which case `files_changed_since_previous` lists `git diff --name-only`). The serialized packet is at most 65536 bytes: over budget it is trimmed in a fixed order (files first 200 then halved, unchanged ids collapsed to a count, finding text and notes cut to 256, evidence reasons dropped, findings cut from the end), each step recorded in `truncated`, and finding ids, criteria ids, hashes, attempt numbers, repository identity, and `stale_reasons` are never trimmed; `packet_id` is sha256 of the final body, so identical inputs give byte-identical packets. Stored as `design_review_packet` with event `design_review_packet_generated` (packet_id, attempt, design_hash, byte size, counts; never finding text). A managed Phase-2 Reviewer whose stored packet is for `attempts + 1` and the current `design_hash` gets `# Delta review packet` (JSON) in front of its role prompt, and its session records `packet_id` and `design_hash`; a packet for another design or attempt is ignored and the reviewer gets full context. Mission Control shows the packet's attempt, disposition counts, criteria delta, and stale flag.
@@ -334,6 +335,120 @@ python3 bin/handsoff_supervisor.py verify --criterion REQ-001 --by implementer-1
 Every `checks` record carries `binding` (command to binding hash), `executed`, `reused_from` (the source `vr-...` run id, or null), and `feature_hash` inside the hashed, chained record, and each entry in `results` carries `duration_s`, `timed_out`, `truncated`, and `output_bytes` next to the command, exit code, and output digest. A reused record copies its results from the source (each copied entry also names its `reused_from`), so the flags travel with it. A criterion with several tests gets `executed true` only when every one of its commands was launched in that call; a partially reused record is never a source and names a single `reused_from` only when all of its reused results came from one record. The CLI output lists `launched` and `reused`, the `checks_run` event carries `launched_count` and `reused_count`, and Mission Control's evidence telemetry shows an EXECUTED or REUSED pill per record (a record written before #43 has neither field, loads as before, and is never a reuse source).
 
 Invalidation is implicit: editing or adding any file the digest covers, changing a check command, the timeout, a regression group, a governance value, or the spec of a bound criterion changes the binding, and the next `verify` launches. The cache is the ledger itself: there is no side file to clear, and `.handsoff-verify-inflight/` holds only lock files.
+
+## Archive analysis
+
+`bin/handsoff_analyzer.py` (stdlib only) mines the completed-run archive
+described above and files evidenced improvement tickets, so what Handsoff
+learns about itself across every project turns into tracked work instead of
+a folder nobody reads (#49).
+
+**What it reads.** Every `*.json` under the archive directory. A file that
+does not parse is listed under `unreadable` and skipped. Two archives with
+the same `repo` and `started_at` are one run: the newest `archived_at` is
+kept (an exact tie keeps the file name that sorts last) and the rest are
+listed under `duplicates`. An archive whose `run_kind` is `test`, or, when
+`run_kind` is absent, whose repo name starts with `handsoff-test-`,
+`handsoff-selfcheck`, `handsoff-dropin`, `handsoff-benchmark`, or
+`handsoff-fixture`, is listed under `skipped_fixtures` and never mined.
+Nothing in the archive is ever deleted or rewritten. `archive_run` writes
+`run_kind` into every new archive: an explicit `HANDSOFF_RUN_KIND` of `test`
+or `product` wins, otherwise the run root's name decides by the same
+prefixes, else `product`.
+
+**Facts per run**, read only from ledger records: the outcome
+(`status.status`); the design-phase hours as wall clock from the first
+`phase_advanced` to Phase 2 (or `initialized` when there is none) to the first
+`phase_advanced` to Phase 3, waits included, unmeasured when either timestamp
+is missing or unparsable; the `design_review_approved` and
+`design_review_changes_requested` attempt count; the
+`design_review_budget_exhausted` and `design_review_attempt_authorized`
+counts; criteria mutations after the last `design_approved`
+(`criterion_added`, `criterion_updated`, `criterion_removed`,
+`criteria_transaction_applied`); the `recovery_escalated` count and whether
+any `agent_session_*` event exists; the `question_raised` count; `pilot_note`
+texts; the `checks_run` `launched_count` and `reused_count` sums; failed
+`live_checks_run` events (`verify-live` failures); `review_cap_override_recorded`
+counts. Timestamps are normalized to UTC ISO-8601.
+
+**Rules** (fixed ids; weight decides filing priority, highest first):
+
+| Rule | Weight | Fires when |
+| --- | --- | --- |
+| R7 | 100 | each distinct `pilot_note` text, with the run ids that carry it |
+| R6 | 90 | any `verify-live` failure |
+| R3 | 80 | `recovery_escalated` on any run with zero `agent_session_*` events |
+| R1 | 70 | design-review budget exhausted in at least 2 product runs |
+| R2 | 60 | criteria mutated after design approval in at least 2 runs |
+| R5 | 50 | median measured design-phase hours above `[analysis].design_phase_hours_threshold`, at least 3 measured runs |
+| R4 | 40 | reused / (launched + reused), summed over product runs with at least 2 `checks_run` events, below 0.20 with at least 3 such runs |
+| R8 | 30 | Pilot authorizations past the design-review budget in at least 2 runs (report only) |
+| R9 | 30 | review cap overrides in at least 2 runs (report only) |
+
+Findings are ordered by weight descending, then rule id, then sorted run
+ids; run-id lists are sorted; percentages are rounded to one decimal, hours
+to two. A finding with an empty run-id list is never written or filed.
+
+**Drafts and filing.** Each R1 to R7 finding drafts an issue in house style:
+a title, `## Symptom` with the evidence (run ids and numbers), `## Cause
+hypothesis` labelled as a hypothesis, `## Benefit`, `## Required behavior`,
+`## Acceptance criteria`, and a hidden marker line `<!-- handsoff-analysis
+rule:<id> -->` (R7 markers carry a digest of the note text after the rule
+id, so one filed note never suppresses a different one). A draft may contain
+only: the archive file name as run id, the repo, the first 120 characters of
+the feature title, event kinds, timestamps, numeric counters, boolean
+outcomes, and pilot-note text. No prompt, output, environment, status,
+acceptance, verification, or event-message content is ever serialized into
+a draft or a report. Filing goes through an injectable GitHub client; the
+default wraps `gh` (`gh issue list` and `gh issue create`, no shell) and
+tests inject a fake. Every filed issue carries the labels
+`from-archive-analysis` and `needs-triage`. Before filing, the client lists
+open issues and issues closed within `dedupe_days`; a draft is suppressed
+(and listed in the report) when an existing issue carries the same marker or
+its normalized title shares at least 60 percent of tokens (Jaccard over
+lowercase alphanumeric tokens). At most `max_tickets_per_scan` issues are
+filed per scan, highest weight first; the rest are listed under
+`not_filed`. `--dry-run`, `filing = "report_only"`, and a missing `gh`
+executable file nothing and say so in the report's `filing` entry.
+
+**Hard exclusions.** `GATE_WEAKENING_RULES` is the fixed set {R8, R9}: their
+natural remedy is raising `max_autonomous_design_reviews` or
+`max_review_rounds`, so they produce report entries only and are never
+filed, with no configuration to lift that.
+
+**Triggers and the report.** `advance 8` with status `complete` runs a scan
+right after the archive write when `[analysis].enabled` is true (honouring
+`HANDSOFF_ARCHIVE_DIR`), includes the archive just written without
+rewriting it, and records `archive_scan_completed` (findings, filed,
+suppressed, excluded, skipped_fixtures, unreadable counts, report path) on
+the live run's ledger only. A scan failure prints
+`HANDSOFF_ANALYSIS_FAILED (run still completed successfully): ...` and never
+fails the advance. On demand:
+
+```bash
+python3 bin/handsoff_supervisor.py analyze-archives [--dry-run] [--archive-dir DIR]
+python3 bin/handsoff_supervisor.py pilot-note --by moncy --text "Reviewer keeps asking for screenshots"
+```
+
+Each scan writes `.handsoff-analysis/<timestamp>.json` (gitignored and
+excluded from the repository digest) and prints `HANDSOFF_ANALYSIS_REPORT:
+<path>`. `pilot-note` (1 to 512 characters) records a `pilot_note` event on
+the current run; `POST /api/pilot-note` (same-origin, actor `Mission Control
+Pilot`) does the same from the small input in the dashboard header; the next
+scan lists that note as an R7 finding with its run id.
+
+**`[analysis]` keys** in `handsoff.toml` (every key optional; an invalid
+value is a load error like every other section):
+
+```toml
+[analysis]
+enabled = true                      # bool, default true
+max_tickets_per_scan = 5            # int 0 to 50, default 5
+dedupe_days = 30                    # int 0 to 365, default 30
+design_phase_hours_threshold = 1.0  # number greater than 0, default 1.0
+archive_dir = "~/Documents/Handsoff-Archive"  # optional; default HANDSOFF_ARCHIVE_DIR, else the Documents archive
+filing = "gh"                       # "gh" (default) or "report_only" (never construct a GitHub client)
+```
 
 ## Work items and the per-item status table
 

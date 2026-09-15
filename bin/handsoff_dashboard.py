@@ -872,7 +872,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
                         "/api/regression-decision", "/api/question-answer", "/api/question-answers",
-                        "/api/design-review-authorize"}:
+                        "/api/design-review-authorize", "/api/pilot-note", "/api/amendment-approval"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
         if not self._same_origin_allowed():
@@ -930,6 +930,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                              by="Mission Control Pilot", text=requested["text"])
                 self._json_response(HTTPStatus.OK, {"ok": True, "question_id": record["question_id"]})
                 return
+            if path == "/api/pilot-note":
+                # #49: the header note box; same audited path as the CLI,
+                # actor is the dashboard's Pilot identity.
+                if set(requested) != {"text"} or not isinstance(requested.get("text"), str):
+                    raise lib.HandsoffError("pilot note requires text")
+                record = lib.record_pilot_note(self.server.project_root, by="Mission Control Pilot",
+                                               text=requested["text"])
+                self._json_response(HTTPStatus.OK, {"ok": True, "text": record["text"]})
+                return
             if path == "/api/question-answers":
                 # #48: one form per role sends its answers as one batch; a
                 # shape error is 400, a state conflict (unknown, answered,
@@ -973,6 +982,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.server.project_root, lib.load_config(self.server.project_root)
                 )).get("design_approved")
                 self._json_response(HTTPStatus.OK, {"ok": True, "design_approved": approved})
+                return
+            if path == "/api/amendment-approval":
+                if requested:
+                    raise lib.HandsoffError("amendment approval payload must be empty")
+                snapshot = build_snapshot(self.server.project_root)
+                if (snapshot.get("input_required") or {}).get("kind") != "amendment_approval":
+                    self._json_response(HTTPStatus.CONFLICT, {
+                        "ok": False, "error": "The current mission is not waiting on an amendment approval"})
+                    return
+                command = argparse.Namespace(root=str(self.server.project_root), by="Mission Control Pilot")
+                if supervisor.cmd_amendment_approve(command) != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The amendment gate rejected this approval"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True})
                 return
             if path == "/api/design-review-authorize":
                 if requested:

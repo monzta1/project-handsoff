@@ -32,7 +32,7 @@ const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 // profileSourceLabel, autoDetectOptionLabel, resolveAgentSelectValue,
 // ALLOWED_ADAPTERS, liveStatusView, liveAgeLabel, the amendment helpers
 // (showAmendmentPanel, amendmentHeadline, amendmentDecisionLabel, ...), the verification
-// execution helpers (verificationExecutionState, verificationExecutionLabel), and the fallback-list helpers come from
+// execution helpers (verificationExecutionState, verificationExecutionLabel), pilotNoteText, and the fallback-list helpers come from
 // lib/dashboard-logic.js (loaded before this file) so they stay testable
 // with plain `node --test` and no DOM.
 
@@ -376,6 +376,12 @@ function renderInputAlert(inputRequest, feature, regression) {
   const regressionDecline = $("regression-decline");
   approvalButton.classList.toggle("hidden", state.inputKind !== "design_approval");
   deploymentButton.classList.toggle("hidden", state.inputKind !== "deployment_approval");
+  const amendmentButton = $("amendment-approve");
+  amendmentButton.classList.toggle("hidden", state.inputKind !== "amendment_approval");
+  if (state.inputKind === "amendment_approval" && signature !== state.alertSignature) {
+    amendmentButton.disabled = false;
+    amendmentButton.textContent = "APPROVE AMENDMENT";
+  }
   const budgetButton = $("design-review-authorize");
   budgetButton.classList.toggle("hidden", state.inputKind !== "design_review_budget");
   if (state.inputKind === "design_review_budget" && signature !== state.alertSignature) {
@@ -455,6 +461,27 @@ async function authorizeDesign() {
   }
 }
 
+async function approveAmendment() {
+  const button = $("amendment-approve");
+  button.disabled = true;
+  button.textContent = "TRANSMITTING APPROVAL…";
+  try {
+    const response = await fetch("/api/amendment-approval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Approval returned ${response.status}`);
+    button.textContent = "AMENDMENT APPROVED";
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "APPROVE AMENDMENT";
+    showError(`Approval rejected: ${error.message}`);
+  }
+}
+
 async function authorizeDesignReviewAttempt() {
   const button = $("design-review-authorize");
   button.disabled = true;
@@ -473,6 +500,38 @@ async function authorizeDesignReviewAttempt() {
     button.disabled = false;
     button.textContent = "AUTHORIZE ONE MORE DESIGN REVIEW";
     showError(`Authorization rejected: ${error.message}`);
+  }
+}
+
+async function sendPilotNote(event) {
+  // #49: the header note box. The text goes to the current run's ledger
+  // as a pilot_note event; the next archive scan lists it as an R7 finding.
+  event.preventDefault();
+  const input = $("pilot-note-text");
+  const button = $("pilot-note-send");
+  const text = pilotNoteText(input.value);
+  if (!text) {
+    showError("Pilot note rejected: enter 1 to 512 characters");
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "SENDING…";
+  try {
+    const response = await fetch("/api/pilot-note", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Pilot note returned ${response.status}`);
+    input.value = "";
+    button.textContent = "SENT";
+    await refresh();
+  } catch (error) {
+    showError(`Pilot note rejected: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    window.setTimeout(() => { button.textContent = "SEND"; }, 1500);
   }
 }
 
@@ -976,6 +1035,8 @@ $("enable-alerts").addEventListener("click", enableDesktopAlerts);
 $("design-approve").addEventListener("click", authorizeDesign);
 $("deployment-approve").addEventListener("click", authorizeDeployment);
 $("design-review-authorize").addEventListener("click", authorizeDesignReviewAttempt);
+$("amendment-approve").addEventListener("click", approveAmendment);
+$("pilot-note-form").addEventListener("submit", sendPilotNote);
 $("regression-accept").addEventListener("click", () => decideRegression("accept"));
 $("regression-decline").addEventListener("click", () => decideRegression("decline"));
 $("settings-toggle").addEventListener("click", openSettings);

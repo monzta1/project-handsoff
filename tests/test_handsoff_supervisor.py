@@ -7026,6 +7026,38 @@ class TestAmendmentLane(HandsoffTestCase):
         self.assertIsNone(snapshot["amendment"])
         self.assertFalse(snapshot["input_required"]["required"])
 
+    def test_mission_control_approve_control_records_the_amendment_approval(self):
+        # Same audited path as amendment-approve, from the board, as the Pilot.
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-002", requirement="[#101] REQ-002 revised")]))
+        self._ok(self._review())
+        server = self.dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        host, port = server.server_address[:2]
+        try:
+            def post():
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request("POST", "/api/amendment-approval", body="{}",
+                                   headers={"Content-Type": "application/json", "Origin": f"http://{host}:{port}"})
+                response = connection.getresponse()
+                body = json.loads(response.read())
+                connection.close()
+                return response.status, body
+            snapshot = self.dashboard.build_snapshot(self.tmp)
+            self.assertEqual(snapshot["input_required"]["kind"], "amendment_approval")
+            self.assertEqual(post()[0], 200)
+            status = self.read_status()
+            self.assertIsNone(status["amendment"])
+            self.assertEqual(status["amendments"][-1]["pilot_approval"]["by"], "Mission Control Pilot")
+            self.assertEqual(post()[0], 409)
+        finally:
+            server.shutdown()
+            server.server_close()
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        app = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertIn('id="amendment-approve"', html)
+        self.assertIn('fetch("/api/amendment-approval"', app)
+
     def test_broker_routes_the_lane_and_keeps_approval_human_only(self):
         self._phase_4_run()
         root_text = str(self.tmp.resolve())
@@ -11907,3 +11939,793 @@ class TestDesignReviewBudgetAuthorizeControl(HandsoffTestCase):
         self.assertIn('id="design-review-authorize"', html)
         self.assertIn('state.inputKind !== "design_review_budget"', app)
         self.assertIn('fetch("/api/design-review-authorize"', app)
+
+
+class TestArchiveAnalyzer(HandsoffTestCase):
+    """#49: bin/handsoff_analyzer.py mines the completed-run archive for
+    evidenced patterns and files them in house style. Criteria
+    i49-facts-and-patterns, i49-filing-dedupe-cap, i49-exclusions,
+    i49-trigger-and-notes, i49-fixture-marking. Every archive write lands
+    in a temp dir; the operator's Documents archive is counted before and
+    after so a stray write there fails the test; no test ever calls the
+    real gh (a PATH shim records any attempt)."""
+
+    SECRET = "sk-live-SECRET-TOKEN-4242"
+    NOTE_A = "Deploy step needs a checklist"
+    NOTE_B = "Reviewer keeps asking for screenshots"
+    T0 = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+
+    def setUp(self):
+        super().setUp()
+        self.archive_dir = Path(tempfile.mkdtemp(prefix="handsoff-archive-analyzer-"))
+        self._old_env = {key: os.environ.get(key) for key in ("HANDSOFF_ARCHIVE_DIR", "HANDSOFF_RUN_KIND", "PATH")}
+        os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
+        self.documents_archive = Path.home() / "Documents" / "Handsoff-Archive"
+        self.documents_count_before = self._documents_archive_count()
+        # A gh shim first on PATH: any real gh invocation from a subprocess
+        # leaves a marker file, which tearDown asserts never appeared.
+        self.shim_dir = Path(tempfile.mkdtemp(prefix="handsoff-gh-shim-"))
+        self.gh_marker = self.shim_dir / "gh-was-called"
+        shim = self.shim_dir / "gh"
+        shim.write_text(f"#!/bin/sh\ntouch '{self.gh_marker}'\nexit 1\n")
+        shim.chmod(0o755)
+        os.environ["PATH"] = f"{self.shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        sys.path.insert(0, str(BIN))
+        import handsoff_analyzer
+        import handsoff_lib
+        import handsoff_supervisor
+        self.analyzer = handsoff_analyzer
+        self.lib = handsoff_lib
+        self.supervisor = handsoff_supervisor
+
+    def tearDown(self):
+        self.assertEqual(self._documents_archive_count(), self.documents_count_before,
+                         "the real ~/Documents/Handsoff-Archive must never be written by a test")
+        self.assertFalse(self.gh_marker.exists(), "a test invoked the real gh executable")
+        for key, value in self._old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.archive_dir, ignore_errors=True)
+        shutil.rmtree(self.shim_dir, ignore_errors=True)
+        super().tearDown()
+
+    # -- fixture helpers ---------------------------------------------------
+
+    def _documents_archive_count(self):
+        if not self.documents_archive.exists():
+            return 0
+        return sum(1 for _ in self.documents_archive.iterdir())
+
+    def _at(self, minutes):
+        return (self.T0 + timedelta(minutes=minutes)).isoformat()
+
+    def _ev(self, kind, minutes, **extra):
+        return {"kind": kind, "at": self._at(minutes), "message": f"{kind} message", **extra}
+
+    def _archive(self, name, repo, events, *, started=0, archived=600, run_kind=None,
+                 status="complete", feature="Feature", verifications=None):
+        record = {
+            "repo": repo, "root": f"/tmp/{repo}", "feature": feature,
+            "started_at": self._at(started), "archived_at": self._at(archived),
+            "completed_at": self._at(archived),
+            "status": {"status": status, "phase_number": 8, "next_action": "private next action"},
+            "acceptance": {"criteria": [{"id": "REQ-001", "requirement": "private requirement"}]},
+            "verifications": verifications or [],
+            "events": events,
+        }
+        if run_kind is not None:
+            record["run_kind"] = run_kind
+        (self.archive_dir / name).write_text(json.dumps(record, indent=1, sort_keys=True))
+        return name
+
+    def _seed(self):
+        """One archive per rule R1 to R7 plus R8/R9 cases, one unreadable
+        file, one exact duplicate pair, one fixture-named run, one
+        run_kind test run."""
+        self._archive("r1a.json", "alpha", [
+            self._ev("initialized", 0),
+            self._ev("phase_advanced", 10, phase_number=2),
+            self._ev("design_review_changes_requested", 15),
+            self._ev("design_review_changes_requested", 20),
+            self._ev("design_review_budget_exhausted", 20),
+            self._ev("design_review_attempt_authorized", 25),
+            self._ev("design_review_approved", 30),
+            self._ev("design_approved", 35),
+            self._ev("phase_advanced", 40, phase_number=3),
+            self._ev("checks_run", 50, launched_count=3, reused_count=0),
+            self._ev("checks_run", 55, launched_count=2, reused_count=0),
+        ])
+        self._archive("r1b.json", "bravo", [
+            self._ev("initialized", 0),
+            self._ev("phase_advanced", 0, phase_number=2),
+            self._ev("design_review_budget_exhausted", 30),
+            self._ev("design_review_attempt_authorized", 40),
+            self._ev("design_approved", 100),
+            self._ev("phase_advanced", 120, phase_number=3),
+            self._ev("review_cap_override_recorded", 130),
+            self._ev("checks_run", 140, launched_count=4, reused_count=1),
+            self._ev("checks_run", 150, launched_count=0, reused_count=0),
+        ])
+        self._archive("r2a.json", "charlie", [
+            self._ev("initialized", 0),
+            self._ev("criterion_added", 5, criterion="REQ-001"),
+            self._ev("design_approved", 60),
+            self._ev("criterion_updated", 70, criterion="REQ-001"),
+            self._ev("criterion_updated", 75, criterion="REQ-001"),
+            self._ev("criteria_transaction_applied", 80),
+            self._ev("phase_advanced", 180, phase_number=3),
+            self._ev("review_cap_override_recorded", 190),
+            self._ev("review_cap_override_recorded", 195),
+            self._ev("checks_run", 200, launched_count=5, reused_count=0),
+            self._ev("checks_run", 210, launched_count=0, reused_count=0),
+        ])
+        self._archive("r2b.json", "delta", [
+            self._ev("initialized", 0),
+            self._ev("phase_advanced", 5, phase_number=2),
+            self._ev("design_approved", 30),
+            self._ev("criterion_removed", 40, criterion="REQ-001"),
+            self._ev("checks_run", 50, launched_count=1, reused_count=0),
+            self._ev("live_checks_run", 90, ok=False, run_id="vr-1"),
+            self._ev("live_checks_run", 95, ok=True, run_id="vr-2"),
+        ])
+        self._archive("r3.json", "echo", [
+            self._ev("initialized", 0),
+            self._ev("phase_advanced", 0, phase_number=2),
+            self._ev("question_raised", 10, text="private question text"),
+            self._ev("question_raised", 20, text="private question text"),
+            self._ev("recovery_escalated", 30),
+            self._ev("phase_advanced", 90, phase_number=3),
+            self._ev("checks_run", 100, launched_count=1, reused_count=0),
+        ])
+        self._archive("r3neg.json", "foxtrot", [
+            self._ev("initialized", 0),
+            self._ev("agent_session_launching", 5, session_id="hs-" + "0" * 32),
+            self._ev("recovery_escalated", 30),
+        ])
+        self._archive("r7.json", "golf", [
+            self._ev("initialized", 0),
+            {"kind": "checks_run", "at": self._at(10), "message": f"leaked {self.SECRET} in a message",
+             "launched_count": 1, "reused_count": 0},
+            self._ev("pilot_note", 20, by="moncy", text=self.NOTE_B),
+            self._ev("pilot_note", 25, by="moncy", text=self.NOTE_A),
+        ], feature="Golf " + ("x" * 200), verifications=[{
+            "kind": "checks", "ok": True, "results": [{"command": "true", "output_tail": f"out {self.SECRET}"}],
+        }])
+        self._archive("r7b.json", "hotel", [
+            self._ev("initialized", 0),
+            self._ev("pilot_note", 20, by="Mission Control Pilot", text=f"  {self.NOTE_B}  "),
+        ])
+        # Exact duplicate pair: same repo and started_at; the older archived_at
+        # carries a live failure that must NOT surface because it is dropped.
+        self._archive("dup-old.json", "india", [
+            self._ev("initialized", 0), self._ev("live_checks_run", 10, ok=False),
+        ], archived=300)
+        self._archive("dup-new.json", "india", [
+            self._ev("initialized", 0),
+        ], archived=400)
+        (self.archive_dir / "broken.json").write_text("{not json")
+        self._archive("handsoff-test-fixture.json", "handsoff-test-fixture", [
+            self._ev("initialized", 0), self._ev("live_checks_run", 10, ok=False),
+        ])
+        self._archive("kind-test.json", "zulu", [
+            self._ev("initialized", 0), self._ev("live_checks_run", 10, ok=False),
+        ], run_kind="test")
+
+    class FakeGhClient:
+        def __init__(self, issues=None, available=True):
+            self.issues = list(issues or [])
+            self.calls = []
+            self._available = available
+
+        def available(self):
+            self.calls.append(("available",))
+            return self._available
+
+        def list_issues(self):
+            self.calls.append(("list_issues",))
+            return list(self.issues)
+
+        def create_issue(self, title, body, labels):
+            self.calls.append(("create_issue", title, body, list(labels)))
+            return f"https://example.invalid/issues/{len(self.calls)}"
+
+    def _cfg(self, **analysis):
+        cfg = self.lib.load_config(self.tmp)
+        cfg["analysis"] = {**cfg["analysis"], **analysis}
+        return cfg
+
+    def _events(self):
+        return [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()
+                if line.strip()]
+
+    EXPECTED = [
+        ("R7", ["r7.json"]),
+        ("R7", ["r7.json", "r7b.json"]),
+        ("R6", ["r2b.json"]),
+        ("R3", ["r3.json"]),
+        ("R1", ["r1a.json", "r1b.json"]),
+        ("R2", ["r2a.json", "r2b.json"]),
+        ("R5", ["r1a.json", "r1b.json", "r2a.json", "r3.json"]),
+        ("R4", ["r1a.json", "r1b.json", "r2a.json"]),
+        ("R8", ["r1a.json", "r1b.json"]),
+        ("R9", ["r1b.json", "r2a.json"]),
+    ]
+
+    # -- loading and facts -------------------------------------------------
+
+    def test_load_archives_lists_unreadable_fixtures_and_dedupes(self):
+        self._seed()
+        loaded = self.analyzer.load_archives(self.archive_dir)
+        self.assertEqual(loaded["unreadable"], ["broken.json"])
+        self.assertEqual(loaded["skipped_fixtures"], ["handsoff-test-fixture.json", "kind-test.json"])
+        self.assertEqual(loaded["duplicates"], ["dup-old.json"])
+        self.assertEqual([item["run_id"] for item in loaded["readable"]],
+                         ["dup-new.json", "r1a.json", "r1b.json", "r2a.json", "r2b.json", "r3.json",
+                          "r3neg.json", "r7.json", "r7b.json"])
+        # Nothing is deleted or rewritten by loading.
+        self.assertEqual(len(list(self.archive_dir.glob("*.json"))), 13)
+
+    def test_duplicate_tie_on_archived_at_keeps_the_file_name_that_sorts_last(self):
+        self._archive("tie-a.json", "kilo", [self._ev("initialized", 0)], archived=300)
+        self._archive("tie-b.json", "kilo", [self._ev("initialized", 0)], archived=300)
+        loaded = self.analyzer.load_archives(self.archive_dir)
+        self.assertEqual([item["run_id"] for item in loaded["readable"]], ["tie-b.json"])
+        self.assertEqual(loaded["duplicates"], ["tie-a.json"])
+
+    def test_classify_archive_uses_run_kind_then_repo_prefix(self):
+        classify = self.analyzer.classify_archive
+        self.assertEqual(classify({"run_kind": "test", "repo": "real-product"}, "x.json"), "test")
+        self.assertEqual(classify({"run_kind": "product", "repo": "handsoff-test-abc"}, "x.json"), "product")
+        for prefix in ("handsoff-test-", "handsoff-selfcheck", "handsoff-dropin", "handsoff-benchmark",
+                       "handsoff-fixture"):
+            self.assertEqual(classify({"repo": prefix + "1"}, "x.json"), "test", prefix)
+        self.assertEqual(classify({"repo": "fm9-tone"}, "x.json"), "product")
+        self.assertEqual(classify({}, "handsoff-selfcheck-2026.json"), "test")
+
+    def test_run_facts_reads_only_ledger_counters_and_normalizes_timestamps(self):
+        self._seed()
+        facts = self.analyzer.run_facts(json.loads((self.archive_dir / "r1a.json").read_text()))
+        self.assertEqual(facts["outcome"], "complete")
+        self.assertEqual(facts["design_phase_hours"], 0.5)
+        self.assertEqual(facts["design_review_attempts"], 3)
+        self.assertEqual(facts["design_review_budget_exhausted"], 1)
+        self.assertEqual(facts["design_review_attempt_authorized"], 1)
+        self.assertEqual((facts["checks_run_events"], facts["checks_launched"], facts["checks_reused"]), (2, 5, 0))
+        self.assertEqual(facts["started_at"], "2026-09-01T10:00:00+00:00")
+        charlie = self.analyzer.run_facts(json.loads((self.archive_dir / "r2a.json").read_text()))
+        self.assertEqual(charlie["criteria_mutations_after_approval"], 3)
+        self.assertEqual(charlie["design_phase_hours"], 3.0)  # initialized to Phase 3
+        self.assertEqual(charlie["review_cap_overrides"], 2)
+        delta = self.analyzer.run_facts(json.loads((self.archive_dir / "r2b.json").read_text()))
+        self.assertIsNone(delta["design_phase_hours"])
+        self.assertEqual(delta["verify_live_failures"], 1)
+        echo = self.analyzer.run_facts(json.loads((self.archive_dir / "r3.json").read_text()))
+        self.assertEqual((echo["recovery_escalated"], echo["agent_sessions"], echo["question_raised"]), (1, False, 2))
+        golf = self.analyzer.run_facts(json.loads((self.archive_dir / "r7.json").read_text()))
+        self.assertEqual(golf["pilot_notes"], [self.NOTE_B, self.NOTE_A])
+        self.assertEqual(len(golf["feature"]), 120)
+        self.assertNotIn(self.SECRET, json.dumps(golf))
+        # Unparsable timestamps leave the phase unmeasured, never crash.
+        weird = self.analyzer.run_facts({"status": {"status": "complete"}, "events": [
+            {"kind": "phase_advanced", "phase_number": 2, "at": "yesterday"},
+            {"kind": "phase_advanced", "phase_number": 3, "at": "2026-09-01T12:00:00Z"},
+        ]})
+        self.assertIsNone(weird["design_phase_hours"])
+        self.assertEqual(self.analyzer.normalize_timestamp("2026-09-01T12:00:00Z"), "2026-09-01T12:00:00+00:00")
+        self.assertEqual(self.analyzer.normalize_timestamp("2026-09-01T14:00:00+02:00"), "2026-09-01T12:00:00+00:00")
+
+    # -- rules -------------------------------------------------------------
+
+    def test_seeded_archives_produce_exactly_the_seeded_findings_in_order(self):
+        self._seed()
+        report = self.analyzer.scan(self.tmp, self._cfg(), dry_run=True, now=self.T0)
+        self.assertEqual([(f["rule"], f["run_ids"]) for f in report["findings"]], self.EXPECTED)
+        by_rule = {}
+        for finding in report["findings"]:
+            by_rule.setdefault(finding["rule"], []).append(finding)
+        self.assertEqual(by_rule["R1"][0]["numbers"], {"runs": 2, "design_review_budget_exhausted": 2})
+        self.assertEqual(by_rule["R2"][0]["numbers"], {"runs": 2, "criteria_mutations_after_approval": 4})
+        self.assertEqual(by_rule["R3"][0]["numbers"], {"runs": 1, "recovery_escalated": 1, "agent_session_events": 0})
+        self.assertEqual(by_rule["R4"][0]["numbers"], {"runs": 3, "launched": 14, "reused": 1, "reuse_percent": 6.7})
+        self.assertEqual(by_rule["R5"][0]["numbers"], {"runs": 4, "median_hours": 1.75, "threshold_hours": 1.0})
+        self.assertEqual(by_rule["R6"][0]["numbers"], {"runs": 1, "verify_live_failures": 1})
+        self.assertEqual([(f["text"], f["numbers"]) for f in by_rule["R7"]],
+                         [(self.NOTE_A, {"runs": 1}), (self.NOTE_B, {"runs": 2})])
+        self.assertTrue(all(f["excluded"] for f in by_rule["R8"] + by_rule["R9"]))
+        self.assertTrue(all(not f["excluded"] for rule in ("R1", "R2", "R3", "R4", "R5", "R6", "R7")
+                            for f in by_rule[rule]))
+        self.assertEqual([f["rule"] for f in report["excluded"]], ["R8", "R9"])
+        self.assertEqual(report["runs"]["unreadable"], ["broken.json"])
+        self.assertEqual(report["runs"]["skipped_fixtures"], ["handsoff-test-fixture.json", "kind-test.json"])
+        self.assertEqual(report["runs"]["duplicates"], ["dup-old.json"])
+        self.assertEqual(sorted(report["facts"]), report["runs"]["product"])
+
+    def test_second_scan_is_byte_identical(self):
+        self._seed()
+        first = self.analyzer.scan(self.tmp, self._cfg(), dry_run=True, now=self.T0)
+        first_bytes = Path(first["report_path"]).read_bytes()
+        second = self.analyzer.scan(self.tmp, self._cfg(), dry_run=True, now=self.T0)
+        self.assertEqual(first["report_path"], second["report_path"])
+        self.assertEqual(Path(second["report_path"]).read_bytes(), first_bytes)
+        self.assertEqual(Path(first["report_path"]).parent, self.tmp / ".handsoff-analysis")
+
+    def test_rule_thresholds_hold_below_their_minimums(self):
+        # One budget exhaustion, one mutation run, two R4 runs, two measured
+        # runs, one authorization, one override: nothing fires except R7.
+        self._archive("solo.json", "solo", [
+            self._ev("initialized", 0),
+            self._ev("phase_advanced", 0, phase_number=2),
+            self._ev("design_review_budget_exhausted", 10),
+            self._ev("design_review_attempt_authorized", 15),
+            self._ev("design_approved", 20),
+            self._ev("criterion_updated", 25, criterion="REQ-001"),
+            self._ev("phase_advanced", 300, phase_number=3),
+            self._ev("review_cap_override_recorded", 310),
+            self._ev("checks_run", 320, launched_count=5, reused_count=0),
+            self._ev("checks_run", 330, launched_count=5, reused_count=0),
+            self._ev("pilot_note", 340, by="moncy", text="solo note"),
+        ])
+        self._archive("solo2.json", "solo2", [
+            self._ev("initialized", 0),
+            self._ev("phase_advanced", 0, phase_number=2),
+            self._ev("phase_advanced", 300, phase_number=3),
+            self._ev("checks_run", 320, launched_count=5, reused_count=0),
+            self._ev("checks_run", 330, launched_count=5, reused_count=0),
+        ])
+        # A third run whose checks_run events predate the #43 counters is
+        # unmeasured for R4: it must not read as zero reuse and trip the rule.
+        self._archive("precache.json", "precache", [
+            self._ev("initialized", 0),
+            self._ev("phase_advanced", 0, phase_number=2),
+            self._ev("checks_run", 320),
+            self._ev("checks_run", 330),
+        ])
+        report = self.analyzer.scan(self.tmp, self._cfg(), dry_run=True, now=self.T0)
+        self.assertEqual([(f["rule"], f["run_ids"]) for f in report["findings"]], [("R7", ["solo.json"])])
+        self.assertEqual(report["facts"]["precache.json"]["checks_run_measured"], 0)
+        self.assertEqual(report["facts"]["precache.json"]["checks_run_events"], 2)
+        # Recovery with a managed session never trips R3; a healthy reuse
+        # ratio never trips R4; a median under the threshold never trips R5.
+        facts = {
+            "a.json": {"recovery_escalated": 1, "agent_sessions": True, "checks_run_measured": 2,
+                       "checks_launched": 1, "checks_reused": 4, "design_phase_hours": 0.5},
+            "b.json": {"checks_run_measured": 2, "checks_launched": 1, "checks_reused": 4, "design_phase_hours": 0.5},
+            "c.json": {"checks_run_measured": 2, "checks_launched": 1, "checks_reused": 4, "design_phase_hours": 9.0},
+        }
+        self.assertEqual(self.analyzer.evaluate_rules(facts, self._cfg()), [])
+        facts["c.json"]["design_phase_hours"] = 0.5
+        facts["b.json"]["design_phase_hours"] = 5.0
+        found = self.analyzer.evaluate_rules(facts, self._cfg(design_phase_hours_threshold=4.5))
+        self.assertEqual([(f["rule"], f["run_ids"]) for f in found], [])
+        found = self.analyzer.evaluate_rules(facts, self._cfg(design_phase_hours_threshold=0.4))
+        self.assertEqual([(f["rule"], f["run_ids"], f["numbers"]["median_hours"]) for f in found],
+                         [("R5", ["a.json", "b.json", "c.json"], 0.5)])
+
+    def test_gate_weakening_rules_are_fixed_reported_and_never_filed(self):
+        self.assertEqual(set(self.analyzer.GATE_WEAKENING_RULES), {"R8", "R9"})
+        self.assertIn("max_autonomous_design_reviews", self.analyzer.GATE_WEAKENING_RULES["R8"].natural_remedy)
+        self.assertIsInstance(self.analyzer.GATE_WEAKENING_RULES["R9"], self.analyzer.GateWeakening)
+        self._seed()
+        client = self.FakeGhClient()
+        report = self.analyzer.scan(self.tmp, self._cfg(max_tickets_per_scan=50), client=client, now=self.T0)
+        filed_rules = [call[1] for call in client.calls if call[0] == "create_issue"]
+        self.assertEqual(len(filed_rules), 8)
+        self.assertFalse(any("R8" in title or "R9" in title for title in filed_rules))
+        self.assertEqual({f["rule"] for f in report["filed"]}, {"R1", "R2", "R3", "R4", "R5", "R6", "R7"})
+        self.assertEqual([f["rule"] for f in report["excluded"]], ["R8", "R9"])
+        self.assertNotIn("R8", {d["rule"] for d in report["drafts"]})
+        with self.assertRaises(self.lib.HandsoffError):
+            self.analyzer.draft_issue(report["excluded"][0])
+        # A finding with an empty run-id list never reaches the report.
+        self.assertTrue(all(f["run_ids"] for f in report["findings"]))
+
+    # -- drafts and the allowlist -----------------------------------------
+
+    def test_drafts_follow_house_style_and_carry_the_marker(self):
+        self._seed()
+        report = self.analyzer.scan(self.tmp, self._cfg(), dry_run=True, now=self.T0)
+        drafts = {d["rule"]: d for d in report["drafts"] if d["rule"] != "R7"}
+        r1 = drafts["R1"]
+        self.assertEqual(r1["title"], "Design-review budget exhausted across product runs")
+        for section in ("## Symptom", "## Cause hypothesis", "## Benefit", "## Required behavior",
+                        "## Acceptance criteria"):
+            self.assertIn(section, r1["body"])
+        self.assertIn("Hypothesis:", r1["body"])
+        self.assertIn("<!-- handsoff-analysis rule:R1 -->", r1["body"])
+        self.assertIn("- `r1a.json`", r1["body"])
+        self.assertIn("- `r1b.json`", r1["body"])
+        self.assertIn("design_review_budget_exhausted: 2", r1["body"])
+        self.assertEqual(r1["labels"], ["from-archive-analysis", "needs-triage"])
+        self.assertIn("6.7 percent", drafts["R4"]["body"])
+        notes = [d for d in report["drafts"] if d["rule"] == "R7"]
+        self.assertEqual([d["title"] for d in notes], [f"Pilot note: {self.NOTE_A}", f"Pilot note: {self.NOTE_B}"])
+        self.assertIn(self.NOTE_B, notes[1]["body"])
+        self.assertTrue(notes[0]["marker"].startswith("R7:") and notes[0]["marker"] != notes[1]["marker"])
+        self.assertIn(f"<!-- handsoff-analysis rule:{notes[0]['marker']} -->", notes[0]["body"])
+
+    def test_drafts_and_report_never_carry_anything_outside_the_allowlist(self):
+        self._seed()
+        report = self.analyzer.scan(self.tmp, self._cfg(), dry_run=True, now=self.T0)
+        serialized = json.dumps(report)
+        on_disk = Path(report["report_path"]).read_text()
+        for leak in (self.SECRET, "private next action", "private requirement", "private question text",
+                     "checks_run message", "output_tail"):
+            self.assertNotIn(leak, serialized, leak)
+            self.assertNotIn(leak, on_disk, leak)
+        for draft in report["drafts"]:
+            self.assertNotIn(self.SECRET, draft["body"] + draft["title"])
+        allowed = {
+            "repo", "feature", "run_kind", "started_at", "archived_at", "outcome", "event_count",
+            "design_phase_hours", "design_review_attempts", "design_review_budget_exhausted",
+            "design_review_attempt_authorized", "criteria_mutations_after_approval", "recovery_escalated",
+            "agent_sessions", "question_raised", "pilot_notes", "checks_run_events", "checks_run_measured", "checks_launched",
+            "checks_reused", "verify_live_failures", "review_cap_overrides",
+        }
+        for facts in report["facts"].values():
+            self.assertEqual(set(facts), allowed)
+
+    # -- filing, dedupe, cap -----------------------------------------------
+
+    def test_filing_dedupes_by_marker_and_title_and_honours_the_cap(self):
+        self._seed()
+        recent = (self.T0 - timedelta(days=10)).isoformat()
+        stale = (self.T0 - timedelta(days=100)).isoformat()
+        client = self.FakeGhClient(issues=[
+            {"number": 11, "title": "Something unrelated", "body": "x\n<!-- handsoff-analysis rule:R6 -->\n",
+             "state": "OPEN", "closed_at": None},
+            {"number": 12, "title": "Acceptance criteria mutated after design approval", "body": "",
+             "state": "CLOSED", "closed_at": recent},
+            {"number": 13, "title": "Old", "body": "<!-- handsoff-analysis rule:R3 -->",
+             "state": "CLOSED", "closed_at": stale},
+        ])
+        report = self.analyzer.scan(self.tmp, self._cfg(), client=client, now=self.T0)
+        self.assertEqual(client.calls[:2], [("available",), ("list_issues",)])
+        created = [call for call in client.calls if call[0] == "create_issue"]
+        self.assertEqual(len(created), 5)
+        self.assertEqual([f["rule"] for f in report["filed"]], ["R7", "R7", "R3", "R1", "R5"])
+        self.assertTrue(all(call[3] == ["from-archive-analysis", "needs-triage"] for call in created))
+        self.assertTrue(all(f["url"].startswith("https://example.invalid/issues/") for f in report["filed"]))
+        self.assertEqual([(s["rule"], s["reason"], s["issue"]) for s in report["suppressed"]],
+                         [("R6", "marker", 11), ("R2", "title", 12)])
+        self.assertEqual([n["rule"] for n in report["not_filed"]], ["R4"])
+        self.assertEqual(report["filing"]["mode"], "gh")
+        event_fields = self.analyzer.scan_event_fields(report)
+        self.assertEqual({k: event_fields[k] for k in ("findings", "filed", "suppressed", "excluded",
+                                                        "skipped_fixtures", "unreadable")},
+                         {"findings": 10, "filed": 5, "suppressed": 2, "excluded": 2,
+                          "skipped_fixtures": 2, "unreadable": 1})
+
+    def test_dedupe_title_overlap_threshold(self):
+        draft = {"rule": "R1", "marker": "R1", "title": "Design-review budget exhausted across product runs",
+                 "run_ids": ["a.json"]}
+        similar = {"number": 1, "title": "Design review budget exhausted in product runs", "body": "",
+                   "state": "open", "closed_at": None}
+        different = {"number": 2, "title": "Budget for lunch runs out", "body": "", "state": "open", "closed_at": None}
+        keep, suppressed = self.analyzer.dedupe([draft], [different], 30, now=self.T0)
+        self.assertEqual((len(keep), suppressed), (1, []))
+        keep, suppressed = self.analyzer.dedupe([draft], [similar], 30, now=self.T0)
+        self.assertEqual((keep, suppressed[0]["reason"], suppressed[0]["issue"]), ([], "title", 1))
+        closed_late = {**similar, "state": "closed", "closed_at": (self.T0 - timedelta(days=31)).isoformat()}
+        keep, _ = self.analyzer.dedupe([draft], [closed_late], 30, now=self.T0)
+        self.assertEqual(len(keep), 1)
+        closed_recent = {**closed_late, "closed_at": (self.T0 - timedelta(days=29)).isoformat()}
+        keep, _ = self.analyzer.dedupe([draft], [closed_recent], 30, now=self.T0)
+        self.assertEqual(keep, [])
+
+    def test_cap_zero_files_nothing_and_dry_run_and_missing_gh_say_so(self):
+        self._seed()
+        client = self.FakeGhClient()
+        report = self.analyzer.scan(self.tmp, self._cfg(max_tickets_per_scan=0), client=client, now=self.T0)
+        self.assertEqual(report["filed"], [])
+        self.assertEqual(len(report["not_filed"]), 8)
+        self.assertFalse(any(call[0] == "create_issue" for call in client.calls))
+        client = self.FakeGhClient()
+        report = self.analyzer.scan(self.tmp, self._cfg(), client=client, dry_run=True, now=self.T0)
+        self.assertEqual((report["filed"], client.calls, report["filing"]["mode"]), ([], [], "dry_run"))
+        self.assertIn("nothing was filed", report["filing"]["note"])
+        self.assertEqual(len(report["drafts"]), 8)
+        client = self.FakeGhClient(available=False)
+        report = self.analyzer.scan(self.tmp, self._cfg(), client=client, now=self.T0)
+        self.assertEqual((report["filed"], client.calls, report["filing"]["mode"]), ([], [("available",)], "gh_missing"))
+        self.assertIn("gh executable not found", report["filing"]["note"])
+        report = self.analyzer.scan(self.tmp, self._cfg(filing="report_only"), client=self.FakeGhClient(), now=self.T0)
+        self.assertEqual(report["filing"]["mode"], "report_only")
+        self.assertEqual(report["filed"], [])
+
+    def test_gh_client_wraps_the_cli_without_a_shell(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append((argv, kwargs))
+            self.assertIs(kwargs["shell"], False)
+            if argv[1:3] == ["issue", "list"]:
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps([
+                    {"number": 7, "title": "T", "body": "B", "state": "OPEN", "closedAt": None,
+                     "labels": [{"name": "needs-triage"}]},
+                ]), stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="https://github.com/x/y/issues/8\n", stderr="")
+
+        client = self.analyzer.GhClient(self.tmp, runner=runner, which=lambda name: "/usr/bin/gh")
+        self.assertTrue(client.available())
+        issues = client.list_issues()
+        self.assertEqual(issues, [{"number": 7, "title": "T", "body": "B", "state": "OPEN", "closed_at": None,
+                                   "labels": ["needs-triage"]}])
+        url = client.create_issue("title", "body", ["from-archive-analysis", "needs-triage"])
+        self.assertEqual(url, "https://github.com/x/y/issues/8")
+        self.assertEqual(calls[1][0][:6], ["gh", "issue", "create", "--title", "title", "--body"])
+        self.assertEqual(calls[1][0][-4:], ["--label", "from-archive-analysis", "--label", "needs-triage"])
+        missing = self.analyzer.GhClient(self.tmp, runner=runner, which=lambda name: None)
+        self.assertFalse(missing.available())
+        self.assertFalse(self.gh_marker.exists())
+
+    # -- configuration -----------------------------------------------------
+
+    def test_analysis_config_defaults_bounds_and_errors(self):
+        cfg = self.lib.load_config(self.tmp)
+        self.assertEqual(cfg["analysis"], {"enabled": True, "max_tickets_per_scan": 5, "dedupe_days": 30,
+                                           "design_phase_hours_threshold": 1.0, "archive_dir": None,
+                                           "filing": "gh"})
+        toml = self.tmp / "handsoff.toml"
+        base = toml.read_text()
+        toml.write_text(base + '\n[analysis]\nenabled = false\nmax_tickets_per_scan = 50\ndedupe_days = 0\n'
+                        'design_phase_hours_threshold = 2.5\narchive_dir = "~/somewhere"\nfiling = "report_only"\n')
+        cfg = self.lib.load_config(self.tmp)
+        self.assertEqual(cfg["analysis"], {"enabled": False, "max_tickets_per_scan": 50, "dedupe_days": 0,
+                                           "design_phase_hours_threshold": 2.5, "archive_dir": "~/somewhere",
+                                           "filing": "report_only"})
+        for body, fragment in (
+            ('enabled = "yes"', "analysis.enabled must be boolean"),
+            ("max_tickets_per_scan = 51", "analysis.max_tickets_per_scan must be an integer from 0 to 50"),
+            ("max_tickets_per_scan = true", "analysis.max_tickets_per_scan"),
+            ("dedupe_days = -1", "analysis.dedupe_days must be an integer from 0 to 365"),
+            ("dedupe_days = 366", "analysis.dedupe_days"),
+            ("design_phase_hours_threshold = 0", "analysis.design_phase_hours_threshold must be a number greater than 0"),
+            ('design_phase_hours_threshold = "1"', "analysis.design_phase_hours_threshold"),
+            ('archive_dir = ""', "analysis.archive_dir"),
+            ('filing = "email"', "analysis.filing"),
+            ("unknown = 1", "analysis has unknown keys: unknown"),
+        ):
+            toml.write_text(base + f"\n[analysis]\n{body}\n")
+            with self.assertRaisesRegex(self.lib.HandsoffError, re.escape(fragment)):
+                self.lib.load_config(self.tmp)
+            r = run(["init", "bad analysis config"], cwd=self.tmp)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn(fragment, r.stdout)
+        toml.write_text("analysis = 1\n" + base)
+        with self.assertRaisesRegex(self.lib.HandsoffError, "must be tables"):
+            self.lib.load_config(self.tmp)
+
+    # -- run_kind ----------------------------------------------------------
+
+    def test_run_kind_for_env_and_prefixes(self):
+        os.environ.pop("HANDSOFF_RUN_KIND", None)
+        for prefix in ("handsoff-test-", "handsoff-selfcheck", "handsoff-dropin", "handsoff-benchmark",
+                       "handsoff-fixture"):
+            self.assertEqual(self.lib.run_kind_for(Path("/tmp") / f"{prefix}abc"), "test")
+        self.assertEqual(self.lib.run_kind_for(Path("/tmp/fm9-tone")), "product")
+        self.assertEqual(self.lib.run_kind_for(self.tmp), "test")
+        os.environ["HANDSOFF_RUN_KIND"] = "product"
+        self.assertEqual(self.lib.run_kind_for(self.tmp), "product")
+        os.environ["HANDSOFF_RUN_KIND"] = "test"
+        self.assertEqual(self.lib.run_kind_for(Path("/tmp/fm9-tone")), "test")
+        os.environ["HANDSOFF_RUN_KIND"] = "staging"
+        self.assertEqual(self.lib.run_kind_for(Path("/tmp/fm9-tone")), "product")
+        self.assertEqual(self.lib.run_kind_for(self.tmp), "test")
+
+    # -- pilot notes -------------------------------------------------------
+
+    def test_pilot_note_cli_records_an_event_without_touching_the_run(self):
+        self.init("Note feature")
+        before = self.read_status()
+        r = run(["pilot-note", "--by", "moncy", "--text", "  The   reviewer  needs screenshots  "], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PILOT_NOTE_RECORDED", r.stdout)
+        notes = [e for e in self._events() if e["kind"] == "pilot_note"]
+        self.assertEqual([(n["by"], n["text"]) for n in notes], [("moncy", "The reviewer needs screenshots")])
+        self.assertEqual(self.read_status(), before)
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+        for text in ("", "   ", "x" * 513):
+            r = run(["pilot-note", "--by", "moncy", "--text", text], cwd=self.tmp)
+            self.assertEqual(r.returncode, 1, text[:10])
+            self.assertIn("1 to 512 characters", r.stdout)
+        r = run(["pilot-note", "--by", "moncy", "--text", "x" * 512], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        r = run(["pilot-note", "--by", " ", "--text", "hello"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--by must be a non-empty string", r.stdout)
+        # Without a current run there is nothing to note on.
+        empty = Path(tempfile.mkdtemp(prefix="handsoff-test-empty-"))
+        try:
+            shutil.copy(self.tmp / "handsoff.toml", empty / "handsoff.toml")
+            r = run(["pilot-note", "--by", "moncy", "--text", "hello"], cwd=empty)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("no current run", r.stdout)
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+
+    def test_pilot_note_post_is_same_origin_and_records_the_dashboard_actor(self):
+        self.init("Note feature")
+        import handsoff_dashboard as dashboard
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        host, port = server.server_address[:2]
+
+        def post(body, origin=True):
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            headers = {"Content-Type": "application/json"}
+            if origin:
+                headers["Origin"] = f"http://{host}:{port}"
+            connection.request("POST", "/api/pilot-note", body=body, headers=headers)
+            response = connection.getresponse()
+            payload = json.loads(response.read())
+            connection.close()
+            return response.status, payload
+
+        try:
+            code, payload = post(json.dumps({"text": "Deploy step needs a checklist"}))
+            self.assertEqual((code, payload), (200, {"ok": True, "text": "Deploy step needs a checklist"}))
+            code, payload = post(json.dumps({"text": "nope"}), origin=False)
+            self.assertEqual(code, 403, payload)
+            code, payload = post(json.dumps({"text": ""}))
+            self.assertEqual(code, 400, payload)
+            code, payload = post(json.dumps({"text": "x", "extra": 1}))
+            self.assertEqual(code, 400, payload)
+        finally:
+            server.shutdown()
+            server.server_close()
+        notes = [e for e in self._events() if e["kind"] == "pilot_note"]
+        self.assertEqual([(n["by"], n["text"]) for n in notes],
+                         [("Mission Control Pilot", "Deploy step needs a checklist")])
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        app = (ROOT / "dashboard" / "app.js").read_text()
+        self.assertIn('id="pilot-note-text"', html)
+        self.assertIn('id="pilot-note-send"', html)
+        self.assertIn('fetch("/api/pilot-note"', app)
+
+    def test_broker_routes_pilot_note_for_the_supervisor(self):
+        import handsoff_broker
+        argv = handsoff_broker._workflow_argv(self.tmp, {
+            "actor": "supervisor", "project_root": str(self.tmp), "action": "workflow",
+            "command": "pilot-note", "by": "supervisor-1", "text": "note text",
+        })
+        self.assertEqual(argv[-5:], ["pilot-note", "--by", "supervisor-1", "--text", "note text"])
+        with self.assertRaisesRegex(self.lib.HandsoffError, "unknown fields"):
+            handsoff_broker._workflow_argv(self.tmp, {
+                "actor": "supervisor", "project_root": str(self.tmp), "action": "workflow",
+                "command": "pilot-note", "by": "supervisor-1", "text": "note", "dry_run": True,
+            })
+        with self.assertRaisesRegex(self.lib.HandsoffError, "missing fields"):
+            handsoff_broker._workflow_argv(self.tmp, {
+                "actor": "supervisor", "project_root": str(self.tmp), "action": "workflow",
+                "command": "pilot-note", "by": "supervisor-1",
+            })
+
+    # -- the Phase 8 trigger and the CLI ----------------------------------
+
+    def _complete_a_run(self, feature="Analyzer trigger feature", after_init=None):
+        self.init(feature)
+        if after_init is not None:
+            after_init()
+        self.set_criterion_state("passing", resolved=True)
+        self.advance_to(7, implemented_by="impl-1", reviewed_by="rev-1")
+        r = run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["verify-live", "--by", "monitor"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["advance", "8", "100"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def test_phase_8_runs_the_scan_after_the_archive_and_lists_the_note_as_r7(self):
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text() + '\n[analysis]\nfiling = "report_only"\n')
+        # The fixture root is handsoff-test-*, so an explicit product kind
+        # is what makes this run visible to the scan.
+        os.environ["HANDSOFF_RUN_KIND"] = "product"
+
+        def note():
+            r = run(["pilot-note", "--by", "moncy", "--text", "Archive trigger note"], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout)
+
+        r = self._complete_a_run("Trigger feature", after_init=note)
+        self.assertIn("HANDSOFF_ARCHIVED:", r.stdout)
+        self.assertIn("HANDSOFF_ANALYSIS_REPORT:", r.stdout)
+        self.assertIn("SHIP_FEATURE_ADVANCED", r.stdout)
+        self.assertNotIn("HANDSOFF_ANALYSIS_FAILED", r.stdout)
+        archive_line = next(line for line in r.stdout.splitlines() if line.startswith("HANDSOFF_ARCHIVED:"))
+        archive_path = Path(archive_line.split(":", 1)[1].strip())
+        report_line = next(line for line in r.stdout.splitlines() if line.startswith("HANDSOFF_ANALYSIS_REPORT:"))
+        report_path = Path(report_line.split(":", 1)[1].strip())
+        self.assertEqual(archive_path.parent.resolve(), self.archive_dir.resolve())
+        self.assertEqual(len(list(self.archive_dir.glob("*.json"))), 1)
+        self.assertEqual(report_path.parent.resolve(), (self.tmp / ".handsoff-analysis").resolve())
+        self.assertTrue(report_path.is_file())
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["runs"]["product"], [archive_path.name])
+        self.assertEqual([(f["rule"], f["run_ids"], f["text"]) for f in report["findings"]],
+                         [("R7", [archive_path.name], "Archive trigger note")])
+        self.assertEqual(report["filing"]["mode"], "report_only")
+        self.assertEqual(report["filed"], [])
+        # The archive was written first and is not rewritten by the scan:
+        # it carries run_kind product and no archive_scan_completed event.
+        archived = json.loads(archive_path.read_text())
+        self.assertEqual(archived["run_kind"], "product")
+        self.assertNotIn("archive_scan_completed", [e["kind"] for e in archived["events"]])
+        events = self._events()
+        kinds = [e["kind"] for e in events]
+        # Live ledger order: the Phase 8 transition, then the scan record,
+        # then the dashboard release, on this run's ledger only.
+        self.assertEqual(kinds.count("archive_scan_completed"), 1)
+        self.assertLess(len(kinds) - 1 - kinds[::-1].index("phase_advanced"), kinds.index("archive_scan_completed"))
+        self.assertLess(kinds.index("archive_scan_completed"), kinds.index("dashboard_release_skipped"))
+        scan_event = next(e for e in events if e["kind"] == "archive_scan_completed")
+        self.assertEqual({k: scan_event[k] for k in ("findings", "filed", "suppressed", "excluded",
+                                                     "skipped_fixtures", "unreadable")},
+                         {"findings": 1, "filed": 0, "suppressed": 0, "excluded": 0,
+                          "skipped_fixtures": 0, "unreadable": 0})
+        self.assertEqual(scan_event["report_path"], str(report_path))
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+        self.assertFalse(self.gh_marker.exists())
+
+    def test_phase_8_archive_of_a_fixture_run_is_skipped_by_the_scan(self):
+        r = self._complete_a_run()
+        self.assertIn("HANDSOFF_ANALYSIS_REPORT:", r.stdout)
+        scan_event = next(e for e in self._events() if e["kind"] == "archive_scan_completed")
+        self.assertEqual((scan_event["findings"], scan_event["skipped_fixtures"]), (0, 1))
+        archived = json.loads(next(self.archive_dir.glob("*.json")).read_text())
+        self.assertEqual(archived["run_kind"], "test")
+
+    def test_scan_failure_never_fails_the_advance(self):
+        # .handsoff-analysis as a FILE makes the report write fail.
+        (self.tmp / ".handsoff-analysis").write_text("not a directory")
+        r = self._complete_a_run()
+        self.assertIn("HANDSOFF_ARCHIVED:", r.stdout)
+        self.assertIn("HANDSOFF_ANALYSIS_FAILED (run still completed successfully):", r.stdout)
+        self.assertIn("SHIP_FEATURE_ADVANCED", r.stdout)
+        self.assertEqual(self.read_status()["status"], "complete")
+        self.assertNotIn("archive_scan_completed", [e["kind"] for e in self._events()])
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+
+    def test_analysis_disabled_skips_the_scan(self):
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text() + "\n[analysis]\nenabled = false\n")
+        r = self._complete_a_run()
+        self.assertIn("HANDSOFF_ARCHIVED:", r.stdout)
+        self.assertNotIn("HANDSOFF_ANALYSIS", r.stdout)
+        self.assertNotIn("archive_scan_completed", [e["kind"] for e in self._events()])
+        self.assertFalse((self.tmp / ".handsoff-analysis").exists())
+
+    def test_analyze_archives_cli_runs_the_same_scan_on_demand(self):
+        self._seed()
+        other = Path(tempfile.mkdtemp(prefix="handsoff-archive-other-"))
+        try:
+            r = run(["analyze-archives", "--dry-run"], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("HANDSOFF_ANALYSIS_REPORT:", r.stdout)
+            report_line = next(line for line in r.stdout.splitlines() if line.startswith("HANDSOFF_ANALYSIS_REPORT:"))
+            report_path = Path(report_line.split(":", 1)[1].strip())
+            self.assertTrue(report_path.is_file())
+            self.assertEqual(report_path.parent.resolve(), (self.tmp / ".handsoff-analysis").resolve())
+            report = json.loads(report_path.read_text())
+            self.assertEqual([(f["rule"], f["run_ids"]) for f in report["findings"]], self.EXPECTED)
+            self.assertEqual(report["filing"]["mode"], "dry_run")
+            summary = json.loads(r.stdout.split("\n", 1)[1])
+            self.assertEqual(summary["runs"], {"product": 9, "skipped_fixtures": 2, "unreadable": 1, "duplicates": 1})
+            r = run(["analyze-archives", "--dry-run", "--archive-dir", str(other)], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            summary = json.loads(r.stdout.split("\n", 1)[1])
+            self.assertEqual(summary["findings"], [])
+            self.assertEqual(summary["runs"]["product"], 0)
+            # Without --dry-run, filing = "report_only" keeps gh out of it.
+            toml = self.tmp / "handsoff.toml"
+            toml.write_text(toml.read_text() + '\n[analysis]\nfiling = "report_only"\n')
+            r = run(["analyze-archives"], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            summary = json.loads(r.stdout.split("\n", 1)[1])
+            self.assertEqual(summary["filing"]["mode"], "report_only")
+            self.assertEqual(len(summary["findings"]), 10)
+            self.assertEqual(summary["filed"], [])
+        finally:
+            shutil.rmtree(other, ignore_errors=True)

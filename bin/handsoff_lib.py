@@ -242,7 +242,24 @@ DEFAULT_CONFIG = {
         "worker_loss_grace_minutes": 2, "live_session_silence_minutes": 10,
         "liveness_seconds": 60, "dashboard_watchdog": True, "poll_seconds": 30,
     },
+    # #49: the archive analyzer. `filing` is "gh" (file through the gh CLI)
+    # or "report_only" (never construct a GitHub client; the report still
+    # lists every draft). archive_dir None means HANDSOFF_ARCHIVE_DIR or
+    # the default Documents archive.
+    "analysis": {
+        "enabled": True, "max_tickets_per_scan": 5, "dedupe_days": 30,
+        "design_phase_hours_threshold": 1.0, "archive_dir": None, "filing": "gh",
+    },
 }
+ANALYSIS_FILING_MODES = ("gh", "report_only")
+ANALYSIS_DIR = ".handsoff-analysis"
+# #49: a run whose root name starts with one of these is a test fixture,
+# a self-check, a drop-in or a benchmark run, never a product run.
+FIXTURE_ROOT_PREFIXES = (
+    "handsoff-test-", "handsoff-selfcheck", "handsoff-dropin", "handsoff-benchmark", "handsoff-fixture",
+)
+RUN_KINDS = ("test", "product")
+MAX_PILOT_NOTE_LENGTH = 512
 
 AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
 SELECTABLE_AGENT_ROLES = AGENT_ROLES
@@ -380,6 +397,7 @@ def load_config(root: Path) -> dict:
     }
     cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
     cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
+    cfg["analysis"] = dict(DEFAULT_CONFIG["analysis"])
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -397,11 +415,12 @@ def load_config(root: Path) -> dict:
     checks = raw.get("checks", {})
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
+    analysis = raw.get("analysis", {})
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks, recovery, regression_gate)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks, recovery, regression_gate, analysis)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, checks, recovery, and regression_gate must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, checks, recovery, regression_gate, and analysis must be tables"
         )
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
@@ -537,6 +556,7 @@ def load_config(root: Path) -> dict:
                 f"handsoff.toml: recovery.{key} must be an integer from {minimum} to {maximum}"
             )
         cfg["recovery"][key] = value
+    cfg["analysis"] = _validate_analysis_config(analysis)
     if not isinstance(tickets, list):
         raise HandsoffError("handsoff.toml: tickets must be an array of tables")
     normalized_tickets = []
@@ -609,6 +629,38 @@ def _atomic_write_text(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _validate_analysis_config(analysis: dict) -> dict:
+    """#49: the [analysis] table. Every key is optional; an invalid value is
+    a load error like every other section."""
+    cfg = dict(DEFAULT_CONFIG["analysis"])
+    unknown = set(analysis) - set(cfg)
+    if unknown:
+        raise HandsoffError(f"handsoff.toml: analysis has unknown keys: {', '.join(sorted(unknown))}")
+    enabled = analysis.get("enabled", cfg["enabled"])
+    if not isinstance(enabled, bool):
+        raise HandsoffError("handsoff.toml: analysis.enabled must be boolean")
+    cfg["enabled"] = enabled
+    for key, (minimum, maximum) in (("max_tickets_per_scan", (0, 50)), ("dedupe_days", (0, 365))):
+        value = analysis.get(key, cfg[key])
+        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+            raise HandsoffError(f"handsoff.toml: analysis.{key} must be an integer from {minimum} to {maximum}")
+        cfg[key] = value
+    threshold = analysis.get("design_phase_hours_threshold", cfg["design_phase_hours_threshold"])
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) \
+            or not math.isfinite(threshold) or threshold <= 0:
+        raise HandsoffError("handsoff.toml: analysis.design_phase_hours_threshold must be a number greater than 0")
+    cfg["design_phase_hours_threshold"] = float(threshold)
+    archive = analysis.get("archive_dir", cfg["archive_dir"])
+    if archive is not None and (not isinstance(archive, str) or not archive.strip()):
+        raise HandsoffError("handsoff.toml: analysis.archive_dir must be a non-empty string when set")
+    cfg["archive_dir"] = archive.strip() if isinstance(archive, str) else None
+    filing = analysis.get("filing", cfg["filing"])
+    if filing not in ANALYSIS_FILING_MODES:
+        raise HandsoffError("handsoff.toml: analysis.filing must be exactly 'gh' or 'report_only'")
+    cfg["filing"] = filing
+    return cfg
 
 
 def _validate_design_evidence_config(value: object) -> list[dict]:
@@ -5729,7 +5781,7 @@ HANDSOFF_GENERATED_NAMES = frozenset({
     ".handsoff.lock", ".handsoff-event-head.json", ".handsoff-writeahead.json",
     ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
     LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE,
-    ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR,
+    ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,
     "__pycache__", ".git",
 })
 
@@ -6671,6 +6723,20 @@ def archive_dir() -> Path:
     return Path.home() / "Documents" / "Handsoff-Archive"
 
 
+def run_kind_for(root: Path) -> str:
+    """#49: "test" or "product". An explicit HANDSOFF_RUN_KIND of exactly
+    test or product wins; otherwise a root whose name starts with one of
+    FIXTURE_ROOT_PREFIXES is a test run, and everything else is product.
+    Written into every archive so the analyzer never mines fixtures."""
+    explicit = os.environ.get("HANDSOFF_RUN_KIND", "").strip()
+    if explicit in RUN_KINDS:
+        return explicit
+    name = Path(root).name
+    if any(name.startswith(prefix) for prefix in FIXTURE_ROOT_PREFIXES):
+        return "test"
+    return "product"
+
+
 def read_events(root: Path, cfg: dict) -> list[dict]:
     """Every event for this run, oldest first. Tolerant of a corrupt line the
     way the dashboard already is: a bad line is skipped, not fatal, because
@@ -6858,6 +6924,7 @@ def archive_run(root: Path, cfg: dict, status: dict, acceptance: dict,
         "archived_at": datetime.now(timezone.utc).isoformat(),
         "repo": root.name,
         "root": str(root),
+        "run_kind": run_kind_for(root),
         "feature": status.get("feature"),
         "started_at": events[0]["at"] if events else status.get("updated_at"),
         "completed_at": status.get("updated_at") or datetime.now(timezone.utc).isoformat(),
@@ -6873,6 +6940,28 @@ def archive_run(root: Path, cfg: dict, status: dict, acceptance: dict,
     out_path = out_dir / filename
     out_path.write_text(json.dumps(record, indent=1, sort_keys=True))
     return out_path
+
+
+def record_pilot_note(root: Path, *, by: object, text: object) -> dict:
+    """#49: append a `pilot_note` event to the CURRENT run's ledger. The
+    note changes nothing about phase, progress, or evidence; the next
+    archive scan lists each distinct note as an R7 finding, which is how
+    the Pilot's own observations become filed improvement tickets."""
+    if not isinstance(by, str) or not by.strip():
+        raise HandsoffError("pilot note: --by must be a non-empty string")
+    if not isinstance(text, str):
+        raise HandsoffError("pilot note: text must be a string")
+    clean = " ".join(text.split())
+    if not 1 <= len(clean) <= MAX_PILOT_NOTE_LENGTH:
+        raise HandsoffError(f"pilot note: text must be 1 to {MAX_PILOT_NOTE_LENGTH} characters")
+    root = Path(root).resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        if not status_path(root, cfg).exists():
+            raise HandsoffError("pilot note: no current run (run init first)")
+        commit(root, cfg, event_kind="pilot_note", event_message=f"Pilot note from {by.strip()}",
+               by=by.strip(), text=clean)
+    return {"by": by.strip(), "text": clean}
 
 
 # --------------------------------------------------------------------------

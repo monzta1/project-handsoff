@@ -19,6 +19,10 @@
       <div class="topbar-meta">
         <span class="connection"><i></i><span id="connection-status">TACTICAL LINK: CONNECTING</span></span>
         <span id="last-sync">Acquiring telemetry…</span>
+        <form id="pilot-note-form" class="pilot-note" autocomplete="off" aria-label="Pilot note for the archive analyzer">
+          <input id="pilot-note-text" class="pilot-note-input" type="text" maxlength="512" placeholder="Pilot note (1 to 512 chars)" aria-label="Pilot note text">
+          <button id="pilot-note-send" class="pilot-note-send" type="submit">SEND</button>
+        </form>
         <button id="settings-toggle" class="settings-toggle" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">AGENT SETTINGS</button>
       </div>
     </header>
@@ -67,6 +71,7 @@
             <button id="design-approve" class="authorize-button hidden" type="button">AUTHORIZE DESIGN</button>
             <button id="deployment-approve" class="authorize-button hidden" type="button">AUTHORIZE DEPLOYMENT</button>
             <button id="design-review-authorize" class="authorize-button hidden" type="button">AUTHORIZE ONE MORE DESIGN REVIEW</button>
+            <button id="amendment-approve" class="authorize-button hidden" type="button">APPROVE AMENDMENT</button>
             <button id="regression-accept" class="authorize-button hidden" type="button">ACCEPT REGRESSION</button>
             <button id="regression-decline" class="alert-button hidden" type="button">DECLINE</button>
             <button id="enable-alerts" class="alert-button" type="button">Enable tactical alerts</button>

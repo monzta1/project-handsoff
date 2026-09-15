@@ -268,6 +268,12 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         if "session" in request:
             base.extend(["--session", _text(request, "session")])
         return base
+    if command == "pilot-note":
+        # #49: the Supervisor may relay a Pilot observation onto the run
+        # ledger; the supervisor validates the 1 to 512 character bound.
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "text"})
+        base.extend(["--by", _text(request, "by"), "--text", _text(request, "text")])
+        return base
     if command == "amendment-escalate":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "reason"})
         base.extend(["--by", _text(request, "by"), "--reason", _text(request, "reason")])

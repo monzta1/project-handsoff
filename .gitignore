@@ -11,6 +11,7 @@ handsoff-verifications.jsonl
 handsoff-design-evidence.json
 .handsoff-selfcheck/
 .handsoff-archive/
+.handsoff-analysis/
 .handsoff-dashboard-owner.json
 .handsoff-live.json
 .handsoff-output-liveness.json

@@ -567,8 +567,20 @@ function collectQuestionFormAnswers(entries) {
   return answers;
 }
 
+const PILOT_NOTE_MAX_LENGTH = 512;
+
+function pilotNoteText(value) {
+  // #49: whitespace-collapsed note text, or "" when it is empty or over
+  // the 512-character bound the supervisor enforces.
+  const text = String(value == null ? "" : value).split(/\s+/).filter(Boolean).join(" ");
+  if (!text || text.length > PILOT_NOTE_MAX_LENGTH) return "";
+  return text;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    PILOT_NOTE_MAX_LENGTH,
+    pilotNoteText,
     showQuestionsPanel,
     questionHeadline,
     questionLabel,

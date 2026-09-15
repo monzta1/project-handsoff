@@ -68,8 +68,8 @@ poll_seconds = 30
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
-  "python3 -m unittest tests.test_handsoff_supervisor.TestStructuredQuestions -v",
-  "node --test tests/dashboard/questions.test.js",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestArchiveAnalyzer -v",
+  "node --test tests/dashboard/pilot_note.test.js",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

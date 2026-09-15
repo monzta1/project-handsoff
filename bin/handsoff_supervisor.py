@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import handsoff_analyzer as analyzer  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 
 
@@ -392,6 +393,7 @@ def cmd_advance(args) -> int:
                       event_kind="phase_advanced", event_message=f"Advanced to {lib.PHASES[args.phase]}",
                       phase_number=args.phase, progress=args.progress)
 
+        archived = False
         if args.phase == 8 and proposed.get("status") == "complete":
             # The phase transition above already committed successfully; an
             # archive failure (e.g. an unwritable Documents folder) must not
@@ -401,14 +403,69 @@ def cmd_advance(args) -> int:
                 archive_path = lib.archive_run(root, cfg, proposed, acceptance,
                                                fresh_verifications, lib.read_events(root, cfg))
                 print(f"HANDSOFF_ARCHIVED: {archive_path}")
+                archived = True
             except OSError as exc:
                 print(f"HANDSOFF_ARCHIVE_FAILED (run still completed successfully): {exc}")
     if args.phase == 8 and proposed.get("status") == "complete":
+        # #49: outside the lock like the dashboard release below (the scan
+        # may talk to GitHub); the completion event takes the lock itself.
+        if archived:
+            _analyze_after_archive(root, cfg)
         # #40: outside the project lock on purpose. The dashboard's own
         # event stream takes that lock every 0.2 s, so holding it here
         # would keep the server from ever noticing the stop request.
         _release_run_dashboard(root, cfg)
     print("SHIP_FEATURE_ADVANCED")
+    return 0
+
+
+def _analyze_after_archive(root, cfg) -> None:
+    """#49: scan the archive (the record just written included) right after
+    the Phase 8 archive write, when [analysis] enabled is true, and record
+    archive_scan_completed on this run's live ledger. Any failure at all is
+    reported and never fails the advance: the transition and the archive
+    are already committed."""
+    if not (cfg.get("analysis") or {}).get("enabled", True):
+        return
+    try:
+        report = analyzer.scan(root, cfg)
+        with lib.project_lock(root):
+            lib.commit(root, cfg, event_kind="archive_scan_completed",
+                      event_message=f"Archive scan completed: {len(report['findings'])} finding(s), "
+                                    f"{len(report['filed'])} filed",
+                      **analyzer.scan_event_fields(report))
+        print(f"HANDSOFF_ANALYSIS_REPORT: {report['report_path']}")
+    except Exception as exc:  # noqa: BLE001 - a scan must never fail a completed run
+        print(f"HANDSOFF_ANALYSIS_FAILED (run still completed successfully): {type(exc).__name__}: {exc}")
+
+
+def cmd_analyze_archives(args) -> int:
+    """#49: the same scan the Phase 8 trigger runs, on demand. Prints the
+    report path. --dry-run files nothing; --archive-dir overrides the
+    archive location for this scan only."""
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    report = analyzer.scan(root, cfg, archive_directory=args.archive_dir, dry_run=args.dry_run)
+    print(f"HANDSOFF_ANALYSIS_REPORT: {report['report_path']}")
+    print(json.dumps({
+        "report_path": report["report_path"],
+        "filing": report["filing"],
+        "findings": [{"rule": f["rule"], "title": f["title"], "run_ids": f["run_ids"], "numbers": f["numbers"],
+                      "excluded": f["excluded"]} for f in report["findings"]],
+        "filed": report["filed"],
+        "suppressed": report["suppressed"],
+        "not_filed": report["not_filed"],
+        "runs": {key: len(value) for key, value in report["runs"].items()},
+    }, indent=2))
+    return 0
+
+
+def cmd_pilot_note(args) -> int:
+    """#49: record a pilot_note event on the current run. The next archive
+    scan lists each distinct note as an R7 finding with its run id."""
+    root = lib.resolve_root(args.root)
+    record = lib.record_pilot_note(root, by=args.by, text=args.text)
+    print(f"PILOT_NOTE_RECORDED: {len(record['text'])} characters by {record['by']}")
     return 0
 
 
@@ -3191,6 +3248,17 @@ def main() -> int:
                                  help='JSON file {"answers": [{"question_id", "choice"} | {"question_id", "other"}]}')
     question_answer.add_argument("--by", required=True)
 
+    analyze = sub.add_parser("analyze-archives", help="scan the completed-run archive for recurring patterns "
+                             "and file evidenced improvement tickets (#49); prints the report path")
+    analyze.add_argument("--dry-run", action="store_true", help="evaluate and report, file nothing")
+    analyze.add_argument("--archive-dir", default=None, help="archive directory for this scan only "
+                         "(default: [analysis].archive_dir, else HANDSOFF_ARCHIVE_DIR, else ~/Documents/Handsoff-Archive)")
+
+    pilot_note = sub.add_parser("pilot-note", help="record a Pilot observation on the current run (#49); "
+                                "the next archive scan lists it as an R7 finding")
+    pilot_note.add_argument("--by", required=True)
+    pilot_note.add_argument("--text", required=True, help="1 to 512 characters")
+
     adv = sub.add_parser("advance")
     adv.add_argument("phase", type=int)
     adv.add_argument("progress", type=int)
@@ -3264,6 +3332,8 @@ def main() -> int:
         "amendment-escalate": cmd_amendment_escalate,
         "question-raise": cmd_question_raise,
         "question-answer": cmd_question_answer,
+        "analyze-archives": cmd_analyze_archives,
+        "pilot-note": cmd_pilot_note,
     }
     try:
         return handlers[args.command](args)

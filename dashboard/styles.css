@@ -50,6 +50,12 @@ button, input { font: inherit; }
 .topbar-meta { display: flex; align-items: center; gap: 20px; color: var(--muted); font: 600 13px/1 var(--sans); }
 .settings-toggle { min-height: 36px; padding: 0 12px; border: 1px solid rgba(111, 179, 245, .3); border-radius: 7px; color: var(--green); background: var(--green-soft); font: 700 11px/1 var(--sans); letter-spacing: .05em; cursor: pointer; }
 .settings-toggle:hover { border-color: var(--green); box-shadow: 0 0 16px rgba(111, 179, 245, .16); }
+.pilot-note { display: flex; align-items: center; gap: 6px; margin: 0; }
+.pilot-note-input { min-height: 36px; width: min(260px, 32vw); padding: 0 10px; border: 1px solid rgba(111, 179, 245, .3); border-radius: 7px; color: var(--ink); background: rgba(0, 0, 0, .25); font: 500 12px/1 var(--sans); }
+.pilot-note-input:focus-visible, .pilot-note-send:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.pilot-note-send { min-height: 36px; padding: 0 12px; border: 1px solid rgba(111, 179, 245, .3); border-radius: 7px; color: var(--green); background: var(--green-soft); font: 700 11px/1 var(--sans); letter-spacing: .05em; cursor: pointer; }
+.pilot-note-send:hover { border-color: var(--green); }
+.pilot-note-send:disabled { opacity: .6; cursor: default; }
 .connection { color: var(--green); font-weight: 700; }
 .connection i { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 12px var(--green); animation: pulse 2s infinite; }
 @keyframes pulse { 50% { opacity: .45; box-shadow: 0 0 3px var(--green); } }
