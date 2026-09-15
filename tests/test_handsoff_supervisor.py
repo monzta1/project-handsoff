@@ -436,8 +436,9 @@ class TestEveMissionControl(HandsoffTestCase):
                 pass
 
             started = time.monotonic()
-            heartbeat = run(["heartbeat", "--by", "telemetry-test", "--note", "state changed"], cwd=self.tmp)
-            self.assertEqual(heartbeat.returncode, 0, heartbeat.stdout + heartbeat.stderr)
+            changed = run(["background-wait-start", "--by", "telemetry-test",
+                           "--note", "state changed"], cwd=self.tmp)
+            self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
             event = ""
             for _ in range(12):
                 line = response.readline().decode("utf-8")
@@ -10335,7 +10336,7 @@ class TestFailureClassification(unittest.TestCase):
         # and a digest -- nothing else.
         self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
         self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
-        self.assertEqual(len(lib.FAILURE_CATEGORIES), 9)  # 8 from CRIT-001 + still_running from CRIT-002
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 10)
         closed_set_reasons = {
             "cancelled": "run was cancelled",
             "timeout": "runner exceeded its timeout",
@@ -10346,6 +10347,7 @@ class TestFailureClassification(unittest.TestCase):
             "non_zero_exit": "process exited with a non-zero status",
             "unknown": "failure signal matched no known category",
             "still_running": "no failure signal reported yet",
+            "presumed_lost": "host watchdog found no liveness signal past the threshold",
         }
         self.assertEqual(set(lib.FAILURE_CATEGORIES), set(closed_set_reasons))
         self.assertEqual(result["reason"], closed_set_reasons[result["category"]])
