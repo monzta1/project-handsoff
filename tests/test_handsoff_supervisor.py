@@ -12454,8 +12454,12 @@ class TestArchiveAnalyzer(HandsoffTestCase):
                                    "labels": ["needs-triage"]}])
         url = client.create_issue("title", "body", ["from-archive-analysis", "needs-triage"])
         self.assertEqual(url, "https://github.com/x/y/issues/8")
-        self.assertEqual(calls[1][0][:6], ["gh", "issue", "create", "--title", "title", "--body"])
-        self.assertEqual(calls[1][0][-4:], ["--label", "from-archive-analysis", "--label", "needs-triage"])
+        # Missing labels are created (idempotently) before the issue, so a
+        # never-scanned repository cannot fail on --label.
+        self.assertEqual([call[0][:4] for call in calls[1:3]],
+                         [["gh", "label", "create", "from-archive-analysis"], ["gh", "label", "create", "needs-triage"]])
+        self.assertEqual(calls[3][0][:6], ["gh", "issue", "create", "--title", "title", "--body"])
+        self.assertEqual(calls[3][0][-4:], ["--label", "from-archive-analysis", "--label", "needs-triage"])
         missing = self.analyzer.GhClient(self.tmp, runner=runner, which=lambda name: None)
         self.assertFalse(missing.available())
         self.assertFalse(self.gh_marker.exists())

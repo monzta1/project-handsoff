@@ -589,7 +589,21 @@ class GhClient:
             })
         return issues
 
+    LABEL_DESCRIPTIONS = {
+        "from-archive-analysis": "Filed by the Handsoff archive analyzer from evidenced run patterns",
+        "needs-triage": "Awaiting planning: decide whether and when to do it",
+    }
+
+    def ensure_labels(self, labels: list[str]) -> None:
+        """A repository that has never been scanned lacks the two labels;
+        `gh issue create --label` then fails outright. Create them first
+        (idempotent: --force updates an existing label in place)."""
+        for label in labels:
+            self._run(["label", "create", label, "--force", "--color", "5319e7",
+                       "--description", self.LABEL_DESCRIPTIONS.get(label, "Handsoff archive analysis")])
+
     def create_issue(self, title: str, body: str, labels: list[str]) -> str:
+        self.ensure_labels(labels)
         args = ["issue", "create", "--title", title, "--body", body]
         for label in labels:
             args.extend(["--label", label])
