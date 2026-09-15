@@ -583,7 +583,7 @@ function renderCriteria(criteria) {
 
 function renderWorkItems(workItems) {
   const items = workItems?.items || [];
-  const visible = Boolean(workItems?.multi);
+  const visible = showWorkItemTable(workItems);
   const panel = $("ticket-panel");
   panel.classList.toggle("hidden", !visible);
   $("ticket-total").textContent = `${items.length} ITEM${items.length === 1 ? "" : "S"}`;
@@ -592,11 +592,65 @@ function renderWorkItems(workItems) {
       <td><code>${escapeHtml(item.id)}</code></td>
       <td>${item.number ? `#${escapeHtml(item.number)}` : "—"}</td>
       <td>${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
+      <td><span class="ticket-state">${escapeHtml(workItemLaneLabel(item))}</span><small>${escapeHtml(workItemLaneDetail(item))}</small>${smallFixCanConfirm(item) ? `<button class="mini-action lane-confirm" data-item="${escapeHtml(item.id)}">CONFIRM</button>` : ""}</td>
+      <td><strong>${escapeHtml(workItemProgressLabel(item))}</strong></td>
       <td><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
       <td>${escapeHtml(item.phase_or_next || "—")}</td>
       <td>${escapeHtml(item.blocker || "—")}</td>
       <td>${escapeHtml(relativeTime(item.updated_at))}</td>
     </tr>`).join("");
+  document.querySelectorAll(".lane-confirm").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/lane-confirm", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ item: button.dataset.item }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `Lane confirmation returned ${response.status}`);
+        await refresh();
+      } catch (error) {
+        button.disabled = false;
+        showError(`Lane confirmation rejected: ${error.message}`);
+      }
+    });
+  });
+}
+
+function renderTranche(proposal) {
+  const panel = $("tranche-panel");
+  panel.classList.toggle("hidden", !proposal);
+  if (!proposal) return;
+  const byId = Object.fromEntries((proposal.issues || []).map((issue) => [`issue-${issue.number}`, issue]));
+  const rows = proposal.proposed_order.map((id) => ({ id, issue: byId[id], dropped: false }));
+  const paint = () => {
+    $("tranche-list").innerHTML = rows.map((row, index) => `<article class="criterion tranche-row" data-id="${escapeHtml(row.id)}">
+      <div><strong>${escapeHtml(row.id)} · ${escapeHtml(row.issue?.title || "Unknown issue")}</strong>
+      <p>${escapeHtml(`${row.issue?.score || 0} pts · ${row.issue?.lane || "full"} · deps ${(row.issue?.dependencies || []).map((n) => `#${n}`).join(", ") || "none"} · cost ${row.issue?.cost_source || "unknown"}`)}</p>
+      <small>${escapeHtml((row.issue?.rationale || []).join(" · "))}</small><small>${escapeHtml(trancheIssueDetail(row.issue))}</small></div>
+      <div><button data-move="up" ${index === 0 ? "disabled" : ""}>↑</button><button data-move="down" ${index === rows.length - 1 ? "disabled" : ""}>↓</button><button data-drop>${row.dropped ? "RETAIN" : "DROP"}</button></div>
+    </article>`).join("");
+    document.querySelectorAll(".tranche-row").forEach((node, index) => {
+      node.querySelector('[data-move="up"]').onclick = () => { [rows[index - 1], rows[index]] = [rows[index], rows[index - 1]]; paint(); };
+      node.querySelector('[data-move="down"]').onclick = () => { [rows[index + 1], rows[index]] = [rows[index], rows[index + 1]]; paint(); };
+      node.querySelector("[data-drop]").onclick = () => { rows[index].dropped = !rows[index].dropped; paint(); };
+    });
+  };
+  paint();
+  $("tranche-approve").onclick = async () => {
+    const button = $("tranche-approve");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/tranche-approval", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(trancheDecisionPayload(proposal.proposal_hash, rows))});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Tranche approval returned ${response.status}`);
+      await refresh();
+    } catch (error) { showError(`Tranche approval rejected: ${error.message}`); }
+    finally { button.disabled = false; }
+  };
 }
 
 function renderDesignEvidence(artifacts) {
@@ -923,6 +977,7 @@ function render(snapshot) {
 
   renderCriteria(acceptance.criteria);
   renderWorkItems(snapshot.work_items || { items: [], multi: false });
+  renderTranche(snapshot.tranche || null);
   renderDesignEvidence(snapshot.design_evidence || []);
   renderAmendment(snapshot.amendment || null);
   renderQuestions(snapshot.questions || null);

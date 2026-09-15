@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_analyzer as analyzer  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+import handsoff_tranche as tranche  # noqa: E402
 
 
 def _load(root: Path, cfg: dict):
@@ -158,6 +159,9 @@ def cmd_init(args) -> int:
                                    "all_criteria_verified": "no", "evidence_attached": "no"},
             "events": [],
         }
+        status["work_item_delivery"] = lib.new_work_item_delivery(
+            acceptance["work_items"], getattr(args, "lane", "full"),
+        )
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="initialized", event_message=f"Handsoff initialized for '{args.feature}'",
                   project_root=str(root))
@@ -267,7 +271,11 @@ def cmd_advance(args) -> int:
             print(f"invalid phase {args.phase}, must be one of {sorted(lib.PHASES)}")
             return 1
         current = int(status.get("phase_number", 0) or 0)
-        if args.phase < current or args.phase > current + 1:
+        small_fix_jump = (
+            current == 1 and args.phase == 4
+            and not lib.full_design_required(status, acceptance, cfg)
+        )
+        if args.phase < current or (args.phase > current + 1 and not small_fix_jump):
             print(f"phase transition blocked: current={current}, requested={args.phase} (one step at a time)")
             return 1
         if args.progress < status.get("progress", 0):
@@ -279,7 +287,7 @@ def cmd_advance(args) -> int:
         # status already on disk can never catch the transition about to
         # happen, because the phase-6+ checks only fire once phase_number
         # already reads 6+, which is one write too late.
-        proposed = dict(status)
+        proposed = deepcopy(status)
         proposed["phase_number"] = args.phase
         proposed["phase"] = lib.PHASES[args.phase]
         proposed["progress"] = args.progress
@@ -293,6 +301,10 @@ def cmd_advance(args) -> int:
             proposed["status"] = "complete"
         if args.implemented_by:
             proposed["implemented_by"] = args.implemented_by
+            active = proposed.get("active_work_item")
+            delivery = proposed.get("work_item_delivery") or {}
+            if active in delivery:
+                delivery[active]["implemented_by"] = args.implemented_by
         if args.authorization_hold:
             if args.phase != 2 or proposed.get("status") != "blocked":
                 print("SHIP_FEATURE_INVALID: --authorization-hold requires Phase 2 with --status blocked")
@@ -704,6 +716,13 @@ def cmd_work_item_activate(args) -> int:
         if args.item not in {item["id"] for item in items}:
             print(f"SHIP_FEATURE_BLOCKED: unknown work item {args.item}")
             return 1
+        if status.get("tranche_approval"):
+            rows = lib.derive_work_items(status, acceptance, cfg)["items"]
+            next_item = next((item["id"] for item in rows
+                              if item.get("required", True) and item.get("status") != "done"), None)
+            if next_item and args.item != next_item:
+                print(f"SHIP_FEATURE_BLOCKED: approved tranche order requires {next_item} next")
+                return 1
         status["active_work_item"] = args.item
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, event_kind="work_item_activated",
@@ -738,6 +757,12 @@ def cmd_work_item_update(args) -> int:
             item["required"] = False
         if args.github_state is not None:
             item["github_checked_at"] = datetime.now(timezone.utc).isoformat()
+        if getattr(args, "implemented_by", None) is not None:
+            delivery = status.get("work_item_delivery") or {}
+            if args.item not in delivery:
+                print(f"SHIP_FEATURE_BLOCKED: work item {args.item} has no delivery record")
+                return 1
+            delivery[args.item]["implemented_by"] = lib.validate_agent_actor(args.implemented_by)
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         after_scope = lib.work_item_scope_hash(items)
         if before_scope != after_scope:
@@ -751,6 +776,151 @@ def cmd_work_item_update(args) -> int:
                    event_kind="work_item_updated", event_message=f"Updated work item {args.item}",
                    by=actor, work_item=args.item, scope_changed=before_scope != after_scope)
     print(f"WORK_ITEM_UPDATED: {args.item}")
+    return 0
+
+
+def cmd_lane_request(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance = _load(root, cfg)
+        delivery = status.get("work_item_delivery") or {}
+        if args.item not in delivery:
+            print(f"SHIP_FEATURE_BLOCKED: unknown work item {args.item}")
+            return 1
+        facts = lib.small_fix_facts(root, acceptance, args.item, cfg)
+        if not facts["eligible"]:
+            print("SMALL_FIX_REFUSED\n" + "\n".join(f"- {reason}" for reason in facts["reasons"]))
+            return 1
+        record = delivery[args.item]
+        record.update(requested_lane="small-fix", facts=facts,
+                      baseline_head=lib.repository_snapshot(root)["head"], escalation_reason=None)
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        lib.commit(root, cfg, status=status, event_kind="work_item_lane_requested",
+                   event_message=f"Requested small-fix lane for {args.item}",
+                   by=actor, work_item=args.item, facts=facts)
+    print(f"SMALL_FIX_REQUESTED: {args.item}")
+    return 0
+
+
+def cmd_lane_confirm(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance = _load(root, cfg)
+        delivery = status.get("work_item_delivery") or {}
+        record = delivery.get(args.item)
+        if not isinstance(record, dict) or record.get("requested_lane") != "small-fix":
+            print(f"SHIP_FEATURE_BLOCKED: {args.item} has no eligible small-fix request")
+            return 1
+        facts = lib.small_fix_facts(root, acceptance, args.item, cfg)
+        if not facts["eligible"]:
+            print("SMALL_FIX_REFUSED\n" + "\n".join(f"- {reason}" for reason in facts["reasons"]))
+            return 1
+        now = datetime.now(timezone.utc).isoformat()
+        record.update(lane="small-fix", confirmed_by=actor, confirmed_at=now,
+                      facts=facts, escalation_reason=None)
+        status.update(updated_at=now,
+                      next_action="Implement the confirmed small fix and attach targeted evidence.")
+        lib.commit(root, cfg, status=status, event_kind="work_item_lane_confirmed",
+                   event_message=f"Pilot confirmed small-fix lane for {args.item}",
+                   by=actor, work_item=args.item, facts=facts)
+    print(f"SMALL_FIX_CONFIRMED: {args.item}")
+    return 0
+
+
+def cmd_plan_tranche(args) -> int:
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    try:
+        if args.issues_file:
+            issues = json.loads(Path(args.issues_file).read_text(encoding="utf-8"))
+            if not isinstance(issues, list):
+                raise lib.HandsoffError("issues file must contain a JSON array")
+        else:
+            issues = tranche.fetch_issues(args.repo)
+        archive_directory = Path(args.archive_dir).expanduser() if args.archive_dir else lib.archive_dir()
+        proposal = tranche.build_proposal(issues, tranche.load_archives(archive_directory),
+                                          args.repo, cfg, limit=args.limit)
+        path = root / tranche.PROPOSAL_FILE
+        lib._atomic_write_text(path, json.dumps(proposal, indent=2, sort_keys=True) + "\n")
+    except (OSError, ValueError, lib.HandsoffError) as exc:
+        print(f"TRANCHE_PLAN_BLOCKED: {exc}")
+        return 1
+    print(json.dumps({"proposal_path": str(path), **proposal}, indent=2))
+    return 0
+
+
+def cmd_tranche_approve(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance = _load(root, cfg)
+        if int(status.get("phase_number", 1) or 1) != 1:
+            print("TRANCHE_APPROVAL_BLOCKED: backlog tranches can only be approved in Phase 1")
+            return 1
+        path = root / tranche.PROPOSAL_FILE
+        try:
+            proposal = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            print("TRANCHE_APPROVAL_BLOCKED: proposal artifact is missing or invalid")
+            return 1
+        if args.proposal_hash != proposal.get("proposal_hash") \
+                or tranche.proposal_hash(proposal) != proposal.get("proposal_hash"):
+            print("TRANCHE_APPROVAL_BLOCKED: proposal hash is stale or invalid")
+            return 1
+        proposed = list(proposal.get("proposed_order") or [])
+        order = list(args.item or proposed)
+        drops = list(args.drop or [])
+        by_id = {f"issue-{row['number']}": row for row in proposal.get("issues", [])
+                 if isinstance(row, dict) and isinstance(row.get("number"), int)}
+        if len(proposed) != len(set(proposed)) or set(proposed) != set(by_id):
+            print("TRANCHE_APPROVAL_BLOCKED: proposal item inventory is invalid")
+            return 1
+        if len(set(order)) != len(order) or len(set(drops)) != len(drops) \
+                or set(order) & set(drops) or set(order) | set(drops) != set(proposed):
+            print("TRANCHE_APPROVAL_BLOCKED: retained order and explicit drops must partition the proposal once")
+            return 1
+        existing = {item["id"]: item for item in acceptance.get("work_items", [])}
+        now = datetime.now(timezone.utc).isoformat()
+        persisted = []
+        for item_id in order:
+            source = by_id[item_id]
+            previous = existing.get(item_id, {})
+            persisted.append({
+                "id": item_id, "kind": "issue", "number": source["number"],
+                "title": source["title"], "url": source.get("url", ""), "required": True,
+                "github_state": "open", "github_checked_at": now,
+                "created_at": previous.get("created_at", now), "updated_at": now,
+                "notes": previous.get("notes", ""),
+            })
+        proposed_acceptance = deepcopy(acceptance)
+        proposed_acceptance["work_items"] = persisted
+        errors = lib.validate_acceptance_schema(proposed_acceptance)
+        if errors:
+            print("TRANCHE_APPROVAL_BLOCKED\n" + "\n".join(f"- {error}" for error in errors))
+            return 1
+        proposed_status = deepcopy(status)
+        old_delivery = proposed_status.get("work_item_delivery") or {}
+        proposed_status["work_item_delivery"] = {
+            item_id: old_delivery.get(item_id, lib.new_work_item_delivery([{"id": item_id}])[item_id])
+            for item_id in order
+        }
+        proposed_status["tranche_approval"] = {
+            "proposal_hash": args.proposal_hash, "proposed_order": proposed,
+            "approved_order": order, "drops": drops, "by": actor, "at": now,
+            "labels": {item_id: by_id[item_id].get("labels", []) for item_id in order},
+        }
+        proposed_status["active_work_item"] = order[0] if order else None
+        proposed_status["updated_at"] = now
+        lib.commit(root, cfg, status=proposed_status, acceptance=proposed_acceptance,
+                   event_kind="tranche_approved", event_message="Pilot approved backlog tranche",
+                   proposal_hash=args.proposal_hash, proposed_order=proposed,
+                   approved_order=order, drops=drops, by=actor)
+    print(f"TRANCHE_APPROVED: {', '.join(order) or 'empty'}")
     return 0
 
 
@@ -1732,6 +1902,50 @@ def cmd_record_review(args) -> int:
             return _print_audit_block(audit_errors)
         if _refuse_if_amendment_open(status, action="independent review"):
             return 1
+        if getattr(args, "item", None):
+            delivery = status.get("work_item_delivery") or {}
+            record = delivery.get(args.item)
+            if not isinstance(record, dict) or record.get("lane") != "small-fix" \
+                    or not record.get("confirmed_by"):
+                print(f"SHIP_FEATURE_BLOCKED: {args.item} is not a confirmed small-fix lane")
+                return 1
+            facts = lib.small_fix_facts(root, acceptance, args.item, cfg)
+            if not facts["eligible"]:
+                record.update(lane="escalated", facts=facts,
+                              escalation_reason="; ".join(facts["reasons"]),
+                              reviewed_by=None, review_hash=None)
+                status.update(phase_number=2, phase=lib.PHASES[2], status="blocked",
+                              updated_at=datetime.now(timezone.utc).isoformat(),
+                              next_action=f"Design the escalated work item {args.item} in the full lane.")
+                lib.commit(root, cfg, status=status, event_kind="work_item_lane_escalated",
+                           event_message=f"Small-fix lane escalated for {args.item}",
+                           by=reviewer_id, work_item=args.item, reasons=facts["reasons"])
+                print("SMALL_FIX_ESCALATED\n" + "\n".join(f"- {reason}" for reason in facts["reasons"]))
+                return 1
+            own = lib.item_criteria(acceptance, args.item)
+            if not own or any(c.get("state") != "passing" or not c.get("evidence") for c in own):
+                print(f"SHIP_FEATURE_BLOCKED: {args.item} criteria require passing evidence")
+                return 1
+            implementer = record.get("implemented_by")
+            if not implementer:
+                print(f"SHIP_FEATURE_BLOCKED: {args.item} has no recorded implementer")
+                return 1
+            if reviewer_id.casefold() == implementer.strip().casefold():
+                print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
+                return 1
+            item_hash = lib.item_acceptance_hash(acceptance, args.item)
+            if record.get("reviewed_by") and record.get("review_hash") == item_hash:
+                print(f"INDEPENDENT_ITEM_REVIEW_ALREADY_RECORDED: {args.item}")
+                return 0
+            now = datetime.now(timezone.utc).isoformat()
+            record.update(reviewed_by=reviewer_id, review_hash=item_hash, facts=facts)
+            status["updated_at"] = now
+            lib.commit(root, cfg, status=status, event_kind="work_item_review_approved",
+                       event_message=f"Independent review approved {args.item}",
+                       by=reviewer_id, implementer=implementer, work_item=args.item,
+                       acceptance_hash=item_hash)
+            print(f"INDEPENDENT_ITEM_REVIEW_RECORDED: {args.item}")
+            return 0
         if status.get("phase_number", 0) < 5:
             print("SHIP_FEATURE_BLOCKED: independent review can only be recorded in Phase 5 or later")
             return 1
@@ -2547,7 +2761,9 @@ def cmd_recovery_acknowledge(args) -> int:
             return 1
         status["escalation"] = None
         status["status"] = "in_progress"
-        status["next_action"] = "Relaunch the assigned role manually or allow the watchdog to reassess."
+        status["next_action"] = lib.NEXT_ACTION_DEFAULTS.get(
+            int(status.get("phase_number", 1) or 1), "Resume the current mission phase."
+        )
         lib.commit(root, cfg, status=status, event_kind="recovery_acknowledged",
                    event_message=args.reason.strip(), by=actor)
     print("RECOVERY_ACKNOWLEDGED")
@@ -2956,6 +3172,8 @@ def main() -> int:
     init.add_argument("feature")
     init.add_argument("--item", action="append", default=[],
                       help="declare one issue (#31 or #31 Title) or plain ask; repeat for multiple items")
+    init.add_argument("--lane", choices=("full", "small-fix"), default="full",
+                      help="initial delivery lane; small-fix still requires explicit Pilot confirmation")
 
     sub.add_parser("status", help="print run state as JSON, including the requested crew per role "
                                   "with its source (explicit or recommended) and adapter availability")
@@ -3021,9 +3239,32 @@ def main() -> int:
     work_update.add_argument("--url")
     work_update.add_argument("--github-state", choices=("open", "closed"))
     work_update.add_argument("--notes")
+    work_update.add_argument("--implemented-by")
     required_choice = work_update.add_mutually_exclusive_group()
     required_choice.add_argument("--required", action="store_true")
     required_choice.add_argument("--optional", action="store_true")
+
+    lane_request = sub.add_parser("lane-request", help="request the measured small-fix lane for one item")
+    lane_request.add_argument("item")
+    lane_request.add_argument("--by", required=True)
+
+    lane_confirm = sub.add_parser("lane-confirm", help="Pilot confirms an eligible small-fix lane")
+    lane_confirm.add_argument("item")
+    lane_confirm.add_argument("--by", required=True)
+
+    plan_tranche = sub.add_parser("plan-tranche", help="build a deterministic read-only backlog proposal")
+    plan_tranche.add_argument("--repo", required=True, help="GitHub owner/repository")
+    plan_tranche.add_argument("--issues-file", default=None, help="offline JSON issue inventory")
+    plan_tranche.add_argument("--archive-dir", default=None)
+    plan_tranche.add_argument("--limit", type=int, default=5)
+
+    tranche_approve = sub.add_parser("tranche-approve", help="Pilot atomically approves a proposal")
+    tranche_approve.add_argument("--proposal-hash", required=True)
+    tranche_approve.add_argument("--by", required=True)
+    tranche_approve.add_argument("--item", action="append", default=None,
+                                 help="retained item id in approved order; repeat")
+    tranche_approve.add_argument("--drop", action="append", default=None,
+                                 help="explicitly dropped item id; repeat")
 
     evidence = sub.add_parser("record-evidence")
     evidence.add_argument("criterion")
@@ -3094,6 +3335,8 @@ def main() -> int:
 
     review = sub.add_parser("record-review")
     review.add_argument("--by", required=True)
+    review.add_argument("--item", default=None,
+                        help="record an item-scoped independent review for a confirmed small-fix lane")
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
 
     review_start = sub.add_parser("review-attempt-start")
@@ -3298,6 +3541,10 @@ def main() -> int:
         "work-items-sync": cmd_work_items_sync,
         "work-item-activate": cmd_work_item_activate,
         "work-item-update": cmd_work_item_update,
+        "lane-request": cmd_lane_request,
+        "lane-confirm": cmd_lane_confirm,
+        "plan-tranche": cmd_plan_tranche,
+        "tranche-approve": cmd_tranche_approve,
         "dashboard": cmd_dashboard,
         "record-evidence": cmd_record_evidence,
         "record-symptom-resolved": cmd_record_symptom,

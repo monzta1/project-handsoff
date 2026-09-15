@@ -273,7 +273,8 @@ function discrepancyLabel(item = {}) {
 }
 
 function showWorkItemTable(workItems = {}) {
-  return Boolean(workItems.multi && (workItems.items || []).length > 1);
+  const items = workItems.items || [];
+  return Boolean(items.length > 1 || items.some((item) => item.lane !== "full"));
 }
 
 // REQ-002: the Auto-detect <option> label always names the live resolved
@@ -569,6 +570,41 @@ function collectQuestionFormAnswers(entries) {
 
 const PILOT_NOTE_MAX_LENGTH = 512;
 
+function workItemLaneLabel(item) {
+  const lane = String(item?.lane || "full").replaceAll("-", " ").toUpperCase();
+  return item?.lane === "small-fix" && !item?.lane_confirmed ? `${lane} · UNCONFIRMED` : lane;
+}
+
+function workItemProgressLabel(item) {
+  const value = Number(item?.progress);
+  return `${Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0}%`;
+}
+
+function smallFixCanConfirm(item) {
+  return item?.lane === "small-fix" && !item?.lane_confirmed && !item?.lane_escalation;
+}
+
+function workItemLaneDetail(item) {
+  const facts = item?.lane_facts;
+  if (!facts) return item?.lane_escalation || "Measurements pending";
+  const caps = facts.caps || {};
+  const detail = `${facts.criteria ?? "?"}/${caps.criteria ?? "?"} criteria · ${facts.changed_lines ?? "?"}/${caps.changed_lines ?? "?"} lines · ${facts.changed_files ?? "?"}/${caps.changed_files ?? "?"} files`;
+  return item?.lane_escalation ? `${detail} · ${item.lane_escalation}` : detail;
+}
+
+function trancheIssueDetail(issue) {
+  const score = Object.entries(issue?.score_inputs || {}).map(([key, value]) => `${key.replaceAll("_", " ")} ${value}`).join(" · ");
+  const blockers = (issue?.blockers || []).join(", ") || "none";
+  const cost = issue?.cost_shape ? JSON.stringify(issue.cost_shape.median_launched_sessions || {}) : "unknown";
+  return `${score || "score inputs unavailable"} · blockers ${blockers} · cost ${cost}`;
+}
+
+function trancheDecisionPayload(proposalHash, rows) {
+  const order = rows.filter((row) => !row.dropped).map((row) => row.id);
+  const drops = rows.filter((row) => row.dropped).map((row) => row.id);
+  return { proposal_hash: String(proposalHash || ""), order, drops };
+}
+
 function pilotNoteText(value) {
   // #49: whitespace-collapsed note text, or "" when it is empty or over
   // the 512-character bound the supervisor enforces.
@@ -581,6 +617,12 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     PILOT_NOTE_MAX_LENGTH,
     pilotNoteText,
+    workItemLaneLabel,
+    workItemProgressLabel,
+    smallFixCanConfirm,
+    workItemLaneDetail,
+    trancheIssueDetail,
+    trancheDecisionPayload,
     showQuestionsPanel,
     questionHeadline,
     questionLabel,

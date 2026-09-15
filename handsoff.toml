@@ -9,6 +9,9 @@ verification_log = "handsoff-verifications.jsonl"
 max_design_rounds = 3
 max_review_rounds = 3
 stall_minutes = 10
+small_fix_max_criteria = 3
+small_fix_max_changed_lines = 200
+small_fix_max_files = 6
 require_live_verification = true
 deployment_requires_explicit_approval = true
 
@@ -68,8 +71,11 @@ poll_seconds = 30
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
-  "python3 -m unittest tests.test_handsoff_supervisor.TestArchiveAnalyzer -v",
-  "node --test tests/dashboard/pilot_note.test.js",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestSmallFixLane -v",
+  "node --test tests/dashboard/work_item_lanes.test.js",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestBacklogPlanner -v",
+  "node --test tests/dashboard/tranche_planner.test.js",
+  "python3 -m unittest tests.test_handsoff_supervisor.TestRecoveryNoManagedSession -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

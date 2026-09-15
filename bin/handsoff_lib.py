@@ -208,6 +208,10 @@ WORK_ITEM_STATES = {
 WORK_ITEM_TAG_PATTERN = re.compile(r"^\[(#\d{1,9}|[a-z0-9][a-z0-9-]{0,39})\]\s")
 WORK_ITEM_ID_PATTERN = re.compile(r"^(?:issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$")
 MAX_WORK_ITEMS = 64
+WORK_ITEM_LANES = ("full", "small-fix", "escalated")
+DEFAULT_SMALL_FIX_MAX_CRITERIA = 3
+DEFAULT_SMALL_FIX_MAX_CHANGED_LINES = 200
+DEFAULT_SMALL_FIX_MAX_FILES = 6
 
 DEFAULT_CONFIG = {
     "status_file": "handsoff-status.json",
@@ -218,6 +222,9 @@ DEFAULT_CONFIG = {
     "max_review_rounds": 3,
     "stall_minutes": 10,
     "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
+    "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
+    "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
+    "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
     "require_live_verification": True,
     "deployment_requires_explicit_approval": True,
     "check_commands": [],
@@ -426,7 +433,8 @@ def load_config(root: Path) -> dict:
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
     cfg["verification_log"] = project.get("verification_log", cfg["verification_log"])
-    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews"):
+    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews",
+                "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
         value = workflow.get(key, cfg[key])
         if not isinstance(value, int) or isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be an integer")
@@ -604,11 +612,18 @@ def load_config(root: Path) -> dict:
             raise HandsoffError(
                 f"handsoff.toml: project.{key} resolves outside the project root "
                 f"(a parent directory may be a symlink)") from None
-    for key in ("max_design_rounds", "stall_minutes", "max_autonomous_design_reviews"):
+    for key in ("max_design_rounds", "stall_minutes", "max_autonomous_design_reviews",
+                "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
         if cfg[key] < 0:
             raise HandsoffError(f"handsoff.toml: {key} must not be negative")
     if not 1 <= cfg["max_review_rounds"] <= 56:
         raise HandsoffError("handsoff.toml: workflow.max_review_rounds must be an integer from 1 to 56")
+    if not 1 <= cfg["small_fix_max_criteria"] <= 64:
+        raise HandsoffError("handsoff.toml: workflow.small_fix_max_criteria must be an integer from 1 to 64")
+    if not 1 <= cfg["small_fix_max_changed_lines"] <= 100000:
+        raise HandsoffError("handsoff.toml: workflow.small_fix_max_changed_lines must be an integer from 1 to 100000")
+    if not 1 <= cfg["small_fix_max_files"] <= 1000:
+        raise HandsoffError("handsoff.toml: workflow.small_fix_max_files must be an integer from 1 to 1000")
     ensure_regression_config_is_disjoint(cfg, root)
     return cfg
 
@@ -3398,6 +3413,57 @@ def validate_status_schema(status: dict) -> list[str]:
                         errors.append("status: agent replacement handoff state is invalid")
                 elif record.get("state") != "pilot_pause" or record.get("handoff") is not None:
                     errors.append("status: paused agent replacement is invalid")
+    delivery = status.get("work_item_delivery")
+    if delivery is not None:
+        fields = {"lane", "requested_lane", "confirmed_by", "confirmed_at", "facts",
+                  "escalation_reason", "implemented_by", "reviewed_by", "review_hash",
+                  "baseline_head"}
+        if not isinstance(delivery, dict) or len(delivery) > MAX_WORK_ITEMS:
+            errors.append("status: 'work_item_delivery' must be an object of at most 64 items")
+        else:
+            for item_id, record in delivery.items():
+                if not WORK_ITEM_ID_PATTERN.fullmatch(str(item_id)) or not isinstance(record, dict) \
+                        or set(record) != fields:
+                    errors.append(f"status: work item delivery {item_id!r} has invalid fields")
+                    continue
+                if record.get("lane") not in WORK_ITEM_LANES \
+                        or record.get("requested_lane") not in {"full", "small-fix"}:
+                    errors.append(f"status: work item delivery {item_id!r} has invalid lane")
+                for field in ("confirmed_by", "confirmed_at", "escalation_reason", "implemented_by",
+                              "reviewed_by", "review_hash", "baseline_head"):
+                    if record.get(field) is not None and not isinstance(record.get(field), str):
+                        errors.append(f"status: work item delivery {item_id!r}.{field} must be a string or null")
+                if record.get("facts") is not None and not isinstance(record.get("facts"), dict):
+                    errors.append(f"status: work item delivery {item_id!r}.facts must be an object or null")
+    tranche_approval = status.get("tranche_approval")
+    if tranche_approval is not None:
+        required = {"proposal_hash", "proposed_order", "approved_order", "drops", "labels", "by", "at"}
+        if not isinstance(tranche_approval, dict) or set(tranche_approval) != required:
+            errors.append("status: 'tranche_approval' has invalid fields")
+        else:
+            proposed = tranche_approval.get("proposed_order")
+            approved = tranche_approval.get("approved_order")
+            drops = tranche_approval.get("drops")
+            labels = tranche_approval.get("labels")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(tranche_approval.get("proposal_hash", ""))):
+                errors.append("status: tranche_approval.proposal_hash must be sha256")
+            if not all(isinstance(values, list) and len(values) <= MAX_WORK_ITEMS
+                       and len(values) == len(set(values))
+                       and all(WORK_ITEM_ID_PATTERN.fullmatch(str(value)) for value in values)
+                       for values in (proposed, approved, drops)):
+                errors.append("status: tranche approval item lists are invalid")
+            elif set(approved) & set(drops) or set(approved) | set(drops) != set(proposed):
+                errors.append("status: tranche approval order and drops must partition the proposal")
+            try:
+                validate_agent_actor(tranche_approval.get("by"))
+                datetime.fromisoformat(tranche_approval.get("at"))
+            except (HandsoffError, TypeError, ValueError):
+                errors.append("status: tranche approval actor or timestamp is invalid")
+            if not isinstance(labels, dict) or set(labels) != set(approved) \
+                    or any(not isinstance(value, list) or len(value) > 32
+                           or not all(isinstance(label, str) and len(label) <= 64 for label in value)
+                           for value in labels.values()):
+                errors.append("status: tranche approval labels are invalid")
     # #42: the open amendment and its closed history, plus the amended_by
     # trail on the design decisions it rewrote.
     errors.extend(amendment_status_errors(status))
@@ -3412,7 +3478,8 @@ def validate_status_schema(status: dict) -> list[str]:
 GOVERNANCE_CONFIG_KEYS = (
     "deployment_requires_explicit_approval", "require_live_verification",
     "max_design_rounds", "max_review_rounds", "stall_minutes",
-    "max_autonomous_design_reviews",
+    "max_autonomous_design_reviews", "small_fix_max_criteria",
+    "small_fix_max_changed_lines", "small_fix_max_files",
 )
 # Governance keys added after runs were already in flight. A key in this
 # set is hashed only while it holds a non-default value: an absent (or
@@ -3424,6 +3491,9 @@ GOVERNANCE_CONFIG_KEYS = (
 # which is the whole point of the chain of trust.
 _LEGACY_OPTIONAL_GOVERNANCE_KEYS = {
     "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
+    "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
+    "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
+    "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
 }
 
 
@@ -3856,14 +3926,21 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         return errors  # a malformed shape makes every gate below meaningless
 
     criteria = acceptance.get("criteria", [])
+    gate_criteria = criteria
+    registry = acceptance.get("work_items")
+    if isinstance(registry, list):
+        required_ids = {item.get("id") for item in registry if item.get("required", True)}
+        gate_criteria = [criterion for criterion in criteria
+                         if criterion_work_item(criterion, registry) in required_ids
+                         or criterion_work_item(criterion, registry) == "unattributed"]
     coverage = status.get("requirement_coverage", {})
-    green = _is_green(criteria)
+    green = _is_green(gate_criteria)
     resolved = coverage.get("original_symptom_resolved") is True
     phase = int(status.get("phase_number", 0) or 0)
     progress = float(status.get("progress", 0) or 0)
-    evidence_errors = _evidence_errors(criteria, verifications or [])
+    evidence_errors = _evidence_errors(gate_criteria, verifications or [])
     expected_coverage = coverage_for(criteria, resolved)
-    symptom_record = _valid_symptom_record(status, criteria, verifications or [])
+    symptom_record = _valid_symptom_record(status, gate_criteria, verifications or [])
 
     if status.get("feature") != acceptance.get("feature"):
         errors.append("state gate: status and acceptance describe different features")
@@ -3872,7 +3949,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     if phase == 7 and status.get("status") not in {"awaiting_approval", "ready_to_deploy"}:
         errors.append("state gate: Phase 7 requires status 'awaiting_approval' or 'ready_to_deploy'")
 
-    if phase >= 3:
+    if phase >= 3 and full_design_required(status, acceptance, cfg):
         errors.extend(_design_review_errors(status, acceptance, cfg))
         errors.extend(_design_errors(status, acceptance, cfg))
     # #42: an open amendment pins the run to the phase and progress it was
@@ -3886,6 +3963,11 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         errors.extend(evidence_errors)
     if progress >= 95 and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("progress gate: 95%+ requires verified acceptance and a resolved original symptom")
+    if "work_items" in acceptance and progress >= 95:
+        unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
+                      if item.get("required") and item.get("status") != "done"]
+        for item in unfinished:
+            errors.append(f"progress gate: required work item {item['id']} must be done before 95%+")
     if status.get("status") in ("ready_to_deploy", "awaiting_approval", "complete") and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("status gate: acceptance registry is not fully green")
     if "work_items" in acceptance and (phase >= 8 or status.get("status") == "complete"):
@@ -3966,8 +4048,19 @@ def assigned_role(status: dict) -> str | None:
     if phase == 1:
         return "architect"
     if phase == 2:
+        # A recorded Pilot approval ends design work even before the
+        # Supervisor advances the phase counter.  Treating the completed
+        # design reviewer as the assigned worker in this narrow interval
+        # made the watchdog relaunch it until recovery was exhausted.
+        if isinstance(status.get("design_approved"), dict):
+            return "supervisor"
         review = status.get("design_review") or {}
         return "architect" if review.get("decision") == "changes_requested" else "reviewer"
+    if phase == 5 and isinstance(status.get("review"), dict):
+        # record-review completes the Reviewer's assignment before the
+        # Supervisor advances to Phase 6. The watchdog must not recover
+        # that deliberately completed reviewer during this interval.
+        return "supervisor"
     return {3: "supervisor", 4: "implementer", 5: "reviewer", 6: "implementer",
             7: "supervisor", 8: "supervisor"}.get(phase)
 
@@ -4058,6 +4151,20 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
     session_id = current.get(role)
     session = sessions.get(session_id) if isinstance(session_id, str) else None
     if not isinstance(session, dict):
+        # Recovery may replace a worker that was actually launched and was
+        # subsequently lost.  It must never manufacture the first managed
+        # session for a role merely because a run has been quiet.  Manual
+        # and externally driven runs intentionally have no agent_session_*
+        # record for that role; escalating them is a false alarm (#51).
+        managed_for_role = any(
+            isinstance(event, dict)
+            and str(event.get("kind") or "").startswith("agent_session_")
+            and event.get("role") == role
+            for event in (events or [])
+        )
+        if not managed_for_role:
+            result["reason"] = "no_managed_session"
+            return result
         timestamps = [status.get("updated_at"), status.get("last_heartbeat_at")]
         ages = [_minutes_since(value, now) for value in timestamps]
         ages = [age for age in ages if age is not None]
@@ -4505,6 +4612,156 @@ def work_item_scope_hash(items: list[dict]) -> str:
     return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
+    """Item-scoped delivery state for new runs.  Legacy runs omit this
+    mapping and continue to use the existing run-level gates."""
+    if lane not in ("full", "small-fix"):
+        raise HandsoffError("lane must be full or small-fix")
+    return {item["id"]: {
+        "lane": lane, "requested_lane": lane, "confirmed_by": None,
+        "confirmed_at": None, "facts": None, "escalation_reason": None,
+        "implemented_by": None, "reviewed_by": None, "review_hash": None,
+        "baseline_head": None,
+    } for item in items}
+
+
+def work_item_delivery(status: dict, item_id: str) -> dict:
+    record = (status.get("work_item_delivery") or {}).get(item_id)
+    if isinstance(record, dict):
+        return record
+    return {
+        "lane": "full", "requested_lane": "full", "confirmed_by": None,
+        "confirmed_at": None, "facts": None, "escalation_reason": None,
+        "implemented_by": status.get("implemented_by"),
+        "reviewed_by": status.get("reviewed_by"), "review_hash": None,
+        "baseline_head": None,
+    }
+
+
+def item_criteria(acceptance: dict, item_id: str) -> list[dict]:
+    registry = acceptance.get("work_items") or []
+    return [criterion for criterion in acceptance.get("criteria", [])
+            if criterion_work_item(criterion, registry) == item_id]
+
+
+def item_acceptance_hash(acceptance: dict, item_id: str) -> str:
+    return acceptance_hash(item_criteria(acceptance, item_id))
+
+
+def repository_change_facts(root: Path) -> dict:
+    """Conservative, reproducible review-time diff measurements."""
+    changed: dict[str, int] = {}
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-renames", "--numstat", "HEAD", "--"], cwd=root,
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                added, removed, path = (line.split("\t", 2) + ["", "", ""])[:3]
+                if not path:
+                    continue
+                changed[path] = (int(added) if added.isdigit() else 0) + (int(removed) if removed.isdigit() else 0)
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"], cwd=root,
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        if untracked.returncode == 0:
+            for name in untracked.stdout.splitlines():
+                path = root / name
+                try:
+                    changed[name] = len(path.read_text(encoding="utf-8").splitlines())
+                except (OSError, UnicodeDecodeError):
+                    changed[name] = 0
+    except (OSError, subprocess.SubprocessError):
+        return {"changed_lines": None, "changed_files": None, "paths": [],
+                "governance_paths": ["measurement_unavailable"]}
+    paths = sorted(changed)
+    governance = [path for path in paths if path == "handsoff.toml"
+                  or path.startswith("schemas/") or path.startswith("prompts/")
+                  or path.startswith("bin/handsoff_")]
+    return {"changed_lines": sum(changed.values()), "changed_files": len(paths),
+            "paths": paths, "governance_paths": governance}
+
+
+def small_fix_facts(root: Path, acceptance: dict, item_id: str, cfg: dict,
+                    *, change_facts: dict | None = None) -> dict:
+    criteria = item_criteria(acceptance, item_id)
+    diff = change_facts if change_facts is not None else repository_change_facts(root)
+    facts = {
+        "criteria": len(criteria),
+        "primary_fixes": sum(c.get("type") == "primary_fix" for c in criteria),
+        **diff,
+        "caps": {
+            "criteria": cfg["small_fix_max_criteria"],
+            "changed_lines": cfg["small_fix_max_changed_lines"],
+            "changed_files": cfg["small_fix_max_files"],
+        },
+    }
+    reasons = []
+    if facts["criteria"] > facts["caps"]["criteria"]:
+        reasons.append(f"{facts['criteria']} criteria over {facts['caps']['criteria']} cap")
+    if facts["primary_fixes"] != 1:
+        reasons.append(f"requires exactly one primary_fix (found {facts['primary_fixes']})")
+    if facts["changed_lines"] is None:
+        reasons.append("diff measurement unavailable")
+    elif facts["changed_lines"] > facts["caps"]["changed_lines"]:
+        reasons.append(f"{facts['changed_lines']} changed lines over {facts['caps']['changed_lines']} cap")
+    if facts["changed_files"] is None:
+        reasons.append("file measurement unavailable")
+    elif facts["changed_files"] > facts["caps"]["changed_files"]:
+        reasons.append(f"{facts['changed_files']} changed files over {facts['caps']['changed_files']} cap")
+    if facts["governance_paths"]:
+        reasons.append("governance paths changed: " + ", ".join(facts["governance_paths"]))
+    facts["eligible"] = not reasons
+    facts["reasons"] = reasons
+    return facts
+
+
+def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> dict:
+    own = item_criteria(acceptance, item_id)
+    delivery = work_item_delivery(status, item_id)
+    passing = sum(c.get("state") == "passing" for c in own)
+    criteria_points = 60.0 * passing / len(own) if own else 0.0
+    lane_gate = (bool(delivery.get("confirmed_by")) if delivery.get("lane") == "small-fix"
+                 else not _design_errors(status, acceptance, cfg)
+                 and not _design_review_errors(status, acceptance, cfg))
+    implemented_by = delivery.get("implemented_by")
+    implemented = bool(implemented_by and any(c.get("evidence") for c in own))
+    item_hash = item_acceptance_hash(acceptance, item_id)
+    reviewed = bool(delivery.get("reviewed_by") and delivery.get("review_hash") == item_hash)
+    global_review = status.get("review") or {}
+    if global_review.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])):
+        reviewed = True
+    approval = status.get("deployment_approved") or {}
+    deployed = approval.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", []))
+    live = bool(status.get("live_verification_id"))
+    gates = {"lane": lane_gate, "implemented": implemented, "reviewed": reviewed,
+             "deployed": deployed, "live": live}
+    value = min(100, max(0, int(math.floor(criteria_points + 8 * sum(gates.values()) + 0.5))))
+    return {"percent": value, "passing": passing, "total": len(own), "gates": gates,
+            "lane": delivery.get("lane", "full"), "facts": delivery.get("facts"),
+            "escalation_reason": delivery.get("escalation_reason")}
+
+
+def overall_item_progress(status: dict, acceptance: dict, cfg: dict) -> int:
+    items, _ = effective_work_items(acceptance, cfg)
+    values = [item_progress(status, acceptance, cfg, item["id"])["percent"]
+              for item in items if item.get("required", True)]
+    return int(math.floor(sum(values) / len(values) + 0.5)) if values else 0
+
+
+def full_design_required(status: dict, acceptance: dict, cfg: dict) -> bool:
+    items, _ = effective_work_items(acceptance, cfg)
+    for item in items:
+        if not item.get("required", True):
+            continue
+        delivery = work_item_delivery(status, item["id"])
+        if delivery.get("lane") != "small-fix" or not delivery.get("confirmed_by"):
+            return True
+    return False
+
+
 def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
     registry, source = effective_work_items(acceptance, cfg)
     criteria = acceptance.get("criteria", [])
@@ -4533,6 +4790,7 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
     rendered = []
     for item in rows:
         own = mapping.get(item["id"], [])
+        progress_view = item_progress(status, acceptance, cfg, item["id"])
         blocker = ""
         if escalation or status.get("status") == "blocked":
             state = "blocked"
@@ -4545,7 +4803,7 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
             blocker = "Assigned worker recovery is active"
         elif reviewing:
             state = "in_review"
-        elif own and all(c.get("state") == "passing" for c in own):
+        elif progress_view["percent"] == 100:
             state = "done"
         elif any(c.get("state") == "blocked" for c in own):
             state = "blocked"
@@ -4561,12 +4819,18 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
         elif github_state == "open" and state == "done":
             discrepancy = "Handsoff is done but GitHub is still open"
         rendered.append({**item, "status": state, "criteria": [c.get("id") for c in own],
+                         "lane": progress_view["lane"], "progress": progress_view["percent"],
+                         "lane_confirmed": bool(work_item_delivery(status, item["id"]).get("confirmed_by")),
+                         "lane_facts": progress_view["facts"],
+                         "lane_escalation": progress_view["escalation_reason"],
                          "phase_or_next": status.get("next_action") or status.get("phase"),
                          "blocker": blocker, "discrepancy": discrepancy})
     counts = {state: sum(item["status"] == state for item in rendered) for state in WORK_ITEM_STATES}
     return {"multi": len(rendered) > 1, "registry": source,
             "tickets_config_deprecated": bool(cfg.get("tickets")) and source == "persisted",
-            "items": rendered, "aggregate": {"total": len(rendered), "done": counts["done"], "counts": counts}}
+            "items": rendered, "aggregate": {"total": len(rendered), "done": counts["done"],
+                                               "counts": counts,
+                                               "progress": overall_item_progress(status, acceptance, cfg)}}
 
 
 # --------------------------------------------------------------------------

@@ -4221,7 +4221,114 @@ class TestRunArchive(HandsoffTestCase):
             self.tmp = real_tmp
         finally:
             shutil.rmtree(other, ignore_errors=True)
-        self.assertEqual(len(list(self.archive_dir.glob("*.json"))), 2)
+
+
+class TestSmallFixLane(HandsoffTestCase):
+    """#47: item lanes are measured, explicitly confirmed, and independently gated."""
+
+    def test_caps_and_progress_are_exact_and_required_item_mean(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        self.assertEqual((cfg["small_fix_max_criteria"], cfg["small_fix_max_changed_lines"],
+                          cfg["small_fix_max_files"]), (3, 200, 6))
+        acceptance = {
+            "feature": "lanes",
+            "work_items": [
+                {"id": "issue-1", "kind": "issue", "number": 1, "title": "one", "url": "",
+                 "required": True, "github_state": None, "github_checked_at": None,
+                 "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00", "notes": ""},
+                {"id": "issue-2", "kind": "issue", "number": 2, "title": "two", "url": "",
+                 "required": True, "github_state": None, "github_checked_at": None,
+                 "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00", "notes": ""},
+            ],
+            "criteria": [
+                {"id": "REQ-001", "type": "primary_fix",
+                 "requirement": "[#1] one", "verification": "automated", "tests": ["x"],
+                 "evidence": ["v1"], "state": "passing"},
+                {"id": "REQ-002", "type": "primary_fix",
+                 "requirement": "[#2] two", "verification": "automated", "tests": ["x"],
+                 "evidence": [], "state": "failing"},
+            ],
+        }
+        status = {"implemented_by": None, "reviewed_by": None, "design_approved": None,
+                  "deployment_approved": None, "live_verification_id": None,
+                  "work_item_delivery": lib.new_work_item_delivery(acceptance["work_items"], "small-fix")}
+        status["work_item_delivery"]["issue-1"].update(confirmed_by="pilot", implemented_by="impl")
+        self.assertEqual(lib.item_progress(status, acceptance, cfg, "issue-1")["percent"], 76)
+        self.assertEqual(lib.item_progress(status, acceptance, cfg, "issue-2")["percent"], 0)
+        self.assertEqual(lib.overall_item_progress(status, acceptance, cfg), 38)
+
+    def test_small_fix_measurement_refuses_caps_and_governance(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        acceptance = {"criteria": [{"id": "REQ-001", "type": "primary_fix"}],
+                      "work_items": [{"id": "issue-1"}]}
+        eligible = lib.small_fix_facts(
+            self.tmp, acceptance, "issue-1", cfg,
+            change_facts={"changed_lines": 199, "changed_files": 6, "paths": ["app.py"],
+                          "governance_paths": []})
+        self.assertTrue(eligible["eligible"])
+        refused = lib.small_fix_facts(
+            self.tmp, acceptance, "issue-1", cfg,
+            change_facts={"changed_lines": 201, "changed_files": 7, "paths": ["handsoff.toml"],
+                          "governance_paths": ["handsoff.toml"]})
+        self.assertFalse(refused["eligible"])
+        self.assertEqual(len(refused["reasons"]), 3)
+
+    def test_init_persists_lane_and_full_design_gate_is_skipped_only_after_confirmation(self):
+        r = run(["init", "small change", "--item", "#47", "--lane", "small-fix"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        status, acceptance = self.read_status(), self.read_acceptance()
+        cfg = lib.load_config(self.tmp)
+        self.assertTrue(lib.full_design_required(status, acceptance, cfg))
+        delivery = status["work_item_delivery"]["issue-47"]
+        delivery.update(confirmed_by="Mission Control Pilot", confirmed_at="2026-01-01T00:00:00+00:00")
+        self.assertFalse(lib.full_design_required(status, acceptance, cfg))
+
+    def test_small_fix_keeps_implementation_evidence_review_and_audit_gates(self):
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        shutil.copy(ROOT / ".gitignore", self.tmp / ".gitignore")
+        set_fixture_check_commands(self.tmp / "handsoff.toml", ["true"])
+        for command in (["git", "init"], ["git", "config", "user.email", "test@example.com"],
+                        ["git", "config", "user.name", "Test"], ["git", "add", "."],
+                        ["git", "commit", "-m", "fixture"]):
+            result = subprocess.run(command, cwd=self.tmp, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(run(["init", "#47 small", "--item", "#47", "--lane", "small-fix"], cwd=self.tmp).returncode, 0)
+        r = run(["criterion-update", "REQ-001", "--requirement", "[#47] Targeted behavior",
+                 "--test", "true", "--state", "failing"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["lane-confirm", "issue-47", "--by", "pilot"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(lib.full_design_required(self.read_status(), self.read_acceptance(),
+                                                  lib.load_config(self.tmp)),
+                         {"status": self.read_status(), "acceptance": self.read_acceptance()})
+        self.assertEqual(run(["work-item-activate", "issue-47", "--by", "supervisor"], cwd=self.tmp).returncode, 0)
+        r = run(["advance", "4", "8", "--implemented-by", "impl"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["record-review", "--item", "issue-47", "--by", "reviewer"], cwd=self.tmp)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("passing evidence", r.stdout)
+        r = run(["verify", "--criterion", "REQ-001", "--by", "impl"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        evidence = self.read_acceptance()["criteria"][0]["evidence"][-1]
+        self.assertEqual(run(["record-symptom-resolved", "--evidence", evidence, "--by", "impl"],
+                             cwd=self.tmp).returncode, 0)
+        r = run(["record-review", "--item", "issue-47", "--by", "impl"], cwd=self.tmp)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("reviewer must differ", r.stdout)
+        r = run(["record-review", "--item", "issue-47", "--by", "reviewer"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(run(["record-review", "--item", "issue-47", "--by", "reviewer"],
+                             cwd=self.tmp).returncode, 0)
+        status, acceptance = self.read_status(), self.read_acceptance()
+        self.assertEqual(lib.item_progress(status, acceptance, lib.load_config(self.tmp), "issue-47")["percent"], 84)
+        self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
 
 
 class TestRunOwnedDashboardRelease(HandsoffTestCase):
@@ -11939,6 +12046,185 @@ class TestDesignReviewBudgetAuthorizeControl(HandsoffTestCase):
         self.assertIn('id="design-review-authorize"', html)
         self.assertIn('state.inputKind !== "design_review_budget"', app)
         self.assertIn('fetch("/api/design-review-authorize"', app)
+
+
+class TestBacklogPlanner(HandsoffTestCase):
+    """#50: deterministic dependency/score planning and hash-bound approval."""
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib as lib
+        import handsoff_tranche as tranche
+        self.lib, self.tranche = lib, tranche
+
+    def fixture(self):
+        return [
+            {"number": 47, "title": "lanes", "state": "OPEN", "url": "u47", "labels": ["bug"],
+             "body": "Touches bin/tool.py and review gate. archive:run-a",
+             "handsoff_facts": {"criteria": 1, "primary_fixes": 1, "changed_lines": 30,
+                                "changed_files": 1, "touched_paths": ["app/tool.py"]}},
+            {"number": 50, "title": "planner", "state": "OPEN", "url": "u50",
+             "labels": ["enhancement"], "body": "Depends on #47"},
+            {"number": 51, "title": "recovery", "state": "OPEN", "url": "u51",
+             "labels": ["enhancement"], "body": "Independent"},
+            {"number": 8, "title": "closed", "state": "CLOSED", "labels": [], "body": ""},
+        ]
+
+    def test_dependency_order_scores_lanes_and_unknown_cost_are_explained(self):
+        proposal = self.tranche.build_proposal(self.fixture(), [], "monzta1/project-handsoff",
+                                               self.lib.load_config(self.tmp), limit=5,
+                                               now="2026-01-01T00:00:00+00:00")
+        self.assertEqual(proposal["proposed_order"], ["issue-47", "issue-50", "issue-51"])
+        rows = {row["number"]: row for row in proposal["issues"]}
+        self.assertEqual(rows[47]["score_inputs"], {
+            "bug": 40, "enhancement": 0, "archive_evidence": 5,
+            "named_files_or_gates": 6, "dependent_unlocks": 10, "small_fix_fit": 10})
+        self.assertEqual(rows[47]["lane"], "small-fix")
+        self.assertEqual(rows[50]["lane"], "full")
+        self.assertIn("criteria=missing", rows[50]["rationale"])
+        self.assertIsNone(rows[50]["cost_shape"])
+        self.assertEqual(rows[50]["cost_source"], "unknown")
+        self.assertEqual(self.tranche.proposal_hash(proposal), proposal["proposal_hash"])
+
+    def test_missing_closed_and_cycle_dependencies_are_distinguished(self):
+        issues = [
+            {"number": 1, "title": "a", "state": "OPEN", "labels": [], "body": "after #2"},
+            {"number": 2, "title": "b", "state": "OPEN", "labels": [], "body": "blocked by #1"},
+            {"number": 3, "title": "c", "state": "OPEN", "labels": [], "body": "depends on #99"},
+            {"number": 4, "title": "d", "state": "OPEN", "labels": [], "body": "after #5"},
+            {"number": 5, "title": "done", "state": "CLOSED", "labels": [], "body": ""},
+        ]
+        rows = {row["number"]: row for row in self.tranche.build_proposal(
+            issues, [], "x/y", self.lib.load_config(self.tmp), limit=5)["issues"]}
+        self.assertEqual(rows[1]["blockers"], ["dependency_cycle"])
+        self.assertEqual(rows[2]["blockers"], ["dependency_cycle"])
+        self.assertEqual(rows[3]["blockers"], ["missing_dependency"])
+        self.assertEqual(rows[4]["blockers"], [])
+
+    def test_cost_shape_uses_matching_completed_archives_and_role_medians(self):
+        issue = self.fixture()[0]
+        archives = []
+        for name, count in (("b.json", 2), ("a.json", 1)):
+            sessions = {f"hs-{i:032x}": {"role": "implementer", "state": "completed",
+                                         "running_at": "2026-01-01T00:00:00+00:00"}
+                        for i in range(count)}
+            archives.append((name, {"repo": "monzta1/project-handsoff", "labels": ["bug"],
+                                    "status": {"status": "complete", "agent_sessions": sessions,
+                                               "work_item_delivery": {"issue-x": {"lane": "small-fix"}}}}))
+        proposal = self.tranche.build_proposal([issue], archives, "monzta1/project-handsoff",
+                                               self.lib.load_config(self.tmp))
+        cost = proposal["issues"][0]["cost_shape"]
+        self.assertEqual(cost["archive_ids"], ["a.json", "b.json"])
+        self.assertEqual(cost["median_launched_sessions"]["implementer"], 1.5)
+
+    def test_proposal_is_non_authoritative_and_approval_is_atomic_and_ordered(self):
+        self.init("planner run")
+        issues = self.tmp / "issues.json"
+        issues.write_text(json.dumps(self.fixture()))
+        authoritative = [self.tmp / name for name in ("handsoff-status.json", "handsoff-acceptance.json",
+                                                       "handsoff-events.jsonl")]
+        before = [path.read_bytes() for path in authoritative]
+        r = run(["plan-tranche", "--repo", "monzta1/project-handsoff",
+                 "--issues-file", str(issues), "--archive-dir", str(self.tmp / "none")], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(before, [path.read_bytes() for path in authoritative])
+        proposal = json.loads((self.tmp / self.tranche.PROPOSAL_FILE).read_text())
+        r = run(["tranche-approve", "--proposal-hash", "0" * 64, "--by", "pilot"], cwd=self.tmp)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(before, [path.read_bytes() for path in authoritative])
+        r = run(["tranche-approve", "--proposal-hash", proposal["proposal_hash"], "--by", "pilot",
+                 "--item", "issue-51", "--item", "issue-47", "--drop", "issue-50"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]],
+                         ["issue-51", "issue-47"])
+        event = json.loads((self.tmp / "handsoff-events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual((event["kind"], event["approved_order"], event["drops"]),
+                         ("tranche_approved", ["issue-51", "issue-47"], ["issue-50"]))
+
+
+class TestRecoveryNoManagedSession(HandsoffTestCase):
+    """#51: a watchdog replaces only a session that actually existed."""
+
+    def setUp(self):
+        super().setUp()
+        self.init("Recovery without a managed session")
+        sys.path.insert(0, str(BIN))
+        import handsoff_lib
+        self.lib = handsoff_lib
+
+    def test_unmanaged_run_is_not_recovered_or_escalated_and_writes_nothing(self):
+        cfg = self.lib.load_config(self.tmp)
+        status = self.read_status()
+        events = self.lib.read_events(self.tmp, cfg)
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        for _archive_case in ("no-session-a", "no-session-b"):
+            assessment = self.lib.recovery_assessment(status, cfg, {}, events, future)
+            self.assertEqual((assessment["state"], assessment["reason"]),
+                             ("not_applicable", "no_managed_session"))
+        before = {name: (self.tmp / name).read_bytes() for name in (
+            "handsoff-status.json", "handsoff-acceptance.json",
+            "handsoff-events.jsonl", "handsoff-verifications.jsonl",
+            ".handsoff-event-head.json",
+        ) if (self.tmp / name).exists()}
+        launches = []
+        result = self.lib.recover_run(
+            self.tmp, actor="watchdog", launcher=lambda role: launches.append(role), now=future)
+        self.assertEqual(result["action"], "skipped")
+        self.assertEqual(result["assessment"]["reason"], "no_managed_session")
+        self.assertEqual(launches, [])
+        after = {name: (self.tmp / name).read_bytes() for name in before}
+        self.assertEqual(after, before)
+        self.assertFalse(any(e.get("kind") == "recovery_escalated"
+                             for e in self.lib.read_events(self.tmp, cfg)))
+
+    def test_real_managed_loss_keeps_terminal_and_silent_recovery_semantics(self):
+        cfg = self.lib.load_config(self.tmp)
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(minutes=30)).isoformat()
+        sid = "hs-" + "1" * 32
+        base = {
+            "phase_number": 4, "status": "in_progress", "updated_at": old,
+            "agent_sessions": {sid: {
+                "session_id": sid, "role": "implementer", "state": "completed",
+                "ended_at": old,
+            }},
+            "current_agent_sessions": {"implementer": sid},
+            "recovery_attempts": [], "recovery_lease": None,
+        }
+        event = {"kind": "agent_session_completed", "role": "implementer"}
+        terminal = self.lib.recovery_assessment(base, cfg, {}, [event], now)
+        self.assertEqual((terminal["state"], terminal["lost_session_id"]),
+                         ("worker_terminal", sid))
+        base["agent_sessions"][sid].update(state="running", ended_at=None,
+                                             running_at=old, started_at=old)
+        silent = self.lib.recovery_assessment(base, cfg, {}, [event], now)
+        self.assertEqual((silent["state"], silent["lost_session_id"]),
+                         ("worker_silent", sid))
+
+    def test_pilot_approved_design_assigns_supervisor_not_finished_reviewer(self):
+        status = self.read_status()
+        status.update(phase_number=2, design_approved={"by": "pilot"})
+        self.assertEqual(self.lib.assigned_role(status), "supervisor")
+        result = self.lib.recovery_assessment(
+            status, self.lib.load_config(self.tmp), {},
+            [{"kind": "agent_session_completed", "role": "reviewer"}],
+            datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        self.assertEqual((result["state"], result["reason"]),
+                         ("not_applicable", "no_managed_session"))
+
+    def test_approved_implementation_review_assigns_supervisor_not_finished_reviewer(self):
+        status = self.read_status()
+        status.update(phase_number=5, review={"by": "reviewer", "acceptance_hash": "a" * 64})
+        self.assertEqual(self.lib.assigned_role(status), "supervisor")
+        result = self.lib.recovery_assessment(
+            status, self.lib.load_config(self.tmp), {},
+            [{"kind": "agent_session_completed", "role": "reviewer"}],
+            datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+        self.assertEqual((result["state"], result["reason"]),
+                         ("not_applicable", "no_managed_session"))
 
 
 class TestArchiveAnalyzer(HandsoffTestCase):

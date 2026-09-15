@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_supervisor as supervisor  # noqa: E402
+import handsoff_tranche as tranche  # noqa: E402
 
 
 ASSET_ROOT = Path(__file__).resolve().parent.parent / "dashboard"
@@ -130,6 +131,7 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 lib.live_beacon_path(root),
                 # #41: the output record, at most one write per second.
                 lib.output_liveness_path(root),
+                root / tranche.PROPOSAL_FILE,
             ]
         except lib.HandsoffError:
             paths = [root / "handsoff.toml", lib.live_beacon_path(root), lib.output_liveness_path(root)]
@@ -459,6 +461,12 @@ def build_snapshot(root: Path) -> dict:
             recovery_assessment = lib.recovery_assessment(
                 status, cfg, lib.read_session_liveness(root), events,
             )
+            try:
+                tranche_proposal = json.loads((root / tranche.PROPOSAL_FILE).read_text(encoding="utf-8"))
+                if tranche.proposal_hash(tranche_proposal) != tranche_proposal.get("proposal_hash"):
+                    tranche_proposal = None
+            except (OSError, ValueError):
+                tranche_proposal = None
     except (lib.HandsoffError, OSError) as exc:
         return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
@@ -566,6 +574,7 @@ def build_snapshot(root: Path) -> dict:
         },
         "tickets": [],
         "work_items": work_items,
+        "tranche": tranche_proposal,
         "design_evidence": design_evidence,
         # #36: counts and flags of the latest delta packet, never finding text.
         "design_review_packet": lib.design_review_packet_summary(status),
@@ -871,6 +880,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_shutdown()
             return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
+                        "/api/lane-confirm", "/api/tranche-approval",
                         "/api/regression-decision", "/api/question-answer", "/api/question-answers",
                         "/api/design-review-authorize", "/api/pilot-note", "/api/amendment-approval"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
@@ -895,6 +905,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             requested = _strict_json_object(self.rfile.read(length))
+            if path == "/api/lane-confirm":
+                if set(requested) != {"item"} or not isinstance(requested.get("item"), str):
+                    raise lib.HandsoffError("lane confirmation requires one work-item id")
+                command = argparse.Namespace(root=str(self.server.project_root),
+                                             item=requested["item"], by="Mission Control Pilot")
+                if supervisor.cmd_lane_confirm(command) != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The small-fix lane gate rejected this item"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True, "item": requested["item"]})
+                return
+            if path == "/api/tranche-approval":
+                required = {"proposal_hash", "order", "drops"}
+                if set(requested) != required or not isinstance(requested.get("proposal_hash"), str) \
+                        or not isinstance(requested.get("order"), list) \
+                        or not isinstance(requested.get("drops"), list) \
+                        or not all(isinstance(value, str) for value in requested["order"] + requested["drops"]):
+                    raise lib.HandsoffError("tranche approval requires proposal_hash, order, and drops")
+                command = argparse.Namespace(root=str(self.server.project_root),
+                                             proposal_hash=requested["proposal_hash"],
+                                             item=requested["order"], drop=requested["drops"],
+                                             by="Mission Control Pilot")
+                if supervisor.cmd_tranche_approve(command) != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The tranche gate rejected this decision"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True})
+                return
             if path == "/api/regression-decision":
                 if set(requested) != {"request_id", "decision", "command_hash"} \
                         or requested.get("decision") not in {"accept", "decline"} \
