@@ -17,5 +17,6 @@ handsoff-design-evidence.json
 .handsoff-live.json
 .handsoff-output-liveness.json
 .handsoff-agent-output.json
+.handsoff-agent-output.lock
 .handsoff-verify-inflight/
 benchmark/

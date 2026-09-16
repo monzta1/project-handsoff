@@ -124,9 +124,13 @@ OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS = 1.0
 # deliberately separate from every audit ledger and is never consulted by a
 # gate. It contains only host-redacted child output and session metadata.
 AGENT_OUTPUT_FILE = ".handsoff-agent-output.json"
+AGENT_OUTPUT_LOCK_FILE = ".handsoff-agent-output.lock"
 MAX_AGENT_OUTPUT_SESSIONS = 8
 MAX_AGENT_OUTPUT_ENTRIES = 160
 MAX_AGENT_OUTPUT_LINE_CHARS = 2048
+AGENT_OUTPUT_FLUSH_INTERVAL_SECONDS = 0.25
+AGENT_OUTPUT_FLUSH_MAX_ENTRIES = 20
+AGENT_OUTPUT_FLUSH_MAX_BYTES = 32768
 ACTIVITY_SOURCES = ("workflow", "heartbeat", "output", "beacon", "session", "pause")
 #: #40: a dashboard launched with `--owned-by-run` writes this pointer file
 #: in the project root so run completion can find and release it. It is
@@ -5919,6 +5923,23 @@ def agent_output_path(root: Path) -> Path:
 _AGENT_OUTPUT_LOCK = threading.Lock()
 
 
+@contextmanager
+def agent_output_lock(root: Path):
+    """Serialize telemetry writers without contending on workflow state."""
+    with _AGENT_OUTPUT_LOCK:
+        if fcntl is None:
+            yield
+            return
+        path = Path(root) / AGENT_OUTPUT_LOCK_FILE
+        path.touch(exist_ok=True)
+        with path.open("r+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _read_agent_output_store(root: Path) -> dict:
     try:
         value = json.loads(agent_output_path(root).read_text(encoding="utf-8"))
@@ -5936,7 +5957,7 @@ def start_agent_output(root: Path, session_id: str, role: str, adapter: str, *,
     """Create a best-effort portable output envelope for one session."""
     stamp = (now or datetime.now(timezone.utc)).isoformat()
     try:
-        with _AGENT_OUTPUT_LOCK, project_lock(Path(root)):
+        with agent_output_lock(Path(root)):
             store = _read_agent_output_store(root)
             order = [item for item in store["order"] if item != session_id]
             order.append(session_id)
@@ -5956,26 +5977,44 @@ def start_agent_output(root: Path, session_id: str, role: str, adapter: str, *,
 
 def append_agent_output(root: Path, session_id: str, stream: str, text: str,
                         source_bytes: int, *, now: datetime | None = None) -> bool:
-    """Append one already-redacted line, retaining a small tail only."""
-    if stream not in {"stdout", "stderr"} or not isinstance(text, str):
-        return False
+    """Compatibility wrapper for one already-redacted line."""
     stamp = (now or datetime.now(timezone.utc)).isoformat()
-    text = text[:MAX_AGENT_OUTPUT_LINE_CHARS]
+    return append_agent_output_batch(
+        root, session_id,
+        [{"at": stamp, "stream": stream, "text": text}], source_bytes,
+    )
+
+
+def append_agent_output_batch(root: Path, session_id: str, batch: list[dict],
+                              source_bytes: int) -> bool:
+    """Persist a bounded batch under the telemetry-only lock."""
+    if not isinstance(batch, list) or not batch:
+        return False
+    normalized = []
+    for item in batch[:AGENT_OUTPUT_FLUSH_MAX_ENTRIES]:
+        if not isinstance(item, dict) or item.get("stream") not in {"stdout", "stderr"} \
+                or not isinstance(item.get("text"), str) or not isinstance(item.get("at"), str):
+            return False
+        normalized.append({
+            "at": item["at"], "stream": item["stream"],
+            "text": item["text"][:MAX_AGENT_OUTPUT_LINE_CHARS],
+        })
     try:
-        with _AGENT_OUTPUT_LOCK, project_lock(Path(root)):
+        with agent_output_lock(Path(root)):
             store = _read_agent_output_store(root)
             record = store["sessions"].get(session_id)
             if not isinstance(record, dict):
                 return False
             cursor = int(record.get("cursor", 0)) + 1
             entries = list(record.get("entries") or [])
-            entries.append({"cursor": cursor, "at": stamp, "stream": stream, "text": text})
+            for offset, item in enumerate(normalized):
+                entries.append({"cursor": cursor + offset, **item})
             if len(entries) > MAX_AGENT_OUTPUT_ENTRIES:
                 excess = len(entries) - MAX_AGENT_OUTPUT_ENTRIES
                 entries = entries[excess:]
                 record["dropped_entries"] = int(record.get("dropped_entries", 0)) + excess
             record.update({
-                "cursor": cursor, "updated_at": stamp,
+                "cursor": cursor + len(normalized) - 1, "updated_at": normalized[-1]["at"],
                 "source_bytes": max(int(source_bytes), int(record.get("source_bytes", 0))),
                 "entries": entries,
             })
@@ -5989,7 +6028,7 @@ def finish_agent_output(root: Path, session_id: str, terminal_state: str, *,
                         now: datetime | None = None) -> None:
     stamp = (now or datetime.now(timezone.utc)).isoformat()
     try:
-        with _AGENT_OUTPUT_LOCK, project_lock(Path(root)):
+        with agent_output_lock(Path(root)):
             store = _read_agent_output_store(root)
             record = store["sessions"].get(session_id)
             if not isinstance(record, dict):

@@ -6034,6 +6034,86 @@ class TestOutputLiveness(HandsoffTestCase):
         self.lib.finish_agent_output(self.tmp, session["session_id"], "failed")
         self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "failed")
 
+    def test_portable_output_batches_a_thousand_lines_without_the_workflow_lock(self):
+        session = self.lib.create_agent_session(
+            self.tmp, role="implementer", actor="codex-burst", adapter="codex",
+            requested_model="default", resolution_source="configured",
+            id_factory=lambda: self._sid(61),
+        )
+        self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        with mock.patch.object(self.lib, "project_lock", side_effect=AssertionError("workflow lock used")):
+            recorder = self.runtime._PortableOutput(
+                self.tmp, session["session_id"], "implementer", "codex", "private task", {},
+            )
+            recorder.feed("stdout", "".join(f"line {number}\n" for number in range(1000)))
+            recorder.finish()
+        store = json.loads(self.lib.agent_output_path(self.tmp).read_text())
+        record = store["sessions"][session["session_id"]]
+        self.assertEqual(record["cursor"], 1000)
+        self.assertEqual(len(record["entries"]), self.lib.MAX_AGENT_OUTPUT_ENTRIES)
+        self.assertEqual(record["dropped_entries"], 1000 - self.lib.MAX_AGENT_OUTPUT_ENTRIES)
+        self.assertLessEqual(recorder.write_count, 50, "telemetry regressed to per-line disk writes")
+
+    def test_portable_output_interval_flushes_and_redaction_fails_closed(self):
+        session = self.lib.create_agent_session(
+            self.tmp, role="implementer", actor="codex-interval", adapter="codex",
+            requested_model="default", resolution_source="configured",
+            id_factory=lambda: self._sid(62),
+        )
+        self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        recorder = self.runtime._PortableOutput(
+            self.tmp, session["session_id"], "implementer", "codex", "private task", {},
+        )
+        with mock.patch.object(self.runtime, "_redact_output_line", side_effect=ValueError("redactor fault")):
+            recorder.feed("stdout", "unsafe value\n")
+        deadline = time.monotonic() + 1
+        raw = ""
+        while time.monotonic() < deadline:
+            raw = self.lib.agent_output_path(self.tmp).read_text()
+            if self.runtime._SAFE_REDACTION_FAILURE in raw:
+                break
+            time.sleep(0.02)
+        recorder.finish()
+        self.assertIn(self.runtime._SAFE_REDACTION_FAILURE, raw)
+        self.assertNotIn("unsafe value", raw)
+
+    def test_portable_output_scrubs_sensitive_environment_chunk_boundaries_and_key_blocks(self):
+        secret = "sentinel-secret-value-482910"
+        prompt = "sensitive assigned prompt that must never be stored"
+        code = ("import os, sys, time\n"
+                "value = os.environ['HANDSOFF_TEST_SECRET_TOKEN']\n"
+                "sys.stdout.write(value[:10]); sys.stdout.flush(); time.sleep(0.05)\n"
+                "sys.stdout.write(value[10:] + '\\n'); sys.stdout.flush()\n"
+                f"print({prompt!r}, flush=True)\n"
+                "print('Authorization: Bearer abcdefghijklmnopqrstuvwxyz', flush=True)\n"
+                "print('postgres://pilot:password@localhost/db', flush=True)\n"
+                "print('-----BEGIN PRIVATE KEY-----', flush=True)\n"
+                "print('private-key-body-that-must-not-land', flush=True)\n"
+                "print('-----END PRIVATE KEY-----', flush=True)\n")
+        spec = self._real_spec("implementer", code, adapter="claude")
+        spec = self.runtime.LaunchSpec(
+            spec.role, spec.adapter, spec.model, spec.argv, spec.cwd, prompt,
+            spec.resolution_source,
+        )
+        with mock.patch.dict(os.environ, {"HANDSOFF_TEST_SECRET_TOKEN": secret}), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(self.runtime.execute_launch(
+                spec, session_id_factory=lambda: self._sid(63), beacon_interval=0.05,
+            ), 0)
+        raw = self.lib.agent_output_path(self.tmp).read_text()
+        for forbidden in (secret, prompt, "abcdefghijklmnopqrstuvwxyz", "pilot:password",
+                          "private-key-body-that-must-not-land"):
+            self.assertNotIn(forbidden, raw)
+        self.assertIn("[REDACTED]", raw)
+        self.assertIn("[ASSIGNED PROMPT ECHO REDACTED]", raw)
+        self.assertIn("[PRIVATE KEY BLOCK REDACTED]", raw)
+        audit = "\n".join(path.read_text() for path in (
+            self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
+            self.tmp / "handsoff-verifications.jsonl", self.tmp / "handsoff-acceptance.json",
+        ) if path.exists())
+        self.assertNotIn(secret, audit)
+        self.assertNotIn(prompt, audit)
+
     def test_supervisor_role_is_still_parsed_and_stdout_reads_unchanged(self):
         import handsoff_broker as broker
         request = {"actor": "supervisor", "project_root": str(self.tmp.resolve()),

@@ -13,7 +13,9 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -412,76 +414,171 @@ class _LiveBeacon:
         )
 
 
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)\b(authorization\s*:\s*(?:bearer|basic)\s+)\S+"),
-    re.compile(r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|PASSWORD|SECRET|CREDENTIAL)[A-Z0-9_]*\s*[=:]\s*)\S+"),
-    re.compile(r"\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}\b"),
+_AUTH_PATTERN = re.compile(r"(?i)\b(authorization\s*:\s*(?:bearer|basic)\s+)\S+")
+_COOKIE_PATTERN = re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)[^\r\n]+")
+_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)([\"']?[A-Z0-9_.-]*(?:API[_-]?KEY|TOKEN|PASSWORD|SECRET|CREDENTIAL|AUTH|COOKIE|PRIVATE[_-]?KEY)"
+    r"[A-Z0-9_.-]*[\"']?\s*[=:]\s*[\"']?)[^\s,}\"']+"
 )
+_TOKEN_PATTERNS = (
+    re.compile(r"\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+)
+_URL_USERINFO_PATTERN = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/@\s:]+:[^/@\s]+@")
+_SENSITIVE_ENV_NAME = re.compile(
+    r"(?i)(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|PRIVATE|PASSPHRASE)"
+)
+_PRIVATE_KEY_BEGIN = re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----")
+_PRIVATE_KEY_END = re.compile(r"-----END(?: [A-Z0-9]+)* PRIVATE KEY-----")
 _CONTROL_PREFIXES = (SUPERVISOR_REQUEST_PREFIX, REVIEW_RESULT_PREFIX, "HANDSOFF_QUESTION:")
+_SAFE_REDACTION_FAILURE = "[OUTPUT REDACTION FAILED]"
+_SAFE_OVERSIZED_OUTPUT = "[OVERSIZED OUTPUT REDACTED]"
 
 
-def _redact_output_line(line: str, prompt_lines: set[str]) -> str:
+def _sensitive_environment_values(environment: dict[str, str]) -> tuple[str, ...]:
+    values = {
+        value for name, value in environment.items()
+        if _SENSITIVE_ENV_NAME.search(str(name)) and isinstance(value, str) and len(value) >= 4
+    }
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def _redact_output_line(line: str, prompt_lines: set[str], prompt_fragments: tuple[str, ...],
+                        sensitive_values: tuple[str, ...]) -> str:
     """Host-side redaction before output can touch portable storage."""
-    stripped = line.strip()
-    if any(stripped.startswith(prefix) for prefix in _CONTROL_PREFIXES):
-        return "[HANDSOFF CONTROL MESSAGE REDACTED]"
-    if stripped and stripped in prompt_lines:
-        return "[ASSIGNED PROMPT ECHO REDACTED]"
-    redacted = line
-    for pattern in _SECRET_PATTERNS:
-        redacted = pattern.sub(lambda match: match.group(1) + "[REDACTED]"
-                               if match.lastindex else "[REDACTED]", redacted)
-    return redacted
+    try:
+        stripped = line.strip()
+        if any(stripped.startswith(prefix) for prefix in _CONTROL_PREFIXES):
+            return "[HANDSOFF CONTROL MESSAGE REDACTED]"
+        if stripped and stripped in prompt_lines:
+            return "[ASSIGNED PROMPT ECHO REDACTED]"
+        redacted = line
+        for fragment in prompt_fragments:
+            redacted = redacted.replace(fragment, "[ASSIGNED PROMPT REDACTED]")
+        for value in sensitive_values:
+            redacted = redacted.replace(value, "[REDACTED]")
+        redacted = _AUTH_PATTERN.sub(lambda match: match.group(1) + "[REDACTED]", redacted)
+        redacted = _COOKIE_PATTERN.sub(lambda match: match.group(1) + "[REDACTED]", redacted)
+        redacted = _ASSIGNMENT_PATTERN.sub(lambda match: match.group(1) + "[REDACTED]", redacted)
+        redacted = _URL_USERINFO_PATTERN.sub(lambda match: match.group(1) + "[REDACTED]@", redacted)
+        for pattern in _TOKEN_PATTERNS:
+            redacted = pattern.sub("[REDACTED]", redacted)
+        return redacted
+    except Exception:
+        return _SAFE_REDACTION_FAILURE
 
 
 class _PortableOutput:
-    """Line-buffer, redact, and persist a bounded output tail for #58."""
+    """Fail-closed redaction plus bounded, batched persistence for #59/#60."""
 
-    def __init__(self, root: Path, session_id: str, role: str, adapter: str, prompt: str):
+    def __init__(self, root: Path, session_id: str, role: str, adapter: str, prompt: str,
+                 environment: dict[str, str]):
         self.root = root
         self.session_id = session_id
         self.role = role
         self.adapter = adapter
         self.pending = {"stdout": "", "stderr": ""}
+        self.private_key_block = {"stdout": False, "stderr": False}
         self.source_bytes = 0
         self.lock = threading.Lock()
+        self.flush_lock = threading.Lock()
+        self.stop = threading.Event()
+        self.queue: list[dict] = []
+        self.queue_bytes = 0
+        self.write_count = 0
         self.prompt_lines = {line.strip() for line in prompt.splitlines() if line.strip()}
+        self.prompt_fragments = tuple(sorted(
+            (line for line in self.prompt_lines if len(line) >= 12), key=len, reverse=True,
+        ))
+        self.sensitive_values = _sensitive_environment_values(environment)
         lib.start_agent_output(root, session_id, role, adapter)
+        self.flusher = threading.Thread(target=self._flush_loop, daemon=True)
+        try:
+            self.flusher.start()
+        except Exception:
+            self.flusher = None
+
+    def _safe_line(self, stream: str, line: str) -> str | None:
+        try:
+            if self.private_key_block[stream]:
+                if _PRIVATE_KEY_END.search(line):
+                    self.private_key_block[stream] = False
+                return None
+            if _PRIVATE_KEY_BEGIN.search(line):
+                self.private_key_block[stream] = not bool(_PRIVATE_KEY_END.search(line))
+                return "[PRIVATE KEY BLOCK REDACTED]"
+            return _redact_output_line(
+                line, self.prompt_lines, self.prompt_fragments, self.sensitive_values,
+            )
+        except Exception:
+            return _SAFE_REDACTION_FAILURE
+
+    def _enqueue_locked(self, stream: str, line: str) -> bool:
+        safe = self._safe_line(stream, line.rstrip("\r"))
+        if safe is None:
+            return False
+        safe = safe[:lib.MAX_AGENT_OUTPUT_LINE_CHARS]
+        self.queue.append({
+            "at": datetime.now(timezone.utc).isoformat(), "stream": stream, "text": safe,
+        })
+        self.queue_bytes += len(safe.encode("utf-8", "replace"))
+        return (len(self.queue) >= lib.AGENT_OUTPUT_FLUSH_MAX_ENTRIES
+                or self.queue_bytes >= lib.AGENT_OUTPUT_FLUSH_MAX_BYTES)
+
+    def _drain(self) -> None:
+        with self.flush_lock:
+            while True:
+                with self.lock:
+                    if not self.queue:
+                        return
+                    batch = self.queue[:lib.AGENT_OUTPUT_FLUSH_MAX_ENTRIES]
+                    del self.queue[:len(batch)]
+                    self.queue_bytes = sum(len(item["text"].encode("utf-8", "replace"))
+                                           for item in self.queue)
+                    source_bytes = self.source_bytes
+                if lib.append_agent_output_batch(
+                        self.root, self.session_id, batch, source_bytes):
+                    self.write_count += 1
+
+    def _flush_loop(self) -> None:
+        while not self.stop.wait(lib.AGENT_OUTPUT_FLUSH_INTERVAL_SECONDS):
+            self._drain()
 
     def feed(self, stream: str, chunk: str) -> None:
+        threshold = False
         with self.lock:
             self.source_bytes += len(chunk.encode("utf-8", "replace"))
             pending = self.pending[stream] + chunk
             lines = pending.split("\n")
             self.pending[stream] = lines.pop()
             for line in lines:
-                lib.append_agent_output(
-                    self.root, self.session_id, stream,
-                    _redact_output_line(line.rstrip("\r"), self.prompt_lines), self.source_bytes,
-                )
-            # A tool can stream progress without a newline. Keep memory bounded
-            # and surface it rather than appearing silent indefinitely.
-            if len(self.pending[stream]) > lib.MAX_AGENT_OUTPUT_LINE_CHARS:
-                line = self.pending[stream][:lib.MAX_AGENT_OUTPUT_LINE_CHARS]
-                self.pending[stream] = self.pending[stream][lib.MAX_AGENT_OUTPUT_LINE_CHARS:]
-                lib.append_agent_output(
-                    self.root, self.session_id, stream,
-                    _redact_output_line(line, self.prompt_lines), self.source_bytes,
-                )
+                threshold = self._enqueue_locked(stream, line) or threshold
+            # Never persist a raw oversized partial line: it can contain a
+            # prompt, private key, or secret split exactly at a chunk edge.
+            if len(self.pending[stream].encode("utf-8", "replace")) > 65536:
+                self.pending[stream] = ""
+                threshold = self._enqueue_locked(stream, _SAFE_OVERSIZED_OUTPUT) or threshold
+        if threshold:
+            self._drain()
 
     def flush(self, stream: str) -> None:
         with self.lock:
             line = self.pending.get(stream, "")
             self.pending[stream] = ""
             if line:
-                lib.append_agent_output(
-                    self.root, self.session_id, stream,
-                    _redact_output_line(line.rstrip("\r"), self.prompt_lines), self.source_bytes,
-                )
+                self._enqueue_locked(stream, line)
 
     def finish(self) -> None:
+        self.stop.set()
+        if self.flusher is not None:
+            try:
+                self.flusher.join(timeout=2)
+            except Exception:
+                pass
         for stream in ("stdout", "stderr"):
             self.flush(stream)
+        self._drain()
         try:
             cfg = lib.load_config(self.root)
             session = lib.load_unique_json(lib.status_path(self.root, cfg)).get("agent_sessions", {}).get(self.session_id, {})
@@ -522,11 +619,13 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         )
         actor = session["actor"]
     session_id = session["session_id"]
-    portable_output = _PortableOutput(root, session_id, spec.role, spec.adapter, spec.stdin)
+    child_env = os.environ.copy()
+    child_env[MANAGED_ROLE_ENV] = spec.role
+    child_env[MANAGED_SESSION_ENV] = session_id
+    portable_output = _PortableOutput(
+        root, session_id, spec.role, spec.adapter, spec.stdin, child_env,
+    )
     try:
-        child_env = os.environ.copy()
-        child_env[MANAGED_ROLE_ENV] = spec.role
-        child_env[MANAGED_SESSION_ENV] = session_id
         process = popen_factory(
             list(spec.argv),
             cwd=spec.cwd,
