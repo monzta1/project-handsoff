@@ -107,6 +107,33 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual((assessment["state"], assessment["reason"]),
                          ("not_applicable", "non_recoverable_failure"))
 
+    def test_bounded_architect_proposal_hands_revision_to_reviewer(self):
+        now = datetime.now(timezone.utc)
+        sid = "hs-" + "d" * 32
+        status = self.read_status()
+        status.update(phase_number=2, phase=lib.PHASES[2], status="in_progress",
+                      design_review_attempts=1,
+                      design_review={"decision": "changes_requested", "findings": [
+                          {"id": "F1.1", "text": "Specify the timeout boundary"}]},
+                      agent_sessions={sid: self.session(sid, "architect", "running", now.isoformat())},
+                      current_agent_sessions={"architect": sid})
+        self.commit_status(status)
+        proposal = lib.record_design_proposal(self.root, sid, {
+            "summary": "Bound external calls and surface safe telemetry.",
+            "approach": ["Wrap each external operation in one bounded lifecycle."],
+            "tradeoffs": ["Timeouts favor bounded completion over indefinite compatibility waits."],
+            "decisions": ["Persist only content-free operation metadata."],
+            "constraints": ["Preserve existing successful caller behavior."],
+            "verification": ["Run focused timeout and dashboard state tests."],
+        })
+        final = self.read_status()
+        self.assertEqual(final["design_proposal"]["proposal_hash"], proposal["proposal_hash"])
+        self.assertIsNone(final["design_review"])
+        self.assertEqual(lib.assigned_role(final), "reviewer")
+        context = lib.managed_design_context(self.root, "reviewer")
+        self.assertEqual(context["design_proposal"]["proposal_hash"], proposal["proposal_hash"])
+        self.assertEqual(context["criteria"][0]["id"], "REQ-001")
+
     def test_liveness_updates_are_locked_and_atomic(self):
         first = "hs-" + "3" * 32
         second = "hs-" + "4" * 32

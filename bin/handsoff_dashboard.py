@@ -822,6 +822,7 @@ class DashboardServer(ThreadingHTTPServer):
                 next_action = str(status.get("next_action") or "Continue the current workflow step.")
                 task = (f"Continue the managed Handsoff workflow as {role}. Execute this current next action: "
                         f"{next_action} Use the role's required structured protocol and Handsoff commands; "
+                        "use the supplied managed design context instead of rediscovering the repository; "
                         "do not stop at narration, repeat evidenced work, or run a full regression suite.")
                 self._launch_managed_role(role, task)
             except Exception as exc:

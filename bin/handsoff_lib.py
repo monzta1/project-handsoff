@@ -3905,6 +3905,9 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("design gate: workflow policy changed since design approval; record a new approval")
     if "work_items" in acceptance and approval.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
         errors.append("design gate: work-item scope changed since design approval; record a new approval")
+    proposal = status.get("design_proposal")
+    if isinstance(proposal, dict) and approval.get("proposal_hash") != proposal.get("proposal_hash"):
+        errors.append("design gate: bounded design proposal changed since human approval")
     approver = approval.get("by")
     architect = approval.get("architect")
     if not approver:
@@ -3934,6 +3937,9 @@ def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str
         errors.append("design review gate: workflow policy changed since design review; record a new design review")
     if "work_items" in acceptance and review.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
         errors.append("design review gate: work-item scope changed since design review; record a new design review")
+    proposal = status.get("design_proposal")
+    if isinstance(proposal, dict) and review.get("proposal_hash") != proposal.get("proposal_hash"):
+        errors.append("design review gate: bounded design proposal changed since design review")
     reviewer = review.get("by")
     architect = review.get("architect")
     if not reviewer:
@@ -4299,7 +4305,12 @@ def assigned_role(status: dict) -> str | None:
         if isinstance(status.get("design_approved"), dict):
             return "supervisor"
         review = status.get("design_review") or {}
-        return "architect" if review.get("decision") == "changes_requested" else "reviewer"
+        proposal = status.get("design_proposal") or {}
+        proposal_ready = isinstance(proposal, dict) \
+            and proposal.get("based_on_review_attempt") == int(status.get("design_review_attempts", 0) or 0)
+        if review.get("decision") == "changes_requested" and not proposal_ready:
+            return "architect"
+        return "reviewer"
     if phase == 5 and isinstance(status.get("review"), dict):
         # record-review completes the Reviewer's assignment before the
         # Supervisor advances to Phase 6. The watchdog must not recover
@@ -4360,6 +4371,103 @@ def managed_handoff_role(status: dict) -> str | None:
     if target_sessions and max(item["ended_at"] for item in target_sessions) >= source["ended_at"]:
         return None
     return target
+
+
+DESIGN_PROPOSAL_FIELDS = ("summary", "approach", "tradeoffs", "decisions", "constraints", "verification")
+
+
+def validate_design_proposal(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != set(DESIGN_PROPOSAL_FIELDS):
+        raise HandsoffError("design proposal must contain exactly summary, approach, tradeoffs, decisions, constraints, and verification")
+    result = {}
+    summary = value.get("summary")
+    if not isinstance(summary, str) or not summary.strip() or len(summary.strip()) > 512:
+        raise HandsoffError("design proposal summary must be 1 to 512 characters")
+    result["summary"] = summary.strip()
+    for field in DESIGN_PROPOSAL_FIELDS[1:]:
+        items = value.get(field)
+        minimum = 1 if field in {"approach", "decisions", "verification"} else 0
+        if not isinstance(items, list) or not minimum <= len(items) <= 8:
+            raise HandsoffError(f"design proposal {field} must contain {minimum} to 8 items")
+        cleaned = []
+        for item in items:
+            if not isinstance(item, str) or not item.strip() or len(item.strip()) > 512:
+                raise HandsoffError(f"design proposal {field} items must be 1 to 512 characters")
+            cleaned.append(item.strip())
+        result[field] = cleaned
+    return result
+
+
+def record_design_proposal(root: Path, session_id: str, value: object) -> dict:
+    """Persist one bounded Architect proposal, bound to current criteria."""
+    proposal = validate_design_proposal(value)
+    root = root.resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        acceptance = load_unique_json(acceptance_path(root, cfg))
+        sessions = status.get("agent_sessions") or {}
+        current = status.get("current_agent_sessions") or {}
+        session = sessions.get(session_id)
+        if not isinstance(session, dict) or session.get("role") != "architect" \
+                or current.get("architect") != session_id \
+                or session.get("state") not in AGENT_SESSION_LIVE_STATES:
+            raise HandsoffError("design proposal must come from the current live Architect session")
+        if int(status.get("phase_number", 1) or 1) not in {1, 2}:
+            raise HandsoffError("design proposal can only be recorded in Phase 1 or Phase 2")
+        now = datetime.now(timezone.utc).isoformat()
+        bound = {
+            **proposal,
+            "architect": session.get("actor"),
+            "session_id": session_id,
+            "at": now,
+            "design_hash": design_hash(acceptance.get("criteria", [])),
+            "based_on_review_attempt": int(status.get("design_review_attempts", 0) or 0),
+        }
+        bound["proposal_hash"] = hashlib.sha256(_canonical(proposal).encode("utf-8")).hexdigest()
+        proposed = deepcopy(status)
+        proposed["design_proposal"] = bound
+        proposed["design_review"] = None
+        proposed["design_approved"] = None
+        proposed["status"] = "in_progress"
+        proposed["next_action"] = "Independent Reviewer evaluates the bounded design proposal and current criteria."
+        proposed["updated_at"] = now
+        commit(root, cfg, status=proposed, event_kind="design_proposal_recorded",
+               event_message="Bounded Architect design proposal recorded",
+               architect=session.get("actor"), session_id=session_id,
+               proposal_hash=bound["proposal_hash"], design_hash=bound["design_hash"],
+               based_on_review_attempt=bound["based_on_review_attempt"],
+               counts={field: len(bound[field]) for field in DESIGN_PROPOSAL_FIELDS[1:]})
+        return deepcopy(bound)
+
+
+def managed_design_context(root: Path, role: str) -> dict | None:
+    """Compact, bounded Phase-2 context supplied instead of repo rediscovery."""
+    if role not in {"architect", "reviewer"}:
+        return None
+    cfg = load_config(root)
+    status_file = status_path(root, cfg)
+    acceptance_file = acceptance_path(root, cfg)
+    if not status_file.is_file() or not acceptance_file.is_file():
+        return None
+    status = load_unique_json(status_file)
+    acceptance = load_unique_json(acceptance_file)
+    if status.get("phase_number") != 2:
+        return None
+    latest = status.get("design_review") or {}
+    findings = latest.get("findings") or latest_design_review_findings(status)
+    return {
+        "feature": status.get("feature") or acceptance.get("feature"),
+        "next_action": status.get("next_action"),
+        "review_attempts": int(status.get("design_review_attempts", 0) or 0),
+        "review_summary": latest.get("summary"),
+        "findings": [{"id": item.get("id"), "text": item.get("text")} for item in findings if isinstance(item, dict)][:32],
+        "criteria": [{key: item.get(key) for key in ("id", "type", "requirement", "verification", "tests")}
+                     for item in acceptance.get("criteria", [])[:64] if isinstance(item, dict)],
+        "design_proposal": status.get("design_proposal"),
+        "instructions": ("Use this packet first. Do not list or search the whole repository. "
+                         "Inspect only files needed to resolve a named finding."),
+    }
 
 
 def session_liveness_path(root: Path) -> Path:

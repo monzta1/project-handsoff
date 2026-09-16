@@ -44,11 +44,13 @@ class LaunchSpec:
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
 REVIEW_RESULT_PREFIX = "HANDSOFF_REVIEW_RESULT:"
+DESIGN_RESULT_PREFIX = "HANDSOFF_DESIGN_PROPOSAL:"
 MANAGED_ROLE_ENV = "HANDSOFF_MANAGED_SESSION_ROLE"
 MANAGED_SESSION_ENV = "HANDSOFF_MANAGED_SESSION_ID"
 MAX_AGENT_TASK_BYTES = 16 * 1024
 MAX_REPLACEMENT_INPUT_BYTES = 64 * 1024
 MAX_SUPERVISOR_REQUESTS = 8
+FOLLOWUP_DESIGN_TOKEN_BUDGET = 16_000
 
 # Managed coding roles need the repository shell, not the user's entire
 # interactive Codex plugin/app/tool catalogue.  Disabling those optional
@@ -58,6 +60,14 @@ CODEX_DISABLED_FEATURES = (
     "plugins", "apps", "skill_search", "multi_agent", "goals",
     "browser_use", "computer_use", "image_generation",
 )
+
+
+def _effective_token_budget(configured: int, role: str, context: dict | None) -> int:
+    """Follow-up design turns receive the packet, not another discovery budget."""
+    if role in {"architect", "reviewer"} and isinstance(context, dict) \
+            and int(context.get("review_attempts", 0) or 0) > 0:
+        return min(configured, FOLLOWUP_DESIGN_TOKEN_BUDGET)
+    return configured
 
 
 def _codex_argv(executable: str, role: str, model: str, token_budget: int) -> list[str]:
@@ -145,6 +155,10 @@ def build_role_input(root: Path, role: str, task: str) -> str:
     text = f"{_role_prompt(root, role)}\n\n# Assigned task\n\n{task}"
     if role in DESIGN_EVIDENCE_ROLES:
         cfg = lib.load_config(root)
+        context = lib.managed_design_context(root, role)
+        if context is not None:
+            context_json = json.dumps(context, sort_keys=True, separators=(",", ":"))
+            text = f"# Managed design context\n\n{context_json}\n\n{text}"
         packet = applicable_design_review_packet(root, cfg, role)
         if packet is not None:
             packet_json = json.dumps(packet, sort_keys=True, separators=(",", ":"))
@@ -213,7 +227,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
-    token_budget = cfg["agent_token_budgets"][role]
+    context = lib.managed_design_context(root, role)
+    token_budget = _effective_token_budget(cfg["agent_token_budgets"][role], role, context)
     _refuse_reviewer_launch_over_budget(root, cfg, role)
     selection = _phase2_design_reviewer_selection(root, cfg, role, which=which)
     if selection is not None:
@@ -296,7 +311,10 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if not executable:
         raise lib.HandsoffError(f"reserved {adapter} executable is no longer available")
     executable = str(Path(executable).resolve())
-    token_budget = lib.load_config(root)["agent_token_budgets"][role]
+    configured_budget = lib.load_config(root)["agent_token_budgets"][role]
+    token_budget = _effective_token_budget(
+        configured_budget, role, lib.managed_design_context(root, role),
+    )
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget)
     else:
@@ -703,6 +721,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
     reviewer_results: list[dict] = []
+    architect_results: list[dict] = []
     protocol_errors: list[str] = []
     question_errors: list[str] = []
     question_lines = [0]
@@ -776,6 +795,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                         if spec.role == "reviewer":
                             _parse_reviewer_line(line, reviewer_results, protocol_errors)
+                        if spec.role == "architect":
+                            _parse_architect_line(line, architect_results, protocol_errors)
                     if len(pending.encode("utf-8")) > 65536:
                         if pending.startswith(SUPERVISOR_REQUEST_PREFIX):
                             protocol_errors.append("Supervisor broker request exceeded 65536 bytes")
@@ -788,6 +809,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
                     if spec.role == "reviewer":
                         _parse_reviewer_line(pending, reviewer_results, protocol_errors)
+                    if spec.role == "architect":
+                        _parse_architect_line(pending, architect_results, protocol_errors)
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
@@ -943,6 +966,29 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         raise AgentLaunchError(
             "Supervisor exited without a broker request or Pilot question", session_id,
         )
+    if len(architect_results) > 1:
+        lib.transition_agent_session(
+            root, session_id, "failed", exit_code=1,
+            failure=lib.classify_runtime_failure(orchestration_noop=True),
+        )
+        raise AgentLaunchError("Architect emitted more than one structured design proposal", session_id)
+    if spec.role == "architect" and not architect_results and question_lines[0] == 0:
+        lib.transition_agent_session(
+            root, session_id, "failed", exit_code=1,
+            failure=lib.classify_runtime_failure(orchestration_noop=True),
+        )
+        raise AgentLaunchError("Architect exited without a structured design proposal or Pilot question", session_id)
+    if architect_results:
+        try:
+            lib.record_design_proposal(root, session_id, architect_results[0])
+        except Exception as exc:
+            lib.transition_agent_session(
+                root, session_id, "failed", exit_code=1,
+                failure=lib.classify_runtime_failure(exit_code=1),
+            )
+            raise AgentLaunchError(
+                f"Architect design proposal dispatch failed: {type(exc).__name__}", session_id,
+            ) from exc
     if len(reviewer_results) > 1:
         lib.transition_agent_session(
             root, session_id, "failed", exit_code=1,
@@ -1082,6 +1128,17 @@ def _parse_reviewer_line(line: str, results: list[dict], errors: list[str]) -> N
         results.append(__import__("handsoff_broker").parse_reviewer_result(payload))
     except lib.HandsoffError as exc:
         errors.append(str(exc))
+
+
+def _parse_architect_line(line: str, results: list[dict], errors: list[str]) -> None:
+    if not line.startswith(DESIGN_RESULT_PREFIX):
+        return
+    payload = line[len(DESIGN_RESULT_PREFIX):].strip()
+    try:
+        value = json.loads(payload)
+        results.append(lib.validate_design_proposal(value))
+    except (ValueError, lib.HandsoffError) as exc:
+        errors.append(f"invalid Architect design proposal: {exc}")
 
 
 def main() -> int:

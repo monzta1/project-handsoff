@@ -78,6 +78,10 @@ class TestAgentTokenBudget(HandsoffTestCase):
         with self.assertRaisesRegex(lib.HandsoffError, "task exceeds"):
             runtime.build_role_input(self.tmp, "architect", "x" * (runtime.MAX_AGENT_TASK_BYTES + 1))
 
+        self.assertEqual(runtime._effective_token_budget(40_000, "architect", {"review_attempts": 1}), 16_000)
+        self.assertEqual(runtime._effective_token_budget(40_000, "reviewer", {"review_attempts": 2}), 16_000)
+        self.assertEqual(runtime._effective_token_budget(40_000, "architect", {"review_attempts": 0}), 40_000)
+
     def test_supervisor_narration_without_protocol_is_a_failed_session(self):
         self.init("Fail fast on no-op orchestration")
         spec = runtime.LaunchSpec(
@@ -94,6 +98,32 @@ class TestAgentTokenBudget(HandsoffTestCase):
         self.assertEqual(session["state"], "failed")
         failure = status["agent_failures"][session["session_id"]]
         self.assertEqual(failure["category"], "orchestration_noop")
+
+    def test_architect_protocol_persists_bounded_proposal_and_narration_fails(self):
+        self.init("Bounded Architect proposal")
+        payload = (
+            'HANDSOFF_DESIGN_PROPOSAL: {"summary":"Small design","approach":["Change one boundary"],'
+            '"tradeoffs":[],"decisions":["Keep compatibility"],"constraints":[],'
+            '"verification":["Run the focused test"]}\n'
+        )
+        spec = runtime.LaunchSpec(
+            "architect", "codex", "default", ("/bin/codex", "exec", "-"),
+            str(self.tmp), "bounded architect prompt", token_budget=40_000,
+        )
+        self.assertEqual(runtime.execute_launch(
+            spec, popen_factory=mock.Mock(return_value=_CompletedProcess(payload)),
+            beacon_interval=0.01,
+        ), 0)
+        status = self.read_status()
+        self.assertEqual(status["design_proposal"]["summary"], "Small design")
+        session = status["agent_sessions"][status["current_agent_sessions"]["architect"]]
+        self.assertEqual(session["state"], "completed")
+
+        with self.assertRaisesRegex(runtime.AgentLaunchError, "without a structured design proposal"):
+            runtime.execute_launch(
+                spec, popen_factory=mock.Mock(return_value=_CompletedProcess("Design complete.\n")),
+                beacon_interval=0.01,
+            )
 
     def test_budget_exhaustion_never_spends_again_on_a_fallback(self):
         failure = lib.classify_runtime_failure(

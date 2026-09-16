@@ -145,6 +145,7 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
         if "design_review" in status or status.get("requires_design_review"):
             status["design_review"] = None
         status["design_approved"] = None
+        status["design_proposal"] = None
         if (status.get("requires_design_approval") or status.get("requires_design_review")) \
                 and status.get("phase_number", 1) >= 3:
             status["phase_number"] = 2
@@ -1506,6 +1507,7 @@ def cmd_design_approve(args) -> int:
             "config_hash": lib.config_hash(cfg),
             "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
             "redesigns_settled_work": args.redesigns_settled_work,
+            "proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
         }
         # In the natural AR7 flow, record-design-review left the run
         # explicitly blocked on this human decision. Once both current
@@ -1655,6 +1657,7 @@ def cmd_record_design_review(args) -> int:
             "structural_blocker": structural_blocker,
             "reviewer_profile": reviewer_profile,
             "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
+            "proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
         }
         lib.append_design_review_history(
             status, lib.design_review_history_entry(status["design_review"], criteria,
