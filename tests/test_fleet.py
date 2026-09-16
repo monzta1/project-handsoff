@@ -57,6 +57,17 @@ class FleetMissionControlTests(unittest.TestCase):
         self.assertNotEqual(snapshot["projects"][0]["binding"], snapshot["projects"][1]["binding"])
         self.assertEqual(snapshot["projects"][0]["engine_version"], "v0.3.5")
 
+    def test_dashboard_progress_uses_phase_floor_and_preserves_verification_score(self):
+        root = self.project("progress")
+        cfg = lib.load_config(root)
+        with lib.project_lock(root):
+            status = lib.load_unique_json(lib.status_path(root, cfg))
+            status.update(phase_number=2, phase=lib.PHASES[2], progress=0)
+            lib.commit(root, cfg, status=status, event_kind="fixture_phase", event_message="fixture")
+        snapshot = dashboard.build_snapshot(root)
+        self.assertEqual(snapshot["status"]["progress"], 20)
+        self.assertEqual(snapshot["status"]["verification_progress"], 0)
+
     def test_clean_close_and_reopen_are_audited_idempotent_and_non_destructive(self):
         root = self.project("closure")
         source = root / "valuable-source.txt"

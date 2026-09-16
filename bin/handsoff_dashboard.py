@@ -174,6 +174,24 @@ def _display_phase_name(status: dict) -> str:
     return status.get("phase") or lib.PHASES.get(phase_number, "Unknown phase")
 
 
+_PHASE_PROGRESS_FLOORS = {1: 0, 2: 20, 3: 30, 4: 40, 5: 50, 6: 75, 7: 90, 8: 95}
+
+
+def _display_progress(status: dict) -> int:
+    """Show mission advancement without mislabeling it as evidence coverage.
+
+    The persisted ``progress`` value is a delivery/evidence score and can
+    correctly remain zero during design. Mission Control's primary gauge is
+    phase progress, so it receives a phase floor while the raw score remains
+    available as ``verification_progress``.
+    """
+    if status.get("status") == "complete":
+        return 100
+    phase_number = int(status.get("phase_number", 1) or 1)
+    raw = int(float(status.get("progress", 0) or 0))
+    return min(100, max(raw, _PHASE_PROGRESS_FLOORS.get(phase_number, 0)))
+
+
 #: Which crew role is doing the work during each phase, for the dashboard's
 #: chiclet row. Phase 2 is resolved dynamically below because a design
 #: finding hands work back from the reviewer to the Architect.
@@ -583,6 +601,8 @@ def build_snapshot(root: Path) -> dict:
     input_request = _input_request(status, cfg)
     operator_actions = _operator_actions(status, cfg, input_request)
     display_status = dict(status)
+    display_status["verification_progress"] = status.get("progress", 0)
+    display_status["progress"] = _display_progress(status)
     if isinstance(status.get("run_closed"), dict):
         display_status["status"] = "closed"
         display_status["phase"] = "Run closed"
