@@ -120,6 +120,13 @@ LIVE_STATES = ("idle", "started", "running", "waiting", "stalled", "stopped", "f
 OUTPUT_LIVENESS_FILE = ".handsoff-output-liveness.json"
 OUTPUT_LIVENESS_KEYS = ("session_id", "role", "output_at", "chunks", "bytes")
 OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS = 1.0
+# #58: portable, bounded managed-agent output. This generated side file is
+# deliberately separate from every audit ledger and is never consulted by a
+# gate. It contains only host-redacted child output and session metadata.
+AGENT_OUTPUT_FILE = ".handsoff-agent-output.json"
+MAX_AGENT_OUTPUT_SESSIONS = 8
+MAX_AGENT_OUTPUT_ENTRIES = 160
+MAX_AGENT_OUTPUT_LINE_CHARS = 2048
 ACTIVITY_SOURCES = ("workflow", "heartbeat", "output", "beacon", "session", "pause")
 #: #40: a dashboard launched with `--owned-by-run` writes this pointer file
 #: in the project root so run completion can find and release it. It is
@@ -1385,7 +1392,7 @@ def write_ahead(root: Path, *, status: dict | None = None, acceptance: dict | No
 def clear_write_ahead(root: Path) -> None:
     try:
         write_ahead_path(root).unlink()
-    except OSError:
+    except Exception:
         pass
 
 
@@ -5903,6 +5910,134 @@ def read_live_beacon(root: Path) -> dict | None:
 
 def output_liveness_path(root: Path) -> Path:
     return Path(root) / OUTPUT_LIVENESS_FILE
+
+
+def agent_output_path(root: Path) -> Path:
+    return Path(root) / AGENT_OUTPUT_FILE
+
+
+_AGENT_OUTPUT_LOCK = threading.Lock()
+
+
+def _read_agent_output_store(root: Path) -> dict:
+    try:
+        value = json.loads(agent_output_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"schema": 1, "order": [], "sessions": {}}
+    if not isinstance(value, dict) or value.get("schema") != 1 \
+            or not isinstance(value.get("order"), list) \
+            or not isinstance(value.get("sessions"), dict):
+        return {"schema": 1, "order": [], "sessions": {}}
+    return value
+
+
+def start_agent_output(root: Path, session_id: str, role: str, adapter: str, *,
+                       now: datetime | None = None) -> None:
+    """Create a best-effort portable output envelope for one session."""
+    stamp = (now or datetime.now(timezone.utc)).isoformat()
+    try:
+        with _AGENT_OUTPUT_LOCK, project_lock(Path(root)):
+            store = _read_agent_output_store(root)
+            order = [item for item in store["order"] if item != session_id]
+            order.append(session_id)
+            while len(order) > MAX_AGENT_OUTPUT_SESSIONS:
+                store["sessions"].pop(order.pop(0), None)
+            store["order"] = order
+            store["sessions"][session_id] = {
+                "session_id": session_id, "role": role, "adapter": adapter,
+                "state": "connected", "started_at": stamp, "updated_at": stamp,
+                "ended_at": None, "cursor": 0, "source_bytes": 0,
+                "dropped_entries": 0, "entries": [],
+            }
+            _atomic_write_text(agent_output_path(root), json.dumps(store, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def append_agent_output(root: Path, session_id: str, stream: str, text: str,
+                        source_bytes: int, *, now: datetime | None = None) -> bool:
+    """Append one already-redacted line, retaining a small tail only."""
+    if stream not in {"stdout", "stderr"} or not isinstance(text, str):
+        return False
+    stamp = (now or datetime.now(timezone.utc)).isoformat()
+    text = text[:MAX_AGENT_OUTPUT_LINE_CHARS]
+    try:
+        with _AGENT_OUTPUT_LOCK, project_lock(Path(root)):
+            store = _read_agent_output_store(root)
+            record = store["sessions"].get(session_id)
+            if not isinstance(record, dict):
+                return False
+            cursor = int(record.get("cursor", 0)) + 1
+            entries = list(record.get("entries") or [])
+            entries.append({"cursor": cursor, "at": stamp, "stream": stream, "text": text})
+            if len(entries) > MAX_AGENT_OUTPUT_ENTRIES:
+                excess = len(entries) - MAX_AGENT_OUTPUT_ENTRIES
+                entries = entries[excess:]
+                record["dropped_entries"] = int(record.get("dropped_entries", 0)) + excess
+            record.update({
+                "cursor": cursor, "updated_at": stamp,
+                "source_bytes": max(int(source_bytes), int(record.get("source_bytes", 0))),
+                "entries": entries,
+            })
+            _atomic_write_text(agent_output_path(root), json.dumps(store, sort_keys=True) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def finish_agent_output(root: Path, session_id: str, terminal_state: str, *,
+                        now: datetime | None = None) -> None:
+    stamp = (now or datetime.now(timezone.utc)).isoformat()
+    try:
+        with _AGENT_OUTPUT_LOCK, project_lock(Path(root)):
+            store = _read_agent_output_store(root)
+            record = store["sessions"].get(session_id)
+            if not isinstance(record, dict):
+                return
+            record.update({"state": "closed", "terminal_state": terminal_state,
+                           "updated_at": stamp, "ended_at": stamp})
+            _atomic_write_text(agent_output_path(root), json.dumps(store, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+
+def agent_output_view(status: dict, root: Path, *, now: datetime | None = None) -> dict | None:
+    """Return the focused session's bounded log and explicit transport state."""
+    session = _live_focus_session(status)
+    if not isinstance(session, dict):
+        return None
+    session_id = session.get("session_id")
+    store = _read_agent_output_store(root)
+    record = store.get("sessions", {}).get(session_id)
+    if not isinstance(record, dict):
+        return {
+            "session_id": session_id, "role": session.get("role"),
+            "adapter": session.get("adapter"), "state": "transport_disconnected",
+            "cursor": 0, "dropped_entries": 0, "entries": [], "updated_at": None,
+        }
+    entries = [entry for entry in (record.get("entries") or [])
+               if isinstance(entry, dict) and set(entry) == {"cursor", "at", "stream", "text"}]
+    session_state = session.get("state")
+    if session_state in AGENT_SESSION_TERMINAL_STATES:
+        transport_state = "completed" if session_state == "completed" else "failed"
+    else:
+        liveness = read_output_liveness(root)
+        persisted = int(record.get("source_bytes", 0))
+        missed = (isinstance(liveness, dict) and liveness.get("session_id") == session_id
+                  and int(liveness.get("bytes", 0)) > persisted)
+        if missed:
+            transport_state = "transport_disconnected"
+        elif entries:
+            age = _seconds_since(entries[-1].get("at"), now or datetime.now(timezone.utc))
+            transport_state = "running_output" if age is not None and age <= LIVE_BEACON_FRESH_SECONDS else "running_quiet"
+        else:
+            transport_state = "running_quiet"
+    return {
+        "session_id": session_id, "role": record.get("role"), "adapter": record.get("adapter"),
+        "state": transport_state, "cursor": int(record.get("cursor", 0)),
+        "dropped_entries": int(record.get("dropped_entries", 0)),
+        "entries": entries, "updated_at": record.get("updated_at"),
+    }
 
 
 def read_output_liveness(root: Path) -> dict | None:

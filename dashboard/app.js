@@ -22,6 +22,8 @@ const state = {
   fallbackDraft: {},
   live: null,
   liveReceivedAt: null,
+  agentOutputSession: null,
+  agentOutputCursor: 0,
 };
 const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 // adapterLabel, effectiveProfileLabel, actorForRole, runProfileLabel,
@@ -832,6 +834,35 @@ function renderLiveAge() {
   $("live-age").textContent = liveAgeLabel(state.live, elapsed);
 }
 
+function renderAgentOutput(output) {
+  const panel = $("agent-output-panel");
+  if (!panel) return;
+  if (!output || !output.session_id) {
+    panel.classList.add("hidden");
+    state.agentOutputSession = null;
+    state.agentOutputCursor = 0;
+    return;
+  }
+  panel.classList.remove("hidden");
+  const labels = {
+    running_output: "SIGNAL ACTIVE",
+    running_quiet: "RUNNING · QUIET",
+    transport_disconnected: "TRANSPORT DISCONNECTED",
+    failed: "SESSION FAILED",
+    completed: "SESSION COMPLETE",
+  };
+  $("agent-output-state").textContent = labels[output.state] || String(output.state || "UNKNOWN").replaceAll("_", " ").toUpperCase();
+  $("agent-output-state").className = `section-meta output-state-${escapeHtml(output.state || "unknown")}`;
+  $("agent-output-meta").textContent = `${String(output.role || "agent").toUpperCase()} · ${output.adapter || "unknown adapter"} · ${output.session_id}${output.dropped_entries ? ` · ${output.dropped_entries} older line(s) released` : ""}`;
+  const entries = Array.isArray(output.entries) ? output.entries : [];
+  $("agent-output-log").textContent = entries.length
+    ? entries.map((entry) => `${entry.stream === "stderr" ? "ERR" : "OUT"} ${entry.text}`).join("\n")
+    : (output.state === "transport_disconnected" ? "Signal transport unavailable. Managed process state remains authoritative." : "Managed process is running quietly.");
+  state.agentOutputSession = output.session_id;
+  state.agentOutputCursor = Number(output.cursor) || 0;
+  $("agent-output-log").scrollTop = $("agent-output-log").scrollHeight;
+}
+
 function renderRoleChiclets(activeRole) {
   document.querySelectorAll("#role-chiclets .chiclet").forEach((el) => {
     el.classList.toggle("is-active", el.dataset.role === activeRole);
@@ -911,6 +942,7 @@ function render(snapshot) {
   }
   if (!snapshot.initialized) {
     renderLive(null);
+    renderAgentOutput(null);
     state.inputRequired = false;
     state.alertSignature = null;
     document.body.classList.remove("input-is-required");
@@ -931,6 +963,7 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
+  renderAgentOutput(snapshot.runtime?.agent_output || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderRegression(snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;

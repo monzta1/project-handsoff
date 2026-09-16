@@ -117,6 +117,12 @@ button, input { font: inherit; }
 .live-role { color: var(--ink); font: 700 11px/1.2 var(--sans); letter-spacing: .06em; }
 .live-age { color: var(--muted); font-variant-numeric: tabular-nums; }
 .live-detail { flex: 1 1 240px; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.agent-output-panel { margin: 0 0 24px; }
+.agent-output-meta { margin: -8px 0 12px; color: var(--muted); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
+.agent-output-log { min-height: 88px; max-height: 260px; margin: 0; padding: 14px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; color: #b9d7c8; background: #07100d; font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.output-state-running_output, .output-state-completed { color: var(--emerald); }
+.output-state-running_quiet { color: var(--amber); }
+.output-state-transport_disconnected, .output-state-failed { color: var(--red); }
 .mission-header { padding: 36px 0 26px; display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; }
 .eyebrow, .panel-label { margin: 0 0 8px; color: var(--green); font: 700 13px/1.3 var(--sans); letter-spacing: .03em; }
 .mission-header h1 { max-width: 990px; margin: 0; font-size: clamp(26px, 3.6vw, 42px); line-height: 1.12; letter-spacing: -.02em; font-weight: 700; }

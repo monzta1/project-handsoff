@@ -7,6 +7,7 @@ import codecs
 import hashlib
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -411,6 +412,85 @@ class _LiveBeacon:
         )
 
 
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(authorization\s*:\s*(?:bearer|basic)\s+)\S+"),
+    re.compile(r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|PASSWORD|SECRET|CREDENTIAL)[A-Z0-9_]*\s*[=:]\s*)\S+"),
+    re.compile(r"\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}\b"),
+)
+_CONTROL_PREFIXES = (SUPERVISOR_REQUEST_PREFIX, REVIEW_RESULT_PREFIX, "HANDSOFF_QUESTION:")
+
+
+def _redact_output_line(line: str, prompt_lines: set[str]) -> str:
+    """Host-side redaction before output can touch portable storage."""
+    stripped = line.strip()
+    if any(stripped.startswith(prefix) for prefix in _CONTROL_PREFIXES):
+        return "[HANDSOFF CONTROL MESSAGE REDACTED]"
+    if stripped and stripped in prompt_lines:
+        return "[ASSIGNED PROMPT ECHO REDACTED]"
+    redacted = line
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub(lambda match: match.group(1) + "[REDACTED]"
+                               if match.lastindex else "[REDACTED]", redacted)
+    return redacted
+
+
+class _PortableOutput:
+    """Line-buffer, redact, and persist a bounded output tail for #58."""
+
+    def __init__(self, root: Path, session_id: str, role: str, adapter: str, prompt: str):
+        self.root = root
+        self.session_id = session_id
+        self.role = role
+        self.adapter = adapter
+        self.pending = {"stdout": "", "stderr": ""}
+        self.source_bytes = 0
+        self.lock = threading.Lock()
+        self.prompt_lines = {line.strip() for line in prompt.splitlines() if line.strip()}
+        lib.start_agent_output(root, session_id, role, adapter)
+
+    def feed(self, stream: str, chunk: str) -> None:
+        with self.lock:
+            self.source_bytes += len(chunk.encode("utf-8", "replace"))
+            pending = self.pending[stream] + chunk
+            lines = pending.split("\n")
+            self.pending[stream] = lines.pop()
+            for line in lines:
+                lib.append_agent_output(
+                    self.root, self.session_id, stream,
+                    _redact_output_line(line.rstrip("\r"), self.prompt_lines), self.source_bytes,
+                )
+            # A tool can stream progress without a newline. Keep memory bounded
+            # and surface it rather than appearing silent indefinitely.
+            if len(self.pending[stream]) > lib.MAX_AGENT_OUTPUT_LINE_CHARS:
+                line = self.pending[stream][:lib.MAX_AGENT_OUTPUT_LINE_CHARS]
+                self.pending[stream] = self.pending[stream][lib.MAX_AGENT_OUTPUT_LINE_CHARS:]
+                lib.append_agent_output(
+                    self.root, self.session_id, stream,
+                    _redact_output_line(line, self.prompt_lines), self.source_bytes,
+                )
+
+    def flush(self, stream: str) -> None:
+        with self.lock:
+            line = self.pending.get(stream, "")
+            self.pending[stream] = ""
+            if line:
+                lib.append_agent_output(
+                    self.root, self.session_id, stream,
+                    _redact_output_line(line.rstrip("\r"), self.prompt_lines), self.source_bytes,
+                )
+
+    def finish(self) -> None:
+        for stream in ("stdout", "stderr"):
+            self.flush(stream)
+        try:
+            cfg = lib.load_config(self.root)
+            session = lib.load_unique_json(lib.status_path(self.root, cfg)).get("agent_sessions", {}).get(self.session_id, {})
+            terminal_state = session.get("state", "failed")
+        except Exception:
+            terminal_state = "failed"
+        lib.finish_agent_output(self.root, self.session_id, terminal_state)
+
+
 def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None = None,
                    popen_factory=subprocess.Popen, session_id_factory=None,
                    precreated_session_id: str | None = None,
@@ -442,6 +522,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         )
         actor = session["actor"]
     session_id = session["session_id"]
+    portable_output = _PortableOutput(root, session_id, spec.role, spec.adapter, spec.stdin)
     try:
         child_env = os.environ.copy()
         child_env[MANAGED_ROLE_ENV] = spec.role
@@ -460,19 +541,24 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     except OSError as exc:
         failure = lib.classify_runtime_failure(exit_code=-1)
         lib.transition_agent_session(root, session_id, "failed_to_start", failure=failure)
+        portable_output.finish()
         raise AgentLaunchError(
             f"{spec.adapter} process failed to start: {type(exc).__name__}", session_id,
         ) from exc
     beacon = _LiveBeacon(root, session_id, spec.role, process, beacon_interval)
     beacon.start()
     try:
-        return _run_managed_process(spec, root, session_id, process, timeout, capture_supervisor)
+        return _run_managed_process(
+            spec, root, session_id, process, timeout, capture_supervisor, portable_output,
+        )
     finally:
         beacon.finish()
+        portable_output.finish()
 
 
 def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
-                         timeout: int, capture_supervisor: bool) -> int:
+                         timeout: int, capture_supervisor: bool,
+                         portable_output: _PortableOutput) -> int:
     """The lifecycle of an already-started child: exactly one terminal
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
@@ -531,6 +617,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     sys.stdout.write(chunk)
                     sys.stdout.flush()
                     note_output(chunk)
+                    portable_output.feed("stdout", chunk)
                     stdout_tail[0] = (stdout_tail[0] + chunk)[-8192:]
                     if discarding:
                         if "\n" in chunk:
@@ -561,6 +648,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
+                portable_output.flush("stdout")
                 # Drained to EOF: release the pipe instead of leaving it to GC.
                 try:
                     process.stdout.close()
@@ -586,10 +674,12 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     sys.stderr.write(chunk)
                     sys.stderr.flush()
                     note_output(chunk)
+                    portable_output.feed("stderr", chunk)
                     stderr_tail[0] = (stderr_tail[0] + chunk)[-8192:]
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
+                portable_output.flush("stderr")
                 # Drained to EOF: release the pipe instead of leaving it to GC.
                 try:
                     process.stderr.close()

@@ -5966,6 +5966,74 @@ class TestOutputLiveness(HandsoffTestCase):
         view = self.lib.live_status(status_after, self.cfg, self.tmp)
         self.assertEqual((view["state"], view["exit_code"]), ("stopped", 0))
 
+    def test_portable_output_is_redacted_bounded_and_visible_after_completion(self):
+        prompt = "private assigned task"
+        code = ("import sys\n"
+                "print('private assigned task', flush=True)\n"
+                "print('OPENAI_API_KEY=sk-super-secret-value', flush=True)\n"
+                "print('ordinary progress', flush=True)\n"
+                "print('stderr progress', file=sys.stderr, flush=True)\n")
+        spec = self._real_spec("implementer", code, adapter="claude")
+        spec = self.runtime.LaunchSpec(
+            spec.role, spec.adapter, spec.model, spec.argv, spec.cwd, prompt,
+            spec.resolution_source,
+        )
+        with mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()):
+            self.assertEqual(self.runtime.execute_launch(
+                spec, session_id_factory=lambda: self._sid(31), beacon_interval=0.05,
+            ), 0)
+        raw = self.lib.agent_output_path(self.tmp).read_text()
+        self.assertNotIn("private assigned task", raw)
+        self.assertNotIn("sk-super-secret-value", raw)
+        self.assertIn("[ASSIGNED PROMPT ECHO REDACTED]", raw)
+        self.assertIn("OPENAI_API_KEY=[REDACTED]", raw)
+        self.assertIn("ordinary progress", raw)
+        view = self.lib.agent_output_view(self.read_status(), self.tmp)
+        self.assertEqual(view["state"], "completed")
+        self.assertEqual(view["session_id"], self._sid(31))
+        self.assertEqual([entry["cursor"] for entry in view["entries"]],
+                         sorted({entry["cursor"] for entry in view["entries"]}))
+        snapshot = self.dashboard.build_snapshot(self.tmp)
+        self.assertEqual(snapshot["runtime"]["agent_output"]["cursor"], view["cursor"])
+        self.assertEqual(self.read_status()["status"], "in_progress", "output never advances a gate")
+
+    def test_portable_output_releases_old_lines_and_sessions(self):
+        for index in range(self.lib.MAX_AGENT_OUTPUT_SESSIONS + 2):
+            sid = self._sid(40 + index)
+            self.lib.start_agent_output(self.tmp, sid, "implementer", "codex")
+            for line in range(self.lib.MAX_AGENT_OUTPUT_ENTRIES + 5):
+                self.assertTrue(self.lib.append_agent_output(
+                    self.tmp, sid, "stdout", f"line {line}", line + 1,
+                ))
+            self.lib.finish_agent_output(self.tmp, sid, "completed")
+        store = json.loads(self.lib.agent_output_path(self.tmp).read_text())
+        self.assertEqual(len(store["sessions"]), self.lib.MAX_AGENT_OUTPUT_SESSIONS)
+        newest = store["sessions"][self._sid(41 + self.lib.MAX_AGENT_OUTPUT_SESSIONS)]
+        self.assertEqual(len(newest["entries"]), self.lib.MAX_AGENT_OUTPUT_ENTRIES)
+        self.assertEqual(newest["dropped_entries"], 5)
+        self.assertEqual(newest["state"], "closed")
+
+    def test_portable_output_distinguishes_quiet_output_disconnect_and_failure(self):
+        session = self.lib.create_agent_session(
+            self.tmp, role="implementer", actor="codex-telemetry", adapter="codex",
+            requested_model="default", resolution_source="configured",
+            id_factory=lambda: self._sid(60),
+        )
+        self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        self.lib.start_agent_output(self.tmp, session["session_id"], "implementer", "codex")
+        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "running_quiet")
+        self.lib.append_agent_output(self.tmp, session["session_id"], "stdout", "working", 7)
+        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "running_output")
+        self.lib.note_output_liveness(self.tmp, session["session_id"], "implementer", 100)
+        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"],
+                         "transport_disconnected")
+        self.lib.transition_agent_session(
+            self.tmp, session["session_id"], "failed", exit_code=1,
+            failure=self.lib.classify_runtime_failure(exit_code=1),
+        )
+        self.lib.finish_agent_output(self.tmp, session["session_id"], "failed")
+        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "failed")
+
     def test_supervisor_role_is_still_parsed_and_stdout_reads_unchanged(self):
         import handsoff_broker as broker
         request = {"actor": "supervisor", "project_root": str(self.tmp.resolve()),
