@@ -14,6 +14,8 @@ import handsoff_cli as cli
 import handsoff_dashboard as dashboard
 import handsoff_lib as lib
 
+CURRENT_VERSION = json.loads((ROOT / "handsoff-runtime.json").read_text())["version"]
+
 
 class VersionedRuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -37,7 +39,7 @@ class VersionedRuntimeTests(unittest.TestCase):
         for copied in ("bin", "dashboard", "fleet", "prompts", "schemas", "handsoff-runtime.json"):
             self.assertFalse((root / copied).exists(), copied)
         identity = lib.validate_runtime_integrity(root)
-        self.assertEqual(identity["version"], "v0.3.5")
+        self.assertEqual(identity["version"], CURRENT_VERSION)
         self.assertEqual(identity["source"], "installed-engine")
         self.assertEqual(identity["compatibility"], "0.3.*")
         self.assertNotIn("manifest", identity)
@@ -50,22 +52,22 @@ class VersionedRuntimeTests(unittest.TestCase):
 
     def test_incompatible_pin_refuses_before_any_agent_launch(self):
         root = self.base / "wrong-pin"
-        cli.init_project(root, "v0.3.5")
+        cli.init_project(root, CURRENT_VERSION)
         (root / lib.VERSION_PIN_FILE).write_text("v9.0.0\n")
         with self.assertRaisesRegex(lib.HandsoffError, "requires Handsoff v9.0.0"):
             lib.validate_runtime_integrity(root)
 
     def test_upgrade_preview_change_and_rollback_preserve_prior_pin(self):
         root = self.base / "upgrade"
-        cli.init_project(root, "v0.3.5")
+        cli.init_project(root, CURRENT_VERSION)
         preview = cli.change_pin(root, "0.3.*", dry_run=True, action="upgrade")
-        self.assertEqual(preview["from"], "v0.3.5")
-        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), "v0.3.5")
+        self.assertEqual(preview["from"], CURRENT_VERSION)
+        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), CURRENT_VERSION)
         cli.change_pin(root, "0.3.*", dry_run=False, action="upgrade")
         self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), "0.3.*")
         rollback = cli.rollback_pin(root, dry_run=False)
-        self.assertEqual(rollback["to"], "v0.3.5")
-        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), "v0.3.5")
+        self.assertEqual(rollback["to"], CURRENT_VERSION)
+        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), CURRENT_VERSION)
 
     def _drop_in(self, name="legacy"):
         root = self.base / name
