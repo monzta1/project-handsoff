@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "project-handsoff"
+version = "0.3.5"
+description = "A lean, auditable multi-agent software-delivery control plane"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Moncy Abraham"}]
+
+[project.scripts]
+handsoff = "handsoff_cli:main"
+handsoff-supervisor = "handsoff_supervisor:main"
+handsoff-agent = "handsoff_agent:main"
+handsoff-fleet = "handsoff_fleet:main"
+
+[tool.setuptools]
+package-dir = {"" = "bin"}
+py-modules = [
+  "handsoff_agent", "handsoff_analyzer", "handsoff_broker", "handsoff_cli",
+  "handsoff_dashboard", "handsoff_fleet", "handsoff_lib", "handsoff_manifest",
+  "handsoff_supervisor", "handsoff_tranche", "validate_handsoff_status"
+]
+
+[tool.setuptools.data-files]
+"share/handsoff" = ["handsoff-runtime.json"]
+"share/handsoff/dashboard" = ["dashboard/app.js", "dashboard/index.html", "dashboard/styles.css"]
+"share/handsoff/dashboard/lib" = ["dashboard/lib/dashboard-logic.js"]
+"share/handsoff/fleet" = ["fleet/app.js", "fleet/index.html", "fleet/styles.css"]
+"share/handsoff/prompts" = ["prompts/architect.md", "prompts/implementer.md", "prompts/reviewer.md", "prompts/supervisor.md"]
+"share/handsoff/schemas" = ["schemas/acceptance.schema.json", "schemas/status.schema.json"]
+"share/handsoff/templates" = ["templates/handsoff.toml"]

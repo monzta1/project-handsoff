@@ -257,6 +257,7 @@ def cmd_status(args) -> int:
         log_problems = lib.verify_event_log(root, cfg)
     print(__import__("json").dumps({
         "root": str(root), "feature": status.get("feature"), "phase": status.get("phase"),
+        "engine": lib.runtime_identity(root),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
         "status": status.get("status"), "next_action": status.get("next_action"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),

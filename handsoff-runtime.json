@@ -1,15 +1,18 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "63f9bf536bf0c0ce55031a741e9e558242ee8566e6aaf70809cd319c7c5347be",
+    "bin/handsoff_agent.py": "324b1f9cf9b16611e71bd39e68481b1242a3c73c2be28402169bf3c7c3b33465",
+    "bin/handsoff_analyzer.py": "420f4aa811549ee2b60f9c0f980402dd1ee32ebe71b358104f69522720606567",
     "bin/handsoff_broker.py": "89000baff8fc01c33e40a490e80b5dfd6a626814ddda432937f23cab1982ea90",
-    "bin/handsoff_dashboard.py": "e9eb74226c3bdfd7ff0cd8d51e720b6c85bc0a73a2fa6a27c33e4bc429e22914",
-    "bin/handsoff_fleet.py": "60573711d0b7d43a4aa57aeca0368b1bed1bea8cfe25e0ecfa5d306bdd334a4b",
-    "bin/handsoff_lib.py": "b3db5b186c5ceff64ceea60c0fb7eb695eeaabfdc87d6ab2d35cd383c87a8285",
-    "bin/handsoff_supervisor.py": "7c743f60ec65f4d8ed72a2105f9d6a6c96cd5493d2aa4a244ee21c24e8890c22",
+    "bin/handsoff_cli.py": "3dcb9e8c3f07c47bb39dda2674fa224973e35728974eef039be5aacda95c8a93",
+    "bin/handsoff_dashboard.py": "ae3b6ee7fd5cb66335273594d03bd8c8dca78a9f12797f59d5429df3a63c3768",
+    "bin/handsoff_fleet.py": "30fd56e9f5fc0f617766139dd0ddd268ac4a389845f9bbbaef43251bb93a67ea",
+    "bin/handsoff_lib.py": "1893d603e4d13b429f8e437a93ed45173514c1a9dd2da8a897bc13257d10118c",
+    "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
+    "bin/handsoff_supervisor.py": "3d26eb720c31eb10e236db1fc6b46feba8e5e599720d2ada3d56955a9a1bd92b",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
-    "dashboard/app.js": "5223d4ac1aea59e41de82d0cf588e344d41ca28654c3661e915256b911e26e87",
-    "dashboard/index.html": "28eba5dd3cf31f6d29221048ce9403caff580e470d441eb43c77103f5d73a5a1",
+    "dashboard/app.js": "cf837a0df945a84baa8f3e842dc2fc656d97f22df9433122ef1165962b080ecc",
+    "dashboard/index.html": "d2aaabe80b4158d99a757c7c6dbed8b64ee5dc4480966fdc4c817f9b59483574",
     "dashboard/lib/dashboard-logic.js": "692ce2aa8b016c51387a21f9f0cead161099a879ed594d78bc37e6a954327859",
     "dashboard/styles.css": "549723875e6242206f91b5120d1a62a33bea747183aca9d1de3068c86277efb5",
     "fleet/app.js": "e08f5f119e0e084b1296496961d8e3caf28ccb29313b4f4e838e32a08f38ca35",
@@ -20,8 +23,9 @@
     "prompts/reviewer.md": "656502540c2930b52030f85e0fc135d75269d98e67cd7478cc61566465486a67",
     "prompts/supervisor.md": "4b78b510803c1cbe63f3d5ce969129724fa5c0ecac1be3c8c16678b3b287bb62",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
-    "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63"
+    "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63",
+    "templates/handsoff.toml": "27c2f6d85f9aae10dd1c5e84b6db2f7067f822df4e65c39a46133f437d869a77"
   },
   "schema": 1,
-  "version": "v0.3.3"
+  "version": "v0.3.5"
 }

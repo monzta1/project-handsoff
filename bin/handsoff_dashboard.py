@@ -29,7 +29,7 @@ import handsoff_supervisor as supervisor  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
 
-ASSET_ROOT = Path(__file__).resolve().parent.parent / "dashboard"
+ASSET_ROOT = lib.engine_root() / "dashboard"
 ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -662,6 +662,7 @@ def build_snapshot(root: Path) -> dict:
         "initialized": True,
         "generated_at": generated_at,
         "root": str(root),
+        "engine": lib.runtime_identity(root),
         "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature"))},
         "status": display_status,
         "phases": _phase_view(

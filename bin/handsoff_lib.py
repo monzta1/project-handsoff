@@ -32,6 +32,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 import urllib.error
@@ -298,6 +299,8 @@ MAX_AGENT_ACTOR_LENGTH = 128
 MAX_AGENT_SESSION_ID_LENGTH = 64
 MAX_AGENT_SESSIONS = 64
 RUNTIME_MANIFEST_FILE = "handsoff-runtime.json"
+VERSION_PIN_FILE = ".handsoff-version"
+OVERRIDES_FILE = "handsoff-overrides.json"
 AGENT_SESSION_ID_PATTERN = re.compile(r"^hs-[0-9a-f]{32}$")
 AGENT_SESSION_LIVE_STATES = {"launching", "running"}
 AGENT_SESSION_TERMINAL_STATES = {
@@ -321,15 +324,52 @@ AGENT_SESSION_FIELDS = {
 }
 
 
-def validate_runtime_integrity(root: Path) -> dict:
-    """Refuse stale or mixed copied framework components before a launch."""
+def engine_root() -> Path:
+    """Locate this engine's immutable resources in a checkout or installation."""
+    checkout = Path(__file__).resolve().parent.parent
+    if (checkout / RUNTIME_MANIFEST_FILE).is_file() and (checkout / "dashboard").is_dir():
+        return checkout
+    return Path(sysconfig.get_path("data")) / "share" / "handsoff"
+
+
+def engine_resource_path(relative: str) -> Path:
+    if not isinstance(relative, str) or relative.startswith(("/", "../")):
+        raise HandsoffError("engine resource path is invalid")
+    root = engine_root()
+    if relative.startswith("bin/") and not (root / relative).exists():
+        return Path(__file__).resolve().parent / Path(relative).name
+    return root / relative
+
+
+def _version_tuple(value: str) -> tuple[int, int, int]:
+    match = re.fullmatch(r"v?([0-9]+)\.([0-9]+)\.([0-9]+)", str(value).strip())
+    if not match:
+        raise HandsoffError(f"invalid Handsoff version: {value}")
+    return tuple(map(int, match.groups()))
+
+
+def version_satisfies(version: str, pin: str) -> bool:
+    actual = _version_tuple(version)
+    pin = str(pin).strip()
+    wildcard = re.fullmatch(r"v?([0-9]+)\.([0-9]+)\.\*", pin)
+    if wildcard:
+        return actual[:2] == tuple(map(int, wildcard.groups()))
+    if pin.startswith("=="):
+        pin = pin[2:]
+    return actual == _version_tuple(pin)
+
+
+def _runtime_identity_with_manifest(root: Path) -> dict:
+    """Exact engine source, pin, manifest identity, and compatibility."""
     root = Path(root).resolve()
-    path = root / RUNTIME_MANIFEST_FILE
+    drop_in = (root / RUNTIME_MANIFEST_FILE).is_file() and (root / "bin" / "handsoff_lib.py").is_file()
+    source = "project-drop-in" if drop_in else "installed-engine"
+    path = root / RUNTIME_MANIFEST_FILE if drop_in else engine_root() / RUNTIME_MANIFEST_FILE
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise HandsoffError(
-            f"Handsoff runtime manifest is missing: {path}; refresh the complete release drop-in"
+            f"Handsoff runtime manifest is missing: {path}; reinstall the complete Handsoff engine"
         ) from exc
     except (OSError, ValueError) as exc:
         raise HandsoffError(f"Handsoff runtime manifest is unreadable: {type(exc).__name__}") from exc
@@ -337,15 +377,48 @@ def validate_runtime_integrity(root: Path) -> dict:
             or manifest.get("schema") != 1 or not isinstance(manifest.get("version"), str) \
             or not manifest["version"].strip() or not isinstance(manifest.get("files"), dict) \
             or not manifest["files"]:
-        raise HandsoffError("Handsoff runtime manifest is invalid; refresh the complete release drop-in")
+        raise HandsoffError("Handsoff runtime manifest is invalid; reinstall the complete Handsoff engine")
+    pin_path = root / VERSION_PIN_FILE
+    pin = manifest["version"] if drop_in else None
+    if not drop_in:
+        try:
+            pin = pin_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError as exc:
+            raise HandsoffError(f"Handsoff engine version pin is missing: {pin_path}; run `handsoff init {root}`") from exc
+        if not version_satisfies(manifest["version"], pin):
+            raise HandsoffError(
+                f"project requires Handsoff {pin}, but installed engine is {manifest['version']}; "
+                "install the compatible engine or update the pin deliberately"
+            )
+    return {
+        "version": manifest["version"], "source": source, "source_root": str(path.parent),
+        "compatibility": pin, "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "manifest": manifest,
+    }
+
+
+def runtime_identity(root: Path) -> dict:
+    """Public content-free engine identity; never return the manifest body."""
+    identity = _runtime_identity_with_manifest(root)
+    identity.pop("manifest", None)
+    return identity
+
+
+def validate_runtime_integrity(root: Path) -> dict:
+    """Refuse stale drop-ins, incompatible pins, or a corrupted installed engine."""
+    root = Path(root).resolve()
+    identity = _runtime_identity_with_manifest(root)
+    manifest = identity.pop("manifest")
+    drop_in = identity["source"] == "project-drop-in"
     mismatches = []
     for relative, expected in sorted(manifest["files"].items()):
         if not isinstance(relative, str) or relative.startswith(("/", "../")) \
                 or not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
             raise HandsoffError("Handsoff runtime manifest contains an invalid entry")
-        target = (root / relative).resolve()
+        target = (root / relative).resolve() if drop_in else engine_resource_path(relative).resolve()
         try:
-            target.relative_to(root)
+            if drop_in:
+                target.relative_to(root)
             actual = hashlib.sha256(target.read_bytes()).hexdigest()
         except (OSError, ValueError):
             actual = None
@@ -356,9 +429,44 @@ def validate_runtime_integrity(root: Path) -> dict:
         suffix = f" (+{len(mismatches) - 8} more)" if len(mismatches) > 8 else ""
         raise HandsoffError(
             f"Handsoff runtime files do not match release {manifest['version']}: {shown}{suffix}; "
-            "refresh the complete release drop-in"
+            f"{'refresh the complete release drop-in' if drop_in else 'reinstall the Handsoff engine'}"
         )
-    return {"version": manifest["version"], "files": len(manifest["files"]), "state": "verified"}
+    if not drop_in and (root / OVERRIDES_FILE).exists():
+        try:
+            overrides = json.loads((root / OVERRIDES_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise HandsoffError(f"{OVERRIDES_FILE} is unreadable") from exc
+        files = overrides.get("files") if isinstance(overrides, dict) and overrides.get("schema") == 1 else None
+        if not isinstance(files, dict) or set(overrides) != {"schema", "files"}:
+            raise HandsoffError(f"{OVERRIDES_FILE} is invalid")
+        allowed = {f"prompts/{role}.md" for role in SELECTABLE_AGENT_ROLES}
+        unknown = set(files) - allowed
+        if unknown:
+            raise HandsoffError(f"trusted core runtime overrides are forbidden: {', '.join(sorted(unknown))}")
+        for relative in files:
+            project_resource_path(root, relative)
+    return {**identity, "files": len(manifest["files"]), "state": "verified"}
+
+
+def project_resource_path(root: Path, relative: str) -> Path:
+    """Resolve an optional thin-project override only when hash-declared."""
+    root = Path(root).resolve()
+    candidate = (root / relative).resolve()
+    drop_in = (root / RUNTIME_MANIFEST_FILE).is_file() and (root / "bin" / "handsoff_lib.py").is_file()
+    if drop_in:
+        return candidate
+    if candidate.is_file():
+        try:
+            overrides = json.loads((root / OVERRIDES_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise HandsoffError(f"project override {relative} is not declared in {OVERRIDES_FILE}") from exc
+        files = overrides.get("files") if isinstance(overrides, dict) else None
+        expected = files.get(relative) if isinstance(files, dict) else None
+        actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        if expected != actual:
+            raise HandsoffError(f"project override hash mismatch: {relative}")
+        return candidate
+    return engine_resource_path(relative)
 MAX_AGENT_REPLACEMENTS = 32
 MAX_QUALITY_FINDINGS = 32
 AGENT_REPLACEMENT_TRIGGERS = {"runtime_failure", "quality_finding"}

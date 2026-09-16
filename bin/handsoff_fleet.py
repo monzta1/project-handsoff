@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 
-FLEET_ASSET_ROOT = Path(__file__).resolve().parent.parent / "fleet"
+FLEET_ASSET_ROOT = lib.engine_root() / "fleet"
 MAX_BODY = 8192
 
 
@@ -111,9 +111,8 @@ def _owner_view(root: Path) -> dict | None:
 
 def _engine_version(root: Path) -> str:
     try:
-        payload = json.loads((root / "handsoff-runtime.json").read_text(encoding="utf-8"))
-        return payload.get("version") or "unknown"
-    except (OSError, ValueError, AttributeError):
+        return lib.runtime_identity(root).get("version") or "unknown"
+    except (OSError, ValueError, AttributeError, lib.HandsoffError):
         return "unknown"
 
 

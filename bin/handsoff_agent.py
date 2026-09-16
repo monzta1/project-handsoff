@@ -53,7 +53,7 @@ class AgentLaunchError(lib.HandsoffError):
 
 
 def _role_prompt(root: Path, role: str) -> str:
-    path = root / "prompts" / f"{role}.md"
+    path = lib.project_resource_path(root, f"prompts/{role}.md")
     if not path.is_file():
         raise lib.HandsoffError(f"role prompt is missing: {path}")
     try:

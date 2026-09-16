@@ -153,9 +153,8 @@ class HandsoffTestCase(unittest.TestCase):
         for name in ("handsoff.toml", "handsoff-runtime.json"):
             shutil.copy(ROOT / name, self.tmp / name)
         normalize_fixture_config(self.tmp / "handsoff.toml")
-        shutil.copytree(ROOT / "schemas", self.tmp / "schemas")
-        shutil.copytree(ROOT / "bin", self.tmp / "bin")
-        shutil.copytree(ROOT / "dashboard", self.tmp / "dashboard")
+        for directory in ("schemas", "dashboard", "fleet", "templates", "bin"):
+            shutil.copytree(ROOT / directory, self.tmp / directory)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

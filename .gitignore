@@ -20,3 +20,6 @@ handsoff-design-evidence.json
 .handsoff-agent-output.lock
 .handsoff-verify-inflight/
 benchmark/
+build/
+dist/
+*.egg-info/

@@ -9,10 +9,13 @@ from pathlib import Path
 
 RUNTIME_FILES = (
     "bin/handsoff_agent.py",
+    "bin/handsoff_analyzer.py",
     "bin/handsoff_broker.py",
+    "bin/handsoff_cli.py",
     "bin/handsoff_dashboard.py",
     "bin/handsoff_fleet.py",
     "bin/handsoff_lib.py",
+    "bin/handsoff_manifest.py",
     "bin/handsoff_supervisor.py",
     "bin/handsoff_tranche.py",
     "bin/validate_handsoff_status.py",
@@ -29,6 +32,7 @@ RUNTIME_FILES = (
     "prompts/supervisor.md",
     "schemas/acceptance.schema.json",
     "schemas/status.schema.json",
+    "templates/handsoff.toml",
 )
 
 

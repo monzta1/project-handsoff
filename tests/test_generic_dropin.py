@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DROPIN_ITEMS = ("handsoff.toml", "handsoff-runtime.json", "schemas", "prompts", "dashboard", "bin")
+DROPIN_ITEMS = ("handsoff.toml", "handsoff-runtime.json", "schemas", "prompts", "dashboard", "fleet", "templates", "bin")
 FORBIDDEN_STRINGS = ("fm9-tone", "tonecommand", "shieldbearer")
 SCANNED_SUFFIXES = (".py", ".md", ".toml", ".json", ".css", ".js", ".html")
 

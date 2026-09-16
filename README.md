@@ -12,14 +12,39 @@ MIT licensed, see [LICENSE](LICENSE).
 
 ## Quick start
 
-Copy `handsoff.toml`, `handsoff-runtime.json`, `schemas/`, `prompts/`, `dashboard/`, and everything in `bin/` into a target project. Keep those framework files from one release together: every managed launch verifies their release hashes before reserving an agent session and refuses a stale or mixed drop-in with the exact mismatched paths. Configure `[checks].commands` and `[checks].live_commands`, then initialize from the target project's root:
+Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
+
+```bash
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.5/project_handsoff-0.3.5-py3-none-any.whl
+handsoff init /absolute/path/to/project
+handsoff doctor /absolute/path/to/project
+```
+
+`handsoff doctor` reports the exact engine version, installation source, compatible project pin, offline-verifiable manifest identity, adapter availability, Python version, and whether run state exists. A missing or incompatible `.handsoff-version` refuses before an agent session is reserved. Exact pins such as `v0.3.5` and compatible-minor pins such as `0.3.*` are supported. Configure `[checks].commands` and `[checks].live_commands`, then initialize the mission from the target project's root or from Mission Control:
 
 ```bash
 python3 bin/handsoff_supervisor.py init "Fix the thing that is broken"
 python3 bin/handsoff_supervisor.py criterion-update REQ-001 --requirement "Exact observable outcome" --verification automated --test "pytest tests/test_fix.py -q"
 ```
 
+With an installed engine, the equivalent commands are `handsoff supervisor init ...` and `handsoff supervisor criterion-update ...`; the legacy script paths remain supported for existing drop-in repositories.
+
 `init` scaffolds `handsoff-status.json` and `handsoff-acceptance.json` at the project root, and flags the run `requires_design_approval: true`. Use `criterion-update`, `criterion-add`, and `criterion-remove` instead of editing the registry by hand. A batch of changes goes through `criteria-apply --file TX.json --by ACTOR` as one all-or-nothing commit (see "Criteria transactions"). Every command resolves the project root itself: `--root DIR`, then `$HANDSOFF_ROOT`, then the nearest ancestor with `handsoff.toml`, then the current directory.
+
+### Engine upgrade, rollback, and legacy migration
+
+All lifecycle changes have non-destructive previews:
+
+```bash
+handsoff upgrade /path/to/project --to 0.3.* --dry-run
+handsoff upgrade /path/to/project --to 0.3.*
+handsoff rollback /path/to/project --dry-run
+handsoff rollback /path/to/project
+handsoff migrate /path/to/legacy-drop-in --dry-run
+handsoff migrate /path/to/legacy-drop-in
+```
+
+Upgrade and rollback atomically change only the project pin after confirming the installed engine satisfies it; an incompatible target prints the exact package install needed and leaves the current pin usable. Pin history is bounded under `.handsoff/engine-pins.json`. Migration first verifies the old drop-in, then moves its runtime-only files to `.handsoff/legacy-runtime/<version>/` so rollback material remains available. Configuration, source, Git history, criteria, approvals, ledgers, session history, and archives stay in place. A locally modified role prompt is preserved only as an explicit `handsoff-overrides.json` entry bound to its SHA-256; trusted core Python, schemas, and UI assets cannot be silently overridden. If any migration step fails, already-moved runtime parts are restored before the command returns.
 
 The Architect (see "Agent roles") collaborates with the human to turn that placeholder criterion into a real design and testable criteria. In Phase 2 an independent reviewer critiques that design first; the Supervisor records either approval or actionable revision findings:
 

@@ -1,0 +1,44 @@
+[project]
+name = "handsoff-project"
+status_file = "handsoff-status.json"
+acceptance_file = "handsoff-acceptance.json"
+event_log = "handsoff-events.jsonl"
+verification_log = "handsoff-verifications.jsonl"
+
+[workflow]
+max_design_rounds = 3
+max_review_rounds = 3
+max_autonomous_design_reviews = 2
+stall_minutes = 10
+small_fix_max_criteria = 3
+small_fix_max_changed_lines = 200
+small_fix_max_files = 6
+require_live_verification = true
+deployment_requires_explicit_approval = true
+
+[fallback_policy]
+max_failovers_per_role = 2
+architect = []
+supervisor = []
+implementer = []
+reviewer = []
+
+[recovery]
+enabled = true
+max_attempts = 3
+lease_minutes = 15
+worker_loss_grace_minutes = 2
+live_session_silence_minutes = 10
+liveness_seconds = 60
+dashboard_watchdog = true
+poll_seconds = 30
+
+[checks]
+commands = []
+live_commands = []
+timeout_seconds = 600
+
+[regression_gate]
+approval_timeout_minutes = 30
+launch_window_minutes = 10
+full_regression_major_only = true

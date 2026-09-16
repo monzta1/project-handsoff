@@ -1110,6 +1110,7 @@ function render(snapshot) {
   $("project-name").textContent = snapshot.project.name.toUpperCase();
   $("feature-name").textContent = snapshot.project.feature;
   $("project-root").textContent = snapshot.root;
+  $("engine-version").textContent = `${snapshot.engine?.version || "unknown"} · ${snapshot.engine?.source || "unknown source"}`;
   $("mission-state").textContent = String(status.status || "unknown").replaceAll("_", " ").toUpperCase();
   const complete = progress >= 100;
   $("progress-value").textContent = Math.round(progress);
