@@ -2804,8 +2804,15 @@ def cmd_recovery_acknowledge(args) -> int:
         status["next_action"] = lib.NEXT_ACTION_DEFAULTS.get(
             int(status.get("phase_number", 1) or 1), "Resume the current mission phase."
         )
+        source = next((item for item in reversed(status.get("recovery_attempts") or [])
+                       if item.get("recovery_id") == escalation.get("source")), None)
+        acknowledged_session_id = None
+        if isinstance(source, dict):
+            acknowledged_session_id = source.get("to_session_id") or source.get("from_session_id")
         lib.commit(root, cfg, status=status, event_kind="recovery_acknowledged",
-                   event_message=args.reason.strip(), by=actor)
+                   event_message=args.reason.strip(), by=actor,
+                   session_id=acknowledged_session_id,
+                   role=source.get("role") if isinstance(source, dict) else None)
     print("RECOVERY_ACKNOWLEDGED")
     return 0
 

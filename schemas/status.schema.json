@@ -179,7 +179,8 @@
             "exit_code": {"type": ["integer", "null"]},
             "packet_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
             "design_hash": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
-            "tier": {"enum": ["primary", "followup", null]}
+            "tier": {"enum": ["primary", "followup", null]},
+            "phase_number": {"type": ["integer", "null"], "minimum": 1, "maximum": 8}
           }
         }
       },
@@ -205,7 +206,7 @@
           "required": ["session_id", "category", "reason", "tail_sha256", "at"],
           "properties": {
             "session_id": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"},
-            "category": {"enum": ["cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion", "process_crash", "non_zero_exit", "unknown", "presumed_lost"]},
+            "category": {"enum": ["cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion", "runtime_environment", "process_crash", "non_zero_exit", "unknown", "presumed_lost"]},
             "reason": {"type": "string"},
             "tail_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "at": {"type": "string", "format": "date-time"}

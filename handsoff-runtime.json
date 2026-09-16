@@ -3,8 +3,8 @@
     "bin/handsoff_agent.py": "d2a073ef669433e9a441d51bcf4c2dcf9ca865c9a8743da30b6fccd63fe7fdc5",
     "bin/handsoff_broker.py": "89000baff8fc01c33e40a490e80b5dfd6a626814ddda432937f23cab1982ea90",
     "bin/handsoff_dashboard.py": "3f736ef156a4af5fca54cbca68556cd92d45d0fb762f6c92f5a5921066700466",
-    "bin/handsoff_lib.py": "a5045455a02ba9985bdaadbe55cc2361c0a82417dca2f295bbcbf602049ddd41",
-    "bin/handsoff_supervisor.py": "7f8d59e282eb434ed450d35fa1c820aefe4b6a754de7ccdae20de4ee993aeb25",
+    "bin/handsoff_lib.py": "14ee7a66e8d2b6c38c903c833161e02accb49f91024b53d170a28299b2ad7cc3",
+    "bin/handsoff_supervisor.py": "2cd62c8db9b17095240f296c6424458eba038965bea68e5304324bf73f335c2d",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
     "dashboard/app.js": "d13f704e0c9ef2cc8d3d4bac052096bbf4205054eaa9178d43acd34ff58f74ba",
@@ -16,7 +16,7 @@
     "prompts/reviewer.md": "656502540c2930b52030f85e0fc135d75269d98e67cd7478cc61566465486a67",
     "prompts/supervisor.md": "4b78b510803c1cbe63f3d5ce969129724fa5c0ecac1be3c8c16678b3b287bb62",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
-    "schemas/status.schema.json": "b7b1b14c401aad2d2c20f595ce14925685a5032e2cb5c08004f54acbb9516fa3"
+    "schemas/status.schema.json": "badb6073d93f5e57b0dee9dc5dd5f176cd26c3098b96375b6fc9e202e4e9ba77"
   },
   "schema": 1,
   "version": "v0.3.3"

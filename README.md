@@ -266,7 +266,7 @@ Implementation reviews are persistent `review_attempts`, not chat claims. Starti
 
 ## Automatic recovery of stalled runs
 
-The `[recovery]` policy drives a lease-protected watchdog. It evaluates the role assigned to the current phase and that session's own liveness; unrelated agent activity cannot hide a failed or silent worker. `recover --by ACTOR` performs one bounded restart while preserving phase, acceptance, and evidence. Exhaustion becomes a visible blocked escalation. Liveness pings are advisory and unauthenticated: they may postpone recovery, never trigger it; a presumed-lost child is superseded rather than signalled.
+The `[recovery]` policy drives a lease-protected watchdog. It selects an exact current failed or silent managed session, then recovers only that session's immutable recorded role; a completed or unrelated role can never consume the failure's attempts. New sessions carry their launch phase, retry caps apply to the contiguous failed-session chain rather than lifetime history, and acknowledging an exhausted hold binds to that exact session so the same failure cannot immediately re-arm. `recover --by ACTOR` performs one bounded restart while preserving phase, acceptance, and evidence. Exhaustion becomes a visible blocked escalation. Liveness pings are advisory and unauthenticated: they may postpone recovery, never trigger it; a presumed-lost child is superseded rather than signalled.
 
 ## Focused checks versus full regressions
 

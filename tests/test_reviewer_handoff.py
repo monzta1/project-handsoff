@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -99,6 +100,71 @@ class ReviewerHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(lib.HandsoffError, "prompts/reviewer.md"):
             agent.build_launch_spec(self.root, "reviewer", "Review", which=lambda _name: "/bin/codex")
         self.assertEqual(self.status(), before)
+
+    def _failed_phase2_reviewer_after_prior_changes(self):
+        architect = lib.create_agent_session(
+            self.root, role="architect", actor="architect-one", adapter="codex",
+            requested_model="default", resolution_source="configured",
+        )
+        lib.transition_agent_session(self.root, architect["session_id"], "running")
+        lib.transition_agent_session(self.root, architect["session_id"], "completed", exit_code=0)
+        self.cli("advance", "2", "20", "--status", "in_progress")
+        self.cli("record-design-review", "--by", "reviewer-prior", "--architect", "architect-one",
+                 "--request-changes", "--summary", "One revision", "--finding", "Revise the boundary")
+        reviewer = lib.create_agent_session(
+            self.root, role="reviewer", actor="reviewer-current", adapter="codex",
+            requested_model="default", resolution_source="configured",
+        )
+        lib.transition_agent_session(self.root, reviewer["session_id"], "running")
+        lib.transition_agent_session(
+            self.root, reviewer["session_id"], "failed", exit_code=1,
+            failure=lib.classify_runtime_failure(exit_code=1),
+        )
+        return architect["session_id"], reviewer["session_id"]
+
+    def test_recovery_uses_exact_failed_reviewer_not_phase_inferred_architect(self):
+        architect_id, reviewer_id = self._failed_phase2_reviewer_after_prior_changes()
+        cfg = lib.load_config(self.root)
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        status = self.status()
+        self.assertEqual(lib.assigned_role(status), "architect")
+        assessment = lib.recovery_assessment(
+            status, cfg, {}, lib.read_events(self.root, cfg), future,
+        )
+        self.assertEqual((assessment["assigned_role"], assessment["lost_session_id"], assessment["state"]),
+                         ("reviewer", reviewer_id, "worker_terminal"))
+        self.assertNotEqual(assessment["lost_session_id"], architect_id)
+        launched = []
+        result = lib.recover_run(
+            self.root, actor="watchdog", launcher=lambda role: launched.append(role) or 0, now=future,
+        )
+        self.assertEqual(result["action"], "recovered")
+        self.assertEqual(launched, ["reviewer"])
+
+    def test_acknowledged_failed_session_does_not_rearm_the_same_hold(self):
+        _, reviewer_id = self._failed_phase2_reviewer_after_prior_changes()
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        for offset in range(3):
+            result = lib.recover_run(
+                self.root, actor="watchdog",
+                launcher=lambda _role: (_ for _ in ()).throw(RuntimeError("fixture launch failure")),
+                now=future + timedelta(seconds=offset),
+            )
+            self.assertEqual(result["action"], "failed")
+            self.assertEqual(result["attempt"], offset + 1)
+        escalated = lib.recover_run(
+            self.root, actor="watchdog", launcher=lambda _role: 0,
+            now=future + timedelta(seconds=4),
+        )
+        self.assertEqual(escalated["action"], "escalated")
+        self.cli("recovery-acknowledge", "--by", "pilot", "--reason", "Failure inspected")
+        cfg = lib.load_config(self.root)
+        assessment = lib.recovery_assessment(
+            self.status(), cfg, {}, lib.read_events(self.root, cfg), future + timedelta(seconds=5),
+        )
+        self.assertEqual(assessment["state"], "not_applicable")
+        self.assertEqual(assessment["reason"], "assigned session is terminal but not recoverable")
+        self.assertNotEqual(assessment.get("lost_session_id"), reviewer_id)
 
 
 if __name__ == "__main__":

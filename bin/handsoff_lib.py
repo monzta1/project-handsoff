@@ -298,7 +298,7 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # valid; when present they must be null or a non-empty string. #37 adds
 # `tier` the same way: null unless a Phase-2 reviewer was launched through
 # the tiered selection, otherwise exactly "primary" or "followup".
-AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier"}
+AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number"}
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
@@ -1776,6 +1776,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             "packet_id": packet_id,
             "design_hash": design_hash,
             "tier": tier,
+            "phase_number": int(status.get("phase_number", 1) or 1),
         }
         sessions[session_id] = session
         current[role] = session_id
@@ -2232,6 +2233,7 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
             "started_at": now, "running_at": None, "ended_at": None,
             "state": "launching", "exit_code": None,
             "packet_id": None, "design_hash": None, "tier": None,
+            "phase_number": int(status.get("phase_number", 1) or 1),
         }
         handoff = _derive_replacement_handoff(
             status, acceptance, repository, role=role, from_session_id=from_session_id,
@@ -3326,6 +3328,11 @@ def validate_status_schema(status: dict) -> list[str]:
                 errors.append(f"{label} contains unsupported fields: {', '.join(sorted(unexpected))}")
             for optional_field in sorted(AGENT_SESSION_OPTIONAL_FIELDS):
                 value = session.get(optional_field)
+                if optional_field == "phase_number":
+                    if value is not None and (not isinstance(value, int) or isinstance(value, bool)
+                                              or value not in PHASES):
+                        errors.append(f"{label}.phase_number must be null or an integer from 1 through 8")
+                    continue
                 if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 64):
                     errors.append(f"{label}.{optional_field} must be null or a non-empty string")
                 elif optional_field == "tier" and value is not None and value not in DESIGN_REVIEWER_TIERS:
@@ -4233,6 +4240,47 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         return result
     sessions = status.get("agent_sessions") or {}
     current = status.get("current_agent_sessions") or {}
+    phase = int(status.get("phase_number", 1) or 1)
+
+    def session_signal(item: dict) -> tuple[str, float | None, float, str] | None:
+        state = item.get("state")
+        if state in {"failed", "timed_out", "failed_to_start"}:
+            return ("worker_terminal", _minutes_since(item.get("ended_at"), now),
+                    float(recovery["worker_loss_grace_minutes"]), "failed session is terminal")
+        if state in AGENT_SESSION_LIVE_STATES:
+            sid = item.get("session_id")
+            ping = (liveness or {}).get(sid) or item.get("running_at") or item.get("started_at")
+            return ("worker_silent", _minutes_since(ping, now),
+                    float(recovery["live_session_silence_minutes"]), "session liveness expired")
+        return None
+
+    acknowledged = {
+        event.get("session_id") for event in (events or [])
+        if isinstance(event, dict) and event.get("kind") == "recovery_acknowledged"
+    }
+    candidates = []
+    for current_role, candidate_id in current.items():
+        candidate = sessions.get(candidate_id) if isinstance(candidate_id, str) else None
+        if not isinstance(candidate, dict) or candidate_id in acknowledged:
+            continue
+        candidate_phase = candidate.get("phase_number")
+        if candidate_phase is not None and candidate_phase != phase:
+            continue
+        observed = session_signal(candidate)
+        if observed is None:
+            continue
+        state_name, silent, threshold, reason = observed
+        if silent is not None and silent >= threshold:
+            stamp = candidate.get("ended_at") or candidate.get("running_at") \
+                or candidate.get("started_at") or ""
+            candidates.append((stamp, current_role, candidate_id, state_name, silent, threshold, reason))
+    if candidates:
+        _, exact_role, exact_id, state_name, silent, threshold, reason = max(candidates)
+        result.update(state=state_name, reason=reason, assigned_role=exact_role,
+                      lost_session_id=exact_id, silent_minutes=silent,
+                      threshold_minutes=threshold)
+        return result
+
     session_id = current.get(role)
     session = sessions.get(session_id) if isinstance(session_id, str) else None
     if not isinstance(session, dict):
@@ -4246,7 +4294,7 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
             and str(event.get("kind") or "").startswith("agent_session_")
             and event.get("role") == role
             for event in (events or [])
-        )
+        ) or any(item.get("role") == role for item in status.get("recovery_attempts", []))
         if not managed_for_role:
             result["reason"] = "no_managed_session"
             return result
@@ -4261,17 +4309,11 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         else:
             result.update(state="active", reason="recent unassigned-run activity")
         return result
+    if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
+        result["reason"] = "assigned session is terminal but not recoverable"
+        return result
     state = session.get("state")
     result["lost_session_id"] = session_id
-    if state in AGENT_SESSION_TERMINAL_STATES:
-        silent = _minutes_since(session.get("ended_at"), now)
-        threshold = float(recovery["worker_loss_grace_minutes"])
-        result.update(silent_minutes=silent, threshold_minutes=threshold)
-        if silent is not None and silent >= threshold:
-            result.update(state="worker_terminal", reason="assigned session is terminal")
-        else:
-            result.update(state="active", reason="terminal grace period")
-        return result
     ping = (liveness or {}).get(session_id) or session.get("running_at") or session.get("started_at")
     silent = _minutes_since(ping, now)
     threshold = float(recovery["live_session_silence_minutes"])
@@ -4303,6 +4345,27 @@ def _expire_recovery_lease(status: dict, now: datetime) -> bool:
     return True
 
 
+def _recovery_episode_attempts(attempts: list[dict], lost_session_id: str | None,
+                               role: str | None) -> list[dict]:
+    """Return the contiguous retry chain ending at one exact lost session."""
+    if not lost_session_id:
+        return [item for item in attempts
+                if item.get("role") == role and item.get("from_session_id") is None]
+    selected = []
+    cursor = lost_session_id
+    for item in reversed(attempts):
+        if item.get("role") != role:
+            if selected:
+                break
+            continue
+        if item.get("to_session_id") == cursor or item.get("from_session_id") == cursor:
+            selected.append(item)
+            cursor = item.get("from_session_id")
+        elif selected:
+            break
+    return list(reversed(selected))
+
+
 def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None,
                 id_factory=None) -> dict:
     """Perform one lease-protected recovery episode. `launcher(role)` is
@@ -4328,14 +4391,17 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
             return {"action": "skipped", "assessment": assessment}
         attempts = list(status.get("recovery_attempts") or [])
         cap = cfg["recovery"]["max_attempts"]
-        if len(attempts) >= cap:
+        episode_attempts = _recovery_episode_attempts(
+            attempts, assessment.get("lost_session_id"), assessment.get("assigned_role"),
+        )
+        if len(episode_attempts) >= cap:
             proposed = deepcopy(status)
             proposed["status"] = "blocked"
             proposed["escalation"] = {
                 "kind": "recovery_exhausted", "at": now.isoformat(),
-                "reason": f"automatic recovery exhausted ({len(attempts)} of {cap})",
+                "reason": f"automatic recovery exhausted ({len(episode_attempts)} of {cap})",
                 "required_action": "Run recovery-acknowledge --by OPERATOR --reason TEXT",
-                "source": attempts[-1]["recovery_id"] if attempts else "recovery-ledger",
+                "source": episode_attempts[-1]["recovery_id"] if episode_attempts else "recovery-ledger",
             }
             proposed["next_action"] = proposed["escalation"]["required_action"]
             commit(root, cfg, status=proposed, event_kind="recovery_escalated",
@@ -4374,7 +4440,7 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         record = {
             "recovery_id": rid, "role": role, "trigger": assessment["state"],
             "from_session_id": assessment.get("lost_session_id"), "to_session_id": None,
-            "attempt": len(attempts) + 1, "cap": cap, "holder": actor,
+            "attempt": len(episode_attempts) + 1, "cap": cap, "holder": actor,
             "state": "reserved", "reason": assessment["reason"], "at": now.isoformat(),
             "launched_at": None, "ended_at": None,
         }

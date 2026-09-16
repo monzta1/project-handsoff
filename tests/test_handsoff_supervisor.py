@@ -2025,7 +2025,7 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "resolution_source": "configured", "started_at": session["started_at"],
             "running_at": session["running_at"], "ended_at": session["ended_at"],
             "state": "completed", "exit_code": 0,
-            "packet_id": None, "design_hash": None, "tier": None,
+            "packet_id": None, "design_hash": None, "tier": None, "phase_number": 1,
         })
         self.assertIsNotNone(session["running_at"])
         self.assertIsNotNone(session["ended_at"])
@@ -12302,6 +12302,10 @@ class TestRecoveryNoManagedSession(HandsoffTestCase):
             "recovery_attempts": [], "recovery_lease": None,
         }
         event = {"kind": "agent_session_completed", "role": "implementer"}
+        completed = self.lib.recovery_assessment(base, cfg, {}, [event], now)
+        self.assertEqual((completed["state"], completed["lost_session_id"]),
+                         ("not_applicable", None))
+        base["agent_sessions"][sid].update(state="failed")
         terminal = self.lib.recovery_assessment(base, cfg, {}, [event], now)
         self.assertEqual((terminal["state"], terminal["lost_session_id"]),
                          ("worker_terminal", sid))
