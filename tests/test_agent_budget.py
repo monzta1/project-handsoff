@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import sys
+from datetime import datetime, timezone
 from unittest import mock
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
@@ -98,6 +100,31 @@ class TestAgentTokenBudget(HandsoffTestCase):
         self.assertEqual(session["state"], "failed")
         failure = status["agent_failures"][session["session_id"]]
         self.assertEqual(failure["category"], "orchestration_noop")
+
+    def test_invalid_supervisor_protocol_is_nonrecoverable(self):
+        self.init("Reject invented Supervisor actions without retries")
+        output = (
+            'HANDSOFF_BROKER_REQUEST: {"actor":"supervisor","project_root":'
+            f'{json.dumps(str(self.tmp.resolve()))},"action":"advance_phase","phase":3}}\n'
+        )
+        spec = runtime.LaunchSpec(
+            "supervisor", "codex", "default", ("/bin/codex", "exec", "-"),
+            str(self.tmp), "bounded supervisor prompt", token_budget=24_000,
+        )
+        with self.assertRaisesRegex(runtime.AgentLaunchError, "broker request rejected"):
+            runtime.execute_launch(
+                spec, popen_factory=mock.Mock(return_value=_CompletedProcess(output)),
+                beacon_interval=0.01,
+            )
+        status = self.read_status()
+        session = status["agent_sessions"][status["current_agent_sessions"]["supervisor"]]
+        failure = status["agent_failures"][session["session_id"]]
+        self.assertEqual(failure["category"], "orchestration_noop")
+        assessment = lib.recovery_assessment(
+            status, lib.load_config(self.tmp), {}, [], datetime.now(timezone.utc),
+        )
+        self.assertEqual((assessment["state"], assessment["reason"]),
+                         ("not_applicable", "non_recoverable_failure"))
 
     def test_architect_protocol_persists_bounded_proposal_and_narration_fails(self):
         self.init("Bounded Architect proposal")

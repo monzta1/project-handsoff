@@ -4299,11 +4299,12 @@ def assigned_role(status: dict) -> str | None:
         return "architect"
     if phase == 2:
         # A recorded Pilot approval ends design work even before the
-        # Supervisor advances the phase counter.  Treating the completed
-        # design reviewer as the assigned worker in this narrow interval
-        # made the watchdog relaunch it until recovery was exhausted.
+        # phase counter advances.  This transition is deterministic and is
+        # performed by the owned dashboard without an LLM; assigning a
+        # Supervisor here wastes tokens and lets malformed model protocol
+        # turn a valid approval into a recovery hold.
         if isinstance(status.get("design_approved"), dict):
-            return "supervisor"
+            return None
         review = status.get("design_review") or {}
         proposal = status.get("design_proposal") or {}
         proposal_ready = isinstance(proposal, dict) \

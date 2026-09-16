@@ -955,7 +955,12 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     if protocol_errors:
         lib.transition_agent_session(
             root, session_id, "failed", exit_code=1,
-            failure=lib.classify_runtime_failure(exit_code=1),
+            # A malformed structured request is a deterministic contract
+            # failure, not an adapter/runtime outage.  Classifying it as a
+            # generic non-zero exit made execute_with_recovery spend every
+            # fallback on the same bad request and ultimately obscure the
+            # still-valid workflow decision with a recovery hold.
+            failure=lib.classify_runtime_failure(orchestration_noop=True),
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
     if capture_supervisor and not supervisor_requests and question_lines[0] == 0:
@@ -1018,6 +1023,17 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 failure=lib.classify_runtime_failure(cancelled=True),
             )
             raise AgentLaunchError("agent launch cancelled", session_id) from exc
+        except lib.HandsoffError as exc:
+            # The host rejected a syntactically valid but semantically
+            # invalid request. Re-running another model against unchanged
+            # state cannot repair that contract violation safely.
+            lib.transition_agent_session(
+                root, session_id, "failed", exit_code=1,
+                failure=lib.classify_runtime_failure(orchestration_noop=True),
+            )
+            raise AgentLaunchError(
+                f"Supervisor broker request rejected: {exc}", session_id,
+            ) from exc
         except Exception as exc:
             lib.transition_agent_session(
                 root, session_id, "failed", exit_code=1,

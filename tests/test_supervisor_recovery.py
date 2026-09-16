@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_supervisor as supervisor  # noqa: E402
 
 
 class RecoveryTests(unittest.TestCase):
@@ -106,6 +107,32 @@ class RecoveryTests(unittest.TestCase):
         assessment = lib.recovery_assessment(status, lib.load_config(self.root), {}, [], now)
         self.assertEqual((assessment["state"], assessment["reason"]),
                          ("not_applicable", "non_recoverable_failure"))
+
+    def test_approved_design_advances_without_a_supervisor_agent(self):
+        cfg = lib.load_config(self.root)
+        status = self.read_status()
+        acceptance = lib.load_unique_json(lib.acceptance_path(self.root, cfg))
+        digest = lib.design_hash(acceptance["criteria"])
+        scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
+        decision = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "architect": "codex-architect", "design_hash": digest,
+            "config_hash": lib.config_hash(cfg), "scope_hash": scope,
+            "summary": "Focused approved design.",
+        }
+        status.update(
+            phase_number=2, phase=lib.PHASES[2], progress=20, status="in_progress",
+            design_review={**decision, "by": "codex-reviewer", "decision": "approved"},
+            design_approved={**decision, "by": "Mission Control Pilot"},
+        )
+        self.commit_status(status)
+        self.assertIsNone(lib.assigned_role(self.read_status()))
+        self.assertTrue(supervisor.advance_approved_design(self.root))
+        advanced = self.read_status()
+        self.assertEqual((advanced["phase_number"], advanced["status"]),
+                         (3, "in_progress"))
+        self.assertGreaterEqual(advanced["progress"], status["progress"])
+        self.assertFalse(supervisor.advance_approved_design(self.root))
 
     def test_bounded_architect_proposal_hands_revision_to_reviewer(self):
         now = datetime.now(timezone.utc)
