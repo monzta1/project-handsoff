@@ -3389,8 +3389,10 @@ def validate_status_schema(status: dict) -> list[str]:
                     or rid in recovery_ids or item.get("role") not in SELECTABLE_AGENT_ROLES \
                     or item.get("trigger") not in RECOVERY_TRIGGERS \
                     or item.get("state") not in RECOVERY_STATES \
-                    or item.get("attempt") != index + 1 \
                     or not isinstance(item.get("cap"), int) \
+                    or not isinstance(item.get("attempt"), int) \
+                    or isinstance(item.get("attempt"), bool) \
+                    or not 1 <= item.get("attempt") <= item.get("cap") \
                     or not all(isinstance(item.get(k), str) and item[k].strip()
                                for k in ("holder", "reason", "at")):
                 errors.append(f"status: recovery_attempts[{index}] is invalid")
@@ -4299,11 +4301,12 @@ def assigned_role(status: dict) -> str | None:
         return "architect"
     if phase == 2:
         # A recorded Pilot approval ends design work even before the
-        # Supervisor advances the phase counter.  Treating the completed
-        # design reviewer as the assigned worker in this narrow interval
-        # made the watchdog relaunch it until recovery was exhausted.
+        # phase counter advances.  This transition is deterministic and is
+        # performed by the owned dashboard without an LLM; assigning a
+        # Supervisor here wastes tokens and lets malformed model protocol
+        # turn a valid approval into a recovery hold.
         if isinstance(status.get("design_approved"), dict):
-            return "supervisor"
+            return None
         review = status.get("design_review") or {}
         proposal = status.get("design_proposal") or {}
         proposal_ready = isinstance(proposal, dict) \
@@ -4320,7 +4323,7 @@ def assigned_role(status: dict) -> str | None:
             7: "supervisor", 8: "supervisor"}.get(phase)
 
 
-def managed_handoff_role(status: dict) -> str | None:
+def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
     """Return the next role only for an already-managed, decision-free chain.
 
     Recovery deliberately refuses to manufacture a first session for a
@@ -4351,6 +4354,10 @@ def managed_handoff_role(status: dict) -> str | None:
     if target is None:
         return None
     phase = int(status.get("phase_number", 1) or 1)
+    if target == "reviewer" and phase == 2 and cfg is not None:
+        budget = design_review_budget(status, cfg)
+        if design_review_launch_refusal(budget, status):
+            return None
     sessions = [item for item in (status.get("agent_sessions") or {}).values()
                 if isinstance(item, dict)]
     if any(item.get("state") in AGENT_SESSION_LIVE_STATES for item in sessions):
@@ -4366,8 +4373,14 @@ def managed_handoff_role(status: dict) -> str | None:
     source = max(relevant, key=lambda item: item["ended_at"])
     if source.get("role") == target:
         return None
+    # A terminal assignment from an earlier phase must not suppress the
+    # same role's new assignment in this phase. This matters most when a
+    # Phase-2 Supervisor request failed before the trusted host advanced an
+    # approved design to Phase 3.
     target_sessions = [item for item in sessions
-                       if item.get("role") == target and isinstance(item.get("ended_at"), str)]
+                       if item.get("role") == target
+                       and item.get("phase_number") == phase
+                       and isinstance(item.get("ended_at"), str)]
     if target_sessions and max(item["ended_at"] for item in target_sessions) >= source["ended_at"]:
         return None
     return target

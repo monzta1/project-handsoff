@@ -816,7 +816,13 @@ class DashboardServer(ThreadingHTTPServer):
                 cfg = lib.load_config(self.project_root)
                 with lib.project_lock(self.project_root):
                     status = lib.load_unique_json(lib.status_path(self.project_root, cfg))
-                role = lib.managed_handoff_role(status)
+                # A current independent review plus human approval is a
+                # deterministic gate transition.  Do it in the trusted host
+                # instead of paying a Supervisor model to invent an advance
+                # request for a decision that has already been made.
+                if supervisor.advance_approved_design(self.project_root):
+                    continue
+                role = lib.managed_handoff_role(status, cfg)
                 if role is None:
                     continue
                 next_action = str(status.get("next_action") or "Continue the current workflow step.")

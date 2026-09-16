@@ -503,6 +503,38 @@ def cmd_advance(args) -> int:
     return 0
 
 
+def advance_approved_design(root: Path) -> bool:
+    """Advance the completed design gate without spending an agent turn.
+
+    The check is intentionally narrow: only a Phase-2 run whose current
+    design review and human approval both pass their hash-bound gates is
+    eligible. ``cmd_advance`` remains the single transition implementation
+    and revalidates the state under its own lock, so a concurrent mutation
+    cannot bypass normal workflow checks.
+    """
+    root = root.resolve()
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        acceptance = lib.load_unique_json(lib.acceptance_path(root, cfg))
+        if int(status.get("phase_number", 0) or 0) != 2:
+            return False
+        if lib._design_errors(status, acceptance, cfg) \
+                or lib._design_review_errors(status, acceptance, cfg):
+            return False
+        progress = max(30, int(status.get("progress", 0) or 0))
+    args = argparse.Namespace(
+        root=str(root), phase=3, progress=progress, status="in_progress",
+        implemented_by=None, design_round=None, new_design_round=False,
+        design_round_reason=None, review_round=None, dry_run=False,
+        next_action=None, authorization_hold=None,
+    )
+    result = cmd_advance(args)
+    if result != 0:
+        raise lib.HandsoffError("approved design could not advance to Phase 3")
+    return True
+
+
 def _analyze_after_archive(root, cfg) -> None:
     """#49: scan the archive (the record just written included) right after
     the Phase 8 archive write, when [analysis] enabled is true, and record

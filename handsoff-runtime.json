@@ -1,14 +1,14 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "dae409a1389658b86753fcf02d212ecdb607a01f55598320935ca3c985754ab2",
+    "bin/handsoff_agent.py": "1facb49b4f4aa02a6cf1b009d3d2693db568c02816490246c7dee859efda46d5",
     "bin/handsoff_analyzer.py": "420f4aa811549ee2b60f9c0f980402dd1ee32ebe71b358104f69522720606567",
     "bin/handsoff_broker.py": "89000baff8fc01c33e40a490e80b5dfd6a626814ddda432937f23cab1982ea90",
     "bin/handsoff_cli.py": "6dad5f62842f4f99e5ae7cc00b26670efc268d2d77015599b580b4de11319a59",
-    "bin/handsoff_dashboard.py": "c30fd7509faa80ce54e7b3fcd16abae4481c3a27c4ea2004f3a7453f7b474d9e",
+    "bin/handsoff_dashboard.py": "567d63c392f33663a62850fd2ae7d7532b0dcb55b437f52131d1d759e0e8786e",
     "bin/handsoff_fleet.py": "30fd56e9f5fc0f617766139dd0ddd268ac4a389845f9bbbaef43251bb93a67ea",
-    "bin/handsoff_lib.py": "71e995399efb5a09a3ebf1b5104b6c65e5ac06543ed511ce0efab51a27e627bc",
+    "bin/handsoff_lib.py": "be8bdd8a6818abff4c54fbb3892a5b3bdab6ef22acbde86d95e01f199ab4b5aa",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
-    "bin/handsoff_supervisor.py": "746e38c828e91ceeafa9a35e9f80509742467e30dc59a296e66fb959d6ce3b10",
+    "bin/handsoff_supervisor.py": "aa9e5c2dd365807c2e621a2b927b449de32cdc0bf233db73294d318ab12c113f",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
     "dashboard/app.js": "cf837a0df945a84baa8f3e842dc2fc656d97f22df9433122ef1165962b080ecc",
@@ -21,7 +21,7 @@
     "prompts/architect.md": "ea79031094048bbed94230df8b08a009da74c366f2b7ba39c59047fbac38e70e",
     "prompts/implementer.md": "887c762376137ca2dd0f6de9e6368613d9b350210d4ac3c8877c0dcbece9c166",
     "prompts/reviewer.md": "6711f0495f24a375c0ac0163aaf8d4e5e62aedc3fc91f9a40eb142e4618d6061",
-    "prompts/supervisor.md": "95f6e5bae33f07e8a149d34b0889f4be80d77385fe644c0aeca280c77f53dd00",
+    "prompts/supervisor.md": "322b6901ac4f114a410ac8e9ddec67c27e1e94a63b48d145438c93ffc0f984e8",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
     "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63",
     "templates/handsoff.toml": "c5c192606ccb10c37fe3e0a8dc0215457f1a38604f2cd05ecd3c3dd51cb83e8d"
