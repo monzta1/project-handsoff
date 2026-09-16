@@ -150,10 +150,12 @@ def approve_design_review(cwd, architect="test-architect", reviewer="test-design
 class HandsoffTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-test-"))
-        for name in ("handsoff.toml",):
+        for name in ("handsoff.toml", "handsoff-runtime.json"):
             shutil.copy(ROOT / name, self.tmp / name)
         normalize_fixture_config(self.tmp / "handsoff.toml")
         shutil.copytree(ROOT / "schemas", self.tmp / "schemas")
+        shutil.copytree(ROOT / "bin", self.tmp / "bin")
+        shutil.copytree(ROOT / "dashboard", self.tmp / "dashboard")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -1751,7 +1753,7 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
         with self.assertRaisesRegex(lib.HandsoffError, "not available"):
             runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: None)
         (self.tmp / "prompts" / "reviewer.md").unlink()
-        with self.assertRaisesRegex(lib.HandsoffError, "prompt is missing"):
+        with self.assertRaisesRegex(lib.HandsoffError, "prompts/reviewer.md"):
             runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: "/bin/reviewer")
 
         self.init("Managed agent runtime adapter")
@@ -10336,13 +10338,14 @@ class TestFailureClassification(unittest.TestCase):
         # and a digest -- nothing else.
         self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
         self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
-        self.assertEqual(len(lib.FAILURE_CATEGORIES), 10)
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 11)
         closed_set_reasons = {
             "cancelled": "run was cancelled",
             "timeout": "runner exceeded its timeout",
             "auth_failure": "authentication or authorization failed",
             "rate_limit": "rate limit or quota exhausted",
             "context_exhaustion": "context window exhausted",
+            "runtime_environment": "managed runtime initialization failed",
             "process_crash": "process was terminated by a signal",
             "non_zero_exit": "process exited with a non-zero status",
             "unknown": "failure signal matched no known category",

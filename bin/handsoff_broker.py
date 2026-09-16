@@ -21,6 +21,7 @@ import handsoff_lib as lib  # noqa: E402
 
 SUPERVISOR_SCRIPT = Path(__file__).resolve().with_name("handsoff_supervisor.py")
 MAX_REQUEST_BYTES = 65536
+MAX_REVIEW_RESULT_BYTES = 16 * 1024
 HUMAN_ONLY_COMMANDS = {
     "design-approve", "deployment-gate", "design-review-authorize", "design-review-escalate",
     "review-cap-override", "recovery-acknowledge", "regression-decide", "regression-finalize",
@@ -152,12 +153,14 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     if command == "record-design-review":
         _exact_fields(request, {
             "actor", "project_root", "action", "command", "by", "architect", "decision", "summary",
-        }, {"findings", "structural_blocker"})
+        }, {"findings", "structural_blocker", "session"})
         decision = _text(request, "decision")
         if decision not in {"approve", "request-changes"}:
             raise lib.HandsoffError("broker design-review decision is invalid")
         base.extend(["--by", _text(request, "by"), "--architect", _text(request, "architect"),
                      f"--{decision}", "--summary", _text(request, "summary")])
+        if "session" in request:
+            base.extend(["--session", _text(request, "session")])
         if "structural_blocker" in request:
             # #37: a boolean flag only; the supervisor refuses it without
             # request-changes before writing anything.
@@ -192,8 +195,11 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
                 base.extend(["--disposition", disposition])
         return base
     if command == "record-review":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"symptom_reproduced"})
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by"},
+                      {"symptom_reproduced", "session"})
         base.extend(["--by", _text(request, "by")])
+        if "session" in request:
+            base.extend(["--session", _text(request, "session")])
         if "symptom_reproduced" in request:
             value = _text(request, "symptom_reproduced")
             if value not in {"yes", "not_applicable"}:
@@ -209,13 +215,15 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
                 base.extend([flag, _text(request, field)])
         return base
     if command == "record-review-findings":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "findings"})
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "findings"}, {"session"})
         findings = request["findings"]
         if not isinstance(findings, list) or not findings or len(findings) > 16 \
                 or not all(isinstance(value, str) and value.strip() for value in findings) \
                 or len(findings) != len(set(findings)):
             raise lib.HandsoffError("broker findings must be a non-empty unique string array of at most 16")
         base.extend(["--by", _text(request, "by")])
+        if "session" in request:
+            base.extend(["--session", _text(request, "session")])
         for finding in findings:
             base.extend(["--finding", finding])
         return base
@@ -390,6 +398,84 @@ def parse_request(text: str) -> dict:
     except json.JSONDecodeError as exc:
         raise lib.HandsoffError(f"invalid broker JSON: {exc}") from exc
     return value
+
+
+def parse_reviewer_result(text: str) -> dict:
+    """Parse the one bounded result a read-only Reviewer returns to its host."""
+    if len(text.encode("utf-8")) > MAX_REVIEW_RESULT_BYTES:
+        raise lib.HandsoffError("Reviewer result is too large")
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise lib.HandsoffError(f"invalid Reviewer result JSON: {exc}") from exc
+    required = {"kind", "decision", "summary", "findings", "structural_blocker", "symptom_reproduced"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise lib.HandsoffError("Reviewer result has invalid fields")
+    if value["kind"] not in {"design", "implementation"}:
+        raise lib.HandsoffError("Reviewer result kind is invalid")
+    if value["decision"] not in {"approved", "changes_requested"}:
+        raise lib.HandsoffError("Reviewer result decision is invalid")
+    if not isinstance(value["summary"], str) or not value["summary"].strip() or len(value["summary"]) > 2048:
+        raise lib.HandsoffError("Reviewer result summary is invalid")
+    findings = value["findings"]
+    if not isinstance(findings, list) or len(findings) > 32 \
+            or not all(isinstance(item, str) and item.strip() and len(item) <= 512 for item in findings):
+        raise lib.HandsoffError("Reviewer result findings are invalid")
+    if value["decision"] == "changes_requested" and not findings:
+        raise lib.HandsoffError("Reviewer changes require at least one finding")
+    if value["decision"] == "approved" and findings:
+        raise lib.HandsoffError("Reviewer approval cannot include findings")
+    if not isinstance(value["structural_blocker"], bool):
+        raise lib.HandsoffError("Reviewer structural_blocker must be boolean")
+    if value["kind"] != "design" and value["structural_blocker"]:
+        raise lib.HandsoffError("structural_blocker applies only to design review")
+    if value["symptom_reproduced"] not in {"yes", "not_applicable"}:
+        raise lib.HandsoffError("Reviewer symptom_reproduced is invalid")
+    return value
+
+
+def _reviewer_result_request(root: Path, session_id: str, result: dict) -> dict:
+    cfg = lib.load_config(root)
+    status = lib.load_unique_json(lib.status_path(root, cfg))
+    sessions = status.get("agent_sessions") or {}
+    current = status.get("current_agent_sessions") or {}
+    session = sessions.get(session_id)
+    if not isinstance(session, dict) or session.get("role") != "reviewer" \
+            or current.get("reviewer") != session_id \
+            or session.get("state") not in lib.AGENT_SESSION_LIVE_STATES:
+        raise lib.HandsoffError("Reviewer result is not bound to the current live Reviewer session")
+    reviewer = session["actor"]
+    base = {"actor": "supervisor", "project_root": str(root), "action": "workflow", "by": reviewer,
+            "session": session_id}
+    if result["kind"] == "design":
+        if status.get("phase_number") != 2:
+            raise lib.HandsoffError("design Reviewer result requires Phase 2")
+        architect_session = lib.current_agent_sessions(status).get("architect")
+        architect = architect_session.get("actor") if isinstance(architect_session, dict) else None
+        if not architect:
+            raise lib.HandsoffError("design Reviewer result has no managed Architect identity")
+        request = {
+            **base, "command": "record-design-review", "architect": architect,
+            "decision": "approve" if result["decision"] == "approved" else "request-changes",
+            "summary": result["summary"],
+        }
+        if result["findings"]:
+            request["findings"] = result["findings"]
+        if result["structural_blocker"]:
+            request["structural_blocker"] = True
+        return request
+    if status.get("phase_number") != 5:
+        raise lib.HandsoffError("implementation Reviewer result requires Phase 5")
+    if result["decision"] == "approved":
+        return {**base, "command": "record-review", "symptom_reproduced": result["symptom_reproduced"]}
+    return {**base, "command": "record-review-findings", "findings": result["findings"]}
+
+
+def dispatch_reviewer_result(root: Path, session_id: str, result: dict, **test_overrides) -> int:
+    """Host bridge from a read-only Reviewer result to Supervisor-owned state."""
+    root = root.resolve()
+    request = _reviewer_result_request(root, session_id, result)
+    return execute_request(root, request, capability=_SUPERVISOR_HOST_CAPABILITY, **test_overrides)
 
 
 def dispatch_supervisor_request(root: Path, request: dict, **test_overrides) -> int:

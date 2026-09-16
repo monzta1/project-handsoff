@@ -37,6 +37,9 @@ class LaunchSpec:
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
+REVIEW_RESULT_PREFIX = "HANDSOFF_REVIEW_RESULT:"
+MANAGED_ROLE_ENV = "HANDSOFF_MANAGED_SESSION_ROLE"
+MANAGED_SESSION_ENV = "HANDSOFF_MANAGED_SESSION_ID"
 
 
 class AgentLaunchError(lib.HandsoffError):
@@ -163,6 +166,7 @@ def _phase2_design_reviewer_selection(root: Path, cfg: dict, role: str, *, which
 
 def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -> LaunchSpec:
     root = root.resolve()
+    lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
         raise lib.HandsoffError("role must be architect, implementer, or reviewer")
     if not isinstance(task, str) or not task.strip():
@@ -236,6 +240,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
 def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
                               *, which=shutil.which) -> LaunchSpec:
     """Build a launch only from the exact fallback profile reserved by the host."""
+    lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES or not isinstance(profile, dict) \
             or set(profile) != {"adapter", "model"}:
         raise lib.HandsoffError("reserved fallback profile is invalid")
@@ -438,6 +443,9 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         actor = session["actor"]
     session_id = session["session_id"]
     try:
+        child_env = os.environ.copy()
+        child_env[MANAGED_ROLE_ENV] = spec.role
+        child_env[MANAGED_SESSION_ENV] = session_id
         process = popen_factory(
             list(spec.argv),
             cwd=spec.cwd,
@@ -447,6 +455,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             text=True,
             shell=False,
             start_new_session=True,
+            env=child_env,
         )
     except OSError as exc:
         failure = lib.classify_runtime_failure(exit_code=-1)
@@ -467,6 +476,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     """The lifecycle of an already-started child: exactly one terminal
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
+    reviewer_results: list[dict] = []
     protocol_errors: list[str] = []
     question_errors: list[str] = []
     stdout_tail = [""]
@@ -535,6 +545,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         _raise_question_line(root, spec.role, session_id, line, question_errors)
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
+                        if spec.role == "reviewer":
+                            _parse_reviewer_line(line, reviewer_results, protocol_errors)
                     if len(pending.encode("utf-8")) > 65536:
                         if pending.startswith(SUPERVISOR_REQUEST_PREFIX):
                             protocol_errors.append("Supervisor broker request exceeded 65536 bytes")
@@ -544,6 +556,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     _raise_question_line(root, spec.role, session_id, pending, question_errors)
                     if capture_supervisor:
                         _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
+                    if spec.role == "reviewer":
+                        _parse_reviewer_line(pending, reviewer_results, protocol_errors)
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
@@ -688,6 +702,24 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(exit_code=1),
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
+    if len(reviewer_results) > 1:
+        lib.transition_agent_session(
+            root, session_id, "failed", exit_code=1,
+            failure=lib.classify_runtime_failure(exit_code=1),
+        )
+        raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
+    if reviewer_results:
+        try:
+            import handsoff_broker as broker
+            broker.dispatch_reviewer_result(root, session_id, reviewer_results[0])
+        except Exception as exc:
+            lib.transition_agent_session(
+                root, session_id, "failed", exit_code=1,
+                failure=lib.classify_runtime_failure(exit_code=1),
+            )
+            raise AgentLaunchError(
+                f"Reviewer result dispatch failed: {type(exc).__name__}", session_id,
+            ) from exc
     if supervisor_requests:
         try:
             import handsoff_broker as broker
@@ -797,6 +829,16 @@ def _parse_supervisor_line(line: str, requests: list[dict], errors: list[str]) -
         errors.append(str(exc))
 
 
+def _parse_reviewer_line(line: str, results: list[dict], errors: list[str]) -> None:
+    if not line.startswith(REVIEW_RESULT_PREFIX):
+        return
+    payload = line[len(REVIEW_RESULT_PREFIX):].strip()
+    try:
+        results.append(__import__("handsoff_broker").parse_reviewer_result(payload))
+    except lib.HandsoffError as exc:
+        errors.append(str(exc))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch a configured Handsoff role")
     parser.add_argument("--root", default=None)
@@ -813,6 +855,10 @@ def main() -> int:
             )
     args = parser.parse_args()
     try:
+        if args.command == "launch" and os.environ.get(MANAGED_ROLE_ENV):
+            raise lib.HandsoffError(
+                "managed roles cannot launch nested agents; return a structured request to the host Supervisor"
+            )
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task)
         if args.command == "inspect":
             print(json.dumps({

@@ -1404,6 +1404,22 @@ def cmd_design_approve(args) -> int:
     return 0
 
 
+def _reviewer_session_error(status: dict, session_id: str | None, reviewer: str) -> str | None:
+    """Bind a host-recorded verdict to the exact current live Reviewer."""
+    if session_id is None:
+        return None
+    sessions = status.get("agent_sessions") or {}
+    current = status.get("current_agent_sessions") or {}
+    session = sessions.get(session_id)
+    if not isinstance(session, dict) or session.get("role") != "reviewer" \
+            or current.get("reviewer") != session_id \
+            or session.get("state") not in lib.AGENT_SESSION_LIVE_STATES:
+        return "--session must name the current live managed Reviewer session"
+    if str(session.get("actor") or "").casefold() != reviewer.strip().casefold():
+        return "--by must match the managed Reviewer session actor"
+    return None
+
+
 def cmd_record_design_review(args) -> int:
     """Record an independent Phase-2 critique of the current design.
 
@@ -1442,6 +1458,10 @@ def cmd_record_design_review(args) -> int:
             return _print_audit_block(audit_errors)
         if status.get("phase_number") != 2:
             print("SHIP_FEATURE_BLOCKED: independent design review can only be recorded in Phase 2")
+            return 1
+        session_error = _reviewer_session_error(status, getattr(args, "session", None), args.by)
+        if session_error:
+            print(f"SHIP_FEATURE_BLOCKED: {session_error}")
             return 1
         criteria = acceptance.get("criteria", [])
         if any(c.get("requirement") == lib.PLACEHOLDER_REQUIREMENT and c.get("tests") == lib.PLACEHOLDER_TESTS
@@ -1562,10 +1582,12 @@ def cmd_record_design_review(args) -> int:
                       event_kind="design_review_budget_exhausted",
                       event_message=f"Design review budget exhausted ({after['attempts']}/{after['limit']}); "
                                     "Pilot authorization required for any further attempt",
-                      design_review_attempts=after["attempts"], design_review_limit=after["limit"])
+                      design_review_attempts=after["attempts"], design_review_limit=after["limit"],
+                      reviewer_session_id=getattr(args, "session", None))
         else:
             fields = {k: v for k, v in review_event.items() if k not in ("kind", "message")}
-            lib.commit(root, cfg, status=status, event_kind=event_kind, event_message=message, **fields)
+            lib.commit(root, cfg, status=status, event_kind=event_kind, event_message=message,
+                       reviewer_session_id=getattr(args, "session", None), **fields)
     print("DESIGN_REVIEW_APPROVED" if args.approve else "DESIGN_CHANGES_REQUESTED")
     return 0
 
@@ -1802,6 +1824,10 @@ def cmd_record_review_findings(args) -> int:
         if status.get("phase_number", 0) < 4:
             print("SHIP_FEATURE_BLOCKED: review findings require Phase 4 or later")
             return 1
+        session_error = _reviewer_session_error(status, getattr(args, "session", None), reviewer)
+        if session_error:
+            print(f"SHIP_FEATURE_BLOCKED: {session_error}")
+            return 1
         implementer = status.get("implemented_by")
         if implementer and reviewer.casefold() == implementer.strip().casefold():
             print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
@@ -1846,6 +1872,7 @@ def cmd_record_review_findings(args) -> int:
                    event_message=f"Review attempt {attempt['attempt']} requested changes",
                    by=reviewer, attempt_id=attempt["attempt_id"], attempt=attempt["attempt"],
                    disposition="changes_requested", findings=findings,
+                   reviewer_session_id=getattr(args, "session", None),
                    reviewed_acceptance_hash=attempt.get("acceptance_hash"),
                    current_acceptance_hash=current_acceptance_hash,
                    acceptance_changed=acceptance_changed)
@@ -1957,6 +1984,10 @@ def cmd_record_review(args) -> int:
         if status.get("phase_number", 0) < 5:
             print("SHIP_FEATURE_BLOCKED: independent review can only be recorded in Phase 5 or later")
             return 1
+        session_error = _reviewer_session_error(status, getattr(args, "session", None), reviewer_id)
+        if session_error:
+            print(f"SHIP_FEATURE_BLOCKED: {session_error}")
+            return 1
         implementer = status.get("implemented_by")
         if implementer and reviewer_id.casefold() == implementer.strip().casefold():
             print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
@@ -2022,6 +2053,7 @@ def cmd_record_review(args) -> int:
                   }],
                   event_kind="review_approved", event_message="Independent review approved current acceptance",
                   by=reviewer_id, acceptance_hash=status["review"]["acceptance_hash"],
+                  reviewer_session_id=getattr(args, "session", None),
                   implementer_profile=implementer_profile, reviewer_profile=reviewer_profile,
                   profiles_distinct=profiles_distinct)
     print("INDEPENDENT_REVIEW_RECORDED")
@@ -3314,6 +3346,8 @@ def main() -> int:
     design_review.add_argument("--by", required=True, help="independent design reviewer's identity")
     design_review.add_argument("--architect", required=True, help="identity of the Architect being reviewed")
     design_review.add_argument("--summary", required=True, help="review findings or approval rationale")
+    design_review.add_argument("--session", default=None,
+                               help="host-only exact managed Reviewer session binding")
     design_review_decision = design_review.add_mutually_exclusive_group(required=True)
     design_review_decision.add_argument("--approve", action="store_true")
     design_review_decision.add_argument("--request-changes", action="store_true")
@@ -3356,6 +3390,8 @@ def main() -> int:
 
     review = sub.add_parser("record-review")
     review.add_argument("--by", required=True)
+    review.add_argument("--session", default=None,
+                        help="host-only exact managed Reviewer session binding")
     review.add_argument("--item", default=None,
                         help="record an item-scoped independent review for a confirmed small-fix lane")
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
@@ -3368,6 +3404,8 @@ def main() -> int:
 
     review_findings = sub.add_parser("record-review-findings")
     review_findings.add_argument("--by", required=True)
+    review_findings.add_argument("--session", default=None,
+                                 help="host-only exact managed Reviewer session binding")
     review_findings.add_argument("--finding", action="append", required=True)
 
     review_override = sub.add_parser("review-cap-override")

@@ -282,6 +282,7 @@ MAX_AGENT_MODEL_LENGTH = 128
 MAX_AGENT_ACTOR_LENGTH = 128
 MAX_AGENT_SESSION_ID_LENGTH = 64
 MAX_AGENT_SESSIONS = 64
+RUNTIME_MANIFEST_FILE = "handsoff-runtime.json"
 AGENT_SESSION_ID_PATTERN = re.compile(r"^hs-[0-9a-f]{32}$")
 AGENT_SESSION_LIVE_STATES = {"launching", "running"}
 AGENT_SESSION_TERMINAL_STATES = {
@@ -303,6 +304,46 @@ AGENT_SESSION_FIELDS = {
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
     *AGENT_SESSION_OPTIONAL_FIELDS,
 }
+
+
+def validate_runtime_integrity(root: Path) -> dict:
+    """Refuse stale or mixed copied framework components before a launch."""
+    root = Path(root).resolve()
+    path = root / RUNTIME_MANIFEST_FILE
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise HandsoffError(
+            f"Handsoff runtime manifest is missing: {path}; refresh the complete release drop-in"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise HandsoffError(f"Handsoff runtime manifest is unreadable: {type(exc).__name__}") from exc
+    if not isinstance(manifest, dict) or set(manifest) != {"schema", "version", "files"} \
+            or manifest.get("schema") != 1 or not isinstance(manifest.get("version"), str) \
+            or not manifest["version"].strip() or not isinstance(manifest.get("files"), dict) \
+            or not manifest["files"]:
+        raise HandsoffError("Handsoff runtime manifest is invalid; refresh the complete release drop-in")
+    mismatches = []
+    for relative, expected in sorted(manifest["files"].items()):
+        if not isinstance(relative, str) or relative.startswith(("/", "../")) \
+                or not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise HandsoffError("Handsoff runtime manifest contains an invalid entry")
+        target = (root / relative).resolve()
+        try:
+            target.relative_to(root)
+            actual = hashlib.sha256(target.read_bytes()).hexdigest()
+        except (OSError, ValueError):
+            actual = None
+        if actual != expected:
+            mismatches.append(relative)
+    if mismatches:
+        shown = ", ".join(mismatches[:8])
+        suffix = f" (+{len(mismatches) - 8} more)" if len(mismatches) > 8 else ""
+        raise HandsoffError(
+            f"Handsoff runtime files do not match release {manifest['version']}: {shown}{suffix}; "
+            "refresh the complete release drop-in"
+        )
+    return {"version": manifest["version"], "files": len(manifest["files"]), "state": "verified"}
 MAX_AGENT_REPLACEMENTS = 32
 MAX_QUALITY_FINDINGS = 32
 AGENT_REPLACEMENT_TRIGGERS = {"runtime_failure", "quality_finding"}
@@ -6841,7 +6882,7 @@ def design_review_packet_summary(status: dict) -> dict | None:
 
 FAILURE_CATEGORIES = (
     "cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion",
-    "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
+    "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
 )
 
 _FAILURE_REASON_LABELS = {
@@ -6850,6 +6891,7 @@ _FAILURE_REASON_LABELS = {
     "auth_failure": "authentication or authorization failed",
     "rate_limit": "rate limit or quota exhausted",
     "context_exhaustion": "context window exhausted",
+    "runtime_environment": "managed runtime initialization failed",
     "process_crash": "process was terminated by a signal",
     "non_zero_exit": "process exited with a non-zero status",
     "unknown": "failure signal matched no known category",
@@ -6865,6 +6907,11 @@ _TAIL_PATTERNS = (
     ("auth_failure", re.compile(r"unauthorized|authentication failed|invalid api key|401", re.IGNORECASE)),
     ("rate_limit", re.compile(r"rate limit|too many requests|quota exceeded|429", re.IGNORECASE)),
     ("context_exhaustion", re.compile(r"context length exceeded|context window|maximum context|prompt is too long", re.IGNORECASE)),
+    ("runtime_environment", re.compile(
+        r"readonly database|read-only database|failed to initialize.*app-server|"
+        r"cannot establish repository identity|operation not permitted",
+        re.IGNORECASE,
+    )),
 )
 
 
@@ -6924,7 +6971,7 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
 
 RECOVERABLE_FAILURE_CATEGORIES = {
     "auth_failure", "rate_limit", "context_exhaustion", "timeout",
-    "process_crash", "non_zero_exit", "presumed_lost",
+    "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost",
 }
 FALLBACK_SKIP_REASONS = {
     "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent",

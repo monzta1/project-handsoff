@@ -12,7 +12,7 @@ MIT licensed, see [LICENSE](LICENSE).
 
 ## Quick start
 
-Copy `handsoff.toml`, `schemas/`, `prompts/`, `dashboard/`, and everything in `bin/` into a target project. Configure `[checks].commands` and `[checks].live_commands`, then initialize from the target project's root:
+Copy `handsoff.toml`, `handsoff-runtime.json`, `schemas/`, `prompts/`, `dashboard/`, and everything in `bin/` into a target project. Keep those framework files from one release together: every managed launch verifies their release hashes before reserving an agent session and refuses a stale or mixed drop-in with the exact mismatched paths. Configure `[checks].commands` and `[checks].live_commands`, then initialize from the target project's root:
 
 ```bash
 python3 bin/handsoff_supervisor.py init "Fix the thing that is broken"
