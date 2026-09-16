@@ -37,12 +37,48 @@ class LaunchSpec:
     # #37: the reviewer tier the Phase-2 selection chose, and why.
     tier: str | None = None
     tier_reason: str | None = None
+    # Host-enforced native rollout ceiling when the selected adapter
+    # supports it.  It is configuration, never inferred from output.
+    token_budget: int | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
 REVIEW_RESULT_PREFIX = "HANDSOFF_REVIEW_RESULT:"
 MANAGED_ROLE_ENV = "HANDSOFF_MANAGED_SESSION_ROLE"
 MANAGED_SESSION_ENV = "HANDSOFF_MANAGED_SESSION_ID"
+MAX_AGENT_TASK_BYTES = 16 * 1024
+MAX_REPLACEMENT_INPUT_BYTES = 64 * 1024
+MAX_SUPERVISOR_REQUESTS = 8
+
+# Managed coding roles need the repository shell, not the user's entire
+# interactive Codex plugin/app/tool catalogue.  Disabling those optional
+# surfaces materially reduces the fixed prompt paid again on every tool
+# turn while leaving the OS sandbox and core shell/edit tools intact.
+CODEX_DISABLED_FEATURES = (
+    "plugins", "apps", "skill_search", "multi_agent", "goals",
+    "browser_use", "computer_use", "image_generation",
+)
+
+
+def _codex_argv(executable: str, role: str, model: str, token_budget: int) -> list[str]:
+    sandbox = "read-only" if role in {"reviewer", "supervisor"} else "workspace-write"
+    argv = [executable, "exec", "--ephemeral", "--sandbox", sandbox]
+    for feature in CODEX_DISABLED_FEATURES:
+        argv.extend(["--disable", feature])
+    # Codex's native shared rollout meter stops the complete agent loop,
+    # including repeated tool/model turns.  Count both prefill and sampling
+    # tokens at full weight so cached or repeated context is not free from
+    # Handsoff's safety ceiling.
+    argv.extend([
+        "-c",
+        ("features.rollout_budget={enabled=true,"
+         f"limit_tokens={token_budget},reminder_at_remaining_tokens=[],"
+         "sampling_token_weight=1.0,prefill_token_weight=1.0}"),
+    ])
+    if model != lib.DEFAULT_AGENT_MODEL:
+        argv.extend(["--model", model])
+    argv.append("-")
+    return argv
 
 
 class AgentLaunchError(lib.HandsoffError):
@@ -103,6 +139,8 @@ def build_role_input(root: Path, role: str, task: str) -> str:
         raise lib.HandsoffError("role must be architect, implementer, or reviewer")
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
+    if len(task.encode("utf-8")) > MAX_AGENT_TASK_BYTES:
+        raise lib.HandsoffError(f"task exceeds {MAX_AGENT_TASK_BYTES} UTF-8 bytes")
     root = root.resolve()
     text = f"{_role_prompt(root, role)}\n\n# Assigned task\n\n{task}"
     if role in DESIGN_EVIDENCE_ROLES:
@@ -175,6 +213,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
+    token_budget = cfg["agent_token_budgets"][role]
     _refuse_reviewer_launch_over_budget(root, cfg, role)
     selection = _phase2_design_reviewer_selection(root, cfg, role, which=which)
     if selection is not None:
@@ -214,11 +253,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
     executable = str(Path(executable).resolve())
 
     if adapter == "codex":
-        sandbox = "read-only" if role in {"reviewer", "supervisor"} else "workspace-write"
-        argv = [executable, "exec", "--ephemeral", "--sandbox", sandbox]
-        if model != lib.DEFAULT_AGENT_MODEL:
-            argv.extend(["--model", model])
-        argv.append("-")
+        argv = _codex_argv(executable, role, model, token_budget)
     else:
         permission_mode = "plan" if role in {"reviewer", "supervisor"} else "acceptEdits"
         argv = [executable, "-p", "--permission-mode", permission_mode]
@@ -237,6 +272,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
         design_hash=packet["design_hash"] if packet else None,
         tier=tier,
         tier_reason=tier_reason,
+        token_budget=token_budget,
     )
 
 
@@ -247,6 +283,11 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if role not in lib.SELECTABLE_AGENT_ROLES or not isinstance(profile, dict) \
             or set(profile) != {"adapter", "model"}:
         raise lib.HandsoffError("reserved fallback profile is invalid")
+    if not isinstance(task, str) or not task.strip() \
+            or len(task.encode("utf-8")) > MAX_REPLACEMENT_INPUT_BYTES:
+        raise lib.HandsoffError(
+            f"replacement input must be non-empty and at most {MAX_REPLACEMENT_INPUT_BYTES} UTF-8 bytes"
+        )
     adapter = profile.get("adapter")
     model = lib.validate_agent_model(profile.get("model"))
     if adapter not in lib.SELECTABLE_AGENT_ADAPTERS:
@@ -255,18 +296,18 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if not executable:
         raise lib.HandsoffError(f"reserved {adapter} executable is no longer available")
     executable = str(Path(executable).resolve())
+    token_budget = lib.load_config(root)["agent_token_budgets"][role]
     if adapter == "codex":
-        sandbox = "read-only" if role in {"reviewer", "supervisor"} else "workspace-write"
-        argv = [executable, "exec", "--ephemeral", "--sandbox", sandbox]
-        if model != lib.DEFAULT_AGENT_MODEL:
-            argv.extend(["--model", model])
-        argv.append("-")
+        argv = _codex_argv(executable, role, model, token_budget)
     else:
         mode = "plan" if role in {"reviewer", "supervisor"} else "acceptEdits"
         argv = [executable, "-p", "--permission-mode", mode]
         if model != lib.DEFAULT_AGENT_MODEL:
             argv.extend(["--model", model])
-    return LaunchSpec(role, adapter, model, tuple(argv), str(root.resolve()), task, "fallback")
+    return LaunchSpec(
+        role, adapter, model, tuple(argv), str(root.resolve()), task, "fallback",
+        token_budget=token_budget,
+    )
 
 
 def _stop_process_group(process) -> None:
@@ -664,6 +705,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     reviewer_results: list[dict] = []
     protocol_errors: list[str] = []
     question_errors: list[str] = []
+    question_lines = [0]
     stdout_tail = [""]
     stderr_tail = [""]
     try:
@@ -728,7 +770,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         pending += chunk
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
-                        _raise_question_line(root, spec.role, session_id, line, question_errors)
+                        if _raise_question_line(root, spec.role, session_id, line, question_errors):
+                            question_lines[0] += 1
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                         if spec.role == "reviewer":
@@ -739,7 +782,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         pending = ""
                         discarding = True
                 if pending and not discarding:
-                    _raise_question_line(root, spec.role, session_id, pending, question_errors)
+                    if _raise_question_line(root, spec.role, session_id, pending, question_errors):
+                        question_lines[0] += 1
                     if capture_supervisor:
                         _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
                     if spec.role == "reviewer":
@@ -891,6 +935,14 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(exit_code=1),
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
+    if capture_supervisor and not supervisor_requests and question_lines[0] == 0:
+        lib.transition_agent_session(
+            root, session_id, "failed", exit_code=1,
+            failure=lib.classify_runtime_failure(orchestration_noop=True),
+        )
+        raise AgentLaunchError(
+            "Supervisor exited without a broker request or Pilot question", session_id,
+        )
     if len(reviewer_results) > 1:
         lib.transition_agent_session(
             root, session_id, "failed", exit_code=1,
@@ -993,25 +1045,29 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
             quality_finding_id = None
 
 
-def _raise_question_line(root: Path, role: str, session_id: str, line: str, errors: list[str]) -> None:
+def _raise_question_line(root: Path, role: str, session_id: str, line: str, errors: list[str]) -> bool:
     """#46: `HANDSOFF_QUESTION: <text>` from any role is recorded the moment
     it is read, so the board alerts while the child is still running. A
     failure to record is remembered for the report and never reaches the
     child, the reader, or the session record."""
     stripped = line.strip()
     if not stripped.startswith(lib.QUESTION_PREFIX):
-        return
+        return False
     try:
         lib.raise_question(root, role=role, session_id=session_id,
                            text=stripped[len(lib.QUESTION_PREFIX):])
     except Exception as exc:  # noqa: BLE001
         errors.append(f"question not recorded: {type(exc).__name__}: {exc}")
+    return True
 
 
 def _parse_supervisor_line(line: str, requests: list[dict], errors: list[str]) -> None:
     if not line.startswith(SUPERVISOR_REQUEST_PREFIX):
         return
     payload = line[len(SUPERVISOR_REQUEST_PREFIX):].strip()
+    if len(requests) >= MAX_SUPERVISOR_REQUESTS:
+        errors.append(f"Supervisor emitted more than {MAX_SUPERVISOR_REQUESTS} broker requests")
+        return
     try:
         requests.append(__import__("handsoff_broker").parse_request(payload))
     except lib.HandsoffError as exc:
@@ -1060,6 +1116,7 @@ def main() -> int:
                 "cwd": spec.cwd,
                 "stdin_bytes": len(spec.stdin.encode("utf-8")),
                 "stdin_sha256": hashlib.sha256(spec.stdin.encode("utf-8")).hexdigest(),
+                "token_budget": spec.token_budget,
                 "fresh_session": True,
             }, indent=2))
             return 0

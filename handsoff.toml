@@ -53,6 +53,14 @@ supervisor = []
 implementer = []
 reviewer = []
 
+[agent_budget]
+# Hard per-session Codex rollout ceilings. Budget exhaustion stops the role
+# and pauses for the Pilot; it never launches a fallback and spends again.
+architect = 40000
+supervisor = 24000
+implementer = 80000
+reviewer = 40000
+
 [recovery]
 enabled = true
 max_attempts = 3

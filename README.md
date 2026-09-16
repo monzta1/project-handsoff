@@ -120,6 +120,19 @@ python3 bin/handsoff_agent.py inspect architect --task "Design the requested fea
 python3 bin/handsoff_agent.py launch implementer --task "Implement the approved criteria" --by implementer-1
 ```
 
+Every managed Codex launch has a hard native rollout ceiling. Defaults are
+24,000 tokens for Supervisor, 40,000 for Architect and Reviewer, and 80,000
+for Implementer; override them with integer values from 8,000 to 500,000 in
+`[agent_budget]` (`supervisor`, `architect`, `implementer`, `reviewer`). The
+runner disables optional Codex plugins, apps, browser/computer/image surfaces,
+skills search, goals, and multi-agent fan-out for managed roles, leaving the
+repository shell/edit surface and OS sandbox in place. Budget exhaustion is a
+closed, non-recoverable outcome: the run pauses instead of launching a fallback
+and paying the same prompt cost again. A Supervisor that exits without an
+exact broker request or structured Pilot question fails immediately rather
+than being recorded as successful orchestration. Assigned tasks are capped at
+16 KiB and one Supervisor response may dispatch at most eight requests.
+
 `handsoff_agent.py` resolves the executable to an absolute path and never uses a shell. The role prompt and task travel on standard input, not in command arguments. Codex uses an ephemeral `codex exec` session; Claude Code uses headless `claude -p`. `default` omits the model flag. Reviewer and Supervisor launches enforce read-only/plan mode at the runner boundary; Architect and Implementer use explicit workspace-write/accept-edits modes. No bypass-permission flags are generated. Every public `launch` enters the managed recovery path, so an eligible classified failure can move to the next configured same-role fallback profile. Runner output streams directly rather than accumulating in memory; unrecoverable nonzero exits, cancellation, timeouts, missing prompts, and missing executables fail visibly, with timeout/cancellation terminating the fresh process group.
 
 Brokered role launches recover only from host-classified failures tied to the exact terminal session. Under the project lock, HandsOff rechecks audit integrity and the current-session pointer, derives a bounded secret-free git/criteria/evidence handoff, reserves a fresh same-role fallback session, and atomically claims it before starting only that exact profile; claim replay fails before process creation. TERM-to-KILL ownership stays with the live launcher; the status never stores process IDs, prompts, output, environment, credentials, or token values. Cancellation, unknown/nonrecoverable failures, live-session replacement requests, an exhausted cap, and quality claims outside the configured review boundary record a Pilot pause without changing workflow gates. A Supervisor quality request contains only the exact completed `session_id` and one closed `finding_code`; callers cannot choose the failure category, reason, model, or handoff. Quality eligibility uses the authenticated monotonic `review_round` and `max_review_rounds`, and duplicate findings for the same session and review round are rejected. Each Reviewer session also binds its immutable Implementer identity for every later fallback in that Reviewer chain.

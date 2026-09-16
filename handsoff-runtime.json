@@ -1,12 +1,12 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "324b1f9cf9b16611e71bd39e68481b1242a3c73c2be28402169bf3c7c3b33465",
+    "bin/handsoff_agent.py": "9a2f072106d6e575df6b9588ee6fa29874c3bd0e31fcbeae777b9525f86bf1d9",
     "bin/handsoff_analyzer.py": "420f4aa811549ee2b60f9c0f980402dd1ee32ebe71b358104f69522720606567",
     "bin/handsoff_broker.py": "89000baff8fc01c33e40a490e80b5dfd6a626814ddda432937f23cab1982ea90",
     "bin/handsoff_cli.py": "6dad5f62842f4f99e5ae7cc00b26670efc268d2d77015599b580b4de11319a59",
     "bin/handsoff_dashboard.py": "ae3b6ee7fd5cb66335273594d03bd8c8dca78a9f12797f59d5429df3a63c3768",
     "bin/handsoff_fleet.py": "30fd56e9f5fc0f617766139dd0ddd268ac4a389845f9bbbaef43251bb93a67ea",
-    "bin/handsoff_lib.py": "1893d603e4d13b429f8e437a93ed45173514c1a9dd2da8a897bc13257d10118c",
+    "bin/handsoff_lib.py": "ffbabf5b7ca1a804c47a1ce68987f1c52634e60566b4805346581ebfb61492c7",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
     "bin/handsoff_supervisor.py": "3d26eb720c31eb10e236db1fc6b46feba8e5e599720d2ada3d56955a9a1bd92b",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
@@ -18,13 +18,13 @@
     "fleet/app.js": "e08f5f119e0e084b1296496961d8e3caf28ccb29313b4f4e838e32a08f38ca35",
     "fleet/index.html": "c4382739a1b48fd4fdb3aa6f9439ac171e265cf200da549090380bd668ac2d99",
     "fleet/styles.css": "eb75553935ec0c4154f90511be929333265ffe0b576d11945d889102bb1f595d",
-    "prompts/architect.md": "fbdabce6caf92e5a559a5d9b0bf1f12bd3f3777d8197398494df50c5f7384b0d",
-    "prompts/implementer.md": "9ac07c79a3d6d71fd033983c1a5d2dcf3a736ac187a4bf840d1f347476527e31",
-    "prompts/reviewer.md": "656502540c2930b52030f85e0fc135d75269d98e67cd7478cc61566465486a67",
-    "prompts/supervisor.md": "4b78b510803c1cbe63f3d5ce969129724fa5c0ecac1be3c8c16678b3b287bb62",
+    "prompts/architect.md": "b7f78cd528cd1000a64072466e89ec86f728565f89ffa48dc89c456d1d9f7b8a",
+    "prompts/implementer.md": "887c762376137ca2dd0f6de9e6368613d9b350210d4ac3c8877c0dcbece9c166",
+    "prompts/reviewer.md": "9da852e6776a29b64878b45a9dcc24c8c890e6100b476088474a45491b1b055c",
+    "prompts/supervisor.md": "95f6e5bae33f07e8a149d34b0889f4be80d77385fe644c0aeca280c77f53dd00",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
     "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63",
-    "templates/handsoff.toml": "27c2f6d85f9aae10dd1c5e84b6db2f7067f822df4e65c39a46133f437d869a77"
+    "templates/handsoff.toml": "c5c192606ccb10c37fe3e0a8dc0215457f1a38604f2cd05ecd3c3dd51cb83e8d"
   },
   "schema": 1,
   "version": "v0.3.5"

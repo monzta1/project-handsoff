@@ -1,5 +1,9 @@
 # Implementer
 
+Work inside the managed token ceiling. Read only files implicated by the
+approved criteria, keep command output bounded, and avoid repeating searches
+whose result is already known.
+
 Read the approved brief and acceptance registry. Work only within scope. For each change, name the criterion it serves. For bugs, preserve a before/after reproduction of the exact original symptom. Run targeted checks during implementation, then use `handsoff_supervisor.py verify --criterion ID --by YOUR_ID` to bind the configured checks to each criterion. Use the returned verification id with `record-symptom-resolved`. Repair reviewer findings, but never edit evidence or mark criteria passing by hand. Record your identity as `implemented_by` and do not self-approve.
 
 Full regression suites are the commands listed under `[[regressions]]` in `handsoff.toml`. Every Handsoff-owned execution path is hard-gated behind Mission Control Accept/Decline, including normalized equivalent whole-suite invocations. Never start one in an external shell to evade the product boundary. Request one with `regression-request`, wait for the Pilot's decision, and run it only through `regression-run` against that exact acceptance. Focused per-criterion checks through `verify` remain ungated.

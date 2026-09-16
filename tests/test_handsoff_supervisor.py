@@ -10444,6 +10444,18 @@ class TestFailureClassification(unittest.TestCase):
             ("timeout/near-miss", dict(timed_out=False, cancelled=False, exit_code=None,
                                        stdout_tail="the request timed out waiting for a response"), "unknown"),
 
+            ("token_budget_exhaustion/clean", dict(
+                exit_code=1, stderr_tail="shared rollout token budget exhausted"),
+             "token_budget_exhaustion"),
+            ("token_budget_exhaustion/near-miss", dict(
+                exit_code=None, stderr_tail="the planning budget is tight"), "unknown"),
+
+            ("orchestration_noop/clean", dict(orchestration_noop=True, exit_code=0),
+             "orchestration_noop"),
+            ("orchestration_noop/near-miss", dict(
+                orchestration_noop=False, exit_code=None,
+                stderr_tail="supervisor produced no prose"), "unknown"),
+
             # auth_failure: clean signature, then near-miss text that
             # doesn't actually match any known pattern.
             ("auth_failure/clean", dict(exit_code=None,
@@ -10514,7 +10526,8 @@ class TestFailureClassification(unittest.TestCase):
         self.assertEqual(result["category"], "still_running")
         self.assertNotIn(result["category"], (
             "rate_limit", "auth_failure", "context_exhaustion", "timeout",
-            "process_crash", "cancelled", "non_zero_exit", "unknown",
+            "token_budget_exhaustion", "orchestration_noop", "process_crash",
+            "cancelled", "non_zero_exit", "unknown",
         ))
 
         # The function has no call path to heartbeat/elapsed-time data at
@@ -10522,7 +10535,10 @@ class TestFailureClassification(unittest.TestCase):
         # cannot race or duplicate that pre-existing, unmodified authority.
         import inspect
         params = set(inspect.signature(lib.classify_runtime_failure).parameters)
-        self.assertEqual(params, {"exit_code", "timed_out", "cancelled", "stderr_tail", "stdout_tail"})
+        self.assertEqual(params, {
+            "exit_code", "timed_out", "cancelled", "orchestration_noop",
+            "stderr_tail", "stdout_tail",
+        })
         self.assertTrue(callable(lib.stall_warning))  # still exists, untouched, sole authority on silence
 
     def test_quality_failover_requires_bounded_retries_and_recorded_finding(self):
@@ -10554,10 +10570,12 @@ class TestFailureClassification(unittest.TestCase):
         # and a digest -- nothing else.
         self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
         self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
-        self.assertEqual(len(lib.FAILURE_CATEGORIES), 11)
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 13)
         closed_set_reasons = {
             "cancelled": "run was cancelled",
             "timeout": "runner exceeded its timeout",
+            "token_budget_exhaustion": "managed role exhausted its token budget",
+            "orchestration_noop": "Supervisor exited without a broker request or Pilot question",
             "auth_failure": "authentication or authorization failed",
             "rate_limit": "rate limit or quota exhausted",
             "context_exhaustion": "context window exhausted",

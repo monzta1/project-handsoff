@@ -92,6 +92,19 @@ DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
 # Pilot has to authorize each further attempt one at a time.
 DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS = 2
 DESIGN_REVIEW_AUTHORIZATION_COMMAND = "handsoff_supervisor.py design-review-authorize --by <pilot>"
+# Hard ceilings for one managed Codex session.  These are deliberately
+# conservative: a role that cannot finish inside its allowance must return a
+# bounded handoff or stop for the Pilot, never silently consume an unlimited
+# rollout.  Projects may lower or raise an individual role under
+# [agent_budget], but may not disable the ceiling.
+DEFAULT_AGENT_TOKEN_BUDGETS = {
+    "architect": 40_000,
+    "supervisor": 24_000,
+    "implementer": 80_000,
+    "reviewer": 40_000,
+}
+MIN_AGENT_TOKEN_BUDGET = 8_000
+MAX_AGENT_TOKEN_BUDGET = 500_000
 TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
 #: #38: cached, hash-bound design evidence. The side file is generated
 #: state (gitignored), never a ledger: it holds the bounded output of
@@ -259,6 +272,7 @@ DEFAULT_CONFIG = {
         "reviewer": [],
     },
     "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
+    "agent_token_budgets": dict(DEFAULT_AGENT_TOKEN_BUDGETS),
     "reviewer_followup": None,
     "recovery": {
         "enabled": True, "max_attempts": 3, "lease_minutes": 15,
@@ -562,6 +576,7 @@ def load_config(root: Path) -> dict:
     cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
+    cfg["agent_token_budgets"] = dict(DEFAULT_AGENT_TOKEN_BUDGETS)
     cfg["design_evidence"] = []
     cfg["profile_sources"] = {
         role: {"adapter": RECOMMENDED_PROFILE_SOURCE, "model": RECOMMENDED_PROFILE_SOURCE}
@@ -584,15 +599,16 @@ def load_config(root: Path) -> dict:
     agents = raw.get("agents", {})
     models = raw.get("models", {})
     fallback_policy = raw.get("fallback_policy", {})
+    agent_budget = raw.get("agent_budget", {})
     checks = raw.get("checks", {})
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, checks, recovery, regression_gate, analysis)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, checks, recovery, regression_gate, analysis)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, checks, recovery, regression_gate, and analysis must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, recovery, regression_gate, and analysis must be tables"
         )
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
@@ -674,6 +690,21 @@ def load_config(root: Path) -> dict:
     cfg["max_failovers_per_role"] = validate_max_failovers(
         fallback_policy.get("max_failovers_per_role", DEFAULT_MAX_FAILOVERS_PER_ROLE)
     )
+    unknown_budget_roles = set(agent_budget) - set(SELECTABLE_AGENT_ROLES)
+    if unknown_budget_roles:
+        raise HandsoffError(
+            "handsoff.toml: agent_budget has unknown keys: "
+            + ", ".join(sorted(unknown_budget_roles))
+        )
+    for role in SELECTABLE_AGENT_ROLES:
+        value = agent_budget.get(role, DEFAULT_AGENT_TOKEN_BUDGETS[role])
+        if not isinstance(value, int) or isinstance(value, bool) \
+                or not MIN_AGENT_TOKEN_BUDGET <= value <= MAX_AGENT_TOKEN_BUDGET:
+            raise HandsoffError(
+                f"handsoff.toml: agent_budget.{role} must be an integer from "
+                f"{MIN_AGENT_TOKEN_BUDGET} to {MAX_AGENT_TOKEN_BUDGET}"
+            )
+        cfg["agent_token_budgets"][role] = value
     for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
         value = checks.get(toml_key, cfg[config_key])
         if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
@@ -7326,13 +7357,16 @@ def design_review_packet_summary(status: dict) -> dict | None:
 # --------------------------------------------------------------------------
 
 FAILURE_CATEGORIES = (
-    "cancelled", "timeout", "auth_failure", "rate_limit", "context_exhaustion",
+    "cancelled", "timeout", "token_budget_exhaustion", "orchestration_noop",
+    "auth_failure", "rate_limit", "context_exhaustion",
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
 )
 
 _FAILURE_REASON_LABELS = {
     "cancelled": "run was cancelled",
     "timeout": "runner exceeded its timeout",
+    "token_budget_exhaustion": "managed role exhausted its token budget",
+    "orchestration_noop": "Supervisor exited without a broker request or Pilot question",
     "auth_failure": "authentication or authorization failed",
     "rate_limit": "rate limit or quota exhausted",
     "context_exhaustion": "context window exhausted",
@@ -7349,6 +7383,9 @@ _FAILURE_REASON_LABELS = {
 # refreshing a rate-limited token) -- there is no such thing as an
 # ambiguous double-classification, only a fixed tie-break.
 _TAIL_PATTERNS = (
+    ("token_budget_exhaustion", re.compile(
+        r"shared rollout token budget exhausted|token budget exhausted", re.IGNORECASE,
+    )),
     ("auth_failure", re.compile(r"unauthorized|authentication failed|invalid api key|401", re.IGNORECASE)),
     ("rate_limit", re.compile(r"rate limit|too many requests|quota exceeded|429", re.IGNORECASE)),
     ("context_exhaustion", re.compile(r"context length exceeded|context window|maximum context|prompt is too long", re.IGNORECASE)),
@@ -7361,7 +7398,8 @@ _TAIL_PATTERNS = (
 
 
 def classify_runtime_failure(*, exit_code: int | None = None, timed_out: bool = False,
-                              cancelled: bool = False, stderr_tail: str = "",
+                              cancelled: bool = False, orchestration_noop: bool = False,
+                              stderr_tail: str = "",
                               stdout_tail: str = "") -> dict:
     """Turn a launched agent's raw outcome into one of FAILURE_CATEGORIES.
     Never returns the scanned text itself, only a category, a fixed-set
@@ -7383,6 +7421,8 @@ def classify_runtime_failure(*, exit_code: int | None = None, timed_out: bool = 
         category = "cancelled"
     elif timed_out:
         category = "timeout"
+    elif orchestration_noop:
+        category = "orchestration_noop"
     else:
         category = None
         for name, pattern in _TAIL_PATTERNS:
