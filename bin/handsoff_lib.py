@@ -4309,6 +4309,59 @@ def assigned_role(status: dict) -> str | None:
             7: "supervisor", 8: "supervisor"}.get(phase)
 
 
+def managed_handoff_role(status: dict) -> str | None:
+    """Return the next role only for an already-managed, decision-free chain.
+
+    Recovery deliberately refuses to manufacture a first session for a
+    manually driven run.  Normal orchestration is different: after one
+    managed role completes and workflow state assigns a different role, an
+    owned Mission Control dashboard should launch that role without waiting
+    for a terminal operator.  The latest completed session must be newer than
+    the target role's latest session, which prevents completed/no-op roles
+    from being relaunched forever.
+    """
+    if status.get("status") in {"complete", "blocked", "awaiting_approval", "ready_to_deploy", "closed"}:
+        return None
+    if isinstance(status.get("run_closed"), dict) or status.get("escalation") is not None \
+            or status.get("authorization_hold") is not None:
+        return None
+    if isinstance(status.get("human_pause"), dict) or isinstance(status.get("background_wait"), dict):
+        return None
+    if any(isinstance(item, dict) and item.get("state") == "pending"
+           for item in status.get("pending_questions") or []):
+        return None
+    if any(isinstance(item, dict) and item.get("state") in {"awaiting_approval", "accepted", "launched"}
+           for item in status.get("regression_requests") or []):
+        return None
+    if any(isinstance(item, dict) and item.get("state") in {"reserved", "launched"}
+           for item in status.get("recovery_attempts") or []):
+        return None
+    target = assigned_role(status)
+    if target is None:
+        return None
+    phase = int(status.get("phase_number", 1) or 1)
+    sessions = [item for item in (status.get("agent_sessions") or {}).values()
+                if isinstance(item, dict)]
+    if any(item.get("state") in AGENT_SESSION_LIVE_STATES for item in sessions):
+        return None
+
+    relevant = [item for item in sessions
+                if item.get("state") == "completed"
+                and item.get("role") in SELECTABLE_AGENT_ROLES
+                and item.get("phase_number") in {phase, phase - 1}
+                and isinstance(item.get("ended_at"), str)]
+    if not relevant:
+        return None
+    source = max(relevant, key=lambda item: item["ended_at"])
+    if source.get("role") == target:
+        return None
+    target_sessions = [item for item in sessions
+                       if item.get("role") == target and isinstance(item.get("ended_at"), str)]
+    if target_sessions and max(item["ended_at"] for item in target_sessions) >= source["ended_at"]:
+        return None
+    return target
+
+
 def session_liveness_path(root: Path) -> Path:
     return root / ".handsoff-session-liveness.json"
 
@@ -4425,6 +4478,21 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
             return ("worker_silent", _minutes_since(ping, now),
                     float(recovery["live_session_silence_minutes"]), "session liveness expired")
         return None
+
+    # The in-process fallback planner already refuses these categories.  The
+    # host watchdog must honor the same decision or it can spend the budget
+    # again after the launcher intentionally paused (# token ceilings).
+    for current_role, candidate_id in current.items():
+        candidate = sessions.get(candidate_id) if isinstance(candidate_id, str) else None
+        failure = (status.get("agent_failures") or {}).get(candidate_id) \
+            if isinstance(candidate_id, str) else None
+        if isinstance(candidate, dict) and candidate.get("state") in {
+                "failed", "timed_out", "failed_to_start", "cancelled"} \
+                and isinstance(failure, dict) \
+                and failure.get("category") not in RECOVERABLE_FAILURE_CATEGORIES:
+            result.update(reason="non_recoverable_failure", assigned_role=current_role,
+                          lost_session_id=candidate_id)
+            return result
 
     acknowledged = {
         event.get("session_id") for event in (events or [])

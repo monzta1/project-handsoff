@@ -66,6 +66,47 @@ class RecoveryTests(unittest.TestCase):
         assessment = lib.recovery_assessment(status, cfg, {unrelated: fresh}, [], now)
         self.assertEqual(assessment["state"], "worker_terminal")
 
+    def test_managed_completion_hands_off_but_manual_and_same_role_runs_do_not(self):
+        now = datetime.now(timezone.utc)
+        earlier = (now - timedelta(minutes=2)).isoformat()
+        later = (now - timedelta(minutes=1)).isoformat()
+        architect_id = "hs-" + "a" * 32
+        reviewer_id = "hs-" + "b" * 32
+        status = self.read_status()
+        status.update(phase_number=2, phase=lib.PHASES[2], status="in_progress",
+                      design_review=None, agent_sessions={}, current_agent_sessions={})
+        self.assertIsNone(lib.managed_handoff_role(status))
+        architect = self.session(architect_id, "architect", "completed", earlier)
+        architect["phase_number"] = 1
+        status["agent_sessions"] = {architect_id: architect}
+        status["current_agent_sessions"] = {"architect": architect_id}
+        self.assertEqual(lib.managed_handoff_role(status), "reviewer")
+        reviewer = self.session(reviewer_id, "reviewer", "completed", later)
+        reviewer["phase_number"] = 2
+        status["agent_sessions"][reviewer_id] = reviewer
+        status["current_agent_sessions"]["reviewer"] = reviewer_id
+        status["design_review"] = {"decision": "changes_requested"}
+        self.assertEqual(lib.managed_handoff_role(status), "architect")
+        architect["phase_number"] = 2
+        architect["ended_at"] = now.isoformat()
+        self.assertIsNone(lib.managed_handoff_role(status))
+
+    def test_watchdog_does_not_retry_nonrecoverable_budget_exhaustion(self):
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(minutes=30)).isoformat()
+        sid = "hs-" + "c" * 32
+        status = self.read_status()
+        failed = self.session(sid, "implementer", "failed", old)
+        failed["phase_number"] = 4
+        status.update(phase_number=4, phase=lib.PHASES[4], status="in_progress",
+                      agent_sessions={sid: failed}, current_agent_sessions={"implementer": sid},
+                      agent_failures={sid: {"category": "token_budget_exhaustion",
+                                            "reason": "managed role exhausted its token budget",
+                                            "tail_sha256": "0" * 64, "at": old}})
+        assessment = lib.recovery_assessment(status, lib.load_config(self.root), {}, [], now)
+        self.assertEqual((assessment["state"], assessment["reason"]),
+                         ("not_applicable", "non_recoverable_failure"))
+
     def test_liveness_updates_are_locked_and_atomic(self):
         first = "hs-" + "3" * 32
         second = "hs-" + "4" * 32

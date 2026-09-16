@@ -802,6 +802,30 @@ class DashboardServer(ThreadingHTTPServer):
         recovery = cfg.get("recovery", {})
         if recovery.get("enabled") and recovery.get("dashboard_watchdog"):
             threading.Thread(target=self._watchdog_loop, daemon=True).start()
+            if self.owned_by_run:
+                threading.Thread(target=self._orchestration_loop, daemon=True).start()
+
+    def _launch_managed_role(self, role: str, task: str) -> int:
+        import handsoff_agent
+        spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
+        return handsoff_agent.execute_with_recovery(spec)
+
+    def _orchestration_loop(self):
+        while not self._watchdog_stop.wait(1.0):
+            try:
+                cfg = lib.load_config(self.project_root)
+                with lib.project_lock(self.project_root):
+                    status = lib.load_unique_json(lib.status_path(self.project_root, cfg))
+                role = lib.managed_handoff_role(status)
+                if role is None:
+                    continue
+                next_action = str(status.get("next_action") or "Continue the current workflow step.")
+                task = (f"Continue the managed Handsoff workflow as {role}. Execute this current next action: "
+                        f"{next_action} Use the role's required structured protocol and Handsoff commands; "
+                        "do not stop at narration, repeat evidenced work, or run a full regression suite.")
+                self._launch_managed_role(role, task)
+            except Exception as exc:
+                print(f"HANDSOFF_ORCHESTRATION_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     def _watchdog_loop(self):
         cfg = lib.load_config(self.project_root)
@@ -809,11 +833,9 @@ class DashboardServer(ThreadingHTTPServer):
         while not self._watchdog_stop.wait(interval):
             try:
                 def launcher(role):
-                    import handsoff_agent
                     task = (f"Resume trusted Handsoff state as {role}; read status, acceptance, and event log "
                             "and continue without repeating evidenced work.")
-                    spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
-                    return handsoff_agent.execute_with_recovery(spec)
+                    return self._launch_managed_role(role, task)
                 lib.recover_run(self.project_root, actor="Mission Control Watchdog", launcher=launcher)
             except Exception as exc:
                 print(f"HANDSOFF_WATCHDOG_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

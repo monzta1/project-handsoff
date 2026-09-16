@@ -14,7 +14,7 @@ and expose `handsoff` at `$HOME/.local/bin/handsoff`:
 python3 -m venv "$HOME/.local/share/handsoff/venv"
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade pip
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.7/project_handsoff-0.3.7-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.8/project_handsoff-0.3.8-py3-none-any.whl"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$HOME/.local/share/handsoff/venv/bin/handsoff" "$HOME/.local/bin/handsoff"
 ```
@@ -28,7 +28,7 @@ handsoff doctor /absolute/path/to/project
 ```
 
 `init` defaults to a compatible patch pin such as `0.3.*`. That lets a project use
-security and bug-fix releases within the same minor line. Pass `--pin v0.3.7` only
+security and bug-fix releases within the same minor line. Pass `--pin v0.3.8` only
 when the project must remain on one exact engine build.
 
 ## Clean patch upgrade
@@ -38,7 +38,7 @@ version-named environment and do not change scripts, aliases, or LaunchAgents:
 
 ```bash
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade --force-reinstall \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.7/project_handsoff-0.3.7-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.8/project_handsoff-0.3.8-py3-none-any.whl"
 handsoff version --json
 handsoff doctor /absolute/path/to/project
 ```
@@ -47,11 +47,11 @@ A project pinned to `0.3.*` accepts the new patch immediately. For an exact pin,
 preview and then record the new pin after installing the wheel:
 
 ```bash
-handsoff upgrade /absolute/path/to/project --to v0.3.7 --dry-run
-handsoff upgrade /absolute/path/to/project --to v0.3.7
+handsoff upgrade /absolute/path/to/project --to v0.3.8 --dry-run
+handsoff upgrade /absolute/path/to/project --to v0.3.8
 ```
 
-Replace `v0.3.7` with the release being installed.
+Replace `v0.3.8` with the release being installed.
 
 ## Minor or major upgrade
 
@@ -74,7 +74,7 @@ project pin from Handsoff's bounded pin history:
 
 ```bash
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --force-reinstall \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.6/project_handsoff-0.3.6-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.7/project_handsoff-0.3.7-py3-none-any.whl"
 handsoff rollback /absolute/path/to/project --dry-run
 handsoff rollback /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
