@@ -229,6 +229,10 @@ def _input_request(status: dict, cfg: dict) -> dict:
     user pause, so it is surfaced even without a separate blocked transition.
     A narrow phrase check supports older state written before that convention.
     """
+    if isinstance(status.get("run_closed"), dict):
+        return {"required": False, "kind": None, "message": None, "request_id": None,
+                "amendment_id": None, "amendment_decision": None, "question_id": None,
+                "question_cards": []}
     workflow_status = str(status.get("status") or "")
     regression = next((item for item in reversed(status.get("regression_requests") or [])
                        if item.get("state") == "awaiting_approval"), None)
@@ -343,9 +347,10 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
         "amendment_review_reject": "amendment-review", "recovery_acknowledge": "recovery-acknowledge",
         "recover": "recover", "review_cap_override": "review-cap-override",
         "pause": "human-pause-start", "resume": "human-pause-end",
+        "run_close": "run-close", "run_reopen": "run-reopen",
     }
 
-    def add(kind, label, consequence, *, reason=False, tone="primary"):
+    def add(kind, label, consequence, *, reason=False, tone="primary", confirmation=False):
         operation = operation_by_kind[kind]
         registry = supervisor.OPERATION_REGISTRY.get(operation) or {}
         if registry.get("class") != "operator-facing":
@@ -357,6 +362,7 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
             "requesting_session": None,
             "created_at": status.get("updated_at"), "binding": binding,
             "consequence": consequence, "requires_reason": reason, "tone": tone,
+            "requires_confirmation": confirmation,
         })
 
     kind = input_request.get("kind")
@@ -390,10 +396,19 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
     current_regression = lib.active_regression_request(status)
     if current_regression and current_regression.get("state") in {"awaiting_approval", "accepted"}:
         add("regression_cancel", "Cancel regression request", "Closes the pending regression request", tone="danger")
-    if isinstance(status.get("human_pause"), dict):
+    if isinstance(status.get("run_closed"), dict):
+        actions.clear()
+        if status.get("status") != "complete":
+            add("run_reopen", "Reopen mission", "Restores this run for continued work", reason=True)
+    elif isinstance(status.get("human_pause"), dict):
         add("resume", "Resume mission", "Ends the explicit Pilot pause")
     elif status.get("status") != "complete" and not actions:
         add("pause", "Pause mission", "Records an explicit Pilot pause", reason=True, tone="muted")
+    if not isinstance(status.get("run_closed"), dict):
+        live = [item for item in lib.current_agent_sessions(status).values()
+                if isinstance(item, dict) and item.get("state") in lib.AGENT_SESSION_LIVE_STATES]
+        consequence = "Cancels the owned live session and records closure" if live else "Records closure and releases run-owned resources"
+        add("run_close", "Cleanly close run", consequence, reason=True, tone="danger", confirmation=True)
     return actions
 
 
@@ -568,6 +583,9 @@ def build_snapshot(root: Path) -> dict:
     input_request = _input_request(status, cfg)
     operator_actions = _operator_actions(status, cfg, input_request)
     display_status = dict(status)
+    if isinstance(status.get("run_closed"), dict):
+        display_status["status"] = "closed"
+        display_status["phase"] = "Run closed"
     display_status["phase"] = _display_phase_name(status)
     actors = {
         "architect": ((status.get("design_review") or {}).get("architect")
@@ -1084,6 +1102,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     item = (snapshot.get("regression") or {}).get("current") or {}
                     code = supervisor.cmd_regression_cancel(argparse.Namespace(
                         root=root_arg, request_id=item.get("request_id"), by=pilot))
+                elif kind == "run_close":
+                    code = supervisor.cmd_run_close(argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason,
+                        expected_updated_at=status.get("updated_at"), cancel_active=True,
+                        release_dashboard=False))
+                elif kind == "run_reopen":
+                    code = supervisor.cmd_run_reopen(argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason,
+                        expected_updated_at=status.get("updated_at")))
                 else:
                     raise lib.HandsoffError("unsupported operator action")
                 if code != 0:

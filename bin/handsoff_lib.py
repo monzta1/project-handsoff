@@ -26,6 +26,7 @@ import math
 import os
 import re
 import secrets
+import signal
 import shlex
 import shutil
 import socket
@@ -7979,6 +7980,138 @@ def release_run_dashboard(root: Path, *, timeout: float = 2.0, wait: float = 5.0
                 "reason": f"shutdown accepted but port {port} still accepted connections after {wait:g} s"}
     return {"released": True, "pid": pid, "port": port,
             "reason": f"run-owned dashboard on port {port} shut down"}
+
+
+def _terminate_owned_session_process(root: Path, session: dict, *, wait: float = 2.0) -> dict:
+    """Stop only the process group proven by the current fresh session beacon."""
+    beacon = read_live_beacon(root)
+    session_id = session.get("session_id")
+    if not beacon or beacon.get("session_id") != session_id or beacon.get("state") not in {"started", "running"}:
+        raise HandsoffError(f"cannot prove process ownership for live session {session_id}")
+    age = _seconds_since(beacon.get("beacon_at"), datetime.now(timezone.utc))
+    pid = beacon.get("pid")
+    if age is None or age < 0 or age > LIVE_BEACON_FRESH_SECONDS or not isinstance(pid, int) or pid <= 1:
+        raise HandsoffError(f"cannot prove a fresh owned process for live session {session_id}")
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        # Restart-safe closure: a prior attempt may have stopped the exact
+        # beacon-bound child and crashed before recording the terminal state.
+        return {"session_id": session_id, "pid": pid, "signal": "already-stopped"}
+    except (OSError, AttributeError) as exc:
+        raise HandsoffError(f"owned process for session {session_id} cannot be verified") from exc
+    if pgid != pid:
+        raise HandsoffError(f"process {pid} is not the owned process-group leader for session {session_id}")
+    os.killpg(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + max(wait, 0.0)
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return {"session_id": session_id, "pid": pid, "signal": "SIGTERM"}
+        time.sleep(0.05)
+    os.killpg(pgid, signal.SIGKILL)
+    return {"session_id": session_id, "pid": pid, "signal": "SIGKILL"}
+
+
+def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | None = None,
+              cancel_active: bool = False, terminate_process=_terminate_owned_session_process,
+              release_dashboard: bool = True) -> dict:
+    """Audit and resource-close one run without deleting any durable artifact.
+
+    Live processes are cancelled only when a fresh beacon, the current
+    session pointer, PID, and process-group leader all agree. The state
+    transition is idempotent and bound to the dashboard state the Pilot saw.
+    """
+    root = Path(root).resolve()
+    actor = validate_agent_actor(by)
+    why = " ".join(str(reason or "").split())
+    if not why:
+        raise HandsoffError("clean run closure requires a reason")
+    if len(why) > 512:
+        raise HandsoffError("clean run closure reason must be at most 512 characters")
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        acceptance = load_unique_json(acceptance_path(root, cfg))
+        existing = status.get("run_closed")
+        if isinstance(existing, dict):
+            return {"closed": True, "already_closed": True, "run_closed": existing,
+                    "dashboard": {"released": False, "reason": "closure was already recorded"}}
+        if expected_updated_at is not None and status.get("updated_at") != expected_updated_at:
+            raise HandsoffError("run closure is stale; mission state changed")
+        current = current_agent_sessions(status)
+        live = [item for item in current.values()
+                if isinstance(item, dict) and item.get("state") in AGENT_SESSION_LIVE_STATES]
+        if live and not cancel_active:
+            raise HandsoffError("active managed sessions require explicit cancel confirmation")
+        stopped = []
+        for session in live:
+            stopped.append(terminate_process(root, session))
+
+        proposed = deepcopy(status)
+        now = datetime.now(timezone.utc).isoformat()
+        for session in live:
+            sid = session["session_id"]
+            target = proposed["agent_sessions"][sid]
+            if target.get("state") in AGENT_SESSION_LIVE_STATES:
+                target["state"] = "cancelled"
+                target["ended_at"] = now
+                target["exit_code"] = 130
+                proposed.get("current_agent_sessions", {}).pop(target.get("role"), None)
+            for replacement in proposed.get("agent_replacements") or []:
+                if replacement.get("to_session_id") == sid and replacement.get("state") in {"claimed", "running"}:
+                    replacement["state"] = "failed"
+                    replacement["ended_at"] = now
+        proposed["background_wait"] = None
+        proposed["human_pause"] = None
+        proposed["recovery_lease"] = None
+        proposed["run_closed"] = {
+            "by": actor, "at": now, "reason": why,
+            "cancelled_active": bool(live), "session_ids": [item["session_id"] for item in live],
+        }
+        proposed["next_action"] = "Run closed by the Pilot. Reopen it from Mission Control to continue."
+        proposed["updated_at"] = now
+        errors = validate_status_schema(proposed)
+        if errors:
+            raise HandsoffError(errors[0])
+        commit(root, cfg, status=proposed, event_kind="run_closed",
+               event_message=f"Pilot cleanly closed the run: {why}", by=actor,
+               cancelled_active=bool(live), session_ids=[item["session_id"] for item in live])
+    dashboard = release_run_dashboard(root) if release_dashboard else {
+        "released": False, "reason": "dashboard release delegated to caller",
+    }
+    return {"closed": True, "already_closed": False, "run_closed": proposed["run_closed"],
+            "stopped": stopped, "dashboard": dashboard}
+
+
+def reopen_run(root: Path, *, by: str, reason: str, expected_updated_at: str | None = None) -> dict:
+    """Reopen a non-complete cleanly closed run; durable history is preserved."""
+    root = Path(root).resolve()
+    actor = validate_agent_actor(by)
+    why = " ".join(str(reason or "").split())
+    if not why:
+        raise HandsoffError("reopen requires a reason")
+    if len(why) > 512:
+        raise HandsoffError("reopen reason must be at most 512 characters")
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        closed = status.get("run_closed")
+        if not isinstance(closed, dict):
+            raise HandsoffError("run is not closed")
+        if status.get("status") == "complete":
+            raise HandsoffError("a completed archived run cannot be reopened")
+        if expected_updated_at is not None and status.get("updated_at") != expected_updated_at:
+            raise HandsoffError("run reopen is stale; mission state changed")
+        proposed = deepcopy(status)
+        proposed.pop("run_closed", None)
+        proposed["status"] = "in_progress"
+        proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
+        proposed["next_action"] = f"Pilot reopened the run: {why}"
+        commit(root, cfg, status=proposed, event_kind="run_reopened",
+               event_message=f"Pilot reopened the run: {why}", by=actor)
+    return {"reopened": True}
 
 
 # --------------------------------------------------------------------------

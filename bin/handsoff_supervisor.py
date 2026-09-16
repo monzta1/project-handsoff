@@ -84,6 +84,8 @@ OPERATION_REGISTRY = {
     "question-answer": {"class": "operator-facing", "surface": "questions-panel"},
     "analyze-archives": {"class": "automatic", "surface": "flight-log"},
     "pilot-note": {"class": "operator-facing", "surface": "pilot-note-form"},
+    "run-close": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "run-reopen": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "advance": {"class": "agent-only", "surface": "phase-rail"},
     "deployment-gate": {"class": "operator-facing", "surface": "operator-actions-panel"},
 }
@@ -3355,6 +3357,26 @@ def cmd_dashboard(args) -> int:
                  owned_by_run=bool(getattr(args, "owned_by_run", False)))
 
 
+def cmd_run_close(args) -> int:
+    result = lib.close_run(
+        lib.resolve_root(args.root), by=args.by, reason=args.reason,
+        expected_updated_at=getattr(args, "expected_updated_at", None),
+        cancel_active=bool(getattr(args, "cancel_active", False)),
+        release_dashboard=bool(getattr(args, "release_dashboard", True)),
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+def cmd_run_reopen(args) -> int:
+    result = lib.reopen_run(
+        lib.resolve_root(args.root), by=args.by, reason=args.reason,
+        expected_updated_at=getattr(args, "expected_updated_at", None),
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Project Handsoff supervisor and gatekeeper")
     p.add_argument("--root", default=None, help="project root (default: nearest ancestor with handsoff.toml, else cwd)")
@@ -3711,6 +3733,17 @@ def main() -> int:
     pilot_note.add_argument("--by", required=True)
     pilot_note.add_argument("--text", required=True, help="1 to 512 characters")
 
+    run_close = sub.add_parser("run-close", help="cleanly close a run and release owned resources")
+    run_close.add_argument("--by", required=True)
+    run_close.add_argument("--reason", required=True)
+    run_close.add_argument("--expected-updated-at")
+    run_close.add_argument("--cancel-active", action="store_true")
+
+    run_reopen = sub.add_parser("run-reopen", help="reopen a non-complete cleanly closed run")
+    run_reopen.add_argument("--by", required=True)
+    run_reopen.add_argument("--reason", required=True)
+    run_reopen.add_argument("--expected-updated-at")
+
     adv = sub.add_parser("advance")
     adv.add_argument("phase", type=int)
     adv.add_argument("progress", type=int)
@@ -3792,6 +3825,8 @@ def main() -> int:
         "question-answer": cmd_question_answer,
         "analyze-archives": cmd_analyze_archives,
         "pilot-note": cmd_pilot_note,
+        "run-close": cmd_run_close,
+        "run-reopen": cmd_run_reopen,
     }
     try:
         return handlers[args.command](args)

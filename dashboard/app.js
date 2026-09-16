@@ -477,6 +477,7 @@ async function executeOperatorAction(action, reason, button) {
     showError("Command rejected: enter the required reason.");
     return;
   }
+  if (action.requires_confirmation && !window.confirm(`${action.label}\n\n${action.consequence}\n\nThis action is audited and cannot delete source code or Git history.`)) return;
   button.disabled = true;
   const original = button.textContent;
   button.textContent = "TRANSMITTING…";

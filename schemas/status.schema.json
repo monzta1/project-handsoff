@@ -7,6 +7,17 @@
     "phase": {"enum": ["Orient", "Design debate", "Design approved", "Implementation", "Independent review", "Checks & documentation", "Awaiting deployment approval", "Live verified"]},
     "progress": {"type": "number", "minimum": 0, "maximum": 100},
     "status": {"enum": ["in_progress", "blocked", "ready_to_deploy", "awaiting_approval", "complete"]},
+    "run_closed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["by", "at", "reason", "cancelled_active", "session_ids"],
+      "properties": {
+        "by": {"type": "string", "minLength": 1},
+        "at": {"type": "string", "format": "date-time"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+        "cancelled_active": {"type": "boolean"},
+        "session_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^hs-[0-9a-f]{32}$"}}
+      }
+    },
     "updated_at": {"type": "string", "format": "date-time"},
     "last_heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
     "last_heartbeat_owner": {"type": ["string", "null"], "minLength": 1},

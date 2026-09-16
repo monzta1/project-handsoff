@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Handsoff // Fleet Mission Control</title><link rel="stylesheet" href="/styles.css"></head>
+<body><main>
+  <header><div><p>HANDSOFF · E.V.E.</p><h1>Fleet Mission Control</h1></div><div id="link">TACTICAL LINK: CONNECTING</div></header>
+  <section id="decisions" class="panel hidden"><div class="head"><div><p>PILOT AUTHORIZATION</p><h2>Fleet decisions waiting</h2></div><strong id="decision-count">0</strong></div><div id="decision-list"></div></section>
+  <section class="summary" id="summary"></section>
+  <section class="panel"><div class="head"><div><p>REGISTERED PROJECTS</p><h2>Mission fleet</h2></div><span id="synced">ACQUIRING</span></div><div id="projects" class="projects"></div></section>
+</main><dialog id="confirm"><form method="dialog"><p>HIGH-IMPACT OPERATION</p><h2 id="confirm-title"></h2><pre id="confirm-context"></pre><label id="reason-wrap">REASON<input id="reason" maxlength="512"></label><div><button value="cancel">CANCEL</button><button id="confirm-go" value="default">CONFIRM EXACT OPERATION</button></div></form></dialog><div id="toast" class="toast hidden"></div><script src="/app.js" defer></script></body></html>

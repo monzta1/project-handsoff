@@ -402,7 +402,7 @@ class TestEveMissionControl(HandsoffTestCase):
         }
         request = dashboard._input_request(status, {"deployment_requires_explicit_approval": True})
         actions = dashboard._operator_actions(status, {}, request)
-        self.assertEqual({item["kind"] for item in actions}, {"design_approve", "design_reject"})
+        self.assertEqual({item["kind"] for item in actions}, {"design_approve", "design_reject", "run_close"})
         for action in actions:
             self.assertEqual(supervisor.OPERATION_REGISTRY[action["operation"]]["class"], "operator-facing")
             self.assertTrue(action["binding"])
