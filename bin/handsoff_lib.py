@@ -7597,6 +7597,129 @@ def _archive_slug(text: str, max_len: int = 60) -> str:
     return (slug or "run")[:max_len]
 
 
+def build_run_metrics(status: dict, events: list[dict], verifications: list[dict], *,
+                      now: datetime | None = None) -> dict:
+    """Derive content-free delivery metrics from already-audited records.
+
+    Token fields stay null unless an adapter eventually supplies structured,
+    authoritative usage. Handsoff never estimates usage from text length.
+    """
+    now = now or datetime.now(timezone.utc)
+
+    def parsed(value):
+        try:
+            return datetime.fromisoformat(value) if isinstance(value, str) else None
+        except ValueError:
+            return None
+
+    ordered_events = sorted(
+        (item for item in events if isinstance(item, dict) and parsed(item.get("at"))),
+        key=lambda item: item["at"],
+    )
+    start = parsed(ordered_events[0]["at"]) if ordered_events else parsed(status.get("updated_at"))
+    complete = status.get("status") == "complete"
+    end = parsed(status.get("updated_at")) if complete else now
+    elapsed = max((end - start).total_seconds(), 0) if start and end else None
+
+    phase_cursor = start
+    phase_number = 1
+    phase_seconds = {str(number): 0.0 for number in PHASES}
+    for event in ordered_events:
+        if event.get("kind") != "phase_advanced" or not isinstance(event.get("phase_number"), int):
+            continue
+        at = parsed(event.get("at"))
+        if phase_cursor and at and at >= phase_cursor:
+            phase_seconds[str(phase_number)] += (at - phase_cursor).total_seconds()
+        phase_number = event["phase_number"]
+        phase_cursor = at or phase_cursor
+    if phase_cursor and end and end >= phase_cursor:
+        phase_seconds[str(phase_number)] += (end - phase_cursor).total_seconds()
+
+    sessions = []
+    for item in (status.get("agent_sessions") or {}).values():
+        if not isinstance(item, dict):
+            continue
+        began = parsed(item.get("running_at") or item.get("started_at"))
+        ended = parsed(item.get("ended_at")) or (now if item.get("state") in AGENT_SESSION_LIVE_STATES else None)
+        duration = max((ended - began).total_seconds(), 0) if began and ended else None
+        sessions.append({
+            "session_id": item.get("session_id"), "role": item.get("role"),
+            "adapter": item.get("adapter"),
+            "model": item.get("reported_model") or item.get("requested_model"),
+            "phase_number": item.get("phase_number"), "state": item.get("state"),
+            "duration_seconds": round(duration, 3) if duration is not None else None,
+            "input_tokens": None, "output_tokens": None, "cached_tokens": None,
+            "total_tokens": None, "usage_source": "unavailable",
+        })
+    sessions.sort(key=lambda item: str(item.get("session_id") or ""))
+    failures = sum(item.get("state") in (AGENT_SESSION_TERMINAL_STATES - {"completed"}) for item in sessions)
+    verification_seconds = 0.0
+    for record in verifications:
+        for result in (record.get("results") or []) if isinstance(record, dict) else []:
+            value = result.get("duration_s") if isinstance(result, dict) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                verification_seconds += float(value)
+    pilot_wait_seconds = 0.0
+    background_wait_seconds = 0.0
+    open_waits = {"human": None, "background": None}
+    wait_events = {
+        "human_pause_started": ("human", True), "human_pause_ended": ("human", False),
+        "background_wait_started": ("background", True),
+        "background_wait_ended": ("background", False),
+    }
+    for event in ordered_events:
+        mapping = wait_events.get(event.get("kind"))
+        if not mapping:
+            continue
+        key, opening = mapping
+        at = parsed(event.get("at"))
+        if opening:
+            open_waits[key] = at
+        elif open_waits[key] and at and at >= open_waits[key]:
+            seconds = (at - open_waits[key]).total_seconds()
+            if key == "human":
+                pilot_wait_seconds += seconds
+            else:
+                background_wait_seconds += seconds
+            open_waits[key] = None
+    for key, began in open_waits.items():
+        if began and end and end >= began:
+            if key == "human":
+                pilot_wait_seconds += (end - began).total_seconds()
+            else:
+                background_wait_seconds += (end - began).total_seconds()
+    known_usage = [item for item in sessions if item["total_tokens"] is not None]
+    largest_sessions = sorted(
+        sessions, key=lambda item: item["duration_seconds"] if item["duration_seconds"] is not None else -1,
+        reverse=True,
+    )[:5]
+    return {
+        "generated_at": now.isoformat(),
+        "elapsed_seconds": round(elapsed, 3) if elapsed is not None else None,
+        "phase_seconds": {key: round(value, 3) for key, value in phase_seconds.items()},
+        "verification_seconds": round(verification_seconds, 3),
+        "pilot_wait_seconds": round(pilot_wait_seconds, 3),
+        "background_wait_seconds": round(background_wait_seconds, 3),
+        "managed_sessions": len(sessions), "failed_sessions": failures,
+        "replacement_count": len(status.get("agent_replacements") or []),
+        "recovery_attempts": len(status.get("recovery_attempts") or []),
+        "design_review_attempts": int(status.get("design_review_attempts", 0) or 0),
+        "implementation_review_attempts": len(status.get("review_attempts") or []),
+        "verification_runs": len(verifications),
+        "tokens": {
+            "input": sum(item["input_tokens"] for item in known_usage) if known_usage else None,
+            "output": sum(item["output_tokens"] for item in known_usage) if known_usage else None,
+            "cached": sum(item["cached_tokens"] for item in known_usage) if known_usage else None,
+            "total": sum(item["total_tokens"] for item in known_usage) if known_usage else None,
+            "coverage": f"{len(known_usage)}/{len(sessions)} sessions",
+        },
+        "sessions": sessions,
+        "largest_sessions": largest_sessions,
+        "baseline": {"state": "unavailable", "sample_size": 0,
+                     "reason": "no compatible historical cohort selected"},
+    }
+
+
 def archive_run(root: Path, cfg: dict, status: dict, acceptance: dict,
                 verifications: list[dict], events: list[dict]) -> Path:
     """Write one self-contained JSON record of a just-completed run to the
@@ -7624,6 +7747,7 @@ def archive_run(root: Path, cfg: dict, status: dict, acceptance: dict,
         "acceptance": acceptance,
         "verifications": verifications,
         "events": events,
+        "metrics": build_run_metrics(status, events, verifications),
     }
     out_dir = archive_dir()
     out_dir.mkdir(parents=True, exist_ok=True)

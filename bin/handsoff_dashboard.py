@@ -556,6 +556,7 @@ def build_snapshot(root: Path) -> dict:
         item["from_profile"] = session_view(sessions.get(replacement.get("from_session_id")))
         item["to_profile"] = session_view(sessions.get(replacement.get("to_session_id")))
         replacements.append(item)
+    metrics = lib.build_run_metrics(status, events, verifications)
     return {
         "initialized": True,
         "generated_at": generated_at,
@@ -592,6 +593,7 @@ def build_snapshot(root: Path) -> dict:
             "replacements": replacements,
             "agent_output": agent_output,
         },
+        "metrics": metrics,
         "audit": {
             "healthy": audit_healthy,
             "gate_errors": gate_errors,

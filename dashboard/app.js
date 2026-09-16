@@ -879,6 +879,36 @@ function renderAgentOutput(output) {
   $("agent-output-log").scrollTop = $("agent-output-log").scrollHeight;
 }
 
+function metricDuration(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+function renderMetrics(metrics) {
+  if (!metrics) return;
+  $("metrics-elapsed").textContent = metricDuration(metrics.elapsed_seconds);
+  $("metrics-sessions").textContent = String(metrics.managed_sessions || 0);
+  $("metrics-failures").textContent = `${metrics.failed_sessions || 0} / ${metrics.replacement_count || 0}`;
+  $("metrics-reviews").textContent = `${metrics.design_review_attempts || 0} / ${metrics.implementation_review_attempts || 0}`;
+  $("metrics-verification").textContent = metricDuration(metrics.verification_seconds);
+  $("metrics-pilot-wait").textContent = metricDuration(metrics.pilot_wait_seconds);
+  const total = metrics.tokens?.total;
+  $("metrics-tokens").textContent = total == null ? "UNKNOWN" : Number(total).toLocaleString();
+  $("metrics-token-state").textContent = total == null
+    ? `TOKENS UNKNOWN · ${metrics.tokens?.coverage || "0/0 sessions"}`
+    : `TOKEN SIGNAL · ${metrics.tokens?.coverage || ""}`;
+  $("metrics-phase-list").innerHTML = Object.entries(metrics.phase_seconds || {})
+    .filter(([, seconds]) => Number(seconds) > 0)
+    .map(([phase, seconds]) => `<span>PHASE ${escapeHtml(phase)} <strong>${escapeHtml(metricDuration(seconds))}</strong></span>`)
+    .join("");
+  $("metrics-session-list").innerHTML = (metrics.largest_sessions || [])
+    .map((session) => `<span>${escapeHtml(String(session.role || "agent").toUpperCase())} · ${escapeHtml(session.adapter || "unknown")} · ${escapeHtml(session.model || "default")} <strong>${escapeHtml(metricDuration(session.duration_seconds))}</strong></span>`)
+    .join("");
+}
+
 function renderRoleChiclets(activeRole) {
   document.querySelectorAll("#role-chiclets .chiclet").forEach((el) => {
     el.classList.toggle("is-active", el.dataset.role === activeRole);
@@ -980,6 +1010,7 @@ function render(snapshot) {
 
   renderLive(snapshot.live);
   renderAgentOutput(snapshot.runtime?.agent_output || null);
+  renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderRegression(snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
