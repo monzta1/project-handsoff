@@ -634,6 +634,7 @@ def build_snapshot(root: Path) -> dict:
             "watchdog_enabled": cfg.get("recovery", {}).get("dashboard_watchdog", False),
         },
         "regression": {
+            "release_plan": status.get("release_plan"),
             "pending": next((item for item in reversed(status.get("regression_requests") or [])
                              if item.get("state") == "awaiting_approval"), None),
             "current": lib.active_regression_request(status),

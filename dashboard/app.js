@@ -331,6 +331,8 @@ function regressionRecordText(request) {
   const results = (request.results || []).map((result) =>
     `  exit ${result.exit_code}: ${result.command}`).join("\n");
   return [
+    request.release_version ? `Release: ${request.release_version} · ${String(request.release_class || "unknown").toUpperCase()}` : null,
+    request.policy_override_reason ? `Policy override: ${request.policy_override_reason}` : null,
     `Group: ${request.group}`,
     `State: ${String(request.state || "unknown").toUpperCase()}`,
     `Command hash: ${request.command_sha256}`,
@@ -351,12 +353,26 @@ function regressionRecordText(request) {
   ].filter(Boolean).join("\n");
 }
 
+function releasePlanText(plan) {
+  if (!plan) return "";
+  return [
+    `Release: ${plan.version} · ${String(plan.release_class || "unknown").toUpperCase()}`,
+    `Full regression eligible: ${plan.full_regression_eligible ? "YES" : "NO — TARGETED TESTS ONLY"}`,
+    plan.full_regression_override_reason ? `Override: ${plan.full_regression_override_reason}` : null,
+    `Planned by: ${plan.planned_by || "unknown"} · ${plan.planned_at || "unknown"}`,
+    "Targeted checks:",
+    ...(plan.targeted_checks || []).map((item) => `  ${item.command} — ${item.reason}`),
+    `Full groups: ${(plan.regression_groups || []).join(", ") || "none"}`,
+  ].filter(Boolean).join("\n");
+}
+
 function renderRegression(regression) {
   const current = regression?.current || null;
   const last = regression?.last || null;
+  const plan = regression?.release_plan || null;
   const card = $("regression-alert");
-  card.classList.toggle("hidden", !current && !last);
-  $("regression-status-details").textContent = regressionRecordText(current || last);
+  card.classList.toggle("hidden", !current && !last && !plan);
+  $("regression-status-details").textContent = regressionRecordText(current || last) || releasePlanText(plan);
   $("regression-last").textContent = last
     ? `Last closed request: ${last.group} · ${String(last.state || "unknown").toUpperCase()} · ${last.completed_at || last.decided_at || last.requested_at}`
     : "";

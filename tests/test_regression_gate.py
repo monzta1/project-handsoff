@@ -29,6 +29,8 @@ class RegressionGateTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "fixture"], cwd=self.root, check=True)
         result = self.cli("init", "Regression gate #28")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = self.cli("release-plan", "--version", "v1.0.0", "--by", "Pilot")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)

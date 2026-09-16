@@ -87,6 +87,7 @@ timeout_seconds = 600
 [regression_gate]
 approval_timeout_minutes = 30
 launch_window_minutes = 10
+full_regression_major_only = true
 
 [[regressions]]
 name = "python-full"

@@ -932,6 +932,32 @@ def cmd_tranche_approve(args) -> int:
     return 0
 
 
+def cmd_release_plan(args) -> int:
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    plan = lib.release_plan_payload(
+        cfg, args.version, actor, override_reason=args.full_regression_override_reason,
+    )
+    with lib.project_lock(root):
+        status, _ = _load(root, cfg)
+        lib.ensure_no_launched_regression(status)
+        active = lib.active_regression_request(status)
+        if active and active.get("state") in {"awaiting_approval", "accepted"}:
+            active["state"] = "invalidated"
+            active["completed_at"] = plan["planned_at"]
+        status["release_plan"] = plan
+        status["updated_at"] = plan["planned_at"]
+        lib.commit(
+            root, cfg, status=status, event_kind="release_planned",
+            event_message=f"{plan['release_class'].capitalize()} release {plan['version']} planned",
+            version=plan["version"], release_class=plan["release_class"],
+            full_regression_eligible=plan["full_regression_eligible"], by=actor,
+        )
+    print(json.dumps(plan, indent=2))
+    return 0
+
+
 def cmd_regression_request(args) -> int:
     actor = lib.validate_agent_actor(args.by)
     root = lib.resolve_root(args.root)
@@ -939,6 +965,15 @@ def cmd_regression_request(args) -> int:
     group = lib.regression_group(cfg, args.group)
     with lib.project_lock(root):
         status, acceptance = _load(root, cfg)
+        plan = status.get("release_plan")
+        if cfg["regression_gate"].get("full_regression_major_only", True):
+            if not isinstance(plan, dict):
+                print("REGRESSION_BLOCKED: record a semantic release-plan before requesting a full regression")
+                return 1
+            if not plan.get("full_regression_eligible"):
+                print(f"REGRESSION_BLOCKED: {plan.get('release_class')} releases use targeted tests; "
+                      "record an explicit full-regression override reason to proceed")
+                return 1
         if lib.active_regression_request(status):
             print("REGRESSION_BLOCKED: another regression request is already live")
             return 1
@@ -960,6 +995,10 @@ def cmd_regression_request(args) -> int:
             "launch_nonce_sha256": None, "reason": args.reason.strip(),
             "requester_session_id": next((sid for sid, session in (status.get("agent_sessions") or {}).items()
                                           if session.get("actor") == actor), None),
+            "release_version": plan.get("version") if isinstance(plan, dict) else None,
+            "release_class": plan.get("release_class") if isinstance(plan, dict) else None,
+            "policy_override_reason": plan.get("full_regression_override_reason")
+            if isinstance(plan, dict) else None,
             **_regression_bindings(root, cfg, acceptance, status), "results": [],
         }
         status["regression_requests"] = [*requests, item]
@@ -3260,6 +3299,11 @@ def main() -> int:
     verify.add_argument("--no-cache", action="store_true",
                         help="launch every needed command even when an eligible record for its binding exists")
 
+    release_plan = sub.add_parser("release-plan", help="record semantic release class and verification policy")
+    release_plan.add_argument("--version", required=True)
+    release_plan.add_argument("--by", required=True)
+    release_plan.add_argument("--full-regression-override-reason")
+
     regression_request = sub.add_parser("regression-request")
     regression_request.add_argument("--group", required=True)
     regression_request.add_argument("--by", required=True)
@@ -3601,6 +3645,7 @@ def main() -> int:
         "init": cmd_init, "status": cmd_status, "validate": cmd_validate,
         "advance": cmd_advance, "deployment-gate": cmd_deployment_gate,
         "verify": cmd_verify, "verify-log": cmd_verify_log, "doctor": cmd_doctor,
+        "release-plan": cmd_release_plan,
         "regression-request": cmd_regression_request,
         "regression-decide": cmd_regression_decide,
         "regression-run": cmd_regression_run,

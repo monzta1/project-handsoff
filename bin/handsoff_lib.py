@@ -244,7 +244,10 @@ DEFAULT_CONFIG = {
     "tickets": [],
     "design_evidence": [],
     "regressions": [],
-    "regression_gate": {"approval_timeout_minutes": 30, "launch_window_minutes": 10},
+    "regression_gate": {
+        "approval_timeout_minutes": 30, "launch_window_minutes": 10,
+        "full_regression_major_only": True,
+    },
     "agents": {role: profile["adapter"] for role, profile in RECOMMENDED_CREW.items()},
     "models": {role: profile["model"] for role, profile in RECOMMENDED_CREW.items()},
     "fallbacks": {
@@ -574,11 +577,17 @@ def load_config(root: Path) -> dict:
     unknown_gate = set(regression_gate) - set(DEFAULT_CONFIG["regression_gate"])
     if unknown_gate:
         raise HandsoffError(f"handsoff.toml: regression_gate has unknown keys: {', '.join(sorted(unknown_gate))}")
-    for key in DEFAULT_CONFIG["regression_gate"]:
+    for key in ("approval_timeout_minutes", "launch_window_minutes"):
         value = regression_gate.get(key, cfg["regression_gate"][key])
         if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 1440:
             raise HandsoffError(f"handsoff.toml: regression_gate.{key} must be an integer from 1 to 1440")
         cfg["regression_gate"][key] = value
+    major_only = regression_gate.get(
+        "full_regression_major_only", cfg["regression_gate"]["full_regression_major_only"],
+    )
+    if not isinstance(major_only, bool):
+        raise HandsoffError("handsoff.toml: regression_gate.full_regression_major_only must be boolean")
+    cfg["regression_gate"]["full_regression_major_only"] = major_only
     if not isinstance(regressions, list):
         raise HandsoffError("handsoff.toml: regressions must be an array of tables")
     normalized_regressions = []
@@ -3262,6 +3271,7 @@ def validate_status_schema(status: dict) -> list[str]:
                 or recovery_attempts[-1].get("recovery_id") != lease.get("recovery_id") \
                 or recovery_attempts[-1].get("state") not in {"reserved", "launched"}:
             errors.append("status: recovery_lease must reference the live final recovery attempt")
+    errors.extend(validate_release_plan(status.get("release_plan")))
     regression_requests = status.get("regression_requests")
     if regression_requests is not None:
         if not isinstance(regression_requests, list) or len(regression_requests) > MAX_REGRESSION_REQUESTS:
@@ -3279,9 +3289,20 @@ def validate_status_schema(status: dict) -> list[str]:
             }
             label = f"status: regression_requests[{index}]"
             rid = item.get("request_id") if isinstance(item, dict) else None
-            if not isinstance(item, dict) or set(item) != required:
+            optional = {"release_version", "release_class", "policy_override_reason"}
+            if not isinstance(item, dict) or not required <= set(item) or set(item) - required - optional:
                 errors.append(f"{label} has invalid fields")
                 continue
+            if "release_version" in item:
+                try:
+                    normalized, release_class = classify_release_version(item.get("release_version"))
+                    if normalized != item.get("release_version") or release_class != item.get("release_class"):
+                        errors.append(f"{label} release version/class mismatch")
+                except HandsoffError:
+                    errors.append(f"{label}.release_version is invalid")
+                override = item.get("policy_override_reason")
+                if override is not None and (not isinstance(override, str) or not override.strip()):
+                    errors.append(f"{label}.policy_override_reason is invalid")
             if not isinstance(rid, str) or not REGRESSION_REQUEST_ID_PATTERN.fullmatch(rid) or rid in seen_request_ids:
                 errors.append(f"{label}.request_id is invalid or duplicated")
             seen_request_ids.add(rid)
@@ -4644,6 +4665,81 @@ def regression_group(cfg: dict, name: str) -> dict:
     if item is None:
         raise HandsoffError(f"unknown regression group: {name}")
     return item
+
+
+RELEASE_VERSION_PATTERN = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?$")
+RELEASE_CLASSES = ("patch", "minor", "major")
+
+
+def classify_release_version(version: str) -> tuple[str, str]:
+    """Normalize a semantic version and classify the intended release.
+
+    The class is explicit in the version itself for this policy: any X.0.0
+    is major, X.Y.0 is minor, and X.Y.Z is patch. 0.x still follows the
+    same mechanical rule so agents cannot reinterpret policy ad hoc.
+    """
+    if not isinstance(version, str):
+        raise HandsoffError("release version must be semantic X.Y.Z")
+    match = RELEASE_VERSION_PATTERN.fullmatch(version.strip())
+    if not match:
+        raise HandsoffError("release version must be semantic X.Y.Z")
+    major, minor, patch = (int(value) for value in match.groups())
+    normalized = f"v{major}.{minor}.{patch}"
+    release_class = "major" if minor == 0 and patch == 0 else "minor" if patch == 0 else "patch"
+    return normalized, release_class
+
+
+def release_plan_payload(cfg: dict, version: str, by: str, *, override_reason: str | None = None,
+                         now: datetime | None = None) -> dict:
+    normalized, release_class = classify_release_version(version)
+    reason = override_reason.strip() if isinstance(override_reason, str) and override_reason.strip() else None
+    major_only = cfg.get("regression_gate", {}).get("full_regression_major_only", True)
+    eligible = not major_only or release_class == "major" or reason is not None
+    stamp = (now or datetime.now(timezone.utc)).isoformat()
+    targeted = [{"command": command, "reason": "configured focused check"}
+                for command in cfg.get("check_commands", [])]
+    return {
+        "version": normalized, "release_class": release_class, "planned_by": by,
+        "planned_at": stamp, "full_regression_eligible": eligible,
+        "full_regression_override_reason": reason,
+        "targeted_checks": targeted,
+        "regression_groups": [group.get("name") for group in cfg.get("regressions", [])],
+    }
+
+
+def validate_release_plan(plan: object) -> list[str]:
+    if plan is None:
+        return []
+    required = {"version", "release_class", "planned_by", "planned_at",
+                "full_regression_eligible", "full_regression_override_reason",
+                "targeted_checks", "regression_groups"}
+    if not isinstance(plan, dict) or set(plan) != required:
+        return ["status: release_plan is invalid"]
+    errors = []
+    try:
+        normalized, release_class = classify_release_version(plan.get("version"))
+        if normalized != plan.get("version") or release_class != plan.get("release_class"):
+            errors.append("status: release_plan version/class mismatch")
+    except HandsoffError:
+        errors.append("status: release_plan version is invalid")
+    if not all(isinstance(plan.get(key), str) and plan[key].strip()
+               for key in ("planned_by", "planned_at")):
+        errors.append("status: release_plan identity is invalid")
+    if not isinstance(plan.get("full_regression_eligible"), bool):
+        errors.append("status: release_plan eligibility is invalid")
+    override = plan.get("full_regression_override_reason")
+    if override is not None and (not isinstance(override, str) or not override.strip()):
+        errors.append("status: release_plan override reason is invalid")
+    checks = plan.get("targeted_checks")
+    if not isinstance(checks, list) or not all(
+            isinstance(item, dict) and set(item) == {"command", "reason"}
+            and all(isinstance(item.get(key), str) and item[key].strip() for key in ("command", "reason"))
+            for item in checks):
+        errors.append("status: release_plan targeted checks are invalid")
+    groups = plan.get("regression_groups")
+    if not isinstance(groups, list) or not all(isinstance(item, str) and item for item in groups):
+        errors.append("status: release_plan regression groups are invalid")
+    return errors
 
 
 def configured_regression_commands(cfg: dict) -> set[str]:

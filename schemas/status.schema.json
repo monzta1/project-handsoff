@@ -90,6 +90,20 @@
         "recovery_id": {"type": "string", "pattern": "^hv-[0-9a-f]{32}$"}
       }
     },
+    "release_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "release_class", "planned_by", "planned_at", "full_regression_eligible", "full_regression_override_reason", "targeted_checks", "regression_groups"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "release_class": {"enum": ["patch", "minor", "major"]},
+        "planned_by": {"type": "string", "minLength": 1},
+        "planned_at": {"type": "string", "format": "date-time"},
+        "full_regression_eligible": {"type": "boolean"},
+        "full_regression_override_reason": {"type": ["string", "null"]},
+        "targeted_checks": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["command", "reason"], "properties": {"command": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1}}}},
+        "regression_groups": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
     "regression_requests": {
       "type": "array", "maxItems": 16,
       "items": {
@@ -117,6 +131,9 @@
           "epoch_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "reason": {"type": "string", "minLength": 1},
           "requester_session_id": {"type": ["string", "null"], "pattern": "^hs-[0-9a-f]{32}$"},
+          "release_version": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+          "release_class": {"enum": ["patch", "minor", "major"]},
+          "policy_override_reason": {"type": ["string", "null"]},
           "results": {"type": "array"}
         }
       }

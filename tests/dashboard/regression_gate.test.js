@@ -19,5 +19,8 @@ test("Mission Control renders an explicit regression Accept/Decline gate", () =>
     assert.match(app, new RegExp(field));
   }
   assert.match(app, /regressionRecordText/);
+  assert.match(app, /releasePlanText/);
+  assert.match(app, /NO — TARGETED TESTS ONLY/);
+  assert.match(app, /release_version/);
   assert.match(app, /regression\?\.last/);
 });

@@ -11185,6 +11185,8 @@ class TestVerificationCache(HandsoffTestCase):
         self._verify("REQ-001")
         self.assertEqual(self._launches("a"), 1)
         ledger_before = (self.tmp / "handsoff-verifications.jsonl").read_bytes()
+        planned = run(["release-plan", "--version", "v1.0.0", "--by", "Pilot"], cwd=self.tmp)
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
         requested = run(["regression-request", "--group", "python-full", "--by", "codex-supervisor"], cwd=self.tmp)
         self.assertEqual(requested.returncode, 0, requested.stdout + requested.stderr)
         item = self.read_status()["regression_requests"][-1]
@@ -11208,6 +11210,43 @@ class TestVerificationCache(HandsoffTestCase):
         # The regression command itself can never be a targeted check.
         with self.assertRaisesRegex(self.lib.HandsoffError, "full regression blocked"):
             self.lib.run_checks(self.lib.load_config(self.tmp), self.tmp, commands=["python3 tests/test_everything.py"])
+
+    def test_release_policy_blocks_patch_and_minor_full_regression_without_explicit_override(self):
+        self._configure([self._command("a")], extra_toml=(
+            '\n[[regressions]]\nname = "python-full"\ncommands = ["python3 tests/test_everything.py"]\n'))
+        self._git_init()
+        self.init("Release policy fixture")
+        for version, release_class in (("v2.3.4", "patch"), ("v2.4.0", "minor")):
+            planned = run(["release-plan", "--version", version, "--by", "Pilot"], cwd=self.tmp)
+            self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+            plan = self.read_status()["release_plan"]
+            self.assertEqual((plan["version"], plan["release_class"], plan["full_regression_eligible"]),
+                             (version, release_class, False))
+            requested = run(["regression-request", "--group", "python-full", "--by", "supervisor"], cwd=self.tmp)
+            self.assertEqual(requested.returncode, 1)
+            self.assertIn("use targeted tests", requested.stdout)
+
+    def test_release_policy_allows_major_or_audited_one_time_override_and_invalidates_stale_plan(self):
+        self._configure([self._command("a")], extra_toml=(
+            '\n[[regressions]]\nname = "python-full"\ncommands = ["python3 tests/test_everything.py"]\n'))
+        self._git_init()
+        self.init("Release policy fixture")
+        major = run(["release-plan", "--version", "v3.0.0", "--by", "Pilot"], cwd=self.tmp)
+        self.assertEqual(major.returncode, 0, major.stdout + major.stderr)
+        request = run(["regression-request", "--group", "python-full", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(request.returncode, 0, request.stdout + request.stderr)
+        first = self.read_status()["regression_requests"][-1]
+        self.assertEqual((first["release_version"], first["release_class"]), ("v3.0.0", "major"))
+        override = run(["release-plan", "--version", "v3.1.1", "--by", "Pilot",
+                        "--full-regression-override-reason", "security-sensitive patch"], cwd=self.tmp)
+        self.assertEqual(override.returncode, 0, override.stdout + override.stderr)
+        status = self.read_status()
+        self.assertEqual(status["regression_requests"][-1]["state"], "invalidated")
+        self.assertTrue(status["release_plan"]["full_regression_eligible"])
+        request = run(["regression-request", "--group", "python-full", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(request.returncode, 0, request.stdout + request.stderr)
+        second = self.read_status()["regression_requests"][-1]
+        self.assertEqual(second["policy_override_reason"], "security-sensitive patch")
 
     # -- i43-concurrency-and-fixture ---------------------------------------
 
