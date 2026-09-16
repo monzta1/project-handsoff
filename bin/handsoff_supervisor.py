@@ -24,6 +24,70 @@ import handsoff_analyzer as analyzer  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
+# One inventory for the command line, broker, and Mission Control. A command
+# may only be exposed to the Pilot when it is explicitly classified here;
+# agent protocol writes never become browser mutations by accident.
+OPERATION_REGISTRY = {
+    "init": {"class": "operator-facing", "surface": "mission-init-form"},
+    "status": {"class": "diagnostic", "surface": "dashboard"},
+    "validate": {"class": "diagnostic", "surface": "audit-state"},
+    "verify-log": {"class": "diagnostic", "surface": "audit-state"},
+    "doctor": {"class": "operator-facing", "surface": "audit-state"},
+    "dashboard": {"class": "diagnostic", "surface": "dashboard"},
+    "verify": {"class": "operator-facing", "surface": "verification-list"},
+    "release-plan": {"class": "operator-facing", "surface": "regression-alert"},
+    "regression-request": {"class": "operator-facing", "surface": "regression-alert"},
+    "regression-decide": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "regression-run": {"class": "automatic", "surface": "regression-alert"},
+    "regression-cancel": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "regression-finalize": {"class": "automatic", "surface": "regression-alert"},
+    "work-items-sync": {"class": "agent-only", "surface": "ticket-panel"},
+    "work-item-activate": {"class": "agent-only", "surface": "ticket-panel"},
+    "work-item-update": {"class": "agent-only", "surface": "ticket-panel"},
+    "lane-request": {"class": "agent-only", "surface": "ticket-panel"},
+    "lane-confirm": {"class": "operator-facing", "surface": "ticket-panel"},
+    "plan-tranche": {"class": "diagnostic", "surface": "tranche-panel"},
+    "tranche-approve": {"class": "operator-facing", "surface": "tranche-panel"},
+    "record-evidence": {"class": "agent-only", "surface": "verification-list"},
+    "record-symptom-resolved": {"class": "agent-only", "surface": "acceptance-score"},
+    "design-approve": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "design-reject": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "record-design-review": {"class": "agent-only", "surface": "review-attempts-panel"},
+    "design-review-packet": {"class": "automatic", "surface": "design-review-packet"},
+    "design-review-authorize": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "design-review-escalate": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "record-review": {"class": "agent-only", "surface": "review-attempts-panel"},
+    "review-attempt-start": {"class": "agent-only", "surface": "review-attempts-panel"},
+    "record-review-findings": {"class": "agent-only", "surface": "review-attempts-panel"},
+    "review-cap-override": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "recover": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "watch": {"class": "automatic", "surface": "live-status"},
+    "recovery-acknowledge": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "verify-live": {"class": "operator-facing", "surface": "verification-list"},
+    "heartbeat": {"class": "automatic", "surface": "live-status"},
+    "background-wait-start": {"class": "automatic", "surface": "live-status"},
+    "background-wait-end": {"class": "automatic", "surface": "live-status"},
+    "human-pause-start": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "human-pause-end": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "design-timing": {"class": "diagnostic", "surface": "metrics-panel"},
+    "design-evidence": {"class": "agent-only", "surface": "design-evidence-panel"},
+    "criterion-update": {"class": "agent-only", "surface": "criteria-list"},
+    "criterion-add": {"class": "agent-only", "surface": "criteria-list"},
+    "criterion-remove": {"class": "agent-only", "surface": "criteria-list"},
+    "criteria-apply": {"class": "agent-only", "surface": "criteria-list"},
+    "amendment-open": {"class": "agent-only", "surface": "amendment-panel"},
+    "amendment-revise": {"class": "agent-only", "surface": "amendment-panel"},
+    "amendment-review": {"class": "agent-only", "surface": "amendment-panel"},
+    "amendment-approve": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "amendment-escalate": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "question-raise": {"class": "agent-only", "surface": "questions-panel"},
+    "question-answer": {"class": "operator-facing", "surface": "questions-panel"},
+    "analyze-archives": {"class": "automatic", "surface": "flight-log"},
+    "pilot-note": {"class": "operator-facing", "surface": "pilot-note-form"},
+    "advance": {"class": "agent-only", "surface": "phase-rail"},
+    "deployment-gate": {"class": "operator-facing", "surface": "operator-actions-panel"},
+}
+
 
 def _load(root: Path, cfg: dict):
     status = lib.load_unique_json(lib.status_path(root, cfg))
@@ -577,6 +641,35 @@ def cmd_deployment_gate(args) -> int:
                   event_kind="deployment_approved", event_message="Explicit deployment approval recorded",
                   by=args.by)
     print("DEPLOYMENT_APPROVED")
+    return 0
+
+
+def cmd_design_reject(args) -> int:
+    """Pilot rejects the currently reviewed design and returns it for revision."""
+    actor = lib.validate_agent_actor(args.by)
+    reason = str(args.reason or "").strip()
+    if not reason:
+        print("SHIP_FEATURE_BLOCKED: design rejection requires --reason")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, _ = _load(root, cfg)
+        review = status.get("design_review")
+        if status.get("phase_number") != 2 or not isinstance(review, dict) \
+                or review.get("decision") != "approved" or status.get("design_approved"):
+            print("SHIP_FEATURE_BLOCKED: no reviewed, unapproved design is awaiting the Pilot")
+            return 1
+        rejected_hash = review.get("design_hash")
+        status["design_review"] = None
+        status["design_approved"] = None
+        status["status"] = "in_progress"
+        status["next_action"] = f"Pilot requested design revision: {reason}"
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        lib.commit(root, cfg, status=status, event_kind="design_rejected",
+                   event_message=f"Pilot rejected the reviewed design: {reason}",
+                   by=actor, reason=reason, design_hash=rejected_hash)
+    print("DESIGN_REJECTED")
     return 0
 
 
@@ -3392,6 +3485,10 @@ def main() -> int:
                                 "non-empty description ONLY when the human explicitly asked to redesign "
                                 "already-settled work, making that exception visible in the audit trail")
 
+    design_reject = sub.add_parser("design-reject", help="Pilot rejects the currently reviewed design")
+    design_reject.add_argument("--by", required=True)
+    design_reject.add_argument("--reason", required=True)
+
     design_review = sub.add_parser("record-design-review",
                                    help="record an independent Phase-2 review of the Architect's design")
     design_review.add_argument("--by", required=True, help="independent design reviewer's identity")
@@ -3662,6 +3759,7 @@ def main() -> int:
         "record-evidence": cmd_record_evidence,
         "record-symptom-resolved": cmd_record_symptom,
         "design-approve": cmd_design_approve,
+        "design-reject": cmd_design_reject,
         "record-design-review": cmd_record_design_review,
         "design-review-packet": cmd_design_review_packet,
         "design-review-authorize": cmd_design_review_authorize,

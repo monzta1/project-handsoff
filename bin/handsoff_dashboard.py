@@ -8,6 +8,7 @@ commands exposed by the supervisor CLI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import re
@@ -237,6 +238,7 @@ def _input_request(status: dict, cfg: dict) -> dict:
         cfg.get("deployment_requires_explicit_approval", True)
         and phase == 7
         and not status.get("deployment_approved")
+        and not isinstance(status.get("human_pause"), dict)
     )
     design_review = status.get("design_review") or {}
     design_approval_missing = (
@@ -318,6 +320,81 @@ def _input_request(status: dict, cfg: dict) -> dict:
             "amendment_decision": amendment_decision,
             "question_id": questions[0].get("question_id") if questions else None,
             "question_cards": lib.question_cards(status) if questions else []}
+
+
+def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict]:
+    """Canonical current Pilot actions; every id is bound to displayed state."""
+    seed = {
+        "updated_at": status.get("updated_at"), "kind": input_request.get("kind"),
+        "escalation": status.get("escalation"),
+        "amendment_hash": (status.get("amendment") or {}).get("amendment_hash"),
+        "regression": (lib.active_regression_request(status) or {}).get("command_sha256"),
+    }
+    binding = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+    actions = []
+
+    operation_by_kind = {
+        "design_approve": "design-approve", "design_reject": "design-reject",
+        "deployment_approve": "deployment-gate", "deployment_hold": "human-pause-start",
+        "design_review_authorize": "design-review-authorize", "design_review_escalate": "design-review-escalate",
+        "regression_accept": "regression-decide", "regression_decline": "regression-decide",
+        "regression_cancel": "regression-cancel", "amendment_approve": "amendment-approve",
+        "amendment_escalate": "amendment-escalate", "amendment_review_approve": "amendment-review",
+        "amendment_review_reject": "amendment-review", "recovery_acknowledge": "recovery-acknowledge",
+        "recover": "recover", "review_cap_override": "review-cap-override",
+        "pause": "human-pause-start", "resume": "human-pause-end",
+    }
+
+    def add(kind, label, consequence, *, reason=False, tone="primary"):
+        operation = operation_by_kind[kind]
+        registry = supervisor.OPERATION_REGISTRY.get(operation) or {}
+        if registry.get("class") != "operator-facing":
+            raise lib.HandsoffError(f"dashboard action {kind} has no operator-facing canonical operation")
+        actions.append({
+            "action_id": f"{kind}:{binding}", "kind": kind, "label": label,
+            "operation": operation, "type": input_request.get("kind") or kind,
+            "reason": input_request.get("message"), "requesting_role": _active_role(status, input_request),
+            "requesting_session": None,
+            "created_at": status.get("updated_at"), "binding": binding,
+            "consequence": consequence, "requires_reason": reason, "tone": tone,
+        })
+
+    kind = input_request.get("kind")
+    if kind == "design_approval":
+        add("design_approve", "Authorize design", "Opens Phase 3 for the exact reviewed design")
+        add("design_reject", "Request design revision", "Returns the design to the Architect and Reviewer", reason=True, tone="danger")
+    elif kind == "deployment_approval":
+        add("deployment_approve", "Authorize deployment", "Allows live verification to continue")
+        add("deployment_hold", "Hold deployment", "Pauses the mission until the Pilot resumes it", reason=True, tone="danger")
+    elif kind == "design_review_budget":
+        add("design_review_authorize", "Authorize one review", "Permits exactly one additional design review")
+        add("design_review_escalate", "Escalate reviewer tier", "Routes the next review to the primary reviewer tier", reason=True)
+        add("pause", "Keep mission held", "Records an explicit Pilot pause", reason=True, tone="muted")
+    elif kind == "regression_approval":
+        add("regression_accept", "Accept regression", "Authorizes the displayed commands once")
+        add("regression_decline", "Decline regression", "Closes this request without executing it", tone="danger")
+    elif kind == "amendment_approval":
+        add("amendment_approve", "Approve amendment", "Resumes the frozen phase with the reviewed delta")
+        add("amendment_escalate", "Escalate to redesign", "Closes the amendment and returns to full design", reason=True, tone="danger")
+    elif kind == "amendment_review":
+        add("amendment_review_approve", "Approve amendment review", "Moves the amendment to Pilot approval", reason=True)
+        add("amendment_review_reject", "Request amendment revision", "Returns the amendment for revision", reason=True, tone="danger")
+    elif kind == "amendment_revision":
+        add("amendment_escalate", "Escalate to redesign", "Closes the amendment and returns to full design", reason=True, tone="danger")
+    escalation = status.get("escalation") or {}
+    if escalation.get("kind") in {"recovery_exhausted", "recovery_paused"}:
+        add("recovery_acknowledge", "Acknowledge recovery hold", "Clears the exhausted recovery hold", reason=True)
+        add("recover", "Retry recovery", "Runs one eligible bounded recovery attempt", reason=True)
+    if escalation.get("kind") == "review_cap_exhausted":
+        add("review_cap_override", "Authorize one review attempt", "Extends the implementation-review cap once", reason=True)
+    current_regression = lib.active_regression_request(status)
+    if current_regression and current_regression.get("state") in {"awaiting_approval", "accepted"}:
+        add("regression_cancel", "Cancel regression request", "Closes the pending regression request", tone="danger")
+    if isinstance(status.get("human_pause"), dict):
+        add("resume", "Resume mission", "Ends the explicit Pilot pause")
+    elif status.get("status") != "complete" and not actions:
+        add("pause", "Pause mission", "Records an explicit Pilot pause", reason=True, tone="muted")
+    return actions
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
@@ -429,6 +506,11 @@ def build_snapshot(root: Path) -> dict:
             "root": str(root),
             "error": "System online. No active Mission Objective was found in this project, Pilot.",
             "settings": _settings_view(cfg),
+            "operator_actions": [{
+                "action_id": "init:new", "kind": "init", "label": "Initialize mission",
+                "consequence": "Creates a new Handsoff mission in this project",
+                "requires_reason": False, "tone": "primary",
+            }],
         }
 
     try:
@@ -484,6 +566,7 @@ def build_snapshot(root: Path) -> dict:
     design_reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
     audit_healthy = not gate_errors and not audit_errors
     input_request = _input_request(status, cfg)
+    operator_actions = _operator_actions(status, cfg, input_request)
     display_status = dict(status)
     display_status["phase"] = _display_phase_name(status)
     actors = {
@@ -647,6 +730,7 @@ def build_snapshot(root: Path) -> dict:
         "escalation": status.get("escalation"),
         "settings": _settings_view(cfg),
         "input_required": input_request,
+        "operator_actions": operator_actions,
         "activity_note": activity,
         "activity": activity_view,
         "live": live,
@@ -888,6 +972,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_shutdown()
             return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
+                        "/api/init", "/api/operator-action",
                         "/api/lane-confirm", "/api/tranche-approval",
                         "/api/regression-decision", "/api/question-answer", "/api/question-answers",
                         "/api/design-review-authorize", "/api/pilot-note", "/api/amendment-approval"}:
@@ -913,6 +998,100 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             requested = _strict_json_object(self.rfile.read(length))
+            if path == "/api/init":
+                if set(requested) != {"feature", "issue", "lane"} \
+                        or not isinstance(requested.get("feature"), str) \
+                        or requested.get("issue") is not None and not isinstance(requested.get("issue"), str) \
+                        or requested.get("lane") not in {"full", "small-fix"}:
+                    raise lib.HandsoffError("mission initialization requires feature, optional issue, and lane")
+                item = [requested["issue"].strip()] if requested.get("issue") and requested["issue"].strip() else []
+                command = argparse.Namespace(root=str(self.server.project_root), feature=requested["feature"],
+                                             item=item, lane=requested["lane"])
+                if supervisor.cmd_init(command) != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "Mission initialization was rejected"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True})
+                return
+            if path == "/api/operator-action":
+                if set(requested) != {"action_id", "reason"} \
+                        or not isinstance(requested.get("action_id"), str) \
+                        or requested.get("reason") is not None and not isinstance(requested.get("reason"), str):
+                    raise lib.HandsoffError("operator action requires action_id and optional reason")
+                snapshot = build_snapshot(self.server.project_root)
+                action = next((item for item in snapshot.get("operator_actions") or []
+                               if item.get("action_id") == requested["action_id"]), None)
+                if not action:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The displayed operator action is stale"})
+                    return
+                reason = (requested.get("reason") or "").strip()
+                if action.get("requires_reason") and not reason:
+                    raise lib.HandsoffError("this operator action requires a reason")
+                root_arg = str(self.server.project_root)
+                pilot = "Mission Control Pilot"
+                status = snapshot.get("status") or {}
+                kind = action["kind"]
+                if kind == "design_approve":
+                    review = status.get("design_review") or {}
+                    command = argparse.Namespace(root=root_arg, by=pilot, architect=review.get("architect"),
+                                                 summary="Pilot authorized the reviewed design in Mission Control.",
+                                                 redesigns_settled_work=None)
+                    code = supervisor.cmd_design_approve(command)
+                elif kind == "design_reject":
+                    code = supervisor.cmd_design_reject(argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason))
+                elif kind == "deployment_approve":
+                    code = supervisor.cmd_deployment_gate(argparse.Namespace(
+                        root=root_arg, approve=True, by=pilot))
+                elif kind in {"deployment_hold", "pause"}:
+                    code = supervisor.cmd_human_pause_start(argparse.Namespace(
+                        root=root_arg, by=pilot, note=reason or "Pilot held the mission in Mission Control"))
+                elif kind == "resume":
+                    code = supervisor.cmd_human_pause_end(argparse.Namespace(
+                        root=root_arg, by=pilot, note="Pilot resumed the mission in Mission Control"))
+                elif kind == "design_review_authorize":
+                    code = supervisor.cmd_design_review_authorize(argparse.Namespace(
+                        root=root_arg, by=pilot, note="Authorized from Mission Control"))
+                elif kind == "design_review_escalate":
+                    code = supervisor.cmd_design_review_escalate(argparse.Namespace(
+                        root=root_arg, by=pilot, note=reason))
+                elif kind == "recovery_acknowledge":
+                    code = supervisor.cmd_recovery_acknowledge(argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason))
+                elif kind == "recover":
+                    code = supervisor.cmd_recover(argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason, dry_run=False, timeout=3600))
+                elif kind == "review_cap_override":
+                    code = supervisor.cmd_review_cap_override(argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason))
+                elif kind == "amendment_approve":
+                    code = supervisor.cmd_amendment_approve(argparse.Namespace(root=root_arg, by=pilot))
+                elif kind == "amendment_escalate":
+                    code = supervisor.cmd_amendment_escalate(argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason))
+                elif kind in {"amendment_review_approve", "amendment_review_reject"}:
+                    code = supervisor.cmd_amendment_review(argparse.Namespace(
+                        root=root_arg, by=pilot, summary=reason,
+                        approve=kind == "amendment_review_approve",
+                        request_changes=kind == "amendment_review_reject"))
+                elif kind in {"regression_accept", "regression_decline"}:
+                    item = (snapshot.get("regression") or {}).get("pending") or {}
+                    code = supervisor.cmd_regression_decide(argparse.Namespace(
+                        root=root_arg, request_id=item.get("request_id"), by=pilot,
+                        accept=kind == "regression_accept", decline=kind == "regression_decline"))
+                elif kind == "regression_cancel":
+                    item = (snapshot.get("regression") or {}).get("current") or {}
+                    code = supervisor.cmd_regression_cancel(argparse.Namespace(
+                        root=root_arg, request_id=item.get("request_id"), by=pilot))
+                else:
+                    raise lib.HandsoffError("unsupported operator action")
+                if code != 0:
+                    self._json_response(HTTPStatus.CONFLICT,
+                                        {"ok": False, "error": "The workflow gate rejected this action"})
+                    return
+                self._json_response(HTTPStatus.OK, {"ok": True, "kind": kind})
+                return
             if path == "/api/lane-confirm":
                 if set(requested) != {"item"} or not isinstance(requested.get("item"), str):
                     raise lib.HandsoffError("lane confirmation requires one work-item id")

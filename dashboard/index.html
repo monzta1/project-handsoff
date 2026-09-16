@@ -39,7 +39,12 @@
         <span class="empty-code">SYSTEM ONLINE · NO ACTIVE MISSION</span>
         <h1>System online. Welcome back, Pilot.</h1>
         <p id="empty-message">No Mission Objective detected. Initialize a Ship Feature and E.V.E. will acquire it automatically.</p>
-        <code>python3 bin/handsoff_supervisor.py init "Your feature"</code>
+        <form id="mission-init-form" class="mission-init-form" autocomplete="off">
+          <label>MISSION OBJECTIVE<input id="mission-init-feature" type="text" maxlength="240" required placeholder="Describe the feature or repair"></label>
+          <label>ISSUE <span>OPTIONAL</span><input id="mission-init-issue" type="text" maxlength="80" placeholder="#61"></label>
+          <label>FLIGHT PROFILE<select id="mission-init-lane"><option value="full">Full mission</option><option value="small-fix">Small-fix lane</option></select></label>
+          <button id="mission-init-submit" type="submit">INITIALIZE MISSION</button>
+        </form>
       </section>
 
       <div id="active-state" class="hidden">
@@ -76,6 +81,12 @@
             <button id="regression-decline" class="alert-button hidden" type="button">DECLINE</button>
             <button id="enable-alerts" class="alert-button" type="button">Enable tactical alerts</button>
           </div>
+        </section>
+
+        <section id="operator-actions-panel" class="panel operator-actions-panel hidden" aria-live="polite">
+          <div class="section-head"><div><p class="panel-label">PILOT OPERATIONS</p><h2>Available command decisions</h2></div><span id="operator-actions-count" class="section-meta">0 ACTIONS</span></div>
+          <p class="operator-actions-intro">Every control is bound to the mission state displayed here. Stale commands are rejected safely.</p>
+          <div id="operator-actions-list" class="operator-actions-list"></div>
         </section>
 
         <section id="regression-alert" class="regression-card panel hidden" aria-live="polite">

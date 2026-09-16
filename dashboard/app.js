@@ -435,6 +435,94 @@ function renderInputAlert(inputRequest, feature, regression) {
   state.alertSignature = signature;
 }
 
+function renderOperatorActions(actions = []) {
+  const panel = $("operator-actions-panel");
+  if (!panel) return;
+  panel.classList.toggle("hidden", actions.length === 0);
+  $("operator-actions-count").textContent = `${actions.length} ACTION${actions.length === 1 ? "" : "S"}`;
+  const list = $("operator-actions-list");
+  list.replaceChildren();
+  for (const action of actions) {
+    const card = document.createElement("article");
+    card.className = `operator-action operator-action-${action.tone || "primary"}`;
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = action.label;
+    const consequence = document.createElement("p");
+    consequence.textContent = action.consequence;
+    copy.append(title, consequence);
+    const controls = document.createElement("div");
+    controls.className = "operator-action-controls";
+    let reason = null;
+    if (action.requires_reason) {
+      reason = document.createElement("input");
+      reason.type = "text";
+      reason.maxLength = 512;
+      reason.placeholder = "Reason required";
+      reason.setAttribute("aria-label", `Reason for ${action.label}`);
+      controls.append(reason);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = action.label.toUpperCase();
+    button.addEventListener("click", () => executeOperatorAction(action, reason?.value || "", button));
+    controls.append(button);
+    card.append(copy, controls);
+    list.append(card);
+  }
+}
+
+async function executeOperatorAction(action, reason, button) {
+  if (action.requires_reason && !reason.trim()) {
+    showError("Command rejected: enter the required reason.");
+    return;
+  }
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "TRANSMITTING…";
+  try {
+    const response = await fetch("/api/operator-action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action_id: action.action_id, reason: reason.trim() || null }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Command returned ${response.status}`);
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = original;
+    showError(`Command rejected: ${error.message}`);
+  }
+}
+
+async function initializeMission(event) {
+  event.preventDefault();
+  const button = $("mission-init-submit");
+  const feature = $("mission-init-feature").value.trim();
+  if (!feature) return;
+  button.disabled = true;
+  button.textContent = "INITIALIZING…";
+  try {
+    const response = await fetch("/api/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        feature,
+        issue: $("mission-init-issue").value.trim() || null,
+        lane: $("mission-init-lane").value,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Initialization returned ${response.status}`);
+    await refresh();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "INITIALIZE MISSION";
+    showError(`Mission initialization rejected: ${error.message}`);
+  }
+}
+
 async function decideRegression(decision) {
   const request = state.regressionRequest;
   if (!request) return;
@@ -996,6 +1084,7 @@ function render(snapshot) {
     $("active-state").classList.add("hidden");
     $("empty-state").classList.remove("hidden");
     $("empty-message").textContent = snapshot.error || "No Mission Objective detected. Initialize a Ship Feature to begin.";
+    renderOperatorActions([]);
     setFaviconState("idle");
     return;
   }
@@ -1012,6 +1101,7 @@ function render(snapshot) {
   renderAgentOutput(snapshot.runtime?.agent_output || null);
   renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
+  renderOperatorActions(snapshot.operator_actions || []);
   renderRegression(snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   setFaviconState(status.status === "complete" ? "complete"
@@ -1172,6 +1262,7 @@ $("deployment-approve").addEventListener("click", authorizeDeployment);
 $("design-review-authorize").addEventListener("click", authorizeDesignReviewAttempt);
 $("amendment-approve").addEventListener("click", approveAmendment);
 $("pilot-note-form").addEventListener("submit", sendPilotNote);
+$("mission-init-form").addEventListener("submit", initializeMission);
 $("regression-accept").addEventListener("click", () => decideRegression("accept"));
 $("regression-decline").addEventListener("click", () => decideRegression("decline"));
 $("settings-toggle").addEventListener("click", openSettings);

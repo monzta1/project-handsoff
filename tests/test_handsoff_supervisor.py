@@ -341,7 +341,8 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertIn('fetch("/api/design-approval"', script)
         self.assertIn('fetch("/api/deployment-approval"', script)
         self.assertIn('signature !== state.alertSignature', script)
-        self.assertIn("python3 bin/handsoff_supervisor.py init", html)
+        self.assertIn('id="mission-init-form"', html)
+        self.assertNotIn("python3 bin/handsoff_supervisor.py init", html)
 
         self.init("Dashboard design authorization")
         authored = run([
@@ -374,6 +375,74 @@ class TestEveMissionControl(HandsoffTestCase):
             self.assertEqual(approved["by"], "Mission Control Pilot")
             self.assertEqual(approved["architect"], "arch-ui")
             self.assertEqual(self.read_status()["status"], "in_progress")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_canonical_operation_registry_and_dashboard_actions_are_closed(self):
+        dashboard = self._dashboard()
+        import handsoff_supervisor as supervisor
+
+        source = (ROOT / "bin" / "handsoff_supervisor.py").read_text()
+        commands = set(re.findall(r"\bsub\.add_parser\(\s*[\"']([^\"']+)", source))
+        self.assertEqual(commands, set(supervisor.OPERATION_REGISTRY))
+        allowed = {"operator-facing", "agent-only", "automatic", "diagnostic", "destructive"}
+        self.assertFalse({item["class"] for item in supervisor.OPERATION_REGISTRY.values()} - allowed)
+
+        html = (ROOT / "dashboard" / "index.html").read_text()
+        for command, record in supervisor.OPERATION_REGISTRY.items():
+            if record["class"] == "operator-facing":
+                self.assertIn(f'id="{record["surface"]}"', html, command)
+
+        status = {
+            "phase_number": 2, "updated_at": "2026-09-15T12:00:00+00:00",
+            "requires_design_approval": True, "design_approved": None,
+            "design_review": {"decision": "approved", "architect": "architect-1", "design_hash": "abc"},
+        }
+        request = dashboard._input_request(status, {"deployment_requires_explicit_approval": True})
+        actions = dashboard._operator_actions(status, {}, request)
+        self.assertEqual({item["kind"] for item in actions}, {"design_approve", "design_reject"})
+        for action in actions:
+            self.assertEqual(supervisor.OPERATION_REGISTRY[action["operation"]]["class"], "operator-facing")
+            self.assertTrue(action["binding"])
+            self.assertTrue(action["action_id"].endswith(action["binding"]))
+
+    def test_design_rejection_is_reasoned_audited_and_invalidates_the_displayed_action(self):
+        dashboard = self._dashboard()
+        self.init("Dashboard design rejection")
+        authored = run(["criterion-update", "REQ-001", "--requirement",
+                        "A concrete design must be reviewed before implementation"], cwd=self.tmp)
+        self.assertEqual(authored.returncode, 0, authored.stdout + authored.stderr)
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp, architect="arch-ui", reviewer="reviewer-ui").returncode, 0)
+        first = dashboard.build_snapshot(self.tmp)
+        action = next(item for item in first["operator_actions"] if item["kind"] == "design_reject")
+
+        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        payload = json.dumps({"action_id": action["action_id"], "reason": "Add the missing rollback path"})
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=3)
+            connection.request("POST", "/api/operator-action", body=payload,
+                               headers={"Content-Type": "application/json", "Origin": f"http://{host}:{port}"})
+            response = connection.getresponse()
+            body = response.read()
+            connection.close()
+            self.assertEqual(response.status, 200, body)
+            self.assertIsNone(self.read_status()["design_review"])
+
+            connection = http.client.HTTPConnection(host, port, timeout=3)
+            connection.request("POST", "/api/operator-action", body=payload,
+                               headers={"Content-Type": "application/json", "Origin": f"http://{host}:{port}"})
+            response = connection.getresponse()
+            body = response.read()
+            connection.close()
+            self.assertEqual(response.status, 409, body)
+            events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(item["kind"] == "design_rejected" for item in events), 1)
         finally:
             server.shutdown()
             server.server_close()
