@@ -55,7 +55,7 @@ class FleetMissionControlTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in snapshot["projects"]], ["alpha", "beta"])
         self.assertEqual(len(fleet.load_registry(self.registry)), 2)
         self.assertNotEqual(snapshot["projects"][0]["binding"], snapshot["projects"][1]["binding"])
-        self.assertEqual(snapshot["projects"][0]["engine_version"], "v0.3.3")
+        self.assertEqual(snapshot["projects"][0]["engine_version"], "v0.3.5")
 
     def test_clean_close_and_reopen_are_audited_idempotent_and_non_destructive(self):
         root = self.project("closure")

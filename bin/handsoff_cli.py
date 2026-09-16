@@ -35,7 +35,8 @@ def _current_identity() -> dict:
 def init_project(root: Path, pin: str | None, *, dry_run: bool = False) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     identity = _current_identity()
-    required = pin or identity["version"]
+    current = lib._version_tuple(identity["version"])
+    required = pin or f"{current[0]}.{current[1]}.*"
     if not lib.version_satisfies(identity["version"], required):
         raise lib.HandsoffError(f"installed engine {identity['version']} does not satisfy requested pin {required}")
     config = root / "handsoff.toml"
@@ -159,10 +160,14 @@ def migrate_project(root: Path, *, dry_run: bool) -> dict:
 def doctor(root: Path) -> dict:
     identity = lib.validate_runtime_integrity(root)
     cfg = lib.load_config(root)
+    legacy_runtime_paths = [str(root / item) for item in LEGACY_PARTS if (root / item).exists()]
     return {"ok": True, "root": str(root), "engine": identity,
             "config": str(root / "handsoff.toml"),
             "adapters": lib.adapter_availability(),
             "state_present": lib.status_path(root, cfg).exists(),
+            "console_executable": str(Path(sys.argv[0]).expanduser().resolve()),
+            "legacy_runtime_paths": legacy_runtime_paths,
+            "migration_required": identity["source"] == "project-drop-in",
             "python": ".".join(map(str, sys.version_info[:3]))}
 
 

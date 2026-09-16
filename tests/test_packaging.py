@@ -30,7 +30,7 @@ class VersionedRuntimeTests(unittest.TestCase):
 
     def test_thin_init_has_only_config_and_pin_and_reports_exact_engine(self):
         root = self.base / "thin-one"
-        result = cli.init_project(root, "0.3.*")
+        result = cli.init_project(root, None)
         self.assertEqual(result["pin"], "0.3.*")
         self.assertTrue((root / "handsoff.toml").is_file())
         self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), "0.3.*")
@@ -42,7 +42,11 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertEqual(identity["compatibility"], "0.3.*")
         self.assertNotIn("manifest", identity)
         self.assertRegex(identity["manifest_sha256"], r"^[0-9a-f]{64}$")
-        self.assertTrue(cli.doctor(root)["ok"])
+        diagnosis = cli.doctor(root)
+        self.assertTrue(diagnosis["ok"])
+        self.assertFalse(diagnosis["migration_required"])
+        self.assertEqual(diagnosis["legacy_runtime_paths"], [])
+        self.assertTrue(diagnosis["console_executable"])
 
     def test_incompatible_pin_refuses_before_any_agent_launch(self):
         root = self.base / "wrong-pin"
@@ -81,6 +85,9 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
         ledger = (root / "handsoff-events.jsonl").read_bytes()
         preview = cli.migrate_project(root, dry_run=True)
+        diagnosis = cli.doctor(root)
+        self.assertTrue(diagnosis["migration_required"])
+        self.assertIn(str(root / "bin"), diagnosis["legacy_runtime_paths"])
         self.assertTrue((root / "bin").is_dir())
         self.assertIn("bin", preview["move"])
         applied = cli.migrate_project(root, dry_run=False)

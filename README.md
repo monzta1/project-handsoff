@@ -10,6 +10,11 @@ The Supervisor owns state, phase gates, acceptance evidence, retries, and user e
 
 MIT licensed, see [LICENSE](LICENSE).
 
+For a clean first install, upgrade, rollback, or migration from a repository that
+contains an older copied runtime, follow [INSTALL.md](INSTALL.md). It uses one
+stable command path so shell scripts and background services never point at an
+obsolete release-specific environment.
+
 ## Quick start
 
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
@@ -20,7 +25,7 @@ handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
 
-`handsoff doctor` reports the exact engine version, installation source, compatible project pin, offline-verifiable manifest identity, adapter availability, Python version, and whether run state exists. A missing or incompatible `.handsoff-version` refuses before an agent session is reserved. Exact pins such as `v0.3.5` and compatible-minor pins such as `0.3.*` are supported. Configure `[checks].commands` and `[checks].live_commands`, then initialize the mission from the target project's root or from Mission Control:
+`handsoff doctor` reports the exact engine version, installation source, compatible project pin, offline-verifiable manifest identity, adapter availability, Python version, whether run state exists, and whether a copied legacy runtime still needs migration. A missing or incompatible `.handsoff-version` refuses before an agent session is reserved. New projects default to the compatible patch pin `0.3.*`; exact pins such as `v0.3.5` remain supported when strict reproducibility is preferred. Configure `[checks].commands` and `[checks].live_commands`, then initialize the mission from the target project's root or from Mission Control:
 
 ```bash
 python3 bin/handsoff_supervisor.py init "Fix the thing that is broken"
