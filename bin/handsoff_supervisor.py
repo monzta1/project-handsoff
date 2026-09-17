@@ -1510,6 +1510,18 @@ def cmd_verify(args) -> int:
                     binding={t: bindings[t] for t in own_tests}, executed=executed,
                     reused_from=reused_from, feature_hash=run_hash,
                     repository_digest=record_digest, config_digest=config_digest)
+                if record_digest:
+                    digest_dir = root / ".handsoff-digests"
+                    digest_dir.mkdir(parents=True, exist_ok=True)
+                    snapshot = digest_dir / f"{record_digest}.json"
+                    if executed or not snapshot.exists():
+                        lib.atomic_write_json(snapshot, {
+                            "digest": record_digest,
+                            "entries": lib.repository_digest_entries(root, cfg),
+                        })
+                    snapshots = sorted(digest_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    for old in snapshots[16:]:
+                        old.unlink()
                 status["verification_head"] = record["hash"]
                 if record["run_id"] not in criterion["evidence"]:
                     criterion["evidence"].append(record["run_id"])

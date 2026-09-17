@@ -56,6 +56,11 @@ commands = []
 live_commands = []
 timeout_seconds = 600
 
+[digest]
+# Optional glob patterns excluded from repository evidence digests. A match
+# applies to the full relative path and to any path component.
+ignore = []
+
 [regression_gate]
 approval_timeout_minutes = 30
 launch_window_minutes = 10

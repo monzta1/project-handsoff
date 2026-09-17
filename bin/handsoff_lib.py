@@ -21,6 +21,7 @@ tool let an ungated transition into Phase 6 succeed.
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import json
 import math
 import os
@@ -287,6 +288,7 @@ DEFAULT_CONFIG = {
     "require_live_verification": True,
     "deployment_requires_explicit_approval": True,
     "check_commands": [],
+    "digest_ignore": [],
     "implementer_commands": [],
     "documentation": {"files": [], "exclude": []},
     "live_check_commands": [],
@@ -745,8 +747,11 @@ def load_config(root: Path) -> dict:
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
+    digest = raw.get("digest", {})
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
+    if not isinstance(digest, dict):
+        raise HandsoffError("handsoff.toml: digest must be a table")
     if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis)):
         raise HandsoffError(
             "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, and analysis must be tables"
@@ -755,6 +760,10 @@ def load_config(root: Path) -> dict:
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
     cfg["verification_log"] = project.get("verification_log", cfg["verification_log"])
+    ignore = digest.get("ignore", [])
+    if not isinstance(ignore, list) or not all(isinstance(item, str) for item in ignore):
+        raise HandsoffError("handsoff.toml: digest.ignore must be a list of strings")
+    cfg["digest_ignore"] = list(ignore)
     if set(adapters) - set(SELECTABLE_AGENT_ADAPTERS):
         raise HandsoffError("handsoff.toml: adapters may only contain codex and claude")
     for adapter, value in adapters.items():
@@ -2978,7 +2987,9 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
     current_digest = repository_digest(root, cfg)
     current_config = verification_config_hash(cfg)
     result = {"current_digest": current_digest, "current": [], "stale": [],
-              "unknown": [], "refresh_commands": []}
+              "unknown": [], "refresh_commands": [], "changed_paths": [],
+              "changed_paths_truncated": False, "changed_paths_note": None}
+    current_entries = repository_digest_entries(root, cfg)
     for criterion in acceptance.get("criteria", []):
         cid = criterion.get("id")
         if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
@@ -2994,10 +3005,27 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
         recorded_config = record.get("config_hash")
         if digest is None:
             result["unknown"].append(cid)
+            result["changed_paths"] = None
+            result["changed_paths_note"] = "snapshot not recorded"
         elif digest == current_digest and (recorded_config is None or recorded_config == current_config):
             result["current"].append(cid)
         else:
             result["stale"].append(cid)
+            snapshot_path = root / ".handsoff-digests" / f"{digest}.json"
+            if snapshot_path.is_file():
+                try:
+                    old_entries = load_unique_json(snapshot_path).get("entries", {})
+                    changed = sorted({*old_entries, *current_entries} - {
+                        path for path in set(old_entries) & set(current_entries)
+                        if old_entries[path] == current_entries[path]
+                    })
+                    if len(changed) > 32:
+                        result["changed_paths_truncated"] = True
+                    result["changed_paths"] = changed[:32]
+                except (OSError, HandsoffError, ValueError):
+                    result["changed_paths_note"] = "snapshot not recorded"
+            else:
+                result["changed_paths_note"] = "snapshot not recorded"
             result["refresh_commands"].append(
                 f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
     return result
@@ -4716,8 +4744,11 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     progress = float(status.get("progress", 0) or 0)
     evidence_errors = _evidence_errors(gate_criteria, verifications or [])
     if root is not None and phase >= 5:
-        for cid in evidence_drift(root, cfg, acceptance, records)["stale"]:
-            errors.append(f"evidence drift: {cid} was verified on a different repository digest; "
+        drift = evidence_drift(root, cfg, acceptance, records)
+        for cid in drift["stale"]:
+            paths = ", ".join(drift.get("changed_paths", []))
+            suffix = f"; changed paths: {paths}" if paths else ""
+            errors.append(f"evidence drift: {cid} was verified on a different repository digest{suffix}; "
                           f"re-run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
     expected_coverage = coverage_for(criteria, resolved)
     symptom_record = _valid_symptom_record(status, gate_criteria, verifications or [])
@@ -7749,6 +7780,54 @@ HANDSOFF_GENERATED_NAMES = frozenset({
 })
 
 
+def _digest_listing(root: Path, cfg: dict) -> list[str]:
+    """List candidate paths once, applying git and configured ignore rules."""
+    listed = None
+    try:
+        probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=str(root),
+                               capture_output=True, text=True, timeout=10, check=False)
+        if probe.returncode == 0 and probe.stdout.strip() == "true":
+            tracked = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), capture_output=True,
+                                     timeout=30, check=True).stdout
+            untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"],
+                                       cwd=str(root), capture_output=True, timeout=30, check=True).stdout
+            listed = [x.decode("utf-8", "replace") for x in (tracked + untracked).split(b"\0") if x]
+    except (OSError, subprocess.SubprocessError):
+        listed = None
+    if listed is None:
+        listed = []
+        gitignore_rules = []
+        for directory, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in HANDSOFF_GENERATED_NAMES)
+            base = Path(directory).relative_to(root).as_posix()
+            if base == ".": base = ""
+            if ".gitignore" in files:
+                for line in (Path(directory) / ".gitignore").read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and not line.startswith("!"):
+                        gitignore_rules.append((base, line))
+            for filename in files:
+                if filename == ".gitignore":
+                    continue
+                relative = filename if not base else f"{base}/{filename}"
+                ignored = False
+                for rule_base, rule in gitignore_rules:
+                    target = relative[len(rule_base) + 1:] if rule_base and relative.startswith(rule_base + "/") else relative
+                    pattern = rule.rstrip("/")
+                    if rule.endswith("/") and (target == pattern or target.startswith(pattern + "/")):
+                        ignored = True
+                    elif rule.startswith("/") and fnmatch.fnmatch(target, pattern.lstrip("/")):
+                        ignored = True
+                    elif fnmatch.fnmatch(target, pattern) or fnmatch.fnmatch(Path(target).name, pattern):
+                        ignored = True
+                if not ignored:
+                    listed.append(relative)
+    ignores = [item for item in cfg.get("digest_ignore", []) if isinstance(item, str)]
+    return sorted({path for path in listed
+                   if not any(fnmatch.fnmatch(path, glob) or any(fnmatch.fnmatch(part, glob) for part in path.split("/"))
+                              for glob in ignores)})
+
+
 def _digest_excluded(relative: str, state_files: set[str]) -> bool:
     """Runtime bookkeeping never counts as repository content. Beyond the
     enumerated names, every `.handsoff*` path component is Handsoff side
@@ -7795,27 +7874,8 @@ def repository_digest(root: Path, cfg: dict | None = None) -> str:
     evidence drift."""
     names = cfg or DEFAULT_CONFIG
     state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
-    listed: list[str] | None = None
-    try:
-        probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=str(root), shell=False,
-                               text=True, capture_output=True, timeout=10, check=False)
-        if probe.returncode == 0 and probe.stdout.strip() == "true":
-            tracked = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), shell=False,
-                                     capture_output=True, timeout=30, check=True).stdout
-            untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=str(root),
-                                       shell=False, capture_output=True, timeout=30, check=True).stdout
-            listed = [entry.decode("utf-8", "replace") for entry in (tracked + untracked).split(b"\0") if entry]
-    except (OSError, subprocess.SubprocessError):
-        listed = None
-    if listed is None:
-        listed = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            relative_dir = Path(dirpath).relative_to(root).as_posix()
-            dirnames[:] = sorted(d for d in dirnames if d not in HANDSOFF_GENERATED_NAMES)
-            for filename in filenames:
-                listed.append(filename if relative_dir == "." else f"{relative_dir}/{filename}")
     pairs = []
-    for relative in sorted(set(listed)):
+    for relative in _digest_listing(root, names):
         if _digest_excluded(relative, state_files):
             continue
         pairs.append([relative, _digest_entry(root, relative)])
@@ -7830,16 +7890,8 @@ def repository_digest_entries(root: Path, cfg: dict | None = None) -> dict[str, 
     """
     names = cfg or load_config(root)
     state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
-    listed = []
-    try:
-        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), capture_output=True, check=True).stdout
-        untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=str(root), capture_output=True, check=True).stdout
-        listed = [x.decode("utf-8", "replace") for x in (tracked + untracked).split(b"\0") if x]
-    except (OSError, subprocess.SubprocessError):
-        for directory, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in HANDSOFF_GENERATED_NAMES)
-            listed.extend(str(Path(directory).joinpath(f).relative_to(root).as_posix()) for f in files)
-    return {path: _digest_entry(root, path) for path in sorted(set(listed)) if not _digest_excluded(path, state_files)}
+    return {path: _digest_entry(root, path) for path in _digest_listing(root, names)
+            if not _digest_excluded(path, state_files)}
 
 
 def record_session_result(root: Path, session_id: str, kind: str, payload: dict) -> dict:
