@@ -301,3 +301,18 @@ class LaunchRoleHttpTests(HandsoffTestCase):
         audited = self._launch_events()
         self.assertEqual(len(audited), 3)
         self.assertTrue(all(e["accepted"] is False and e["reason"] for e in audited))
+
+
+class LaunchActorAttributionTests(HandsoffTestCase):
+    """Only a Pilot-initiated launch carries the Pilot's name; watchdog and
+    orchestration launches keep the runtime's adapter-role identity."""
+
+    def test_default_launch_actor_is_not_the_pilot(self):
+        import handsoff_agent
+        server = dashboard.DashboardServer.__new__(dashboard.DashboardServer)
+        server.project_root = self.tmp
+        with mock.patch.object(handsoff_agent, "build_launch_spec", return_value="spec"), \
+                mock.patch.object(handsoff_agent, "execute_with_recovery", return_value=0) as run_it:
+            dashboard.DashboardServer._launch_managed_role(server, "reviewer", "resume")
+            dashboard.DashboardServer._launch_managed_role(server, "reviewer", "pilot task", "Mission Control Pilot")
+        self.assertEqual([c.kwargs.get("actor") for c in run_it.call_args_list], [None, "Mission Control Pilot"])

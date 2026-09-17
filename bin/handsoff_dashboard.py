@@ -919,7 +919,12 @@ class DashboardServer(ThreadingHTTPServer):
             if self.owned_by_run:
                 threading.Thread(target=self._orchestration_loop, daemon=True).start()
 
-    def _launch_managed_role(self, role: str, task: str, actor: str = "Mission Control Pilot") -> int:
+    def _launch_managed_role(self, role: str, task: str, actor: str | None = None) -> int:
+        """Launch a managed role. `actor` names who asked for the launch and
+        becomes the session's recorded identity, so only a Pilot-initiated
+        /api/launch-role passes "Mission Control Pilot"; watchdog and
+        orchestration launches keep the runtime default (adapter-role) so
+        a machine reviewer is never recorded under the Pilot's name."""
         import handsoff_agent
         spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
         return handsoff_agent.execute_with_recovery(spec, actor=actor)
