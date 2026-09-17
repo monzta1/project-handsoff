@@ -366,7 +366,7 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # valid; when present they must be null or a non-empty string. #37 adds
 # `tier` the same way: null unless a Phase-2 reviewer was launched through
 # the tiered selection, otherwise exactly "primary" or "followup".
-AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number"}
+AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "host_session_id"}
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
@@ -1655,12 +1655,15 @@ def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dic
     # Recomputing item progress while its changed criteria are temporarily
     # reset would make the just-written amendment contradict its own frozen
     # snapshot and render an otherwise valid run invalid.
-    if status is not None and "work_item_delivery" in status and open_amendment(status) is None:
+    preserve_progress = bool(status is not None and status.pop("_preserve_progress", False))
+    if status is not None and "work_item_delivery" in status and open_amendment(status) is None and not preserve_progress:
         progress_acceptance = acceptance
         if progress_acceptance is None and acceptance_path(root, cfg).is_file():
             progress_acceptance = load_unique_json(acceptance_path(root, cfg))
         if isinstance(progress_acceptance, dict):
             status["progress"] = overall_item_progress(status, progress_acceptance, cfg)
+    if status is not None and preserve_progress and "progress" in event_extra:
+        status["progress"] = event_extra["progress"]
     write_ahead(root, status=status, acceptance=acceptance)
     if acceptance is not None:
         atomic_write_json(acceptance_path(root, cfg), acceptance)
@@ -2012,6 +2015,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             "design_hash": design_hash,
             "tier": tier,
             "phase_number": int(status.get("phase_number", 1) or 1),
+            "host_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_COMPANION_SESSION_ID"),
         }
         sessions[session_id] = session
         current[role] = session_id
@@ -2721,6 +2725,7 @@ def criterion_spec_hash(criterion: dict) -> str:
 
 def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
                         by: str, criteria: list[dict], results: list[dict] | None = None,
+                        commands: list[str] | None = None,
                         description: str | None = None,
                         acceptance_digest: str | None = None,
                         config_digest: str | None = None,
@@ -2767,6 +2772,7 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
         "criteria": [c["id"] for c in criteria],
         "criterion_hashes": {c["id"]: criterion_spec_hash(c) for c in criteria},
         "results": results or [],
+        "commands": list(commands or []),
         "description": description or "",
         "acceptance_hash": acceptance_digest,
         "config_hash": config_digest,
@@ -2793,6 +2799,7 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
     check cannot unexpectedly invalidate an existing run.
     """
     current_digest = repository_digest(root, cfg)
+    current_config = verification_config_hash(cfg)
     result = {"current_digest": current_digest, "current": [], "stale": [],
               "unknown": [], "refresh_commands": []}
     for criterion in acceptance.get("criteria", []):
@@ -2807,9 +2814,10 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
         if record is None:
             continue
         digest = record.get("repository_digest")
+        recorded_config = record.get("config_hash")
         if digest is None:
             result["unknown"].append(cid)
-        elif digest == current_digest:
+        elif digest == current_digest and (recorded_config is None or recorded_config == current_config):
             result["current"].append(cid)
         else:
             result["stale"].append(cid)
@@ -3067,7 +3075,8 @@ def _design_review_history_errors(history: object) -> list[str]:
         if not isinstance(entry, dict):
             errors.append(f"{label} must be an object")
             continue
-        if set(entry) != set(DESIGN_REVIEW_HISTORY_FIELDS):
+        if set(entry) - set(DESIGN_REVIEW_HISTORY_FIELDS) - {"proposal_hash"} or \
+                set(DESIGN_REVIEW_HISTORY_FIELDS) - set(entry):
             errors.append(f"{label} must have exactly the keys {sorted(DESIGN_REVIEW_HISTORY_FIELDS)}")
             continue
         attempt = entry["attempt"]
@@ -3312,6 +3321,9 @@ def validate_status_schema(status: dict) -> list[str]:
                         errors.append("status: 'design_approved.at' must include a timezone")
                 except ValueError:
                     errors.append("status: 'design_approved.at' must be an ISO-8601 timestamp")
+            if "proposal_hash" in design_approved and design_approved["proposal_hash"] is not None and (not isinstance(design_approved["proposal_hash"], str)
+                                                                                                          or not design_approved["proposal_hash"].strip()):
+                errors.append("status: 'design_approved.proposal_hash' must be a non-empty string")
             if "redesigns_settled_work" in design_approved and design_approved["redesigns_settled_work"] is not None \
                     and (not isinstance(design_approved["redesigns_settled_work"], str)
                          or not design_approved["redesigns_settled_work"].strip()):
@@ -3332,7 +3344,10 @@ def validate_status_schema(status: dict) -> list[str]:
                         or not design_review[sub].strip():
                     errors.append(f"status: 'design_review.{sub}' must be a non-empty string")
             if design_review.get("decision") not in {"approved", "changes_requested"}:
-                errors.append("status: 'design_review.decision' must be 'approved' or 'changes_requested'")
+                    errors.append("status: 'design_review.decision' must be 'approved' or 'changes_requested'")
+            if "proposal_hash" in design_review and design_review["proposal_hash"] is not None and (not isinstance(design_review["proposal_hash"], str)
+                                                                                                      or not design_review["proposal_hash"].strip()):
+                errors.append("status: 'design_review.proposal_hash' must be a non-empty string")
             if "at" in design_review and isinstance(design_review["at"], str):
                 try:
                     parsed = datetime.fromisoformat(design_review["at"])
@@ -3356,6 +3371,27 @@ def validate_status_schema(status: dict) -> list[str]:
             if "reviewer_profile" in design_review and design_review["reviewer_profile"] is not None:
                 errors.extend(_design_reviewer_profile_errors(design_review["reviewer_profile"],
                                                               "design_review.reviewer_profile"))
+    proposal = status.get("design_proposal")
+    if isinstance(proposal, dict) and "provenance" in proposal:
+        provenance = proposal["provenance"]
+        expected = {"actor", "pid", "executable", "host_session_id", "recorded_at"}
+        if not isinstance(provenance, dict) or set(provenance) != expected:
+            errors.append("status: 'design_proposal.provenance' has invalid fields")
+        else:
+            if not isinstance(provenance["actor"], str) or not provenance["actor"].strip():
+                errors.append("status: 'design_proposal.provenance.actor' must be a non-empty string")
+            if not isinstance(provenance["pid"], int) or isinstance(provenance["pid"], bool) or provenance["pid"] < 1:
+                errors.append("status: 'design_proposal.provenance.pid' must be a positive integer")
+            if not isinstance(provenance["executable"], str) or not provenance["executable"].strip():
+                errors.append("status: 'design_proposal.provenance.executable' must be a non-empty string")
+            if provenance["host_session_id"] is not None and (not isinstance(provenance["host_session_id"], str)
+                                                               or not provenance["host_session_id"].strip()):
+                errors.append("status: 'design_proposal.provenance.host_session_id' must be a string or null")
+            try:
+                if datetime.fromisoformat(provenance["recorded_at"]).tzinfo is None:
+                    raise ValueError
+            except (TypeError, ValueError):
+                errors.append("status: 'design_proposal.provenance.recorded_at' must be timezone-aware")
     errors.extend(_design_reviewer_escalation_errors(status.get("design_reviewer_escalation")))
     errors.extend(_design_review_history_errors(status.get("design_review_history")))
     errors.extend(_design_review_packet_errors(status.get("design_review_packet")))
@@ -4013,6 +4049,7 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
         ("design_approve", "design-approve", "Authorize the reviewed design", "primary", False),
         ("design_reject", "design-reject", "Request a design revision", "danger", True),
         ("deployment_approve", "deployment-gate", "Authorize live verification", "primary", False),
+        ("deployment_revoke", "deployment-gate", "Revoke deployment approval", "danger", True),
         ("deployment_hold", "human-pause-start", "Hold deployment", "danger", True),
         ("design_review_authorize", "design-review-authorize", "Permit one more design review", "primary", False),
         ("design_review_escalate", "design-review-escalate", "Escalate the reviewer tier", "primary", True),
@@ -4040,6 +4077,7 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     review_ready = review.get("decision") == "approved"
     design_pending = bool(status.get("requires_design_approval")) and review_ready and not status.get("design_approved")
     deployment_pending = phase == 7 and not status.get("deployment_approved")
+    deployment_revoke = phase in {7, 8} and isinstance(status.get("deployment_approved"), dict) and not status.get("live_verification_id")
     budget = design_review_budget(status, cfg)
     regression = active_regression_request(status)
     escalation = status.get("escalation") or {}
@@ -4070,6 +4108,7 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     actionable = set()
     if design_pending: actionable |= {"design_approve", "design_reject"}
     if deployment_pending: actionable |= {"deployment_approve", "deployment_hold"}
+    if deployment_revoke: actionable.add("deployment_revoke")
     if phase == 2 and budget.get("exhausted"): actionable |= {"design_review_authorize", "design_review_escalate"}
     if recovery_hold: actionable |= {"recovery_acknowledge", "recover"}
     if escalation.get("kind") == "review_cap_exhausted": actionable.add("review_cap_override")
@@ -4175,7 +4214,7 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("design gate: work-item scope changed since design approval; record a new approval")
     proposal = status.get("design_proposal")
     if isinstance(proposal, dict) and approval.get("proposal_hash") != proposal.get("proposal_hash"):
-        errors.append("design gate: bounded design proposal changed since human approval")
+        errors.append(f"stale proposal: approval binds {approval.get('proposal_hash')}, current is {proposal.get('proposal_hash')}")
     approver = approval.get("by")
     architect = approval.get("architect")
     if not approver:
@@ -4207,7 +4246,7 @@ def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str
         errors.append("design review gate: work-item scope changed since design review; record a new design review")
     proposal = status.get("design_proposal")
     if isinstance(proposal, dict) and review.get("proposal_hash") != proposal.get("proposal_hash"):
-        errors.append("design review gate: bounded design proposal changed since design review")
+        errors.append(f"stale proposal: approval binds {review.get('proposal_hash')}, current is {proposal.get('proposal_hash')}")
     reviewer = review.get("by")
     architect = review.get("architect")
     if not reviewer:
@@ -4728,10 +4767,19 @@ def record_design_proposal(root: Path, session_id: str | None, value: object,
             "at": now,
             "design_hash": design_hash(acceptance.get("criteria", [])),
             "based_on_review_attempt": int(status.get("design_review_attempts", 0) or 0),
+            "provenance": {
+                "actor": actor,
+                "pid": os.getpid(),
+                "executable": str(Path(sys.argv[0]).resolve()),
+                "host_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_COMPANION_SESSION_ID"),
+                "recorded_at": now,
+            },
         }
         bound["proposal_hash"] = hashlib.sha256(_canonical(proposal).encode("utf-8")).hexdigest()
         proposed = deepcopy(status)
         proposed["design_proposal"] = bound
+        old_review = status.get("design_review")
+        old_approval = status.get("design_approved")
         proposed["design_review"] = None
         proposed["design_approved"] = None
         budget = design_review_budget(status, cfg)
@@ -4743,10 +4791,25 @@ def record_design_proposal(root: Path, session_id: str | None, value: object,
         else:
             proposed["status"] = "in_progress"
             proposed.pop("authorization_hold", None)
-            proposed["next_action"] = "Independent Reviewer evaluates the bounded design proposal and current criteria."
+            proposed["next_action"] = "Independent Reviewer evaluates the revised proposal"
         proposed["updated_at"] = now
+        invalidated = []
+        if isinstance(old_approval, dict):
+            invalidated.append("design_approved")
+        if isinstance(old_review, dict):
+            invalidated.append("design_review")
+        extra_events = None
+        if invalidated:
+            extra_events = [{
+                "kind": "decisions_invalidated",
+                "message": "Prior design decisions invalidated by revised proposal",
+                "old_proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
+                "new_proposal_hash": bound["proposal_hash"],
+                "nulled_decisions": invalidated,
+            }]
         commit(root, cfg, status=proposed, event_kind="design_proposal_recorded",
                event_message="Bounded Architect design proposal recorded",
+               extra_events=extra_events,
                architect=actor, session_id=session_id,
                proposal_hash=bound["proposal_hash"], design_hash=bound["design_hash"],
                based_on_review_attempt=bound["based_on_review_attempt"],
@@ -7411,6 +7474,13 @@ def _digest_excluded(relative: str, state_files: set[str]) -> bool:
         return True
     if any(part.startswith(".handsoff") and part != VERSION_PIN_FILE for part in parts):
         return True
+    # handsoff.toml is Handsoff's own configuration, not the product under
+    # test: a live_commands line or a budget tweak must not read as source
+    # drift (#93). What configuration CAN change the meaning of evidence,
+    # the check commands, is bound separately through the verification
+    # config hash stored on every executed record (see evidence_drift).
+    if relative == "handsoff.toml":
+        return True
     return parts[-1].endswith(".pyc")
 
 
@@ -7893,6 +7963,7 @@ def design_review_history_entry(review: dict, criteria: list[dict], *, structura
         "criterion_hashes": {c["id"]: criterion_spec_hash(c) for c in ordered if isinstance(c.get("id"), str)},
         "structural_blocker": bool(structural_blocker),
         "findings": deepcopy(review.get("findings") or []),
+        "proposal_hash": review.get("proposal_hash"),
     }
 
 
@@ -8046,6 +8117,10 @@ def build_design_review_packet(root: Path, cfg: dict, status: dict, acceptance: 
         "previous_attempt": previous["attempt"],
         "design_hash": design_hash(criteria),
         "previous_design_hash": previous["design_hash"],
+        "proposal_changed": previous.get("proposal_hash") is not None and \
+                            previous.get("proposal_hash") != (status.get("design_proposal") or {}).get("proposal_hash"),
+        "previous_proposal_hash": previous.get("proposal_hash"),
+        "proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
         "criteria_delta": criteria_delta,
         "findings": findings,
         "dispositions": {

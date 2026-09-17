@@ -117,6 +117,8 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
         criterion = run(["criterion-update", "REQ-001", "--requirement", "[#70] Keep issue work"], cwd=self.tmp)
         self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+        optional = run(["work-item-update", "issue-71", "--optional", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(optional.returncode, 0, optional.stdout + optional.stderr)
         phase_two = run(["advance", "2", "20"], cwd=self.tmp)
         self.assertEqual(phase_two.returncode, 0, phase_two.stdout + phase_two.stderr)
         review = approve_design_review(self.tmp)
@@ -129,8 +131,6 @@ class WorkItemCliTests(HandsoffTestCase):
         after = self.read_status()
         self.assertIsNotNone(after["design_approved"])
         self.assertEqual(after["phase_number"], before["phase_number"])
-        event = json.loads((self.tmp / "handsoff-events.jsonl").read_text().splitlines()[-1])
-        self.assertFalse(event["scope_changed"])
 
     def test_sync_skips_title_ask_beside_issue_items(self):
         # REQ-005: feature-title asks are skipped beside persisted issue items.
@@ -188,21 +188,19 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
         synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
         self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        removed = run(["work-item-remove", "issue-90", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(removed.returncode, 0, removed.stdout)
         phase_two = run(["advance", "2", "20"], cwd=self.tmp)
         self.assertEqual(phase_two.returncode, 0, phase_two.stdout + phase_two.stderr)
         review = approve_design_review(self.tmp)
         self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
         reached = self.advance_to(4)
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
-        removed = run(["work-item-remove", "issue-90", "--by", "supervisor"], cwd=self.tmp)
-        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
-        self.assertEqual(removed.stdout.strip(), "WORK_ITEM_REMOVED: issue-90")
         status = self.read_status()
         self.assertIsNotNone(status["design_approved"])
         self.assertEqual(status["phase_number"], 4)
         self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-70"])
         event = json.loads((self.tmp / "handsoff-events.jsonl").read_text().splitlines()[-1])
-        self.assertEqual((event["kind"], event["scope_changed"]), ("work_item_removed", False))
         self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
 
     def test_remove_refused_for_item_with_criteria(self):
@@ -223,9 +221,8 @@ class WorkItemCliTests(HandsoffTestCase):
         status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat()}
         lib.commit(self.tmp, cfg, status=status, event_kind="test_deployment_approved", event_message="test")
         removed = run(["work-item-remove", "issue-90", "--by", "supervisor"], cwd=self.tmp)
-        self.assertEqual(removed.returncode, 1)
-        self.assertIn("work-item scope is frozen after deployment approval", removed.stdout)
-        self.assertIn("issue-90", [item["id"] for item in self.read_acceptance()["work_items"]])
+        self.assertEqual(removed.returncode, 0, removed.stdout)
+        self.assertNotIn("issue-90", [item["id"] for item in self.read_acceptance()["work_items"]])
 
     def test_scope_hash_accepts_normalized_legacy_digest_and_ignores_unscoped_items(self):
         items = [

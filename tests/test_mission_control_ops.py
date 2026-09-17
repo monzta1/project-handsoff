@@ -16,7 +16,7 @@ import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 
 
-KINDS = ["design_approve", "design_reject", "deployment_approve", "deployment_hold",
+KINDS = ["design_approve", "design_reject", "deployment_approve", "deployment_revoke", "deployment_hold",
          "design_review_authorize", "design_review_escalate", "review_cap_override",
          "recovery_acknowledge", "recover", "pause", "resume", "run_close", "run_reopen",
          "regression_accept", "regression_decline", "regression_cancel", "launch_role",
@@ -82,8 +82,11 @@ class MissionControlOpsTests(HandsoffTestCase):
             server.shutdown(); server.server_close(); thread.join(2)
 
     def test_auto_handoff_config_is_boolean(self):
-        self.assertTrue(lib.load_config(self.tmp)["auto_handoff"])
-        path = self.tmp / "handsoff.toml"; path.write_text(path.read_text().replace("auto_handoff = true", "auto_handoff = false", 1))
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(__import__("re").sub(r"^auto_handoff = .*$", "", toml.read_text(), flags=__import__("re").M))
+        self.assertTrue(lib.load_config(self.tmp)["auto_handoff"], "default is true when the key is absent")
+        path = self.tmp / "handsoff.toml"
+        path.write_text(path.read_text().replace("[workflow]", "[workflow]\nauto_handoff = false", 1))
         self.assertFalse(lib.load_config(self.tmp)["auto_handoff"])
         path.write_text(path.read_text().replace("auto_handoff = false", 'auto_handoff = "no"', 1))
         with self.assertRaisesRegex(lib.HandsoffError, "workflow.auto_handoff"):

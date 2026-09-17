@@ -121,7 +121,7 @@ def _most_recent_kind(events: list[dict], kinds: set[str]) -> str | None:
     return None
 
 
-def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_design: bool = False) -> None:
+def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_design: bool = False) -> list[str]:
     """Any acceptance mutation makes earlier review/deployment/live decisions
     stale. `invalidate_design=True` additionally clears design_approved and,
     for a flagged run (requires_design_approval) that had advanced to phase
@@ -134,6 +134,10 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
     is being asked for, only whether it has been proven -- an already-
     approved design must not be forced back into re-approval just because
     evidence was attached to it."""
+    revoked = []
+    for key in ("review", "deployment_approved", "live_verification_id"):
+        if status.get(key) is not None:
+            revoked.append(key)
     status["review"] = None
     status["reviewed_by"] = None
     status["deployment_approved"] = None
@@ -144,6 +148,9 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
         status["status"] = "in_progress"
         status["progress"] = min(status.get("progress", 0), 40 if rollback_to == 4 else 50)
     if invalidate_design:
+        for key in ("design_approved", "design_review", "design_proposal"):
+            if status.get(key) is not None:
+                revoked.append(key)
         if "design_review" in status or status.get("requires_design_review"):
             status["design_review"] = None
         status["design_approved"] = None
@@ -154,6 +161,21 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
             status["phase"] = lib.PHASES[2]
             status["status"] = "in_progress"
             status["progress"] = min(status.get("progress", 0), 20)
+    if status.get("phase_number") == 2:
+        status["next_action"] = "Architect revises the design and requests review again"
+    return revoked
+
+
+def _approval_edit_guard(status: dict, revoke: bool) -> bool:
+    """Require an explicit opt-in before registry edits destroy an approved design.
+
+    The guard runs before any acceptance mutation, preserving the exact
+    refusal symptom and making a declined edit observably no-op.
+    """
+    if status.get("design_approved") and not revoke:
+        print("SHIP_FEATURE_BLOCKED: design is approved; this edit would revoke design approval, the independent review, and the proposal. Use amendment-open for a reviewed change, or pass --revoke-approval to proceed deliberately")
+        return True
+    return False
 
 
 def _durable_results(results: list[dict]) -> list[dict]:
@@ -362,9 +384,10 @@ def cmd_advance(args) -> int:
         if args.phase < current or (args.phase > current + 1 and not small_fix_jump):
             print(f"phase transition blocked: current={current}, requested={args.phase} (one step at a time)")
             return 1
-        if args.progress < status.get("progress", 0):
-            print(f"progress transition blocked: current={status.get('progress')}, requested={args.progress} (progress cannot decrease)")
-            return 1
+        current_progress = status.get("progress", 0)
+        progress = current_progress if args.progress is None else args.progress
+        if args.progress is not None and args.progress < current_progress:
+            progress = current_progress
 
         # Build the PROPOSED status and validate THAT, before writing
         # anything. This is the fix for the original bug: validating the
@@ -374,7 +397,7 @@ def cmd_advance(args) -> int:
         proposed = deepcopy(status)
         proposed["phase_number"] = args.phase
         proposed["phase"] = lib.PHASES[args.phase]
-        proposed["progress"] = args.progress
+        proposed["progress"] = progress
         proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
         proposed["next_action"] = args.next_action or lib.NEXT_ACTION_DEFAULTS.get(args.phase, proposed.get("next_action"))
         if args.status:
@@ -443,7 +466,11 @@ def cmd_advance(args) -> int:
                 proposed["review_round"] = number
 
         if "work_item_delivery" in proposed:
-            proposed["progress"] = lib.overall_item_progress(proposed, acceptance, cfg)
+            # The command's monotonic progress value is the operator's
+            # explicit transition contract. Item-level progress remains a
+            # dashboard view and must not silently rewrite an omitted value.
+            proposed["progress"] = progress
+        proposed["_preserve_progress"] = True
 
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems, root=root)
@@ -469,6 +496,7 @@ def cmd_advance(args) -> int:
         if args.dry_run:
             print("SHIP_FEATURE_ADVANCE_WOULD_SUCCEED")
             return 0
+        progress_was_clamped = args.progress is not None and args.progress < current_progress
 
         if new_design_round_event is not None:
             reason = new_design_round_event["reason"]
@@ -486,11 +514,11 @@ def cmd_advance(args) -> int:
                 }]
             lib.commit(root, cfg, status=proposed, extra_events=extra_events,
                       event_kind="design_round_advanced", event_message=message,
-                      phase_number=args.phase, progress=args.progress, **new_design_round_event)
+                      phase_number=args.phase, progress=progress, **new_design_round_event)
         else:
             lib.commit(root, cfg, status=proposed,
                       event_kind="phase_advanced", event_message=f"Advanced to {lib.PHASES[args.phase]}",
-                      phase_number=args.phase, progress=args.progress)
+                      phase_number=args.phase, progress=progress)
 
         archived = False
         if args.phase == 8 and proposed.get("status") == "complete":
@@ -514,6 +542,8 @@ def cmd_advance(args) -> int:
         # event stream takes that lock every 0.2 s, so holding it here
         # would keep the server from ever noticing the stop request.
         _release_run_dashboard(root, cfg)
+    if args.progress is not None and args.progress < progress:
+        print(f"NOTE: progress kept at {current_progress} (requested {args.progress} is lower)")
     print("SHIP_FEATURE_ADVANCED")
     return 0
 
@@ -633,6 +663,25 @@ def cmd_deployment_gate(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if args.revoke:
+            phase = int(status.get("phase_number", 0) or 0)
+            if not isinstance(status.get("deployment_approved"), dict):
+                print("DEPLOYMENT_REVOKE_BLOCKED\n- deployment approval has not been recorded")
+                return 1
+            if phase not in {7, 8} or status.get("live_verification_id"):
+                print("DEPLOYMENT_REVOKE_BLOCKED\n- revoke requires Phase 7 or 8 without a live verification id")
+                return 1
+            proposed = dict(status)
+            proposed["deployment_approved"] = None
+            proposed["phase_number"] = 7
+            proposed["phase"] = lib.PHASES[7]
+            proposed["status"] = "awaiting_approval"
+            proposed["next_action"] = "Await explicit deployment approval."
+            proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
+            lib.commit(root, cfg, status=proposed, event_kind="deployment_revoked",
+                       event_message=args.reason, by=args.by, reason=args.reason)
+            print("DEPLOYMENT_REVOKED")
+            return 0
         refusal = lib.amendment_decision_refusal(status, "deployment approval")
         if refusal:
             print(f"DEPLOYMENT_BLOCKED\n- {refusal}")
@@ -931,7 +980,7 @@ def cmd_work_item_update(args) -> int:
         if isinstance(deployment_approved, dict) and before_scope != after_scope:
             print("SHIP_FEATURE_BLOCKED: work-item scope is frozen after deployment approval; revoke the approval or archive the run before changing the item set")
             return 1
-        if before_scope != after_scope:
+        if isinstance(deployment_approved, dict) and before_scope != after_scope:
             _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = item["updated_at"]
         errors = lib.validate_acceptance_schema(acceptance)
@@ -967,7 +1016,8 @@ def cmd_work_item_remove(args) -> int:
             criteria = ", ".join(row["criteria"])
             print(f"SHIP_FEATURE_BLOCKED: work item {args.item} maps to criteria {criteria}; retag or remove them first")
             return 1
-        if isinstance(status.get("deployment_approved"), dict):
+        post_approval = isinstance(status.get("deployment_approved"), dict)
+        if post_approval and row.get("criteria"):
             print("SHIP_FEATURE_BLOCKED: work-item scope is frozen after deployment approval; revoke the approval or archive the run before changing the item set")
             return 1
         # A removable item carries no criteria, so by construction it is
@@ -980,13 +1030,13 @@ def cmd_work_item_remove(args) -> int:
         if isinstance(delivery, dict):
             delivery.pop(args.item, None)
         after_scope = lib.work_item_scope_hash(acceptance["work_items"], acceptance.get("criteria", []))
-        if before_scope != after_scope:
+        if not post_approval and before_scope != after_scope:
             print(f"SHIP_FEATURE_BLOCKED: removing {args.item} would change the reviewed scope; retag its criteria first")
             return 1
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                    event_kind="work_item_removed", event_message=f"Removed work item {args.item}",
-                   by=actor, work_item=args.item, scope_changed=False)
+                   by=actor, work_item=args.item, scope_changed=False, post_approval=post_approval)
     print(f"WORK_ITEM_REMOVED: {args.item}")
     return 0
 
@@ -1448,10 +1498,11 @@ def cmd_verify(args) -> int:
                 reused_from = next(iter(own_sources)) if len(own_sources) == 1 else None
                 record = lib.append_verification(
                     root, cfg, kind="checks", ok=own_ok, by=args.by,
-                    criteria=[criterion], results=_durable_results(own_results),
+                                         criteria=[criterion], results=_durable_results(own_results),
+                    commands=own_tests,
                     binding={t: bindings[t] for t in own_tests}, executed=executed,
                     reused_from=reused_from, feature_hash=run_hash,
-                    repository_digest=record_digest)
+                    repository_digest=record_digest, config_digest=config_digest)
                 status["verification_head"] = record["hash"]
                 if record["run_id"] not in criterion["evidence"]:
                     criterion["evidence"].append(record["run_id"])
@@ -1594,6 +1645,12 @@ def cmd_design_approve(args) -> int:
             print("SHIP_FEATURE_BLOCKED: acceptance registry still contains init's untouched placeholder "
                   "criterion; author a real criterion before requesting design approval")
             return 1
+        rows = lib.derive_work_items(status, acceptance, cfg)["items"]
+        missing = [row["id"] for row in rows if row.get("required", True) and not row.get("criteria")]
+        if missing:
+            print("SHIP_FEATURE_BLOCKED: required work items have no criteria: "
+                  f"{', '.join(missing)}; tag a criterion [#N] or work-item-remove them")
+            return 1
         # Stamp authored_by = the architect on every criterion that does not
         # already carry one (absent key, or explicitly null/empty all count
         # as unstamped) -- an earlier approval's authorship is never
@@ -1648,6 +1705,7 @@ def cmd_design_approve(args) -> int:
                   by=args.by, architect=args.architect,
                   redesigns_settled_work=args.redesigns_settled_work)
     print("DESIGN_APPROVAL_RECORDED")
+    _print_unverifiable_test_warnings(acceptance, cfg)
     return 0
 
 
@@ -1710,6 +1768,17 @@ def cmd_record_design_review(args) -> int:
         if session_error:
             print(f"SHIP_FEATURE_BLOCKED: {session_error}")
             return 1
+        provenance = (status.get("design_proposal") or {}).get("provenance")
+        if isinstance(provenance, dict):
+            if args.by.strip().casefold() == str(provenance.get("actor") or "").casefold():
+                print("SHIP_FEATURE_BLOCKED: design reviewer must differ from the proposal architect actor")
+                return 1
+            launch_id = getattr(args, "session", None)
+            launch_session = (status.get("agent_sessions") or {}).get(launch_id)
+            if launch_session and provenance.get("host_session_id") and \
+                    launch_session.get("host_session_id") == provenance.get("host_session_id"):
+                print("SHIP_FEATURE_BLOCKED: design reviewer must use an independent host session")
+                return 1
         criteria = acceptance.get("criteria", [])
         if any(c.get("requirement") == lib.PLACEHOLDER_REQUIREMENT and c.get("tests") == lib.PLACEHOLDER_TESTS
                for c in criteria):
@@ -1863,7 +1932,9 @@ def cmd_design_propose(args) -> int:
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}")
         return 1
+    acceptance = lib.load_unique_json(lib.acceptance_path(root, cfg))
     print(f"DESIGN_PROPOSAL_RECORDED: {recorded['proposal_hash']}")
+    _print_unverifiable_test_warnings(acceptance, cfg)
     return 0
 
 
@@ -2393,6 +2464,7 @@ def cmd_verify_live(args) -> int:
             return 1
         record = lib.append_verification(root, cfg, kind="live", ok=ok, by=args.by,
                                          criteria=acceptance["criteria"], results=_durable_results(results),
+                                         commands=commands,
                                          acceptance_digest=digest, config_digest=config_digest)
         status["verification_head"] = record["hash"]
         if ok:
@@ -2415,6 +2487,17 @@ def _criterion_needs_item_warning(criterion: dict, acceptance: dict, cfg: dict) 
     return len(items) > 1 and lib.criterion_work_item_id(criterion) is None
 
 
+def _print_unverifiable_test_warnings(acceptance: dict, cfg: dict) -> None:
+    """Warn when design gates name automated tests verify cannot run."""
+    configured = set(cfg.get("check_commands", []))
+    for criterion in acceptance.get("criteria", []):
+        if "checks" not in lib.VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+            continue
+        for test in criterion.get("tests", []):
+            if test not in configured:
+                print(f"WARNING: criterion {criterion.get('id')} test {test!r} matches no [checks].commands entry; verify will refuse it")
+
+
 def cmd_criterion_update(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -2424,6 +2507,8 @@ def cmd_criterion_update(args) -> int:
         if audit_errors:
             return _print_audit_block(audit_errors)
         if _refuse_if_amendment_open(status):
+            return 1
+        if _approval_edit_guard(status, args.revoke_approval):
             return 1
         criterion = _criterion(acceptance, args.criterion)
         if criterion is None:
@@ -2465,7 +2550,7 @@ def cmd_criterion_update(args) -> int:
         lib.migrate_review_ledger(status)
         abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        decisions_revoked = _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         errors = lib.validate_acceptance_schema(acceptance)
         if errors:
@@ -2475,7 +2560,7 @@ def cmd_criterion_update(args) -> int:
                   "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
         lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_updated", event_message="Acceptance criterion updated",
-                  criterion=args.criterion, work_item_scope_changed=registry_changed or
+                  criterion=args.criterion, decisions_revoked=decisions_revoked, work_item_scope_changed=registry_changed or
                   before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])))
     if warning:
         print("WORK_ITEM_WARNING: untagged criterion in a multi-item run")
@@ -2492,6 +2577,8 @@ def cmd_criterion_add(args) -> int:
         if audit_errors:
             return _print_audit_block(audit_errors)
         if _refuse_if_amendment_open(status):
+            return 1
+        if _approval_edit_guard(status, args.revoke_approval):
             return 1
         if _criterion(acceptance, args.criterion):
             print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} already exists")
@@ -2522,13 +2609,13 @@ def cmd_criterion_add(args) -> int:
         lib.migrate_review_ledger(status)
         abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        decisions_revoked = _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
                   "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
         lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_added", event_message="Acceptance criterion added",
-                  criterion=args.criterion, work_item_scope_changed=registry_changed or
+                  criterion=args.criterion, decisions_revoked=decisions_revoked, work_item_scope_changed=registry_changed or
                   before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])))
     if warning:
         print("WORK_ITEM_WARNING: untagged criterion in a multi-item run")
@@ -2564,7 +2651,7 @@ def cmd_criterion_remove(args) -> int:
         lib.migrate_review_ledger(status)
         abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        decisions_revoked = _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
                   "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
@@ -2598,6 +2685,8 @@ def cmd_criteria_apply(args) -> int:
         lib.ensure_no_launched_regression(status)
         if _refuse_if_amendment_open(status):
             return 1
+        if _approval_edit_guard(status, args.revoke_approval):
+            return 1
         plan = lib.plan_criteria_transaction(acceptance, cfg, operations, root=root)
         if args.dry_run:
             print(__import__("json").dumps(lib.criteria_plan_preview(plan, status), indent=2, sort_keys=True))
@@ -2623,6 +2712,7 @@ def cmd_criteria_apply(args) -> int:
                   registry_hash_after=plan["registry_hash_after"],
                   design_hash_after=plan["design_hash_after"],
                   operation_count=plan["operation_count"],
+                  decisions_revoked=decisions_revoked,
                   work_item_scope_changed=plan["work_item_scope_changed"])
     if untagged:
         print(f"WORK_ITEM_WARNING: untagged criteria in a multi-item run: {', '.join(untagged)}")
@@ -3818,6 +3908,7 @@ def build_parser() -> argparse.ArgumentParser:
     criterion.add_argument("--verification", choices=tuple(lib.VERIFICATION_REQUIREMENTS))
     criterion.add_argument("--test", action="append")
     criterion.add_argument("--state", choices=("failing", "not_tested", "blocked"))
+    criterion.add_argument("--revoke-approval", action="store_true")
 
     criterion_add = sub.add_parser("criterion-add")
     criterion_add.add_argument("criterion")
@@ -3825,6 +3916,7 @@ def build_parser() -> argparse.ArgumentParser:
     criterion_add.add_argument("--requirement", required=True)
     criterion_add.add_argument("--verification", choices=tuple(lib.VERIFICATION_REQUIREMENTS), required=True)
     criterion_add.add_argument("--test", action="append", required=True)
+    criterion_add.add_argument("--revoke-approval", action="store_true")
 
     criterion_remove = sub.add_parser("criterion-remove")
     criterion_remove.add_argument("criterion")
@@ -3835,6 +3927,7 @@ def build_parser() -> argparse.ArgumentParser:
     criteria_apply.add_argument("--by", required=True)
     criteria_apply.add_argument("--dry-run", action="store_true",
                                 help="validate and print the plan as JSON; write nothing")
+    criteria_apply.add_argument("--revoke-approval", action="store_true")
 
     amendment_open = sub.add_parser("amendment-open", help="open a scoped post-approval amendment from a "
                                     "criteria transaction file; the planner classifies it and refuses a "
@@ -3906,7 +3999,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     adv = sub.add_parser("advance")
     adv.add_argument("phase", type=int)
-    adv.add_argument("progress", type=int)
+    adv.add_argument("progress", type=int, nargs="?")
     adv.add_argument("--status", default=None)
     adv.add_argument("--implemented-by", default=None)
     adv.add_argument("--design-round", type=int, default=None,
@@ -3928,7 +4021,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     gate = sub.add_parser("deployment-gate")
     gate.add_argument("--approve", action="store_true")
+    gate.add_argument("--revoke", action="store_true")
     gate.add_argument("--by", default=None)
+    gate.add_argument("--reason", default=None)
 
     return p
 

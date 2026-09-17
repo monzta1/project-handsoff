@@ -453,6 +453,7 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
     operation_by_kind = {
         "design_approve": "design-approve", "design_reject": "design-reject",
         "deployment_approve": "deployment-gate", "deployment_hold": "human-pause-start",
+        "deployment_revoke": "deployment-gate",
         "design_review_authorize": "design-review-authorize", "design_review_escalate": "design-review-escalate",
         "regression_accept": "regression-decide", "regression_decline": "regression-decide",
         "regression_cancel": "regression-cancel", "amendment_approve": "amendment-approve",
@@ -485,6 +486,8 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
     elif kind == "deployment_approval":
         add("deployment_approve", "Authorize deployment", "Allows live verification to continue")
         add("deployment_hold", "Hold deployment", "Pauses the mission until the Pilot resumes it", reason=True, tone="danger")
+    elif kind == "deployment_revoke":
+        add("deployment_revoke", "Revoke deployment approval", "Returns the mission to Phase 7 approval", reason=True, tone="danger")
     elif kind == "design_review_budget":
         add("design_review_authorize", "Authorize one review", "Permits exactly one additional design review")
         add("design_review_escalate", "Escalate reviewer tier", "Routes the next review to the primary reviewer tier", reason=True)
