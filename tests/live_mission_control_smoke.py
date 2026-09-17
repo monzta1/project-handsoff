@@ -82,7 +82,10 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-mc-") as tmp:
         assert payload is not None, "installed dashboard did not answer"
         inventory = payload["operations"]["inventory"]
         kinds = [item["kind"] for item in inventory]
-        assert len(kinds) == 22 and kinds[0] == "design_approve" and "launch_role" in kinds and "engine_migrate" in kinds, kinds
+        required = {"design_approve", "design_reject", "deployment_approve", "deployment_revoke", "launch_role",
+                    "verify_criterion", "verify_live", "engine_migrate", "run_close"}
+        assert len(kinds) >= 22 and kinds[0] == "design_approve" and required <= set(kinds), kinds
+        assert len(kinds) == len(set(kinds)), kinds
         assert all(item["availability"] in {"actionable", "unavailable", "read_only"} for item in inventory), inventory
         assert all(item["reason"] or item["consequence"] for item in inventory), inventory
         live_keys = {"seconds_since_activity", "process_signal", "stall_warning", "stall_threshold_minutes", "assessment"}
@@ -111,4 +114,4 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-mc-") as tmp:
     card = next(p for p in snapshot["projects"] if p["root"] == str(project))
     assert card["dashboard_url"] is None and card["dashboard_note"], card
 
-print(f"LIVE_MISSION_CONTROL_OK installed={identity['version']} inventory=22 stale_launch_refused=yes engine_preview_only=yes fleet_url=yes released_url_none=yes")
+print(f"LIVE_MISSION_CONTROL_OK installed={identity['version']} inventory={len(kinds)} stale_launch_refused=yes engine_preview_only=yes fleet_url=yes released_url_none=yes")
