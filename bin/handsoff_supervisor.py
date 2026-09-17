@@ -3673,7 +3673,7 @@ def main() -> int:
                                "next attempt goes to the primary reviewer tier even when a follow-up "
                                "reviewer profile is configured (#37)")
 
-    design_propose = sub.add_parser("design-propose", help="record a host Architect design proposal")
+    design_propose = sub.add_parser("design-propose", help="record a proposal: summary 1 to 512 characters; each list at most 8 items of at most 512 characters")
     design_propose.add_argument("--file", required=True, help="JSON proposal file")
     design_propose.add_argument("--by", required=True, help="host Architect identity")
 

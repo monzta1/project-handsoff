@@ -140,6 +140,10 @@ OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS = 1.0
 # gate. It contains only host-redacted child output and session metadata.
 AGENT_OUTPUT_FILE = ".handsoff-agent-output.json"
 AGENT_OUTPUT_LOCK_FILE = ".handsoff-agent-output.lock"
+OPERATION_STATES = ("started", "succeeded", "failed", "timed_out", "cancelled")
+OPERATION_ID_PATTERN = re.compile(r"^op-[a-z0-9]{4,32}$")
+OPERATION_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+OPERATIONS_FILE = ".handsoff-operations.json"
 MAX_AGENT_OUTPUT_SESSIONS = 8
 MAX_AGENT_OUTPUT_ENTRIES = 160
 MAX_AGENT_OUTPUT_LINE_CHARS = 2048
@@ -278,6 +282,7 @@ DEFAULT_CONFIG = {
         "enabled": True, "max_attempts": 3, "lease_minutes": 15,
         "worker_loss_grace_minutes": 2, "live_session_silence_minutes": 10,
         "liveness_seconds": 60, "dashboard_watchdog": True, "poll_seconds": 30,
+        "operation_grace_seconds": 120,
     },
     # #49: the archive analyzer. `filing` is "gh" (file through the gh CLI)
     # or "report_only" (never construct a GitHub client; the report still
@@ -782,6 +787,7 @@ def load_config(root: Path) -> dict:
         "max_attempts": (0, 16), "lease_minutes": (1, 1440),
         "worker_loss_grace_minutes": (1, 1440), "live_session_silence_minutes": (1, 1440),
         "liveness_seconds": (1, 3600), "poll_seconds": (1, 3600),
+        "operation_grace_seconds": (0, 3600),
     }
     for key, (minimum, maximum) in bounds.items():
         value = recovery.get(key, cfg["recovery"][key])
@@ -2041,15 +2047,24 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 
 
 def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or set(value) != {"category", "reason", "tail_sha256"}:
+    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation"} \
+            or not {"category", "reason", "tail_sha256"} <= set(value):
         raise HandsoffError("agent failure classification is invalid")
     category = value.get("category")
-    if category not in FAILURE_CATEGORIES or value.get("reason") != _FAILURE_REASON_LABELS.get(category):
+    if category not in FAILURE_CATEGORIES or (category != "dispatch_failed" and value.get("reason") != _FAILURE_REASON_LABELS.get(category)):
         raise HandsoffError("agent failure classification is not from the closed set")
+    if category == "dispatch_failed" and (not isinstance(value.get("reason"), str) or not value["reason"].strip() or len(value["reason"]) > 200):
+        raise HandsoffError("dispatch failure reason must be 1 to 200 characters")
     digest = value.get("tail_sha256")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise HandsoffError("agent failure classification digest is invalid")
-    return {"category": category, "reason": value["reason"], "tail_sha256": digest}
+    result = {"category": category, "reason": value["reason"], "tail_sha256": digest}
+    for key in ("dependency", "operation"):
+        if key in value:
+            if not isinstance(value[key], str) or not OPERATION_IDENTIFIER_PATTERN.fullmatch(value[key]):
+                raise HandsoffError("agent failure operation identifier is invalid")
+            result[key] = value[key]
+    return result
 
 
 def transition_agent_session(root: Path, session_id: str, state: str,
@@ -2133,6 +2148,8 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             event_message=f"Managed {role} agent session is {state.replace('_', ' ')}",
             session_id=session_id, role=role, state=state, exit_code=exit_code,
             failure_category=failure["category"] if failure else None,
+            failure_dependency=failure.get("dependency") if failure else None,
+            failure_operation=failure.get("operation") if failure else None,
             replacement_id=replacement.get("replacement_id") if replacement else None,
             replacement_state=replacement.get("state") if replacement else None,
         )
@@ -3658,14 +3675,15 @@ def validate_status_schema(status: dict) -> list[str]:
                     continue
                 try:
                     normalized = _validate_failure_classification({
-                        key: failure.get(key) for key in ("category", "reason", "tail_sha256")
+                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation")
+                        if isinstance(failure, dict) and key in failure
                     }) if isinstance(failure, dict) else None
                 except HandsoffError as exc:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
-                if not isinstance(failure, dict) or set(failure) != {
-                    "session_id", "category", "reason", "tail_sha256", "at",
-                } or failure.get("session_id") != session_id:
+                if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
+                        or set(failure) - {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation"} \
+                        or failure.get("session_id") != session_id:
                     errors.append(f"status: agent failure {session_id!r} has invalid fields")
                 if normalized and sessions[session_id].get("state") not in \
                         AGENT_SESSION_TERMINAL_STATES - {"completed"}:
@@ -4494,7 +4512,7 @@ def validate_design_proposal(value: object) -> dict:
         cleaned = []
         for item in items:
             if not isinstance(item, str) or not item.strip() or len(item.strip()) > 512:
-                raise HandsoffError(f"design proposal {field} items must be 1 to 512 characters")
+                raise HandsoffError(f"design proposal {field} item length {len(item.strip()) if isinstance(item, str) else 0}; each item must be 1 to 512 characters")
             cleaned.append(item.strip())
         result[field] = cleaned
     return result
@@ -6544,6 +6562,196 @@ def _read_agent_output_store(root: Path) -> dict:
     return value
 
 
+def operations_path(root: Path) -> Path:
+    """Return the bounded, telemetry-only operation journal for ROOT."""
+    return Path(root) / OPERATIONS_FILE
+
+
+def validate_operation_line(payload: object) -> dict | None:
+    """Accept only the small fixed wire schema so arbitrary child text cannot persist."""
+    if not isinstance(payload, dict):
+        return None
+    allowed = {"operation_id", "dependency", "operation", "state", "attempt",
+               "timeout_seconds", "category"}
+    if set(payload) - allowed:
+        return None
+    required = ("operation_id", "dependency", "operation", "state", "attempt", "timeout_seconds")
+    if any(key not in payload or not isinstance(payload[key], str)
+           for key in ("operation_id", "dependency", "operation", "state")):
+        return None
+    if not OPERATION_ID_PATTERN.fullmatch(payload["operation_id"]):
+        return None
+    if any(not OPERATION_IDENTIFIER_PATTERN.fullmatch(payload[key]) for key in ("dependency", "operation")):
+        return None
+    if payload["state"] not in OPERATION_STATES:
+        return None
+    for key, low, high in (("attempt", 1, 64), ("timeout_seconds", 1, 86400)):
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            return None
+    if "category" in payload and (not isinstance(payload["category"], str)
+                                  or payload["category"] not in FAILURE_CATEGORIES):
+        return None
+    return {key: payload[key] for key in allowed if key in payload}
+
+
+def _empty_operations() -> dict:
+    return {"schema": 1, "sessions": {}}
+
+
+def read_operations(root: Path) -> dict:
+    """Read malformed or absent journals as empty, keeping telemetry non-fatal."""
+    try:
+        value = json.loads(operations_path(root).read_text(encoding="utf-8"))
+        if isinstance(value, dict) and value.get("schema") == 1 and isinstance(value.get("sessions"), dict):
+            return value
+    except (OSError, ValueError):
+        pass
+    return _empty_operations()
+
+
+def current_operation(root: Path, session_id: str) -> dict | None:
+    """Return the newest unfinished operation, falling back to newest history.
+
+    The fallback keeps diagnostics useful when a session has just become
+    terminal, while the unfinished preference makes timeout enforcement local
+    to the operation that still owns the live child.
+    """
+    session = read_operations(root).get("sessions", {}).get(session_id)
+    operations = session.get("operations", []) if isinstance(session, dict) else []
+    if not isinstance(operations, list) or not operations:
+        return None
+    non_terminal = [item for item in operations if isinstance(item, dict)
+                    and item.get("state") not in OPERATION_STATES[1:]]
+    return deepcopy((non_terminal or operations)[-1])
+
+
+def succeeded_operation_ids(root: Path, session_id: str) -> list[str]:
+    """Return bounded, journal-order success identifiers for a source session."""
+    session = read_operations(root).get("sessions", {}).get(session_id)
+    operations = session.get("operations", []) if isinstance(session, dict) else []
+    return [item["operation_id"] for item in operations[:64]
+            if isinstance(item, dict) and item.get("state") == "succeeded"
+            and isinstance(item.get("operation_id"), str)]
+
+
+def record_operation(root: Path, session_id: str, role: str, record: dict, now: datetime) -> dict:
+    """Atomically retain recent operation telemetry, bounded by session and history."""
+    stamp = now.isoformat()
+    terminal = record["state"] in OPERATION_STATES[1:]
+    with agent_output_lock(Path(root)):
+        store = read_operations(root)
+        sessions = store["sessions"]
+        session = sessions.setdefault(session_id, {"role": role, "protocol_warnings": 0,
+            "late_telemetry": 0, "operations": []})
+        operations = session.setdefault("operations", [])
+        existing = next((item for item in operations if item.get("operation_id") == record["operation_id"]), None)
+        if existing is None:
+            saved = dict(record)
+            saved.update({"started_at": stamp, "updated_at": stamp})
+            if terminal:
+                saved["ended_at"] = stamp
+            operations.append(saved)
+        else:
+            existing.update({key: record[key] for key in ("attempt", "state") if key in record})
+            if "category" in record:
+                existing["category"] = record["category"]
+            else:
+                existing.pop("category", None)
+            existing["updated_at"] = stamp
+            if terminal:
+                existing["ended_at"] = stamp
+        session["operations"] = operations[-64:]
+        while len(sessions) > 8:
+            oldest = next(iter(sessions))
+            sessions.pop(oldest, None)
+        _atomic_write_text(operations_path(root), json.dumps(store, sort_keys=True) + "\n")
+    return next(item for item in session["operations"] if item["operation_id"] == record["operation_id"])
+
+
+def count_operation_warning(root: Path, session_id: str, role: str, kind: str) -> None:
+    """Count malformed or late telemetry without changing managed-session outcome."""
+    if kind not in {"protocol_warnings", "late_telemetry"}:
+        return
+    with agent_output_lock(Path(root)):
+        store = read_operations(root)
+        session = store["sessions"].setdefault(session_id, {"role": role, "protocol_warnings": 0,
+            "late_telemetry": 0, "operations": []})
+        session[kind] = int(session.get(kind, 0)) + 1
+        _atomic_write_text(operations_path(root), json.dumps(store, sort_keys=True) + "\n")
+
+
+def operation_assessment(record: dict, now: datetime, quiet_seconds: int) -> str:
+    """Classify using terminal, timeout, then quiet-heartbeat precedence."""
+    if record.get("state") in OPERATION_STATES[1:]:
+        return record["state"]
+    started = datetime.fromisoformat(record["started_at"])
+    updated = datetime.fromisoformat(record["updated_at"])
+    if (now - started).total_seconds() >= record["timeout_seconds"]:
+        return "timed_out"
+    if (now - updated).total_seconds() >= quiet_seconds:
+        return "stale"
+    return "waiting"
+
+
+def dependency_class(record: dict) -> str:
+    """Map failure categories to stable dependency families for later assessment."""
+    table = {"auth_failure": "authentication", "rate_limit": "agent_provider",
+             "context_exhaustion": "agent_provider", "token_budget_exhaustion": "agent_provider",
+             "timeout": "network", "network": "network", "target_service": "target_service"}
+    return table.get(record.get("category"), "engine")
+
+
+def operation_view(status: dict, root: Path, now: datetime | None = None,
+                   quiet_seconds: int | None = None) -> dict:
+    """Build the bounded operation panel from the journal and current status.
+
+    This is deliberately read-only: operation telemetry is advisory UI data,
+    so it must not participate in gates, hashes, events, or status mutation.
+    The same focused-session rule as ``agent_output_view`` keeps both panels
+    describing the newest live session, with the newest session as fallback.
+    """
+    focused = _live_focus_session(status)
+    if not isinstance(focused, dict):
+        return {"availability": "unavailable", "session_id": None, "role": None,
+                "current": None, "assessment": "no operation telemetry reported by this session",
+                "dependency_class": None, "elapsed_seconds": None, "timeout_seconds": None,
+                "attempt": None, "retry_count": 0, "last_success_at": None, "history": [],
+                "protocol_warnings": 0, "late_telemetry": 0}
+    session_id = focused.get("session_id")
+    store = read_operations(root)
+    session = store.get("sessions", {}).get(session_id)
+    if not isinstance(session, dict):
+        session = {}
+    history = [deepcopy(item) for item in session.get("operations", [])
+               if isinstance(item, dict)]
+    current = deepcopy(current_operation(root, session_id)) if session_id else None
+    now = now or datetime.now(timezone.utc)
+    if quiet_seconds is None:
+        quiet_seconds = int(load_config(root).get("recovery", {}).get(
+            "live_session_silence_minutes", 10)) * 60
+    assessment = operation_assessment(current, now, quiet_seconds) if current else None
+    started_at = current.get("started_at") if current else None
+    elapsed = None
+    if started_at:
+        try:
+            elapsed = max(0, int((now - datetime.fromisoformat(started_at)).total_seconds()))
+        except (TypeError, ValueError):
+            elapsed = None
+    successes = [item for item in history if item.get("state") == "succeeded" and item.get("ended_at")]
+    last_success_at = successes[-1].get("ended_at") if successes else None
+    return {"availability": "available" if current else "unavailable", "session_id": session_id,
+            "role": session.get("role") or focused.get("role"), "current": current,
+            "assessment": assessment or "no operation telemetry reported by this session",
+            "dependency_class": dependency_class(current) if current else None,
+            "elapsed_seconds": elapsed, "timeout_seconds": current.get("timeout_seconds") if current else None,
+            "attempt": current.get("attempt") if current else None,
+            "retry_count": max(0, int(current.get("attempt", 1)) - 1) if current else 0,
+            "last_success_at": last_success_at, "history": history,
+            "protocol_warnings": int(session.get("protocol_warnings", 0)),
+            "late_telemetry": int(session.get("late_telemetry", 0))}
+
+
 def start_agent_output(root: Path, session_id: str, role: str, adapter: str, *,
                        now: datetime | None = None) -> None:
     """Create a best-effort portable output envelope for one session."""
@@ -7730,6 +7938,7 @@ FAILURE_CATEGORIES = (
     "auth_failure", "rate_limit", "context_exhaustion",
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
     "reviewer_modified_project",
+    "network", "target_service", "external_timeout", "dispatch_failed",
 )
 
 _FAILURE_REASON_LABELS = {
@@ -7747,6 +7956,8 @@ _FAILURE_REASON_LABELS = {
     "still_running": "no failure signal reported yet",
     "presumed_lost": "host watchdog found no liveness signal past the threshold",
     "reviewer_modified_project": "managed Reviewer modified the project tree",
+    "external_timeout": "external operation exceeded its declared timeout",
+    "dispatch_failed": "host dispatch failed",
 }
 
 # Order matters: tier 3 checks these in sequence and the first match wins,
@@ -7827,7 +8038,7 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
 
 RECOVERABLE_FAILURE_CATEGORIES = {
     "auth_failure", "rate_limit", "context_exhaustion", "timeout",
-    "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost",
+    "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost", "external_timeout",
 }
 FALLBACK_SKIP_REASONS = {
     "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent",

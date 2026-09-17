@@ -968,6 +968,43 @@ function renderAgentOutput(output) {
   $("agent-output-log").scrollTop = $("agent-output-log").scrollHeight;
 }
 
+// The closed set of operation states the panel can show. A class per state
+// keeps unknown payload values from reaching the DOM as a class name.
+const OPERATION_STATE_LABELS = {
+  waiting: ["operation-state-waiting", "WAITING ON DEPENDENCY"],
+  timed_out: ["operation-state-timed_out", "TIMED OUT"],
+  stale: ["operation-state-stale", "STALE TELEMETRY"],
+  failed: ["operation-state-failed", "FAILED"],
+  cancelled: ["operation-state-cancelled", "CANCELLED"],
+  succeeded: ["operation-state-succeeded", "SUCCEEDED"],
+  unavailable: ["operation-state-unavailable", "NO OPERATION TELEMETRY"],
+};
+
+function renderOperation(operation) {
+  const panel = $("operation-panel");
+  if (!panel) return;
+  const value = operation || { availability: "unavailable" };
+  const raw = value.availability === "unavailable" ? "unavailable" : value.assessment;
+  const assessment = Object.prototype.hasOwnProperty.call(OPERATION_STATE_LABELS, raw) ? raw : "unavailable";
+  const state = $("operation-state");
+  const [stateClass, label] = OPERATION_STATE_LABELS[assessment];
+  state.className = `section-meta ${stateClass}`;
+  state.textContent = label;
+  const current = value.current || {};
+  const show = (item, suffix = "") => (item == null ? "n/a" : `${item}${suffix}`);
+  const details = assessment === "unavailable"
+    ? "No operation telemetry reported by this session."
+    : `${value.dependency_class || "engine"} · ${current.dependency || "unknown"} / ${current.operation || "unknown"}`
+      + ` · ${show(value.elapsed_seconds, "s")} / ${show(value.timeout_seconds, "s")}`
+      + ` · attempt ${show(value.attempt)} · retries ${value.retry_count ?? 0}`
+      + ` · last success ${value.last_success_at || "never"}`;
+  $("operation-meta").textContent = details;
+  const history = Array.isArray(value.history) ? value.history : [];
+  $("operation-history").textContent = history.length
+    ? history.map((item) => `${item.operation_id} · ${item.state} · attempt ${item.attempt}`).join("\n")
+    : "No operation history.";
+}
+
 function metricDuration(value) {
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
@@ -1078,6 +1115,7 @@ function render(snapshot) {
   if (!snapshot.initialized) {
     renderLive(null);
     renderAgentOutput(null);
+    renderOperation(null);
     state.inputRequired = false;
     state.alertSignature = null;
     document.body.classList.remove("input-is-required");
@@ -1100,6 +1138,7 @@ function render(snapshot) {
 
   renderLive(snapshot.live);
   renderAgentOutput(snapshot.runtime?.agent_output || null);
+  renderOperation(snapshot.runtime?.operation || null);
   renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderOperatorActions(snapshot.operator_actions || []);

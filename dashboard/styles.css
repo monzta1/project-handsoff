@@ -118,6 +118,13 @@ button, input { font: inherit; }
 .live-age { color: var(--muted); font-variant-numeric: tabular-nums; }
 .live-detail { flex: 1 1 240px; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
 .agent-output-panel { margin: 0 0 24px; }
+.operation-panel { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.operation-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.operation-meta { margin: 0 0 10px; color: var(--muted); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
+.operation-history { max-height: 100px; overflow: auto; padding: 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--faint); background: rgba(7, 16, 13, .45); font: 11px/1.5 var(--mono); white-space: pre-wrap; }
+.operation-state-waiting, .operation-state-succeeded { color: var(--sky); }
+.operation-state-timed_out, .operation-state-stale { color: var(--amber); }
+.operation-state-failed, .operation-state-cancelled, .operation-state-unavailable { color: var(--red); }
 .metrics-panel { margin: 0 0 24px; }
 .metrics-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .metrics-grid > div { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: rgba(7, 16, 13, .45); }

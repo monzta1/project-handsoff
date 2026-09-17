@@ -16,7 +16,7 @@ import threading
 import time
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -197,6 +197,17 @@ def build_role_input(root: Path, role: str, task: str) -> str:
     return text
 
 
+def _completed_operations_section(root: Path, session_id: str | None) -> str:
+    """Build a small id-only resume note so successful external work is not repeated."""
+    if not session_id:
+        return ""
+    ids = lib.succeeded_operation_ids(root, session_id)
+    if not ids:
+        return ""
+    return "# Completed external operations\n\n" + "\n".join(f"- {item}" for item in ids[:64]) \
+        + "\n\nThese already succeeded; do not repeat them."
+
+
 def _refuse_reviewer_launch_over_budget(root: Path, cfg: dict, role: str) -> None:
     """#35 advisory pre-check: fail a managed Phase-2 reviewer launch fast,
     with the authorization command in the message, before any profile
@@ -246,6 +257,12 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
+    if role == "reviewer":
+        status_file = lib.status_path(root, cfg)
+        if status_file.is_file():
+            status = lib.load_unique_json(status_file)
+            if status.get("phase_number") == 2 and not status.get("design_proposal"):
+                raise lib.HandsoffError("reviewer launch refused: no design proposal is recorded; run design-propose or an Architect session first")
     if lib.agent_profiles(cfg)[role]["adapter"] == lib.HOST_AGENT_ADAPTER:
         raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
     context = lib.managed_design_context(root, role)
@@ -387,6 +404,42 @@ def _stop_process_group(process) -> None:
         raise lib.HandsoffError("agent process group did not stop after SIGKILL") from exc
 
 
+def _check_operation_timeout(root: Path, cfg: dict, session_id: str, process,
+                             now: datetime) -> str:
+    """Terminate only a still-proven child after its declared external timeout.
+
+    Every ownership fact is read immediately before signalling because a PID
+    can be reused after the original child exits or changes process groups.
+    """
+    operation = lib.current_operation(root, session_id)
+    if not operation or lib.operation_assessment(operation, now, 0) != "timed_out":
+        return "unverified"
+    started = datetime.fromisoformat(operation["started_at"])
+    deadline = started + timedelta(seconds=operation["timeout_seconds"])
+    grace = cfg.get("recovery", {}).get("operation_grace_seconds", 120)
+    if (now - deadline).total_seconds() < grace:
+        return "unverified"
+    beacon = lib.read_live_beacon(root)
+    pid = getattr(process, "pid", None)
+    if not isinstance(beacon, dict) or beacon.get("session_id") != session_id \
+            or beacon.get("state") not in {"started", "running"} or beacon.get("pid") != pid:
+        return "unverified"
+    age = lib._seconds_since(beacon.get("beacon_at"), now)
+    if age is None or age < 0 or age > lib.LIVE_BEACON_FRESH_SECONDS or not isinstance(pid, int) or pid <= 1:
+        return "unverified"
+    try:
+        if os.getpgid(pid) != pid:
+            return "unverified"
+        os.killpg(pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            os.killpg(pid, signal.SIGKILL)
+        return "terminated"
+    except (OSError, ProcessLookupError):
+        return "unverified"
+
+
 def _failure_exit_code(process) -> int:
     value = getattr(process, "returncode", None)
     return value if isinstance(value, int) and not isinstance(value, bool) and value != 0 else 1
@@ -461,15 +514,20 @@ class _LiveBeacon:
         self.root = root
         self.session_id = session_id
         self.role = role
+        self.process = process
         self.pid = _process_pid(process)
         self.interval = max(float(interval), 0.01)
         self.stop = threading.Event()
         self.thread = None
+        self.operation_terminated = False
 
     def _beat(self) -> None:
         while not self.stop.is_set():
             lib.write_live_beacon(self.root, session_id=self.session_id, role=self.role,
                                   state="running", pid=self.pid)
+            if _check_operation_timeout(self.root, lib.load_config(self.root), self.session_id,
+                                        self.process, datetime.now(timezone.utc)) == "terminated":
+                self.operation_terminated = True
             self.stop.wait(self.interval)
 
     def start(self) -> None:
@@ -519,7 +577,8 @@ _SENSITIVE_ENV_NAME = re.compile(
 )
 _PRIVATE_KEY_BEGIN = re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----")
 _PRIVATE_KEY_END = re.compile(r"-----END(?: [A-Z0-9]+)* PRIVATE KEY-----")
-_CONTROL_PREFIXES = (SUPERVISOR_REQUEST_PREFIX, REVIEW_RESULT_PREFIX, "HANDSOFF_QUESTION:")
+_CONTROL_PREFIXES = (SUPERVISOR_REQUEST_PREFIX, REVIEW_RESULT_PREFIX, "HANDSOFF_QUESTION:",
+                     "HANDSOFF_OPERATION:")
 _SAFE_REDACTION_FAILURE = "[OUTPUT REDACTION FAILED]"
 _SAFE_OVERSIZED_OUTPUT = "[OVERSIZED OUTPUT REDACTED]"
 
@@ -742,6 +801,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         return _run_managed_process(
             spec, root, session_id, process, timeout, capture_supervisor, portable_output,
             repository_digest_before=repository_digest_before,
+            beacon=beacon,
         )
     finally:
         beacon.finish()
@@ -751,7 +811,8 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
 def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                          timeout: int, capture_supervisor: bool,
                          portable_output: _PortableOutput,
-                         repository_digest_before: str | None = None) -> int:
+                         repository_digest_before: str | None = None,
+                         beacon: _LiveBeacon | None = None) -> int:
     """The lifecycle of an already-started child: exactly one terminal
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
@@ -826,6 +887,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         line, pending = pending.split("\n", 1)
                         if _raise_question_line(root, spec.role, session_id, line, question_errors):
                             question_lines[0] += 1
+                        _parse_operation_line(line, root, session_id, spec.role)
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                         if spec.role == "reviewer":
@@ -840,6 +902,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 if pending and not discarding:
                     if _raise_question_line(root, spec.role, session_id, pending, question_errors):
                         question_lines[0] += 1
+                    _parse_operation_line(pending, root, session_id, spec.role)
                     if capture_supervisor:
                         _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
                     if spec.role == "reviewer":
@@ -980,6 +1043,16 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 f"agent output stream failed: {type(reader_errors[0]).__name__}", session_id,
             ) from reader_errors[0]
     if process.returncode:
+        if beacon is not None and beacon.operation_terminated:
+            operation = lib.current_operation(root, session_id) or {}
+            failure = {"category": "external_timeout",
+                       "reason": "external operation exceeded its declared timeout",
+                       "dependency": operation.get("dependency"),
+                       "operation": operation.get("operation"),
+                       "tail_sha256": hashlib.sha256(b"").hexdigest()}
+            lib.transition_agent_session(root, session_id, "failed", exit_code=process.returncode,
+                                        failure=failure)
+            raise AgentLaunchError(failure["reason"], session_id)
         failure = lib.classify_runtime_failure(
             exit_code=process.returncode, stderr_tail=stderr_tail[0], stdout_tail=stdout_tail[0],
         )
@@ -1066,16 +1139,17 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         except Exception as exc:
             lib.transition_agent_session(
                 root, session_id, "failed", exit_code=1,
-                failure=lib.classify_runtime_failure(exit_code=1),
+                failure={"category": "dispatch_failed", "reason": str(exc)[:200],
+                         "tail_sha256": hashlib.sha256(b"").hexdigest()},
             )
             raise AgentLaunchError(
-                f"Reviewer result dispatch failed: {type(exc).__name__}", session_id,
+                f"Reviewer result dispatch failed: {str(exc)[:200]}", session_id,
             ) from exc
     if supervisor_requests:
         try:
             import handsoff_broker as broker
             for request in supervisor_requests:
-                broker.dispatch_supervisor_request(Path(spec.cwd), request)
+                broker.dispatch_supervisor_request(Path(spec.project_root or spec.cwd), request)
         except KeyboardInterrupt as exc:
             lib.transition_agent_session(
                 root, session_id, "cancelled", exit_code=130,
@@ -1085,20 +1159,24 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         except lib.HandsoffError as exc:
             # The host rejected a syntactically valid but semantically
             # invalid request. Re-running another model against unchanged
-            # state cannot repair that contract violation safely.
+            # state cannot repair that contract violation safely, so this
+            # stays orchestration_noop (the agent's fault), distinct from
+            # dispatch_failed (#84), which names a host-side failure to
+            # deliver an otherwise valid result.
             lib.transition_agent_session(
                 root, session_id, "failed", exit_code=1,
                 failure=lib.classify_runtime_failure(orchestration_noop=True),
             )
             raise AgentLaunchError(
-                f"Supervisor broker request rejected: {exc}", session_id,
+                f"Supervisor broker request rejected: {str(exc)[:200]}", session_id,
             ) from exc
         except Exception as exc:
             lib.transition_agent_session(
                 root, session_id, "failed", exit_code=1,
-                failure=lib.classify_runtime_failure(exit_code=1),
+                failure={"category": "dispatch_failed", "reason": str(exc)[:200],
+                         "tail_sha256": hashlib.sha256(b"").hexdigest()},
             )
-            raise AgentLaunchError(f"Supervisor broker request failed: {type(exc).__name__}", session_id) from exc
+            raise AgentLaunchError(str(exc)[:200], session_id) from exc
     lib.transition_agent_session(root, session_id, "completed", exit_code=0)
     for problem in question_errors:
         sys.stderr.write(f"HANDSOFF_QUESTION_WARNING: {problem}\n")
@@ -1114,7 +1192,9 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
     """Run and, only on authenticated recoverable outcomes, consume CAS reservations."""
     if spec is None and from_session_id is None:
         raise lib.HandsoffError("recovery requires a launch or a trusted completed session")
-    root = Path(spec.cwd).resolve() if spec else None
+    # #80: a sandboxed Reviewer runs with its cwd in a scratch directory; the
+    # project root travels on the spec so recovery never reads state there.
+    root = Path(spec.project_root or spec.cwd).resolve() if spec else None
     if root is None:
         raise lib.HandsoffError("quality recovery requires an in-memory launch context")
     current_spec = spec
@@ -1135,7 +1215,10 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
         if replacement["action"] != "launch":
             raise lib.HandsoffError(f"agent replacement paused: {replacement['reason']}")
         safe_handoff = json.dumps(replacement["handoff"], sort_keys=True, separators=(",", ":"))
+        completed = _completed_operations_section(root, source_id)
         fallback_input = original_input + "\n\n# Trusted replacement handoff\n\n" + safe_handoff
+        if completed:
+            fallback_input += "\n\n" + completed
         try:
             current_spec = build_profile_launch_spec(
                 root, replacement["role"], fallback_input,
@@ -1203,6 +1286,30 @@ def _parse_reviewer_line(line: str, results: list[dict], errors: list[str]) -> N
         results.append(__import__("handsoff_broker").parse_reviewer_result(payload))
     except lib.HandsoffError as exc:
         errors.append(str(exc))
+
+
+def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> None:
+    """Persist valid operation telemetry while isolating malformed or late child output."""
+    if not line.startswith("HANDSOFF_OPERATION:"):
+        return
+    try:
+        payload = json.loads(line[len("HANDSOFF_OPERATION:"):].strip())
+        record = lib.validate_operation_line(payload)
+    except (ValueError, TypeError):
+        record = None
+    if record is None:
+        lib.count_operation_warning(root, session_id, role, "protocol_warnings")
+        return
+    try:
+        status = lib.load_unique_json(lib.status_path(root, lib.load_config(root)))
+        current = lib.current_agent_sessions(status).get(role)
+        if not isinstance(current, dict) or current.get("session_id") != session_id:
+            lib.count_operation_warning(root, session_id, role, "late_telemetry")
+            return
+        lib.record_operation(root, session_id, role, record, datetime.now(timezone.utc))
+    except Exception:
+        # Telemetry must never turn a managed child outcome into a failure.
+        return
 
 
 def _parse_architect_line(line: str, results: list[dict], errors: list[str]) -> None:

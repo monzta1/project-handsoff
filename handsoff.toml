@@ -70,6 +70,7 @@ live_session_silence_minutes = 10
 liveness_seconds = 60
 dashboard_watchdog = true
 poll_seconds = 30
+operation_grace_seconds = 120
 
 [checks]
 # Shell commands the supervisor actually runs via `handsoff_supervisor.py verify`.
@@ -79,6 +80,8 @@ poll_seconds = 30
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+  "python3 -m unittest tests.test_operations -v",
+  "node --test tests/dashboard/operation_telemetry.test.js",
   "python3 -m unittest tests.test_evidence_drift -v",
   "python3 -m unittest tests.test_reviewer_sandbox -v",
   "python3 -m unittest tests.test_design_review_hold -v",
@@ -93,7 +96,7 @@ commands = [
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = ["python3 tests/live_doctor_smoke.py", "python3 tests/live_host_roles_smoke.py"]
+live_commands = ["python3 tests/live_doctor_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py"]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600

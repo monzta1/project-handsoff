@@ -138,11 +138,12 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 lib.output_liveness_path(root),
                 # #58: every bounded log append invalidates Mission Control.
                 lib.agent_output_path(root),
+                lib.operations_path(root),
                 root / tranche.PROPOSAL_FILE,
             ]
         except lib.HandsoffError:
             paths = [root / "handsoff.toml", lib.live_beacon_path(root),
-                     lib.output_liveness_path(root), lib.agent_output_path(root)]
+                     lib.output_liveness_path(root), lib.agent_output_path(root), lib.operations_path(root)]
         signature = []
         for path in paths:
             try:
@@ -582,6 +583,7 @@ def build_snapshot(root: Path) -> dict:
             # #33: the live session view, from structured state plus the beacon.
             live = lib.live_status(status, cfg, root)
             agent_output = lib.agent_output_view(status, root)
+            operation = lib.operation_view(status, root)
             # #38: states and hashes only; the bounded output stays in the side file.
             try:
                 design_evidence = lib.design_evidence_view(root, cfg)
@@ -728,6 +730,7 @@ def build_snapshot(root: Path) -> dict:
             "current_sessions": current_sessions,
             "replacements": replacements,
             "agent_output": agent_output,
+            "operation": operation,
         },
         "metrics": metrics,
         "audit": {
