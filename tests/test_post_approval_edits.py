@@ -107,6 +107,19 @@ class PostApprovalCliTests(HandsoffTestCase):
         self.assertEqual(last["kind"], "criterion_updated")
         self.assertIn("design_approved", last["decisions_revoked"])
         self.assertIn("design_review", last["decisions_revoked"])
+    def test_criteria_apply_with_revoke_completes_and_names_revoked_decisions(self):
+        # Regression: cmd_criteria_apply referenced decisions_revoked without
+        # assigning it, so every non-dry-run transaction raised NameError.
+        self._approved_design()
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+        tx = self.tmp / "tx.json"
+        tx.write_text(json.dumps({"operations": [{"op": "update", "id": "REQ-001", "fields": {"tests": ["true"]}}]}))
+        result = run(["criteria-apply", "--file", str(tx), "--by", "supervisor", "--revoke-approval"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+        self.assertIn("design_approved", json.dumps(events[-1]))
+
 
     def test_live_commands_change_after_deployment_approval_keeps_the_approval(self):
         self.init("Config edits are not scope")

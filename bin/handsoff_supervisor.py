@@ -2700,7 +2700,7 @@ def cmd_criteria_apply(args) -> int:
         lib.migrate_review_ledger(status)
         abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        decisions_revoked = _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
                   "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
