@@ -270,7 +270,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             if status.get("phase_number") == 2 and not status.get("design_proposal"):
                 raise lib.HandsoffError("reviewer launch refused: no design proposal is recorded; run design-propose or an Architect session first")
             if status.get("phase_number") == 5:
-                if not status.get("original_symptom_resolved"):
+                if not status.get("original_symptom_evidence_id"):
                     raise lib.HandsoffError("reviewer launch refused: run handsoff_supervisor.py record-symptom-resolved --evidence <run_id> --by ACTOR first")
                 acceptance = lib.load_unique_json(lib.acceptance_path(root, lib.load_config(root)))
                 missing = [c.get("id") for c in acceptance.get("criteria", []) if c.get("verification") == "automated" and not c.get("evidence")]
@@ -1160,27 +1160,33 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             raise AgentLaunchError(
                 f"Architect design proposal dispatch failed: {type(exc).__name__}", session_id,
             ) from exc
-    if len(reviewer_results) > 1:
-        lib.transition_agent_session(
-            root, session_id, "failed", exit_code=1,
-            failure=lib.classify_runtime_failure(exit_code=1),
-        )
-        raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
     if spec.role == "reviewer":
         before = repository_digest_before.get("entries", {}) if isinstance(repository_digest_before, dict) else {}
         after = lib.repository_digest_entries(root, lib.load_config(root))
         changed_paths = [path for path in sorted(set(before) | set(after))
                          if before.get(path) != after.get(path)][:64]
         digest_changed = isinstance(repository_digest_before, dict) and repository_digest_before.get("digest") != lib.repository_digest(root, lib.load_config(root))
-        if changed_paths or (digest_changed and str(spec.cwd) == str(root)):
+        sandboxed = Path(spec.cwd).resolve() != Path(root).resolve()
+        if (changed_paths or digest_changed) and not sandboxed:
+            # The reviewer ran inside the tree, so a change is its own doing.
             failure = {"category": "reviewer_modified_project",
                        "reason": "managed Reviewer modified the project tree",
                        "tail_sha256": hashlib.sha256(b"").hexdigest(), "changed_paths": changed_paths or ["<repository-digest-changed>"]}
             lib.transition_agent_session(root, session_id, "failed", exit_code=1, failure=failure)
             raise AgentLaunchError("Reviewer modified the project tree", session_id)
-        if changed_paths:
+        if changed_paths or digest_changed:
+            # #92: a sandboxed reviewer cannot write outside its scratch cwd,
+            # so a changed tree is the host's doing; attribute it and keep
+            # the review rather than blaming the reviewer.
             lib.append_event(root, lib.load_config(root), "host_edited_during_review",
-                             "Host edited project during scratch review", session_id=session_id, paths=changed_paths)
+                             "Host edited project during scratch review", session_id=session_id,
+                             paths=changed_paths or ["<repository-digest-changed>"])
+    if len(reviewer_results) > 1:
+        lib.transition_agent_session(
+            root, session_id, "failed", exit_code=1,
+            failure=lib.classify_runtime_failure(exit_code=1),
+        )
+        raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
     if reviewer_results:
         try:
             import handsoff_broker as broker

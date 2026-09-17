@@ -2344,7 +2344,13 @@ def cmd_record_review(args) -> int:
 
 
 def cmd_session_result_adopt(args) -> int:
-    """Replay a persisted result after dispatch loss, preserving canonical gates."""
+    """Replay a persisted protocol result through the canonical record
+    command (#92). Three rules keep it honest: the request is not bound to
+    the dead session (the broker would refuse a non-live session), the
+    replay runs outside the project lock (it is a supervisor subprocess
+    that takes the lock itself), and the adoption mark is written on a
+    status re-read after the replay, so the replayed decision is not
+    overwritten by a stale copy."""
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     actor = lib.validate_agent_actor(args.by)
@@ -2358,20 +2364,49 @@ def cmd_session_result_adopt(args) -> int:
         if result.get("adopted_at") is not None:
             print("SESSION_RESULT_ADOPT_REFUSED: result is already adopted")
             return 1
-        import handsoff_broker as broker
-        payload = result["payload"]
-        if result["kind"] == "review":
-            request = broker._reviewer_result_request(root, args.session, payload, actor=actor)
-        elif result["kind"] == "design":
-            request = {"actor": "supervisor", "project_root": str(root), "command": "design-propose", "by": actor, "proposal": payload}
+        kind, payload = result["kind"], deepcopy(result["payload"])
+        architect = (status.get("design_proposal") or {}).get("architect")
+    import handsoff_broker as broker
+    base = {"actor": "supervisor", "project_root": str(root), "action": "workflow", "by": actor}
+    if kind == "review":
+        if payload.get("decision") == "approved":
+            request = {**base, "command": "record-review",
+                       "symptom_reproduced": payload.get("symptom_reproduced", "not_applicable"),
+                       "tests_executed": payload.get("tests_executed", "unknown")}
         else:
-            request = dict(payload); request["by"] = actor
+            request = {**base, "command": "record-review-findings", "findings": payload.get("findings") or [],
+                       "tests_executed": payload.get("tests_executed", "unknown")}
+    elif kind == "design":
+        if not architect:
+            print("SESSION_RESULT_ADOPT_REFUSED: no architect recorded on the design proposal")
+            return 1
+        request = {**base, "command": "record-design-review", "architect": architect,
+                   "decision": "approve" if payload.get("decision") == "approved" else "request-changes",
+                   "summary": payload.get("summary") or "adopted"}
+        if payload.get("findings"):
+            request["findings"] = payload["findings"]
+        if payload.get("structural_blocker"):
+            request["structural_blocker"] = True
+    else:
+        request = dict(payload)
+        request.update(base)
+    try:
         broker.execute_request(root, request, capability=broker._SUPERVISOR_HOST_CAPABILITY)
-        proposed = deepcopy(status)
-        adopted = proposed["agent_sessions"][args.session]["result"]
+    except lib.HandsoffError as exc:
+        print(f"SESSION_RESULT_ADOPT_REFUSED: {exc}")
+        return 1
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        adopted = status["agent_sessions"][args.session]["result"]
         adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
         adopted["adopted_by"] = actor
-        lib.commit(root, cfg, status=proposed, event_kind="session_result_adopted", event_message="Persisted session result adopted", session_id=args.session, by=actor)
+        failure = (status.get("agent_failures") or {}).get(args.session)
+        if isinstance(failure, dict):
+            # The replacement pause is derived from this record's category;
+            # marking it adopted is what lifts the pause (recovery skips it).
+            failure["adopted"] = True
+        lib.commit(root, cfg, status=status, event_kind="session_result_adopted",
+                   event_message="Persisted session result adopted", session_id=args.session, by=actor)
     print("SESSION_RESULT_ADOPTED")
     return 0
 

@@ -2153,7 +2153,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 
 
 def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "result_available"} \
+    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "result_available", "adopted"} \
             or not {"category", "reason", "tail_sha256"} <= set(value):
         raise HandsoffError("agent failure classification is invalid")
     category = value.get("category")
@@ -2174,6 +2174,10 @@ def _validate_failure_classification(value: object) -> dict:
         if not isinstance(value["changed_paths"], list) or len(value["changed_paths"]) > 64 or not all(isinstance(item, str) for item in value["changed_paths"]):
             raise HandsoffError("agent failure changed paths are invalid")
         result["changed_paths"] = list(value["changed_paths"])
+    if "adopted" in value:
+        if value["adopted"] is not True:
+            raise HandsoffError("agent failure adopted flag is invalid")
+        result["adopted"] = True
     if "result_available" in value:
         if value["result_available"] is not True:
             raise HandsoffError("agent failure result_available is invalid")
@@ -3813,7 +3817,7 @@ def validate_status_schema(status: dict) -> list[str]:
                 except HandsoffError as exc:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
-                allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths", "result_available"}
+                allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths", "result_available", "adopted", "result_available", "changed_paths", "scratch_path"}
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
                         or set(failure) - allowed_fields \
                         or failure.get("session_id") != session_id:
@@ -5043,7 +5047,7 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
             if isinstance(candidate_id, str) else None
         if isinstance(candidate, dict) and candidate.get("state") in {
                 "failed", "timed_out", "failed_to_start", "cancelled"} \
-                and isinstance(failure, dict) \
+                and isinstance(failure, dict) and not failure.get("adopted") \
                 and failure.get("category") not in RECOVERABLE_FAILURE_CATEGORIES:
             result.update(reason="non_recoverable_failure", assigned_role=current_role,
                           lost_session_id=candidate_id)
