@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import uuid
 from copy import deepcopy
@@ -1781,8 +1782,15 @@ def cmd_record_design_review(args) -> int:
                 return 1
             launch_id = getattr(args, "session", None)
             launch_session = (status.get("agent_sessions") or {}).get(launch_id)
-            if launch_session and provenance.get("host_session_id") and \
-                    launch_session.get("host_session_id") == provenance.get("host_session_id"):
+            # #112: a managed reviewer (codex or claude, named by --session) is
+            # a separate process, provider and actor even when the host
+            # Supervisor launched it from the Architect's terminal. Only a
+            # host-recorded verdict (no --session) shares a host session in
+            # any meaningful sense: the recording process must not be the
+            # Claude Code or Codex session that wrote the proposal.
+            recording_host = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_COMPANION_SESSION_ID")
+            if launch_session is None and provenance.get("host_session_id") \
+                    and recording_host == provenance.get("host_session_id"):
                 print("SHIP_FEATURE_BLOCKED: design reviewer must use an independent host session")
                 return 1
         criteria = acceptance.get("criteria", [])

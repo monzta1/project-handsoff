@@ -38,5 +38,22 @@ class FixtureHygieneTests(unittest.TestCase):
             self.assertIn('".handsoff-version").write_text("0.3.*\\n")', text, name)
 
 
+class RuntimeManifestTests(unittest.TestCase):
+    def test_manifest_matches_the_working_tree(self):
+        # A commit that edits a runtime file without regenerating the
+        # manifest ships an engine that fails its own integrity check (main
+        # at 5834701 did exactly that). Regenerate with
+        # `python3 bin/handsoff_manifest.py --root . --version vX.Y.Z`.
+        import hashlib, json
+        manifest = json.loads((ROOT / "handsoff-runtime.json").read_text(encoding="utf-8"))
+        stale = []
+        for relative, expected in sorted(manifest["files"].items()):
+            path = ROOT / relative
+            actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+            if actual != expected:
+                stale.append(relative)
+        self.assertEqual(stale, [], "regenerate handsoff-runtime.json; stale entries: " + ", ".join(stale))
+
+
 if __name__ == "__main__":
     unittest.main()
