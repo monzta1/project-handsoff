@@ -260,3 +260,19 @@ class StableDashboardCommandTests(unittest.TestCase):
             self.assertEqual(cli.main(), 0)
         self.assertEqual(forwarded, [["--root", "/tmp/p", "dashboard", "--host", "127.0.0.1", "--port", "8801",
                                       "--no-open", "--owned-by-run"]])
+
+
+class PassthroughCommandTests(unittest.TestCase):
+    """v0.3.14 regression: the supervisor/agent/fleet passthrough must return
+    the child's exit code from main() and never reach argparse."""
+
+    def test_supervisor_passthrough_returns_exit_code_from_main(self):
+        with mock.patch.object(cli, "_dispatch_supervisor", return_value=3) as dispatch, \
+                mock.patch.object(sys, "argv", ["handsoff", "supervisor", "--root", "/tmp/p", "status"]):
+            self.assertEqual(cli.main(), 3)
+        dispatch.assert_called_once_with(["--root", "/tmp/p", "status"])
+
+    def test_build_parser_is_pure_even_with_passthrough_argv(self):
+        with mock.patch.object(sys, "argv", ["handsoff", "supervisor", "status"]):
+            parser = cli.build_parser()
+        self.assertTrue(hasattr(parser, "parse_args"))

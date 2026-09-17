@@ -352,20 +352,28 @@ def _dispatch_supervisor(args: list[str]) -> int:
     return _dispatch(handsoff_supervisor.main, args)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    # Passthrough commands own their entire remaining argv, including
-    # options such as --root. Dispatch before argparse so no `--` separator
-    # is ever required from the global CLI.
-    if len(sys.argv) > 1 and sys.argv[1] in {"supervisor", "agent", "fleet"}:
+def _passthrough(argv: list[str]) -> int | None:
+    """Passthrough commands own their entire remaining argv, including
+    options such as --root, so they are dispatched before argparse and no
+    `--` separator is ever required. Returns the exit code, or None when
+    argv is not a passthrough. Kept out of build_parser on purpose: that
+    function must stay pure so `handsoff commands` can render the parser
+    and v0.3.14's regression (an exit code handed to parse_args) cannot
+    recur."""
+    if len(argv) > 1 and argv[1] in {"supervisor", "agent", "fleet"}:
         try:
-            if sys.argv[1] == "supervisor":
-                return _dispatch_supervisor(sys.argv[2:])
-            if sys.argv[1] == "agent":
-                return _dispatch(handsoff_agent.main, sys.argv[2:])
-            return _dispatch(handsoff_fleet.main, sys.argv[2:])
+            if argv[1] == "supervisor":
+                return _dispatch_supervisor(argv[2:])
+            if argv[1] == "agent":
+                return _dispatch(handsoff_agent.main, argv[2:])
+            return _dispatch(handsoff_fleet.main, argv[2:])
         except lib.HandsoffError as exc:
             print(f"HANDSOFF_BLOCKED: {exc}", file=sys.stderr)
             return 1
+    return None
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="handsoff", description="Versioned Handsoff engine")
     sub = parser.add_subparsers(dest="command", required=True)
     version = sub.add_parser("version")
@@ -428,6 +436,9 @@ def _commands_reference() -> str:
 
 
 def main() -> int:
+    passthrough = _passthrough(sys.argv)
+    if passthrough is not None:
+        return passthrough
     parser = build_parser()
     args = parser.parse_args()
     try:
