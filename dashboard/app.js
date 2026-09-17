@@ -441,10 +441,12 @@ function renderOperations(operations = {}, actions = []) {
   if (!panel) return;
   const inventory = operations.inventory || [];
   panel.classList.toggle("hidden", actions.length === 0 && inventory.length === 0);
-  $("operator-actions-count").textContent = `${actions.length + inventory.length} OPERATION${actions.length + inventory.length === 1 ? "" : "S"}`;
+  const actionKinds = new Set(actions.map((action) => action.kind));
+  const usable = actions.length + inventory.filter((item) => item.availability === "actionable" && !actionKinds.has(item.kind)).length;
+  const blocked = inventory.filter((item) => item.availability === "unavailable").length;
+  $("operator-actions-count").textContent = `${usable} AVAILABLE${blocked ? ` / ${blocked} UNAVAILABLE` : ""}`;
   const list = $("operator-actions-list");
   list.replaceChildren();
-  const actionKinds = new Set(actions.map((action) => action.kind));
   for (const action of actions) {
     const card = document.createElement("article");
     card.className = `operator-action operator-action-${action.tone || "primary"}`;
@@ -473,12 +475,25 @@ function renderOperations(operations = {}, actions = []) {
     card.append(copy, controls);
     list.append(card);
   }
-  $("operator-inventory").innerHTML = ["actionable", "unavailable", "read_only"].map((availability) => {
+  // Unavailable operations are folded into one closed disclosure with a
+  // single line per reason. A complete run has eighteen of them and every
+  // one says "run is complete"; listing each as a card buried the panel.
+  $("operator-inventory").innerHTML = ["actionable", "read_only", "unavailable"].map((availability) => {
     const entries = inventory.filter((item) => item.availability === availability && !(availability === "actionable" && actionKinds.has(item.kind)));
     if (!entries.length) return "";
-    const css = availability === "read_only" ? "readonly" : availability === "unavailable" ? "unavailable" : "actionable";
-    const detail = (item) => availability === "unavailable" ? escapeHtml(item.reason) : escapeHtml(item.consequence);
-    return `<div class="operator-inventory-group"><h3>${availability.replace("_", " ").toUpperCase()}</h3>${entries.map((item) => `<article class="operator-inventory-item ${OP_CLASSES[["actionable", "unavailable", "read_only"].indexOf(availability)]}"><strong>${escapeHtml(item.label || item.kind)}</strong><p>${detail(item)}</p></article>`).join("")}</div>`;
+    const cls = OP_CLASSES[["actionable", "unavailable", "read_only"].indexOf(availability)];
+    if (availability === "unavailable") {
+      const byReason = new Map();
+      for (const item of entries) {
+        const reason = item.reason || "not currently applicable";
+        if (!byReason.has(reason)) byReason.set(reason, []);
+        byReason.get(reason).push(item.label || item.kind);
+      }
+      const rows = [...byReason.entries()].map(([reason, kinds]) => `<li class="${cls}"><span>${escapeHtml(reason)}</span><small>${escapeHtml(kinds.join(", "))}</small></li>`).join("");
+      return `<details class="operator-inventory-group operator-inventory-collapsed"><summary>${entries.length} UNAVAILABLE</summary><ul>${rows}</ul></details>`;
+    }
+    const detail = (item) => escapeHtml(item.consequence);
+    return `<div class="operator-inventory-group"><h3>${availability.replace("_", " ").toUpperCase()}</h3>${entries.map((item) => `<article class="operator-inventory-item ${cls}"><strong>${escapeHtml(item.label || item.kind)}</strong><p>${detail(item)}</p></article>`).join("")}</div>`;
   }).join("");
   const launch = inventory.find((item) => item.kind === "launch_role");
   const launchForm = $("launch-role-form");

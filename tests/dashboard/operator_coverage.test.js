@@ -37,3 +37,12 @@ test("new coverage sources contain no em dash", () => {
   assert.doesNotMatch(app.slice(app.indexOf("function renderOperations"), app.indexOf("function postOperation")), /—/);
   assert.doesNotMatch(css.slice(css.indexOf(".operator-inventory"), css.indexOf(".toast")), /—/);
 });
+test("unavailable operations fold into one closed disclosure grouped by reason", () => {
+  const block = app.slice(app.indexOf("function renderOperations"), app.indexOf("function postOperation"));
+  assert.match(block, /operator-inventory-collapsed/);
+  assert.match(block, /<details class="operator-inventory-group operator-inventory-collapsed"><summary>\$\{entries\.length\} UNAVAILABLE<\/summary>/);
+  assert.match(block, /byReason/);
+  assert.doesNotMatch(block, /availability === "unavailable" \? escapeHtml\(item\.reason\)/);
+  assert.match(block, /AVAILABLE\$\{blocked \? ` \/ \$\{blocked\} UNAVAILABLE` : ""\}/);
+  assert.match(css, /\.operator-inventory-collapsed summary/);
+});

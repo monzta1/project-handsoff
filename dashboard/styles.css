@@ -398,6 +398,13 @@ body.input-is-required .mission-state { color: var(--red); border-color: rgba(25
 .operator-inventory-group { display: grid; gap: 6px; }
 .operator-inventory-item { padding: 9px 11px; border-left: 3px solid var(--line); background: rgba(0, 0, 0, .14); }
 .operator-inventory-item p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+.operator-inventory-collapsed summary { cursor: pointer; color: var(--faint); font: 700 10px/1 var(--sans); letter-spacing: .08em; list-style: none; }
+.operator-inventory-collapsed summary::before { content: "\25B8  "; }
+.operator-inventory-collapsed[open] summary::before { content: "\25BE  "; }
+.operator-inventory-collapsed ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.operator-inventory-collapsed li { padding: 6px 10px; border-left: 3px solid var(--line); background: rgba(0, 0, 0, .14); font-size: 12px; }
+.operator-inventory-collapsed li span { color: var(--muted); }
+.operator-inventory-collapsed li small { display: block; margin-top: 2px; color: var(--faint); font-size: 11px; }
 .op-actionable { border-left-color: var(--blue); }
 .op-unavailable { border-left-color: var(--amber); }
 .op-readonly { border-left-color: var(--muted); }
