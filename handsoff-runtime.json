@@ -1,12 +1,12 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "1facb49b4f4aa02a6cf1b009d3d2693db568c02816490246c7dee859efda46d5",
+    "bin/handsoff_agent.py": "32fb14d22cfcda9745c6c6b08f29f99e385c146f854b5fe60bad2c4ef367b03c",
     "bin/handsoff_analyzer.py": "420f4aa811549ee2b60f9c0f980402dd1ee32ebe71b358104f69522720606567",
     "bin/handsoff_broker.py": "89000baff8fc01c33e40a490e80b5dfd6a626814ddda432937f23cab1982ea90",
-    "bin/handsoff_cli.py": "6dad5f62842f4f99e5ae7cc00b26670efc268d2d77015599b580b4de11319a59",
+    "bin/handsoff_cli.py": "24935b774dc641b899cf8b83a2c2bfdab25cbb66020a1dd4879abd676c770964",
     "bin/handsoff_dashboard.py": "567d63c392f33663a62850fd2ae7d7532b0dcb55b437f52131d1d759e0e8786e",
     "bin/handsoff_fleet.py": "30fd56e9f5fc0f617766139dd0ddd268ac4a389845f9bbbaef43251bb93a67ea",
-    "bin/handsoff_lib.py": "be8bdd8a6818abff4c54fbb3892a5b3bdab6ef22acbde86d95e01f199ab4b5aa",
+    "bin/handsoff_lib.py": "05358659541525f0b78f764cedef1a2ab44a3ff2e94ae5ab4d83df32514b82f1",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
     "bin/handsoff_supervisor.py": "aa9e5c2dd365807c2e621a2b927b449de32cdc0bf233db73294d318ab12c113f",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",

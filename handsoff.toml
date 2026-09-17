@@ -25,9 +25,9 @@ deployment_requires_explicit_approval = true
 # provider family. Setting one role never changes the other three.
 # "auto" is an explicit choice, not a placeholder: it keeps the older
 # first-installed auto-detect path (Codex, then Claude Code).
-architect = "claude"
-supervisor = "claude"
-implementer = "claude"
+architect = "codex"
+supervisor = "codex"
+implementer = "codex"
 reviewer = "codex"
 
 [models]
@@ -39,9 +39,9 @@ reviewer = "codex"
 # for the codex reviewer. A recommended model applies only with its
 # recommended adapter: override an adapter without naming a model and the
 # role runs with the runner default (source "runner_default").
-architect = "claude-opus-5"
-supervisor = "claude-opus-5"
-implementer = "claude-opus-5"
+architect = "default"
+supervisor = "default"
+implementer = "default"
 reviewer = "default"
 
 [fallback_policy]
@@ -79,6 +79,7 @@ poll_seconds = 30
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+  "python3 -m unittest tests.test_packaging -v",
   "python3 -m unittest tests.test_handsoff_supervisor.TestSmallFixLane -v",
   "node --test tests/dashboard/work_item_lanes.test.js",
   "python3 -m unittest tests.test_handsoff_supervisor.TestBacklogPlanner -v",

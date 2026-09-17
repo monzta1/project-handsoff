@@ -376,7 +376,7 @@ def version_satisfies(version: str, pin: str) -> bool:
 def _runtime_identity_with_manifest(root: Path) -> dict:
     """Exact engine source, pin, manifest identity, and compatibility."""
     root = Path(root).resolve()
-    drop_in = (root / RUNTIME_MANIFEST_FILE).is_file() and (root / "bin" / "handsoff_lib.py").is_file()
+    drop_in = _looks_like_runtime_drop_in(root)
     source = "project-drop-in" if drop_in else "installed-engine"
     path = root / RUNTIME_MANIFEST_FILE if drop_in else engine_root() / RUNTIME_MANIFEST_FILE
     try:
@@ -409,6 +409,24 @@ def _runtime_identity_with_manifest(root: Path) -> dict:
         "compatibility": pin, "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "manifest": manifest,
     }
+
+
+def _looks_like_runtime_drop_in(root: Path) -> bool:
+    """Recognize a copied engine from its signed runtime, never its names.
+
+    A project is allowed to have directories called ``bin`` or ``schemas``.
+    Those names alone are not evidence that an engine was copied into it.
+    """
+    manifest_path = Path(root) / RUNTIME_MANIFEST_FILE
+    library = Path(root) / "bin" / "handsoff_lib.py"
+    if not manifest_path.is_file() or not library.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected = manifest.get("files", {}).get("bin/handsoff_lib.py")
+        return isinstance(expected, str) and hashlib.sha256(library.read_bytes()).hexdigest() == expected
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def runtime_identity(root: Path) -> dict:
@@ -466,7 +484,7 @@ def project_resource_path(root: Path, relative: str) -> Path:
     """Resolve an optional thin-project override only when hash-declared."""
     root = Path(root).resolve()
     candidate = (root / relative).resolve()
-    drop_in = (root / RUNTIME_MANIFEST_FILE).is_file() and (root / "bin" / "handsoff_lib.py").is_file()
+    drop_in = _looks_like_runtime_drop_in(root)
     if drop_in:
         return candidate
     if candidate.is_file():
