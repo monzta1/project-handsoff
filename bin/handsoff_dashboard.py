@@ -453,6 +453,7 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
     operation_by_kind = {
         "design_approve": "design-approve", "design_reject": "design-reject",
         "deployment_approve": "deployment-gate", "deployment_hold": "human-pause-start",
+        "deployment_revoke": "deployment-gate",
         "design_review_authorize": "design-review-authorize", "design_review_escalate": "design-review-escalate",
         "regression_accept": "regression-decide", "regression_decline": "regression-decide",
         "regression_cancel": "regression-cancel", "amendment_approve": "amendment-approve",
@@ -485,6 +486,8 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
     elif kind == "deployment_approval":
         add("deployment_approve", "Authorize deployment", "Allows live verification to continue")
         add("deployment_hold", "Hold deployment", "Pauses the mission until the Pilot resumes it", reason=True, tone="danger")
+    elif kind == "deployment_revoke":
+        add("deployment_revoke", "Revoke deployment approval", "Returns the mission to Phase 7 approval", reason=True, tone="danger")
     elif kind == "design_review_budget":
         add("design_review_authorize", "Authorize one review", "Permits exactly one additional design review")
         add("design_review_escalate", "Escalate reviewer tier", "Routes the next review to the primary reviewer tier", reason=True)
@@ -668,9 +671,11 @@ def build_snapshot(root: Path) -> dict:
             # #41: one activity reading (output record read once) feeds the
             # stall warning, the activity note, and the live view, the same
             # function `status` prints, so CLI and dashboard cannot disagree.
-            activity_view = lib.activity_view(status, cfg, root)
-            stall = activity_view["stall_warning"]
-            activity = activity_view["activity_note"]
+            liveness = lib.liveness_view(status, root, cfg)
+            stall = liveness["stall_warning"]
+            lib.record_stall_transition(root, cfg, stall)
+            activity_view = liveness
+            activity = stall
             # #33: the live session view, from structured state plus the beacon.
             live = lib.live_status(status, cfg, root)
             agent_output = lib.agent_output_view(status, root)
@@ -684,9 +689,7 @@ def build_snapshot(root: Path) -> dict:
                                     "at": None, "by": None, "head": None, "commit_matches_head": False,
                                     "truncated": False, "exit_code": None}
                                    for entry in cfg.get("design_evidence", [])]
-            recovery_assessment = lib.recovery_assessment(
-                status, cfg, lib.read_session_liveness(root), events, root=root,
-            )
+            recovery_assessment = liveness["assessment"]
             try:
                 tranche_proposal = json.loads((root / tranche.PROPOSAL_FILE).read_text(encoding="utf-8"))
                 if tranche.proposal_hash(tranche_proposal) != tranche_proposal.get("proposal_hash"):
@@ -716,6 +719,11 @@ def build_snapshot(root: Path) -> dict:
         display_status["status"] = "closed"
         display_status["phase"] = "Run closed"
     display_status["phase"] = _display_phase_name(status)
+    display_status["stall_warning"] = liveness["stall_warning"]
+    display_status["live"] = live
+    display_status["activity"] = liveness
+    display_status["process_signal"] = liveness["process_signal"]
+    display_status["consistency_errors"] = design_reviewer_selection.get("consistency_errors", [])
     actors = {
         "architect": ((status.get("design_review") or {}).get("architect")
                       or (status.get("design_approved") or {}).get("architect")),
