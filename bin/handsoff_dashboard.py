@@ -685,7 +685,7 @@ def build_snapshot(root: Path) -> dict:
                                     "truncated": False, "exit_code": None}
                                    for entry in cfg.get("design_evidence", [])]
             recovery_assessment = lib.recovery_assessment(
-                status, cfg, lib.read_session_liveness(root), events,
+                status, cfg, lib.read_session_liveness(root), events, root=root,
             )
             try:
                 tranche_proposal = json.loads((root / tranche.PROPOSAL_FILE).read_text(encoding="utf-8"))

@@ -3035,7 +3035,7 @@ def cmd_recover(args) -> int:
         with lib.project_lock(root):
             status = lib.load_unique_json(lib.status_path(root, cfg))
             assessment = lib.recovery_assessment(
-                status, cfg, lib.read_session_liveness(root), lib.read_events(root, cfg),
+                status, cfg, lib.read_session_liveness(root), lib.read_events(root, cfg), root=root,
             )
         print(__import__("json").dumps(assessment, indent=2))
         return 0

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -283,3 +284,55 @@ class RecoveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BeaconProcessAliveTests(RecoveryTests):
+    """#86: a stale liveness timestamp never presumes a session lost while
+    the live beacon names it and its pid exists."""
+
+    def _silent_run(self):
+        now = datetime.now(timezone.utc)
+        stale = (now - timedelta(minutes=30)).isoformat()
+        sid = "hs-" + "3" * 32
+        status = self.read_status()
+        status.update(phase_number=4, phase=lib.PHASES[4], updated_at=now.isoformat(),
+                      last_heartbeat_at=now.isoformat(),
+                      agent_sessions={sid: self.session(sid, "implementer", "running", stale)},
+                      current_agent_sessions={"implementer": sid})
+        return status, sid, stale, now
+
+    def test_live_beacon_pid_keeps_a_silent_session(self):
+        status, sid, stale, now = self._silent_run()
+        lib.write_live_beacon(self.root, session_id=sid, role="implementer", state="running", pid=4242)
+        with mock.patch("os.kill", return_value=None) as kill:
+            assessment = lib.recovery_assessment(status, lib.load_config(self.root), {sid: stale}, [], now,
+                                                 root=self.root)
+        self.assertEqual((assessment["state"], assessment["reason"]), ("active", "process_alive"))
+        self.assertEqual(kill.call_args.args, (4242, 0))
+        self.commit_status(status)
+        with mock.patch("os.kill", return_value=None):
+            outcome = lib.recover_run(self.root, actor="watchdog", launcher=lambda role: 0, now=now)
+        self.assertNotEqual(outcome.get("action"), "launched", outcome)
+        self.assertEqual(self.read_status()["agent_sessions"][sid]["state"], "running")
+
+    def test_dead_beacon_pid_is_still_lost(self):
+        status, sid, stale, now = self._silent_run()
+        lib.write_live_beacon(self.root, session_id=sid, role="implementer", state="running", pid=4242)
+        with mock.patch("os.kill", side_effect=ProcessLookupError):
+            assessment = lib.recovery_assessment(status, lib.load_config(self.root), {sid: stale}, [], now,
+                                                 root=self.root)
+        self.assertEqual(assessment["state"], "worker_silent")
+
+    def test_beacon_for_another_session_does_not_vouch(self):
+        status, sid, stale, now = self._silent_run()
+        lib.write_live_beacon(self.root, session_id="hs-" + "4" * 32, role="reviewer", state="running", pid=4242)
+        with mock.patch("os.kill", return_value=None):
+            assessment = lib.recovery_assessment(status, lib.load_config(self.root), {sid: stale}, [], now,
+                                                 root=self.root)
+        self.assertEqual(assessment["state"], "worker_silent")
+
+    def test_fresh_timestamp_is_active_without_a_beacon(self):
+        status, sid, stale, now = self._silent_run()
+        assessment = lib.recovery_assessment(status, lib.load_config(self.root), {sid: now.isoformat()}, [], now,
+                                             root=self.root)
+        self.assertEqual(assessment["state"], "active")

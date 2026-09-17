@@ -4858,9 +4858,35 @@ def bound_heartbeat_at(status: dict) -> str | None:
     ) else None
 
 
+def _beacon_process_alive(root: Path | None, session_id: str) -> bool:
+    """True when the live beacon names `session_id` and its pid still
+    exists. Existence, not identity: pid reuse is bounded by the beacon's
+    own session binding, and a stale beacon for another session never
+    vouches for this one."""
+    if root is None:
+        return False
+    beacon = read_live_beacon(root)
+    if not isinstance(beacon, dict) or beacon.get("session_id") != session_id:
+        return False
+    pid = beacon.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
                         events: list[dict] | None = None,
-                        now: datetime | None = None) -> dict:
+                        now: datetime | None = None, root: Path | None = None) -> dict:
+    """`root` lets the assessment consult the live beacon (#86); callers
+    without a root (pure tests, older call sites) keep the timestamp rule."""
     now = now or datetime.now(timezone.utc)
     recovery = cfg.get("recovery") or DEFAULT_CONFIG["recovery"]
     role = assigned_role(status)
@@ -4940,6 +4966,15 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         if observed is None:
             continue
         state_name, silent, threshold, reason = observed
+        if state_name == "worker_silent" and _beacon_process_alive(root, candidate_id):
+            # #86: a liveness timestamp can go stale without the worker
+            # dying (a sleeping laptop, a paused runner). The beacon names
+            # the child's pid; while that pid exists, presuming the
+            # session lost would kill real work and pay for a replacement.
+            result.update(state="active", reason="process_alive", assigned_role=current_role,
+                          lost_session_id=candidate_id, silent_minutes=silent,
+                          threshold_minutes=threshold)
+            return result
         if silent is not None and silent >= threshold:
             stamp = candidate.get("ended_at") or candidate.get("running_at") \
                 or candidate.get("started_at") or ""
@@ -5055,7 +5090,7 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
                    event_message="Expired recovery lease was closed fail-safe", by=actor)
             status = load_unique_json(status_path(root, cfg))
         assessment = recovery_assessment(
-            status, cfg, read_session_liveness(root), read_events(root, cfg), now,
+            status, cfg, read_session_liveness(root), read_events(root, cfg), now, root=root,
         )
         if assessment["state"] in {"not_applicable", "active"}:
             return {"action": "skipped", "assessment": assessment}
