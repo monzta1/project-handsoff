@@ -229,7 +229,7 @@ CREW_AVAILABILITY_SCOPE = "executable discovery only"
 WORK_ITEM_KINDS = {"issue", "ask"}
 WORK_ITEM_STATES = {
     "done", "blocked", "in_review", "awaiting_approval", "recovering",
-    "in_progress", "not_started",
+    "in_progress", "not_started", "unscoped",
 }
 WORK_ITEM_TAG_PATTERN = re.compile(r"^\[(#\d{1,9}|[a-z0-9][a-z0-9-]{0,39})\]\s")
 WORK_ITEM_ID_PATTERN = re.compile(r"^(?:issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$")
@@ -2673,7 +2673,8 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
                         config_digest: str | None = None,
                         binding: dict | None = None, executed: bool = True,
                         reused_from: str | None = None,
-                        feature_hash: str | None = None) -> dict:
+                        feature_hash: str | None = None,
+                        repository_digest: str | None = None) -> dict:
     """Append a hash-chained evidence record. Caller must hold project_lock.
 
     #43: `binding` (command to verification_binding hash), `executed`,
@@ -2720,6 +2721,7 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
         "executed": executed,
         "reused_from": reused_from,
         "feature_hash": feature_hash,
+        "repository_digest": repository_digest,
         "prev_hash": prev_hash,
     }
     record["hash"] = hashlib.sha256((_canonical(record) + prev_hash).encode("utf-8")).hexdigest()
@@ -2728,6 +2730,39 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
         fh.flush()
         os.fsync(fh.fileno())
     return record
+
+
+def evidence_drift(root: Path, cfg: dict, acceptance: dict,
+                   verifications: list[dict]) -> dict:
+    """Classify newest valid automated evidence against one cached digest.
+
+    Legacy records remain unknown rather than stale, so adding this integrity
+    check cannot unexpectedly invalidate an existing run.
+    """
+    current_digest = repository_digest(root, cfg)
+    result = {"current_digest": current_digest, "current": [], "stale": [],
+              "unknown": [], "refresh_commands": []}
+    for criterion in acceptance.get("criteria", []):
+        cid = criterion.get("id")
+        if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+            continue
+        record = next((candidate for candidate in reversed(verifications)
+                       if candidate.get("kind") == "checks"
+                       and candidate.get("ok") is True
+                       and cid in candidate.get("criteria", [])
+                       and candidate.get("criterion_hashes", {}).get(cid) == criterion_spec_hash(criterion)), None)
+        if record is None:
+            continue
+        digest = record.get("repository_digest")
+        if digest is None:
+            result["unknown"].append(cid)
+        elif digest == current_digest:
+            result["current"].append(cid)
+        else:
+            result["stale"].append(cid)
+            result["refresh_commands"].append(
+                f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
+    return result
 
 
 def load_verifications(root: Path, cfg: dict) -> tuple[list[dict], list[str]]:
@@ -3319,7 +3354,8 @@ def validate_status_schema(status: dict) -> list[str]:
                 "session_ids", "trigger", "trigger_detail", "acceptance_hash", "phase_number",
                 "disposition", "findings",
             }
-            if not isinstance(attempt, dict) or set(attempt) != required:
+            if not isinstance(attempt, dict) or not required.issubset(attempt) \
+                    or set(attempt) - required - {"tests_executed"}:
                 errors.append(f"{label} has invalid fields")
                 continue
             aid = attempt.get("attempt_id")
@@ -3375,6 +3411,8 @@ def validate_status_schema(status: dict) -> list[str]:
                            or not isinstance(item.get("summary"), str) or not item["summary"].strip()
                            or len(item["summary"]) > 512 for item in findings_value):
                 errors.append(f"{label}.findings is invalid")
+            if attempt.get("tests_executed", "unknown") not in {"yes", "no", "unknown"}:
+                errors.append(f"{label}.tests_executed is invalid")
         if open_count > 1:
             errors.append("status: at most one review attempt may be open")
         if isinstance(status.get("review_round"), int) \
@@ -3892,7 +3930,7 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("review gate: acceptance changed since review; record a new review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("review gate: workflow policy changed since review; record a new review")
-    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"]):
+    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
         errors.append("review gate: work-item scope changed since review; record a new review")
     reviewer = review.get("by")
     if not reviewer:
@@ -3938,7 +3976,7 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
     if approval.get("config_hash") != config_hash(cfg):
         errors.append("design gate: workflow policy changed since design approval; record a new approval")
-    if "work_items" in acceptance and not scope_hash_matches(approval.get("scope_hash"), acceptance["work_items"]):
+    if "work_items" in acceptance and not scope_hash_matches(approval.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
         errors.append("design gate: work-item scope changed since design approval; record a new approval")
     proposal = status.get("design_proposal")
     if isinstance(proposal, dict) and approval.get("proposal_hash") != proposal.get("proposal_hash"):
@@ -3970,7 +4008,7 @@ def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str
         errors.append("design review gate: criteria changed since design review; record a new design review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("design review gate: workflow policy changed since design review; record a new design review")
-    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"]):
+    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
         errors.append("design review gate: work-item scope changed since design review; record a new design review")
     proposal = status.get("design_proposal")
     if isinstance(proposal, dict) and review.get("proposal_hash") != proposal.get("proposal_hash"):
@@ -4192,7 +4230,8 @@ def _valid_symptom_record(status: dict, criteria: list[dict], verifications: lis
 
 def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime | None = None,
                    verifications: list[dict] | None = None,
-                   verification_problems: list[str] | None = None) -> list[str]:
+                   verification_problems: list[str] | None = None,
+                   root: Path | None = None) -> list[str]:
     """Every rule a transition must satisfy, evaluated against WHATEVER
     status dict is passed in. Callers that want to gate a transition must
     pass the PROPOSED status, the one they are about to write, not the one
@@ -4224,6 +4263,10 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     phase = int(status.get("phase_number", 0) or 0)
     progress = float(status.get("progress", 0) or 0)
     evidence_errors = _evidence_errors(gate_criteria, verifications or [])
+    if root is not None and phase >= 5:
+        for cid in evidence_drift(root, cfg, acceptance, records)["stale"]:
+            errors.append(f"evidence drift: {cid} was verified on a different repository digest; "
+                          f"re-run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
     expected_coverage = coverage_for(criteria, resolved)
     symptom_record = _valid_symptom_record(status, gate_criteria, verifications or [])
 
@@ -4252,14 +4295,22 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
                       if item.get("required") and item.get("status") != "done"]
         for item in unfinished:
-            errors.append(f"progress gate: required work item {item['id']} must be done before 95%+")
+            if item.get("status") == "unscoped":
+                tag = f"#{item['number']}" if item.get("kind") == "issue" else item["id"][4:]
+                errors.append(f"progress gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
+            else:
+                errors.append(f"progress gate: required work item {item['id']} must be done before 95%+")
     if status.get("status") in ("ready_to_deploy", "awaiting_approval", "complete") and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("status gate: acceptance registry is not fully green")
     if "work_items" in acceptance and (phase >= 8 or status.get("status") == "complete"):
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
                       if item.get("required") and item.get("status") != "done"]
         for item in unfinished:
-            errors.append(f"work items gate: required work item {item['id']} is {item['status']}; a run cannot complete while it is unfinished")
+            if item.get("status") == "unscoped":
+                tag = f"#{item['number']}" if item.get("kind") == "issue" else item["id"][4:]
+                errors.append(f"work items gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
+            else:
+                errors.append(f"work items gate: required work item {item['id']} is {item['status']}; a run cannot complete while it is unfinished")
 
     if phase >= 6:
         implemented_by = status.get("implemented_by")
@@ -5248,28 +5299,60 @@ def effective_work_items(acceptance: dict, cfg: dict) -> tuple[list[dict], str]:
     return derive_work_item_registry(acceptance, cfg), "derived"
 
 
-def work_item_scope_hash(items: list[dict]) -> str:
+def scoped_work_items(items: list[dict], criteria: list[dict] | None) -> list[dict]:
+    """The items that actually carry acceptance criteria. Scope is what the
+    criteria promise: an item nobody has tagged a criterion to (a spurious
+    title-derived ask, an issue registered ahead of its criteria) is not
+    part of what a reviewer or the Pilot judged, so adding or removing it
+    must not invalidate their decisions (#82). With `criteria` None the
+    whole registry counts, which is what pure-registry callers expect.
+    Mirrors derive_work_items: untagged criteria attach to a single-item
+    registry's only item."""
+    if criteria is None:
+        return list(items)
+    ids = {item.get("id") for item in items}
+    mapped: set[str] = set()
+    for criterion in criteria:
+        item_id = criterion_work_item_id(criterion)
+        if item_id is None and len(items) == 1:
+            item_id = items[0].get("id")
+        if item_id in ids:
+            mapped.add(item_id)
+    return [item for item in items if item.get("id") in mapped]
+
+
+def work_item_scope_hash(items: list[dict], criteria: list[dict] | None = None) -> str:
     scope = sorted(({"id": item.get("id"), "kind": item.get("kind"),
-                    "number": item.get("number")} for item in items),
+                    "number": item.get("number")} for item in scoped_work_items(items, criteria)),
                    key=lambda item: item["id"] or "")
     return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def work_item_scope_hashes(items: list[dict]) -> dict[str, str]:
-    """Return current and pre-REQ-006 scope digests for gate compatibility."""
-    current = work_item_scope_hash(items)
+def work_item_scope_hashes(items: list[dict], criteria: list[dict] | None = None) -> dict[str, str]:
+    """Current digest plus every historical formula a recorded decision may
+    carry: the pre-v0.3.11 digest over all items with `required`, the same
+    with `required` normalized to true, and the v0.3.11 identity-only
+    digest over all items. Gates accept any of them so runs recorded by an
+    earlier engine keep their approvals."""
+    current = work_item_scope_hash(items, criteria)
+    all_items = work_item_scope_hash(items)
     legacy_scope = sorted(({
         "id": item.get("id"), "kind": item.get("kind"),
         "number": item.get("number"), "required": item.get("required", True),
     } for item in items), key=lambda item: item["id"] or "")
     legacy = hashlib.sha256(json.dumps(legacy_scope, sort_keys=True,
                                        separators=(",", ":")).encode()).hexdigest()
-    return {"current": current, "legacy": legacy}
+    legacy_normalized_scope = sorted(({**item, "required": True} for item in legacy_scope),
+                                     key=lambda item: item["id"] or "")
+    legacy_normalized = hashlib.sha256(json.dumps(legacy_normalized_scope, sort_keys=True,
+                                                  separators=(",", ":")).encode()).hexdigest()
+    return {"current": current, "all_items": all_items, "legacy": legacy,
+            "legacy_normalized": legacy_normalized}
 
 
-def scope_hash_matches(recorded: object, items: list[dict]) -> bool:
-    """Accept either digest so existing approvals remain valid after migration."""
-    return recorded in work_item_scope_hashes(items).values()
+def scope_hash_matches(recorded: object, items: list[dict], criteria: list[dict] | None = None) -> bool:
+    """Accept any known digest so existing approvals remain valid after migration."""
+    return recorded in work_item_scope_hashes(items, criteria).values()
 
 
 def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
@@ -5464,6 +5547,9 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
             blocker = "Assigned worker recovery is active"
         elif reviewing:
             state = "in_review"
+        elif item.get("required", True) and not own:
+            state = "unscoped"
+            blocker = "Required work item has no mapped acceptance criteria"
         elif progress_view["percent"] == 100:
             state = "done"
         elif any(c.get("state") == "blocked" for c in own):
@@ -5575,9 +5661,15 @@ def sync_work_item_registry(acceptance: dict, cfg: dict) -> bool:
     if not isinstance(existing, list):
         return False
     known = {item.get("id") for item in existing}
+    criterion_ids = {criterion_work_item_id(criterion)
+                     for criterion in acceptance.get("criteria", [])}
+    criterion_ids.discard(None)
+    has_persisted_issue = any(item.get("kind") == "issue" for item in existing)
     changed = False
     for item in derive_work_item_registry(acceptance, cfg):
         if item["id"] not in known:
+            if has_persisted_issue and item.get("kind") == "ask" and item["id"] not in criterion_ids:
+                continue
             existing.append(item)
             known.add(item["id"])
             changed = True
@@ -5665,7 +5757,7 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
     planned = deepcopy(acceptance)
     criteria: list[dict] = planned["criteria"]
     before_items, _ = effective_work_items(acceptance, cfg)
-    before_scope = work_item_scope_hash(before_items)
+    before_scope = work_item_scope_hash(before_items, before_criteria)
     seen_ids: set[str] = set()
     records: list[dict] = []
     resets_symptom = False
@@ -5803,7 +5895,7 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
         "design_hash_before": design_hash(before_criteria),
         "design_hash_after": design_hash(criteria),
         "work_items_after": [item["id"] for item in after_items],
-        "work_item_scope_changed": registry_changed or before_scope != work_item_scope_hash(after_items),
+        "work_item_scope_changed": before_scope != work_item_scope_hash(after_items, criteria),
         "resets_original_symptom": resets_symptom,
         "criteria_after": criteria,
         "work_items_registry_after": planned.get("work_items") if isinstance(planned.get("work_items"), list) else None,
@@ -6050,7 +6142,7 @@ def plan_amendment(status: dict, acceptance: dict, cfg: dict, operations: list[d
         "opened_at": now or datetime.now(timezone.utc).isoformat(),
         "by": by.strip(),
         "base_design_hash": plan["design_hash_before"],
-        "base_scope_hash": work_item_scope_hash(registry),
+        "base_scope_hash": work_item_scope_hash(registry, acceptance.get("criteria", [])),
         "changed_ids": changed_ids,
         "dependent_ids": amendment_dependent_ids(plan["criteria_after"], changed_ids, registry),
         "affected_work_items": amendment_affected_work_items(
@@ -6870,6 +6962,8 @@ VERIFY_INFLIGHT_DIR = ".handsoff-verify-inflight"
 HANDSOFF_GENERATED_NAMES = frozenset({
     ".handsoff.lock", ".handsoff-event-head.json", ".handsoff-writeahead.json",
     ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
+    # Agent output is gitignored Handsoff runtime state, not repository evidence.
+    ".handsoff-agent-output.json",
     LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE,
     ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,
     "__pycache__", ".git",
@@ -6877,10 +6971,19 @@ HANDSOFF_GENERATED_NAMES = frozenset({
 
 
 def _digest_excluded(relative: str, state_files: set[str]) -> bool:
+    """Runtime bookkeeping never counts as repository content. Beyond the
+    enumerated names, every `.handsoff*` path component is Handsoff side
+    state (locks, beacons, output tails, future files), except the version
+    pin, which is project configuration a change to which must show up as
+    drift. Without the structural rule a managed session running after
+    `verify` would write a side file and flag its own evidence stale on a
+    root that is not a git checkout (#77)."""
     parts = relative.split("/")
     if relative in state_files:
         return True
     if any(part in HANDSOFF_GENERATED_NAMES for part in parts):
+        return True
+    if any(part.startswith(".handsoff") and part != VERSION_PIN_FILE for part in parts):
         return True
     return parts[-1].endswith(".pyc")
 
@@ -6901,7 +7004,9 @@ def repository_digest(root: Path, cfg: dict | None = None) -> str:
     content is hashed, not HEAD). A root that is not a git checkout hashes
     every file under it minus Handsoff's generated names. A tracked file
     deleted from the working tree contributes a null hash, so a deletion
-    changes the digest too."""
+    changes the digest too. Gitignored Handsoff state files are omitted by
+    git's untracked-file query, preventing runtime bookkeeping from causing
+    evidence drift."""
     names = cfg or DEFAULT_CONFIG
     state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
     listed: list[str] | None = None
@@ -7624,6 +7729,7 @@ FAILURE_CATEGORIES = (
     "cancelled", "timeout", "token_budget_exhaustion", "orchestration_noop",
     "auth_failure", "rate_limit", "context_exhaustion",
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
+    "reviewer_modified_project",
 )
 
 _FAILURE_REASON_LABELS = {
@@ -7640,6 +7746,7 @@ _FAILURE_REASON_LABELS = {
     "unknown": "failure signal matched no known category",
     "still_running": "no failure signal reported yet",
     "presumed_lost": "host watchdog found no liveness signal past the threshold",
+    "reviewer_modified_project": "managed Reviewer modified the project tree",
 }
 
 # Order matters: tier 3 checks these in sequence and the first match wins,

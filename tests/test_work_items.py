@@ -163,6 +163,103 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertIn("work-item scope is frozen after deployment approval", synced.stdout)
         self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], before)
 
+    # REQ-005 / REQ-006 (#82): the criteria-transaction path, removal, and the
+    # scope definition that makes zero-criteria items bookkeeping only.
+
+    def _init_with_issue(self, feature="Feature without issue refs"):
+        initialized = run(["init", feature, "--item", "#70"], cwd=self.tmp)
+        self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+
+    def test_criterion_transaction_never_appends_title_ask_but_registers_tags(self):
+        self._init_with_issue()
+        first = run(["criterion-update", "REQ-001", "--requirement", "[#70] Primary work"], cwd=self.tmp)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-70"])
+        added = run(["criterion-add", "REQ-002", "--type", "supporting", "--verification", "manual",
+                     "--test", "manual inspection", "--requirement", "[#71] Tagged follow-up"], cwd=self.tmp)
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        ids = [item["id"] for item in self.read_acceptance()["work_items"]]
+        self.assertIn("issue-71", ids)
+        self.assertFalse([item for item in ids if item.startswith("ask-")], ids)
+
+    def test_remove_zero_criteria_item_keeps_decisions(self):
+        self._init_with_issue("Ship issue work")
+        criterion = run(["criterion-update", "REQ-001", "--requirement", "[#70] Keep issue work"], cwd=self.tmp)
+        self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+        synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        phase_two = run(["advance", "2", "20"], cwd=self.tmp)
+        self.assertEqual(phase_two.returncode, 0, phase_two.stdout + phase_two.stderr)
+        review = approve_design_review(self.tmp)
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
+        reached = self.advance_to(4)
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        removed = run(["work-item-remove", "issue-90", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertEqual(removed.stdout.strip(), "WORK_ITEM_REMOVED: issue-90")
+        status = self.read_status()
+        self.assertIsNotNone(status["design_approved"])
+        self.assertEqual(status["phase_number"], 4)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-70"])
+        event = json.loads((self.tmp / "handsoff-events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual((event["kind"], event["scope_changed"]), ("work_item_removed", False))
+        self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
+
+    def test_remove_refused_for_item_with_criteria(self):
+        self._init_with_issue()
+        criterion = run(["criterion-update", "REQ-001", "--requirement", "[#70] Primary work"], cwd=self.tmp)
+        self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+        removed = run(["work-item-remove", "issue-70", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(removed.returncode, 1)
+        self.assertIn("maps to criteria REQ-001", removed.stdout)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-70"])
+
+    def test_remove_refused_after_deployment_approval(self):
+        self._init_with_issue()
+        synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        cfg = lib.load_config(self.tmp)
+        status = self.read_status()
+        status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat()}
+        lib.commit(self.tmp, cfg, status=status, event_kind="test_deployment_approved", event_message="test")
+        removed = run(["work-item-remove", "issue-90", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(removed.returncode, 1)
+        self.assertIn("work-item scope is frozen after deployment approval", removed.stdout)
+        self.assertIn("issue-90", [item["id"] for item in self.read_acceptance()["work_items"]])
+
+    def test_scope_hash_accepts_normalized_legacy_digest_and_ignores_unscoped_items(self):
+        items = [
+            {"id": "issue-70", "kind": "issue", "number": 70, "required": True},
+            {"id": "issue-90", "kind": "issue", "number": 90, "required": False},
+        ]
+        criteria = [{"id": "REQ-001", "requirement": "[#70] Primary work"}]
+        legacy_all_required = lib.work_item_scope_hashes(
+            [{**item, "required": True} for item in items])["legacy"]
+        self.assertTrue(lib.scope_hash_matches(legacy_all_required, items, criteria))
+        with_unscoped = lib.work_item_scope_hash(items, criteria)
+        without = lib.work_item_scope_hash(items[:1], criteria)
+        self.assertEqual(with_unscoped, without)
+        self.assertNotEqual(lib.work_item_scope_hash(items), lib.work_item_scope_hash(items[:1]))
+
+    def test_unscoped_required_item_named_in_gate_message(self):
+        self._init_with_issue()
+        criterion = run(["criterion-update", "REQ-001", "--requirement", "[#70] Primary work"], cwd=self.tmp)
+        self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+        synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        cfg = lib.load_config(self.tmp)
+        rows = lib.derive_work_items(self.read_status(), self.read_acceptance(), cfg)
+        row = next(item for item in rows["items"] if item["id"] == "issue-90")
+        self.assertEqual(row["status"], "unscoped")
+        status = self.read_status()
+        status.update(phase_number=8, phase=lib.PHASES[8], status="complete", progress=100)
+        errors = lib.compute_errors(status, self.read_acceptance(), cfg)
+        messages = [error for error in errors if "issue-90" in error]
+        self.assertTrue(messages, errors)
+        for message in messages:
+            self.assertIn("work-item-remove issue-90", message)
+            self.assertIn("unscoped", message)
+
 
 if __name__ == "__main__":
     unittest.main()

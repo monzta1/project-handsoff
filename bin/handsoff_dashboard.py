@@ -243,7 +243,9 @@ def _active_role(status: dict, input_request: dict) -> str | None:
     return ACTIVE_ROLE_BY_PHASE.get(phase_number)
 
 
-def _input_request(status: dict, cfg: dict) -> dict:
+def _input_request(status: dict, cfg: dict, root: Path | None = None,
+                   acceptance: dict | None = None,
+                   verifications: list[dict] | None = None) -> dict:
     """Translate an explicit workflow pause into a dashboard alert.
 
     Supervisors record user-dependent pauses as status=blocked with the exact
@@ -266,6 +268,10 @@ def _input_request(status: dict, cfg: dict) -> dict:
         and not status.get("deployment_approved")
         and not isinstance(status.get("human_pause"), dict)
     )
+    drift = (lib.evidence_drift(root, cfg, acceptance, verifications)
+             if root is not None and acceptance is not None and verifications is not None
+             else {"stale": [], "refresh_commands": []})
+    evidence_stale = bool(drift["stale"])
     design_review = status.get("design_review") or {}
     design_approval_missing = (
         status.get("requires_design_approval") is True
@@ -327,6 +333,10 @@ def _input_request(status: dict, cfg: dict) -> dict:
                              f"question{'' if card['count'] == 1 else 's'} waiting" for card in cards)
         if len(questions) == 1:
             message = f"{message}: {questions[0].get('text')}"
+    elif approval_missing and evidence_stale:
+        kind = "evidence_drift"
+        message = (f"Automated evidence for {', '.join(drift['stale'])} is stale; run "
+                   f"{', '.join(drift['refresh_commands'])} before deployment can be authorized.")
     elif approval_missing:
         kind = "deployment_approval"
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
@@ -602,7 +612,7 @@ def build_snapshot(root: Path) -> dict:
     # next launch selects, with any refusal named) reviewer profile.
     design_reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
     audit_healthy = not gate_errors and not audit_errors
-    input_request = _input_request(status, cfg)
+    input_request = _input_request(status, cfg, root, acceptance, verifications)
     operator_actions = _operator_actions(status, cfg, input_request)
     display_status = dict(status)
     display_status["verification_progress"] = status.get("progress", 0)
@@ -752,6 +762,7 @@ def build_snapshot(root: Path) -> dict:
                 "trigger": item.get("trigger"), "disposition": item.get("disposition"),
                 "reviewer": item.get("reviewer"), "opened_at": item.get("opened_at"),
                 "closed_at": item.get("closed_at"), "findings_count": len(item.get("findings") or []),
+                "tests_executed": item.get("tests_executed", "unknown"),
             } for item in (status.get("review_attempts") or [])],
         },
         "recovery": {

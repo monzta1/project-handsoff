@@ -47,6 +47,19 @@ def _text(request: dict, key: str) -> str:
     return value
 
 
+def _extend_tests_executed(base: list[str], request: dict) -> None:
+    """#80: a Reviewer reports whether it actually ran the linked tests; the
+    broker forwards only the closed set the supervisor accepts, so a
+    malformed value is refused here instead of surfacing as a protocol
+    error after the review already completed."""
+    if "tests_executed" not in request:
+        return
+    value = _text(request, "tests_executed")
+    if value not in {"yes", "no", "unknown"}:
+        raise lib.HandsoffError("broker tests_executed must be yes, no, or unknown")
+    base.extend(["--tests-executed", value])
+
+
 def _workflow_argv(root: Path, request: dict) -> list[str]:
     command = _text(request, "command")
     base = [sys.executable, str(SUPERVISOR_SCRIPT), "--root", str(root), command]
@@ -196,10 +209,11 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         return base
     if command == "record-review":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by"},
-                      {"symptom_reproduced", "session"})
+                      {"symptom_reproduced", "session", "tests_executed"})
         base.extend(["--by", _text(request, "by")])
         if "session" in request:
             base.extend(["--session", _text(request, "session")])
+        _extend_tests_executed(base, request)
         if "symptom_reproduced" in request:
             value = _text(request, "symptom_reproduced")
             if value not in {"yes", "not_applicable"}:
@@ -215,7 +229,9 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
                 base.extend([flag, _text(request, field)])
         return base
     if command == "record-review-findings":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "findings"}, {"session"})
+        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "findings"},
+                      {"session", "tests_executed"})
+        _extend_tests_executed(base, request)
         findings = request["findings"]
         if not isinstance(findings, list) or not findings or len(findings) > 16 \
                 or not all(isinstance(value, str) and value.strip() for value in findings) \
@@ -409,7 +425,8 @@ def parse_reviewer_result(text: str) -> dict:
     except json.JSONDecodeError as exc:
         raise lib.HandsoffError(f"invalid Reviewer result JSON: {exc}") from exc
     required = {"kind", "decision", "summary", "findings", "structural_blocker", "symptom_reproduced"}
-    if not isinstance(value, dict) or set(value) != required:
+    allowed = required | {"tests_executed"}
+    if not isinstance(value, dict) or not required.issubset(value) or set(value) - allowed:
         raise lib.HandsoffError("Reviewer result has invalid fields")
     if value["kind"] not in {"design", "implementation"}:
         raise lib.HandsoffError("Reviewer result kind is invalid")
@@ -431,6 +448,17 @@ def parse_reviewer_result(text: str) -> dict:
         raise lib.HandsoffError("structural_blocker applies only to design review")
     if value["symptom_reproduced"] not in {"yes", "not_applicable"}:
         raise lib.HandsoffError("Reviewer symptom_reproduced is invalid")
+    if value.get("tests_executed", "unknown") not in {"yes", "no", "unknown"}:
+        raise lib.HandsoffError("Reviewer tests_executed is invalid")
+    value.setdefault("tests_executed", "unknown")
+    normalized = []
+    for finding in value["findings"]:
+        code, sep, summary = finding.partition(":")
+        if not sep or code.strip() not in lib.REVIEW_FINDING_CODES:
+            normalized.append("other: " + finding)
+        else:
+            normalized.append(code.strip() + ": " + summary.strip())
+    value["findings"] = normalized
     return value
 
 
@@ -453,6 +481,8 @@ def _reviewer_result_request(root: Path, session_id: str, result: dict) -> dict:
         architect_session = lib.current_agent_sessions(status).get("architect")
         architect = architect_session.get("actor") if isinstance(architect_session, dict) else None
         if not architect:
+            architect = (status.get("design_proposal") or {}).get("architect")
+        if not architect:
             raise lib.HandsoffError("design Reviewer result has no managed Architect identity")
         request = {
             **base, "command": "record-design-review", "architect": architect,
@@ -467,8 +497,10 @@ def _reviewer_result_request(root: Path, session_id: str, result: dict) -> dict:
     if status.get("phase_number") != 5:
         raise lib.HandsoffError("implementation Reviewer result requires Phase 5")
     if result["decision"] == "approved":
-        return {**base, "command": "record-review", "symptom_reproduced": result["symptom_reproduced"]}
-    return {**base, "command": "record-review-findings", "findings": result["findings"]}
+        return {**base, "command": "record-review", "symptom_reproduced": result["symptom_reproduced"],
+                "tests_executed": result.get("tests_executed", "unknown")}
+    return {**base, "command": "record-review-findings", "findings": result["findings"],
+            "tests_executed": result.get("tests_executed", "unknown")}
 
 
 def dispatch_reviewer_result(root: Path, session_id: str, result: dict, **test_overrides) -> int:

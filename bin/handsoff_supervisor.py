@@ -44,6 +44,7 @@ OPERATION_REGISTRY = {
     "work-items-sync": {"class": "agent-only", "surface": "ticket-panel"},
     "work-item-activate": {"class": "agent-only", "surface": "ticket-panel"},
     "work-item-update": {"class": "agent-only", "surface": "ticket-panel"},
+    "work-item-remove": {"class": "agent-only", "surface": "ticket-panel"},
     "lane-request": {"class": "agent-only", "surface": "ticket-panel"},
     "lane-confirm": {"class": "operator-facing", "surface": "ticket-panel"},
     "plan-tranche": {"class": "diagnostic", "surface": "tranche-panel"},
@@ -248,7 +249,7 @@ def cmd_status(args) -> int:
             print(f"SHIP_FEATURE_BLOCKED: {e}")
             return 1
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
-                                    verification_problems=verification_problems)
+                                    verification_problems=verification_problems, root=root)
         # #41: the same activity reading the dashboard snapshot carries.
         activity_view = lib.activity_view(status, cfg, root)
         warning = activity_view["stall_warning"]
@@ -276,6 +277,7 @@ def cmd_status(args) -> int:
         "live_verification_id": status.get("live_verification_id"),
         "verification_runs": len(verifications),
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
+        "evidence_drift": lib.evidence_drift(root, cfg, acceptance, verifications),
         "stall_warning": warning, "activity_note": activity, "activity": activity_view, "live": live,
         "questions": lib.questions_view(status),
         "unattributed_criteria": lib.derive_work_items(status, acceptance, cfg)["unattributed_criteria"],
@@ -295,7 +297,7 @@ def cmd_validate(args) -> int:
             print(f"SHIP_FEATURE_BLOCKED: {e}")
             return 1
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
-                                    verification_problems=verification_problems)
+                                    verification_problems=verification_problems, root=root)
         log_problems = lib.verify_event_log(root, cfg)
     if log_problems:
         errors = errors + [f"event log: {p}" for p in log_problems]
@@ -433,7 +435,7 @@ def cmd_advance(args) -> int:
             proposed["progress"] = lib.overall_item_progress(proposed, acceptance, cfg)
 
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
-                                    verification_problems=verification_problems)
+                                    verification_problems=verification_problems, root=root)
         if errors:
             # A blocked attempt to LEAVE Phase 2 specifically because design
             # approval is missing/stale IS the state machine telling us the
@@ -625,7 +627,7 @@ def cmd_deployment_gate(args) -> int:
             print(f"DEPLOYMENT_BLOCKED\n- {refusal}")
             return 1
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
-                                    verification_problems=verification_problems)
+                                    verification_problems=verification_problems, root=root)
         if errors:
             print("DEPLOYMENT_BLOCKED")
             print("\n".join(f"- {x}" for x in errors))
@@ -669,7 +671,7 @@ def cmd_deployment_gate(args) -> int:
         proposed["next_action"] = "Deploy the reviewed change and run live verification."
         proposed_errors = lib.compute_errors(
             proposed, acceptance, cfg, verifications=verifications,
-            verification_problems=verification_problems,
+            verification_problems=verification_problems, root=root,
         )
         if proposed_errors:
             print("DEPLOYMENT_BLOCKED")
@@ -726,7 +728,7 @@ def _regression_bindings(root: Path, cfg: dict, acceptance: dict, status: dict) 
     return {
         "repository": lib.repository_snapshot(root),
         "acceptance_hash": lib.acceptance_hash(acceptance.get("criteria", [])),
-        "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
+        "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
         "run_id": events[0].get("hash") if events else "GENESIS",
         "epoch_sha256": hashlib.sha256(__import__("json").dumps(
             epoch, sort_keys=True, separators=(",", ":")
@@ -786,16 +788,19 @@ def cmd_work_items_sync(args) -> int:
             return _print_audit_block(audit_errors)
         lib.ensure_no_launched_regression(status)
         before_items, _ = lib.effective_work_items(acceptance, cfg)
-        before_scope = lib.work_item_scope_hash(before_items)
+        before_scope = lib.work_item_scope_hash(before_items, acceptance.get("criteria", []))
         derived = lib.derive_work_item_registry(acceptance, cfg, explicit_items=args.item)
         existing = acceptance.get("work_items")
         if isinstance(existing, list):
             by_id = {item["id"]: item for item in existing}
+            criterion_ids = {lib.criterion_work_item_id(criterion)
+                             for criterion in acceptance.get("criteria", [])}
+            criterion_ids.discard(None)
             for item in derived:
                 current = by_id.get(item["id"])
                 if current is None:
                     if not args.item and any(candidate.get("kind") == "issue" for candidate in existing) \
-                            and item.get("kind") == "ask":
+                            and item.get("kind") == "ask" and item["id"] not in criterion_ids:
                         print(f"WORK_ITEM_SYNC_SKIPPED: {item['id']} (feature-title ask not added beside explicit issue items; pass --item to add it deliberately)")
                         continue
                     existing.append(item)
@@ -806,7 +811,7 @@ def cmd_work_items_sync(args) -> int:
         else:
             persisted = derived
         acceptance["work_items"] = persisted
-        after_scope = lib.work_item_scope_hash(persisted)
+        after_scope = lib.work_item_scope_hash(persisted, acceptance.get("criteria", []))
         if isinstance(status.get("deployment_approved"), dict) and before_scope != after_scope:
             print("SHIP_FEATURE_BLOCKED: work-item scope is frozen after deployment approval; revoke the approval or archive the run before changing the item set")
             return 1
@@ -892,7 +897,7 @@ def cmd_work_item_update(args) -> int:
         if item is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown work item {args.item}")
             return 1
-        before_scope = lib.work_item_scope_hash(items)
+        before_scope = lib.work_item_scope_hash(items, acceptance.get("criteria", []))
         deployment_approved = status.get("deployment_approved")
         for field in ("title", "url", "github_state", "notes"):
             value = getattr(args, field)
@@ -911,7 +916,7 @@ def cmd_work_item_update(args) -> int:
                 return 1
             delivery[args.item]["implemented_by"] = lib.validate_agent_actor(args.implemented_by)
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
-        after_scope = lib.work_item_scope_hash(items)
+        after_scope = lib.work_item_scope_hash(items, acceptance.get("criteria", []))
         if isinstance(deployment_approved, dict) and before_scope != after_scope:
             print("SHIP_FEATURE_BLOCKED: work-item scope is frozen after deployment approval; revoke the approval or archive the run before changing the item set")
             return 1
@@ -926,6 +931,52 @@ def cmd_work_item_update(args) -> int:
                    event_kind="work_item_updated", event_message=f"Updated work item {args.item}",
                    by=actor, work_item=args.item, scope_changed=before_scope != after_scope)
     print(f"WORK_ITEM_UPDATED: {args.item}")
+    return 0
+
+
+def cmd_work_item_remove(args) -> int:
+    """Remove a zero-criteria item while preserving the approval audit trail."""
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance = _load(root, cfg)
+        lib.ensure_no_launched_regression(status)
+        items = acceptance.get("work_items")
+        if not isinstance(items, list):
+            print("SHIP_FEATURE_BLOCKED: synchronize work items before removing them")
+            return 1
+        item = next((candidate for candidate in items if candidate.get("id") == args.item), None)
+        if item is None:
+            print(f"SHIP_FEATURE_BLOCKED: unknown work item {args.item}")
+            return 1
+        row = next(row for row in lib.derive_work_items(status, acceptance, cfg)["items"]
+                   if row["id"] == args.item)
+        if row.get("criteria"):
+            criteria = ", ".join(row["criteria"])
+            print(f"SHIP_FEATURE_BLOCKED: work item {args.item} maps to criteria {criteria}; retag or remove them first")
+            return 1
+        if isinstance(status.get("deployment_approved"), dict):
+            print("SHIP_FEATURE_BLOCKED: work-item scope is frozen after deployment approval; revoke the approval or archive the run before changing the item set")
+            return 1
+        # A removable item carries no criteria, so by construction it is
+        # outside the reviewed scope: the digest is unchanged and no
+        # decision is invalidated (#82). The assertion keeps that invariant
+        # honest if the scope definition ever drifts.
+        before_scope = lib.work_item_scope_hash(items, acceptance.get("criteria", []))
+        acceptance["work_items"] = [candidate for candidate in items if candidate.get("id") != args.item]
+        delivery = status.get("work_item_delivery")
+        if isinstance(delivery, dict):
+            delivery.pop(args.item, None)
+        after_scope = lib.work_item_scope_hash(acceptance["work_items"], acceptance.get("criteria", []))
+        if before_scope != after_scope:
+            print(f"SHIP_FEATURE_BLOCKED: removing {args.item} would change the reviewed scope; retag its criteria first")
+            return 1
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        lib.commit(root, cfg, status=status, acceptance=acceptance,
+                   event_kind="work_item_removed", event_message=f"Removed work item {args.item}",
+                   by=actor, work_item=args.item, scope_changed=False)
+    print(f"WORK_ITEM_REMOVED: {args.item}")
     return 0
 
 
@@ -1381,12 +1432,15 @@ def cmd_verify(args) -> int:
                 # of its reused results came from the same record (each
                 # copied result carries its own reused_from regardless).
                 executed = not own_sources
+                record_digest = repo_digest if executed else next(
+                    (reused[t].get("repository_digest") for t in own_tests if t in reused), None)
                 reused_from = next(iter(own_sources)) if len(own_sources) == 1 else None
                 record = lib.append_verification(
                     root, cfg, kind="checks", ok=own_ok, by=args.by,
                     criteria=[criterion], results=_durable_results(own_results),
                     binding={t: bindings[t] for t in own_tests}, executed=executed,
-                    reused_from=reused_from, feature_hash=run_hash)
+                    reused_from=reused_from, feature_hash=run_hash,
+                    repository_digest=record_digest)
                 status["verification_head"] = record["hash"]
                 if record["run_id"] not in criterion["evidence"]:
                     criterion["evidence"].append(record["run_id"])
@@ -1550,7 +1604,7 @@ def cmd_design_approve(args) -> int:
             "summary": args.summary,
             "design_hash": lib.design_hash(criteria),
             "config_hash": lib.config_hash(cfg),
-            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
+            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
             "redesigns_settled_work": args.redesigns_settled_work,
             "proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
         }
@@ -1701,7 +1755,7 @@ def cmd_record_design_review(args) -> int:
             "findings": findings,
             "structural_blocker": structural_blocker,
             "reviewer_profile": reviewer_profile,
-            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
+            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
             "proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
         }
         lib.append_design_review_history(
@@ -2058,6 +2112,7 @@ def cmd_record_review_findings(args) -> int:
         acceptance_changed = attempt.get("acceptance_hash") != current_acceptance_hash
         attempt["reviewer"] = reviewer
         attempt["findings"] = findings
+        attempt["tests_executed"] = args.tests_executed
         attempt["disposition"] = "changes_requested"
         attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
         if attempt["attempt"] >= lib.effective_review_cap(proposed, cfg):
@@ -2237,9 +2292,10 @@ def cmd_record_review(args) -> int:
             "by": reviewer_id, "at": datetime.now(timezone.utc).isoformat(),
             "acceptance_hash": lib.acceptance_hash(acceptance["criteria"]),
             "config_hash": lib.config_hash(cfg),
-            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]),
+            "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
             "implementer_profile": implementer_profile,
             "reviewer_profile": reviewer_profile,
+            "tests_executed": args.tests_executed,
             "profiles_distinct": profiles_distinct,
             "checklist": {"symptom_reproduced": args.symptom_reproduced,
                           "symptom_resolved": "yes", "all_criteria_verified": "yes",
@@ -2247,7 +2303,7 @@ def cmd_record_review(args) -> int:
         }
         preflight["reviewed_by"] = reviewer_id
         errors = lib.compute_errors(preflight, acceptance, cfg, verifications=records,
-                                    verification_problems=problems)
+                                    verification_problems=problems, root=root)
         if errors:
             print("SHIP_FEATURE_BLOCKED")
             print("\n".join(f"- {x}" for x in errors))
@@ -2258,6 +2314,7 @@ def cmd_record_review(args) -> int:
         attempt["reviewer"] = reviewer_id
         attempt["disposition"] = "approved"
         attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
+        attempt["tests_executed"] = args.tests_executed
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, extra_events=[{
                       "kind": "review_attempt_closed",
@@ -2373,7 +2430,7 @@ def cmd_criterion_update(args) -> int:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
         was_primary = criterion.get("type") == "primary_fix"
-        before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
+        before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", []))
         spec_changed = False
         for field in ("requirement", "verification", "type"):
             value = getattr(args, field)
@@ -2408,7 +2465,7 @@ def cmd_criterion_update(args) -> int:
         lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_updated", event_message="Acceptance criterion updated",
                   criterion=args.criterion, work_item_scope_changed=registry_changed or
-                  before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]))
+                  before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])))
     if warning:
         print("WORK_ITEM_WARNING: untagged criterion in a multi-item run")
     print("CRITERION_UPDATED")
@@ -2435,7 +2492,7 @@ def cmd_criterion_add(args) -> int:
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
-        before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
+        before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", []))
         acceptance["criteria"].append({
             "id": args.criterion, "type": args.type, "requirement": args.requirement,
             "verification": args.verification, "tests": args.test or [],
@@ -2461,7 +2518,7 @@ def cmd_criterion_add(args) -> int:
         lib.commit(root, cfg, status=status, acceptance=acceptance, extra_events=extra,
                   event_kind="criterion_added", event_message="Acceptance criterion added",
                   criterion=args.criterion, work_item_scope_changed=registry_changed or
-                  before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0]))
+                  before_scope != lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])))
     if warning:
         print("WORK_ITEM_WARNING: untagged criterion in a multi-item run")
     print("CRITERION_ADDED")
@@ -2823,7 +2880,7 @@ def cmd_amendment_approve(args) -> int:
                                       + ["amendment approval refused; record a new amendment-review against "
                                          "the registry on disk, or escalate"])
         now = datetime.now(timezone.utc).isoformat()
-        scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0])
+        scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", []))
         rewritten = []
         for field in ("design_approved", "design_review"):
             record = status.get(field)
@@ -3545,6 +3602,10 @@ def main() -> int:
     required_choice.add_argument("--required", action="store_true")
     required_choice.add_argument("--optional", action="store_true")
 
+    work_remove = sub.add_parser("work-item-remove")
+    work_remove.add_argument("item")
+    work_remove.add_argument("--by", required=True)
+
     lane_request = sub.add_parser("lane-request", help="request the measured small-fix lane for one item")
     lane_request.add_argument("item")
     lane_request.add_argument("--by", required=True)
@@ -3651,6 +3712,7 @@ def main() -> int:
     review.add_argument("--item", default=None,
                         help="record an item-scoped independent review for a confirmed small-fix lane")
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
+    review.add_argument("--tests-executed", choices=("yes", "no", "unknown"), default="unknown")
 
     review_start = sub.add_parser("review-attempt-start")
     review_start.add_argument("--by", required=True)
@@ -3663,6 +3725,7 @@ def main() -> int:
     review_findings.add_argument("--session", default=None,
                                  help="host-only exact managed Reviewer session binding")
     review_findings.add_argument("--finding", action="append", required=True)
+    review_findings.add_argument("--tests-executed", choices=("yes", "no", "unknown"), default="unknown")
 
     review_override = sub.add_parser("review-cap-override")
     review_override.add_argument("--by", required=True)
@@ -3870,6 +3933,7 @@ def main() -> int:
         "work-items-sync": cmd_work_items_sync,
         "work-item-activate": cmd_work_item_activate,
         "work-item-update": cmd_work_item_update,
+        "work-item-remove": cmd_work_item_remove,
         "lane-request": cmd_lane_request,
         "lane-confirm": cmd_lane_confirm,
         "plan-tranche": cmd_plan_tranche,

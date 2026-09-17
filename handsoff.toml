@@ -25,8 +25,8 @@ deployment_requires_explicit_approval = true
 # provider family. Setting one role never changes the other three.
 # "auto" is an explicit choice, not a placeholder: it keeps the older
 # first-installed auto-detect path (Codex, then Claude Code).
-architect = "codex"
-supervisor = "codex"
+architect = "host"
+supervisor = "host"
 implementer = "codex"
 reviewer = "codex"
 
@@ -58,7 +58,7 @@ reviewer = []
 # and pauses for the Pilot; it never launches a fallback and spends again.
 architect = 40000
 supervisor = 24000
-implementer = 80000
+implementer = 120000
 reviewer = 80000
 
 [recovery]
@@ -79,6 +79,8 @@ poll_seconds = 30
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+  "python3 -m unittest tests.test_evidence_drift -v",
+  "python3 -m unittest tests.test_reviewer_sandbox -v",
   "python3 -m unittest tests.test_design_review_hold -v",
   "python3 -m unittest tests.test_host_roles -v",
   "python3 -m unittest tests.test_work_items -v",

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,8 @@ class LaunchSpec:
     # Host-enforced native rollout ceiling when the selected adapter
     # supports it.  It is configuration, never inferred from output.
     token_budget: int | None = None
+    env_overrides: dict[str, str] | None = None
+    project_root: str | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -70,9 +73,12 @@ def _effective_token_budget(configured: int, role: str, context: dict | None) ->
     return configured
 
 
-def _codex_argv(executable: str, role: str, model: str, token_budget: int) -> list[str]:
-    sandbox = "read-only" if role in {"reviewer", "supervisor"} else "workspace-write"
+def _codex_argv(executable: str, role: str, model: str, token_budget: int,
+                *, reviewer_sandbox: bool = False) -> list[str]:
+    sandbox = "workspace-write" if reviewer_sandbox or role == "implementer" else "read-only"
     argv = [executable, "exec", "--ephemeral", "--sandbox", sandbox]
+    if reviewer_sandbox:
+        argv.append("--skip-git-repo-check")
     for feature in CODEX_DISABLED_FEATURES:
         argv.extend(["--disable", feature])
     # Codex's native shared rollout meter stops the complete agent loop,
@@ -89,6 +95,16 @@ def _codex_argv(executable: str, role: str, model: str, token_budget: int) -> li
         argv.extend(["--model", model])
     argv.append("-")
     return argv
+
+
+def _reviewer_scratch(root: Path, adapter: str, role: str) -> Path | None:
+    """Create the per-session boundary required by a Codex Reviewer."""
+    if role != "reviewer" or adapter != "codex":
+        return None
+    root = root.resolve()
+    scratch = Path(tempfile.mkdtemp(prefix="handsoff-reviewer-")).resolve()
+    assert not (scratch == root or root in scratch.parents)
+    return scratch
 
 
 class AgentLaunchError(lib.HandsoffError):
@@ -153,6 +169,9 @@ def build_role_input(root: Path, role: str, task: str) -> str:
         raise lib.HandsoffError(f"task exceeds {MAX_AGENT_TASK_BYTES} UTF-8 bytes")
     root = root.resolve()
     text = f"{_role_prompt(root, role)}\n\n# Assigned task\n\n{task}"
+    if role == "reviewer":
+        text = (f"# Project root (read-only)\n\n{root}: use git as `git -C {root} ...` and tests as `cd {root} && python3 -m unittest ...`. "
+                "Write only inside the current directory.\n\n" + text)
     if role in DESIGN_EVIDENCE_ROLES:
         cfg = lib.load_config(root)
         context = lib.managed_design_context(root, role)
@@ -269,8 +288,9 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
         raise lib.HandsoffError(lib.unavailable_adapter_message(role, adapter, model, resolution_source))
     executable = str(Path(executable).resolve())
 
+    scratch = _reviewer_scratch(root, adapter, role)
     if adapter == "codex":
-        argv = _codex_argv(executable, role, model, token_budget)
+        argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
         permission_mode = "plan" if role in {"reviewer", "supervisor"} else "acceptEdits"
         argv = [executable, "-p", "--permission-mode", permission_mode]
@@ -282,7 +302,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
         adapter=adapter,
         model=model,
         argv=tuple(argv),
-        cwd=str(root),
+        cwd=str(scratch or root),
         stdin=stdin,
         resolution_source=resolution_source,
         packet_id=packet["packet_id"] if packet else None,
@@ -290,6 +310,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
         tier=tier,
         tier_reason=tier_reason,
         token_budget=token_budget,
+        env_overrides={"TMPDIR": str(scratch)} if scratch else None,
+        project_root=str(root),
     )
 
 
@@ -319,16 +341,19 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     token_budget = _effective_token_budget(
         configured_budget, role, lib.managed_design_context(root, role),
     )
+    scratch = _reviewer_scratch(root, adapter, role)
     if adapter == "codex":
-        argv = _codex_argv(executable, role, model, token_budget)
+        argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
         mode = "plan" if role in {"reviewer", "supervisor"} else "acceptEdits"
         argv = [executable, "-p", "--permission-mode", mode]
         if model != lib.DEFAULT_AGENT_MODEL:
             argv.extend(["--model", model])
     return LaunchSpec(
-        role, adapter, model, tuple(argv), str(root.resolve()), task, "fallback",
+        role, adapter, model, tuple(argv), str(scratch or root.resolve()), task, "fallback",
         token_budget=token_budget,
+        env_overrides={"TMPDIR": str(scratch)} if scratch else None,
+        project_root=str(root.resolve()),
     )
 
 
@@ -666,7 +691,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     stdout/stderr chunk notes output liveness, a counter file that never
     carries content and never reaches a ledger."""
     capture_supervisor = spec.role == "supervisor"
-    root = Path(spec.cwd).resolve()
+    root = Path(spec.project_root or spec.cwd).resolve()
     actor = lib.validate_agent_actor(actor or lib.default_agent_actor(spec.adapter, spec.role))
     if precreated_session_id is None:
         session = lib.create_agent_session(
@@ -685,9 +710,13 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     child_env = os.environ.copy()
     child_env[MANAGED_ROLE_ENV] = spec.role
     child_env[MANAGED_SESSION_ENV] = session_id
+    if spec.env_overrides:
+        child_env.update(spec.env_overrides)
     portable_output = _PortableOutput(
         root, session_id, spec.role, spec.adapter, spec.stdin, child_env,
     )
+    repository_digest_before = lib.repository_digest(root, lib.load_config(root)) \
+        if spec.role == "reviewer" else None
     try:
         process = popen_factory(
             list(spec.argv),
@@ -712,6 +741,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     try:
         return _run_managed_process(
             spec, root, session_id, process, timeout, capture_supervisor, portable_output,
+            repository_digest_before=repository_digest_before,
         )
     finally:
         beacon.finish()
@@ -720,7 +750,8 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
 
 def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                          timeout: int, capture_supervisor: bool,
-                         portable_output: _PortableOutput) -> int:
+                         portable_output: _PortableOutput,
+                         repository_digest_before: str | None = None) -> int:
     """The lifecycle of an already-started child: exactly one terminal
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
@@ -1020,6 +1051,14 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(exit_code=1),
         )
         raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
+    if spec.role == "reviewer":
+        digest_after = lib.repository_digest(root, lib.load_config(root))
+        if repository_digest_before != digest_after:
+            failure = {"category": "reviewer_modified_project",
+                       "reason": "managed Reviewer modified the project tree",
+                       "tail_sha256": hashlib.sha256(b"").hexdigest()}
+            lib.transition_agent_session(root, session_id, "failed", exit_code=1, failure=failure)
+            raise AgentLaunchError("Reviewer modified the project tree", session_id)
     if reviewer_results:
         try:
             import handsoff_broker as broker
