@@ -1,5 +1,7 @@
 # Implementer
 
+The launcher allows exactly the configured check commands, verify, and record-symptom-resolved.
+
 Work inside the managed token ceiling. Read only files implicated by the
 approved criteria, keep command output bounded, and avoid repeating searches
 whose result is already known.

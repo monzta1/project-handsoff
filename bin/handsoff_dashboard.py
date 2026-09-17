@@ -733,7 +733,10 @@ def build_snapshot(root: Path) -> dict:
         fields = ("session_id", "role", "actor", "adapter", "requested_model",
                   "reported_model", "resolution_source", "state", "started_at",
                   "running_at", "ended_at", "exit_code", "tier")
-        return {field: session.get(field) for field in fields}
+        view = {field: session.get(field) for field in fields}
+        if isinstance(session.get("result"), dict) and session["result"].get("adopted_at"):
+            view["state"] = "adopted"
+        return view
 
     def session_for_actor(actor):
         if not isinstance(actor, str) or not actor.strip():

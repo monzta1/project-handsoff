@@ -462,7 +462,7 @@ def parse_reviewer_result(text: str) -> dict:
     return value
 
 
-def _reviewer_result_request(root: Path, session_id: str, result: dict) -> dict:
+def _reviewer_result_request(root: Path, session_id: str, result: dict, actor: str | None = None) -> dict:
     cfg = lib.load_config(root)
     status = lib.load_unique_json(lib.status_path(root, cfg))
     sessions = status.get("agent_sessions") or {}
@@ -470,10 +470,10 @@ def _reviewer_result_request(root: Path, session_id: str, result: dict) -> dict:
     session = sessions.get(session_id)
     if not isinstance(session, dict) or session.get("role") != "reviewer" \
             or current.get("reviewer") != session_id \
-            or session.get("state") not in lib.AGENT_SESSION_LIVE_STATES:
+            or (session.get("state") not in lib.AGENT_SESSION_LIVE_STATES and actor is None):
         raise lib.HandsoffError("Reviewer result is not bound to the current live Reviewer session")
     reviewer = session["actor"]
-    base = {"actor": "supervisor", "project_root": str(root), "action": "workflow", "by": reviewer,
+    base = {"actor": "supervisor", "project_root": str(root), "action": "workflow", "by": actor or reviewer,
             "session": session_id}
     if result["kind"] == "design":
         if status.get("phase_number") != 2:

@@ -128,8 +128,9 @@ DEFAULT_AGENT_TOKEN_BUDGETS = {
     "architect": 40_000,
     "supervisor": 24_000,
     "implementer": 80_000,
-    "reviewer": 40_000,
+    "reviewer": 80_000,
 }
+PREFLIGHT_FILE = ".handsoff-preflight.json"
 MIN_AGENT_TOKEN_BUDGET = 8_000
 MAX_AGENT_TOKEN_BUDGET = 500_000
 TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
@@ -286,6 +287,7 @@ DEFAULT_CONFIG = {
     "require_live_verification": True,
     "deployment_requires_explicit_approval": True,
     "check_commands": [],
+    "implementer_commands": [],
     "documentation": {"files": [], "exclude": []},
     "live_check_commands": [],
     "check_timeout_seconds": 600,
@@ -306,6 +308,8 @@ DEFAULT_CONFIG = {
     },
     "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
     "agent_token_budgets": dict(DEFAULT_AGENT_TOKEN_BUDGETS),
+    "adapters": {},
+    "followup_design_token_budget": None,
     "reviewer_followup": None,
     "recovery": {
         "enabled": True, "max_attempts": 3, "lease_minutes": 15,
@@ -366,7 +370,7 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # valid; when present they must be null or a non-empty string. #37 adds
 # `tier` the same way: null unless a Phase-2 reviewer was launched through
 # the tiered selection, otherwise exactly "primary" or "followup".
-AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number"}
+AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result"}
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
@@ -631,6 +635,7 @@ def load_config(root: Path) -> dict:
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
     cfg["agent_token_budgets"] = dict(DEFAULT_AGENT_TOKEN_BUDGETS)
+    cfg["adapters"] = {}
     cfg["design_evidence"] = []
     cfg["profile_sources"] = {
         role: {"adapter": RECOMMENDED_PROFILE_SOURCE, "model": RECOMMENDED_PROFILE_SOURCE}
@@ -655,21 +660,32 @@ def load_config(root: Path) -> dict:
     models = raw.get("models", {})
     fallback_policy = raw.get("fallback_policy", {})
     agent_budget = raw.get("agent_budget", {})
+    adapters = raw.get("adapters", {})
     checks = raw.get("checks", {})
+    implementer = raw.get("implementer", {})
     documentation = raw.get("documentation", {})
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, checks, documentation, recovery, regression_gate, analysis)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, documentation, recovery, regression_gate, and analysis must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, and analysis must be tables"
         )
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
     cfg["verification_log"] = project.get("verification_log", cfg["verification_log"])
+    if set(adapters) - set(SELECTABLE_AGENT_ADAPTERS):
+        raise HandsoffError("handsoff.toml: adapters may only contain codex and claude")
+    for adapter, value in adapters.items():
+        if not isinstance(value, str) or not value.strip():
+            raise HandsoffError(f"handsoff.toml: adapters.{adapter} must name an existing file")
+        path_value = Path(value).expanduser()
+        if not path_value.is_absolute(): path_value = root / path_value
+        if not path_value.is_file(): raise HandsoffError(f"handsoff.toml: adapters.{adapter} must name an existing file")
+        cfg["adapters"][adapter] = str(path_value.resolve())
     for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews",
                 "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
         value = workflow.get(key, cfg[key])
@@ -750,7 +766,7 @@ def load_config(root: Path) -> dict:
     cfg["max_failovers_per_role"] = validate_max_failovers(
         fallback_policy.get("max_failovers_per_role", DEFAULT_MAX_FAILOVERS_PER_ROLE)
     )
-    unknown_budget_roles = set(agent_budget) - set(SELECTABLE_AGENT_ROLES)
+    unknown_budget_roles = set(agent_budget) - {*SELECTABLE_AGENT_ROLES, "followup_design"}
     if unknown_budget_roles:
         raise HandsoffError(
             "handsoff.toml: agent_budget has unknown keys: "
@@ -765,11 +781,20 @@ def load_config(root: Path) -> dict:
                 f"{MIN_AGENT_TOKEN_BUDGET} to {MAX_AGENT_TOKEN_BUDGET}"
             )
         cfg["agent_token_budgets"][role] = value
+    followup_budget = agent_budget.get("followup_design")
+    if followup_budget is not None:
+        if not isinstance(followup_budget, int) or isinstance(followup_budget, bool) or followup_budget < MIN_AGENT_TOKEN_BUDGET:
+            raise HandsoffError("handsoff.toml: agent_budget.followup_design must be a positive integer")
+        cfg["followup_design_token_budget"] = followup_budget
     for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
         value = checks.get(toml_key, cfg[config_key])
         if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
             raise HandsoffError(f"handsoff.toml: checks.{toml_key} must be an array of non-empty command strings")
         cfg[config_key] = list(value)
+    implementer_commands = implementer.get("commands", [])
+    if not isinstance(implementer_commands, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in implementer_commands):
+        raise HandsoffError("handsoff.toml: implementer.commands must be an array of non-empty command strings")
+    cfg["implementer_commands"] = list(implementer_commands)
     timeout_value = checks.get("timeout_seconds", cfg["check_timeout_seconds"])
     if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
         raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
@@ -894,6 +919,23 @@ def load_config(root: Path) -> dict:
         raise HandsoffError("handsoff.toml: workflow.small_fix_max_files must be an integer from 1 to 1000")
     ensure_regression_config_is_disjoint(cfg, root)
     return cfg
+
+
+def implementer_allowed_tools(cfg: dict, root: Path | None = None) -> list[str]:
+    """Build Claude's exact implementation tool surface from governed commands.
+
+    The command prefixes are intentionally explicit: Claude may edit the
+    workspace, but it can run only configured checks and the two evidence
+    operations needed to bind its work to the acceptance ledger.
+    """
+    tools = [f"Bash({command})" for command in cfg.get("check_commands", [])]
+    tools.extend([
+        "Bash(python3 bin/handsoff_supervisor.py verify*)",
+        "Bash(python3 bin/handsoff_supervisor.py record-symptom-resolved*)",
+    ])
+    tools.extend(cfg.get("implementer_commands", []))
+    tools.extend(["Read", "Edit", "Write", "Glob", "Grep"])
+    return tools
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -1158,7 +1200,7 @@ def crew_view(cfg: dict, *, which=None) -> dict:
     for role in SELECTABLE_AGENT_ROLES:
         profile = resolved[role]
         adapter = profile["adapter"]
-        discovered = lookup(adapter) if adapter in SELECTABLE_AGENT_ADAPTERS else None
+        discovered = cfg.get("adapters", {}).get(adapter) or (lookup(adapter) if adapter in SELECTABLE_AGENT_ADAPTERS else None)
         executable = str(Path(discovered).resolve()) if discovered else None
         view[role] = {
             "adapter": adapter,
@@ -1168,17 +1210,45 @@ def crew_view(cfg: dict, *, which=None) -> dict:
             "available": executable is not None,
             "executable": executable,
             "availability_scope": CREW_AVAILABILITY_SCOPE,
+            "budget_warning": budget_warning(cfg, role),
         }
     return view
 
+def budget_warning(cfg: dict, role: str) -> str | None:
+    """Explain the four-turn safety floor so low configured budgets are visible."""
+    value = cfg.get("agent_token_budgets", {}).get(role)
+    return f"budget for {role} ({value}) is below 20000 tokens (5000 per turn times 4 turns)" if isinstance(value, int) and value < 20000 else None
 
-def adapter_availability() -> dict:
+
+def adapter_availability(cfg: dict | None = None, *, which=None) -> dict:
     """Executable discovery only; callers must not imply runtime readiness."""
     result = {}
     for adapter in SELECTABLE_AGENT_ADAPTERS:
-        discovered = shutil.which(adapter)
+        override = (cfg or {}).get("adapters", {}).get(adapter)
+        discovered = override or (which or shutil.which)(adapter)
         executable = str(Path(discovered).resolve()) if discovered else None
         result[adapter] = {"available": executable is not None, "executable": executable}
+    return result
+
+def adapter_preflight(cfg: dict, root: Path, which=shutil.which, runner=subprocess.run, timeout=60) -> dict:
+    """Probe each configured CLI once with a tiny prompt, recording bounded diagnostic state."""
+    result = {}
+    for adapter in SELECTABLE_AGENT_ADAPTERS:
+        executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
+        item = {"state": "not_checked", "reason": "executable missing", "checked_at": datetime.now(timezone.utc).isoformat(), "executable": str(executable) if executable else None}
+        if executable:
+            argv = [str(executable), "exec", "--ephemeral", "--sandbox", "read-only", "-"] if adapter == "codex" else [str(executable), "-p", "--output-format", "text"]
+            try:
+                completed = runner(argv, input="Reply with OK", text=True, capture_output=True, timeout=timeout, cwd=str(root))
+                if completed.returncode == 0:
+                    item.update(state="reachable", reason=None)
+                else:
+                    tail = re.sub(r"(?i)(api[_ -]?key|token|password)\s*[:=]\s*\S+", r"\1=[redacted]", (completed.stderr or "")[:200])
+                    item.update(state="unreachable", reason=f"exit code {completed.returncode}: {tail}")
+            except subprocess.TimeoutExpired:
+                item.update(state="unreachable", reason="timeout")
+        result[adapter] = item
+    (root / PREFLIGHT_FILE).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
 
@@ -2083,7 +2153,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 
 
 def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation"} \
+    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "result_available"} \
             or not {"category", "reason", "tail_sha256"} <= set(value):
         raise HandsoffError("agent failure classification is invalid")
     category = value.get("category")
@@ -2100,6 +2170,14 @@ def _validate_failure_classification(value: object) -> dict:
             if not isinstance(value[key], str) or not OPERATION_IDENTIFIER_PATTERN.fullmatch(value[key]):
                 raise HandsoffError("agent failure operation identifier is invalid")
             result[key] = value[key]
+    if "changed_paths" in value:
+        if not isinstance(value["changed_paths"], list) or len(value["changed_paths"]) > 64 or not all(isinstance(item, str) for item in value["changed_paths"]):
+            raise HandsoffError("agent failure changed paths are invalid")
+        result["changed_paths"] = list(value["changed_paths"])
+    if "result_available" in value:
+        if value["result_available"] is not True:
+            raise HandsoffError("agent failure result_available is invalid")
+        result["result_available"] = True
     return result
 
 
@@ -2157,6 +2235,10 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         updated["state"] = state
         if state == "running":
             updated["running_at"] = now
+            if role == "reviewer":
+                warnings = proposed.setdefault("warnings", [])
+                if "a reviewer is live; do not edit the tree" not in warnings:
+                    warnings.append("a reviewer is live; do not edit the tree")
             if replacement is not None:
                 replacement["state"] = "running"
                 replacement["running_at"] = now
@@ -2174,6 +2256,10 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             if failure is not None:
                 failures = proposed.setdefault("agent_failures", {})
                 failures[session_id] = {"session_id": session_id, **failure, "at": now}
+            if role == "reviewer":
+                warnings = proposed.setdefault("warnings", [])
+                warnings[:] = [item for item in warnings
+                                if item != "a reviewer is live; do not edit the tree"]
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
@@ -2204,6 +2290,9 @@ def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
                 capture_output=True, timeout=3, check=True,
             )
         except (OSError, subprocess.SubprocessError) as exc:
+            stderr = getattr(exc, "stderr", "") or ""
+            if "unborn branch" in stderr.lower() or "ambiguous argument 'head'" in stderr.lower():
+                raise HandsoffError("non-git root") from None
             raise HandsoffError(f"cannot establish repository identity: {type(exc).__name__}") from exc
         return result.stdout
     head = git("rev-parse", "HEAD").strip()
@@ -3626,6 +3715,8 @@ def validate_status_schema(status: dict) -> list[str]:
                 errors.append(f"{label} contains unsupported fields: {', '.join(sorted(unexpected))}")
             for optional_field in sorted(AGENT_SESSION_OPTIONAL_FIELDS):
                 value = session.get(optional_field)
+                if optional_field == "result":
+                    continue
                 if optional_field == "phase_number":
                     if value is not None and (not isinstance(value, int) or isinstance(value, bool)
                                               or value not in PHASES):
@@ -3684,6 +3775,11 @@ def validate_status_schema(status: dict) -> list[str]:
                 errors.append(f"{label} launching state cannot have running_at")
             if session_state not in {"launching", "failed_to_start"} and session.get("running_at") is None:
                 errors.append(f"{label} state {session_state!r} requires running_at")
+            result = session.get("result")
+            if result is not None:
+                required = {"kind", "payload", "recorded_at", "adopted_at", "adopted_by"}
+                if not isinstance(result, dict) or set(result) != required or result.get("kind") not in {"review", "design", "supervisor_request"} or not isinstance(result.get("payload"), dict) or ((result.get("adopted_at") is None) != (result.get("adopted_by") is None)):
+                    errors.append(f"{label}.result is invalid")
     if pointers is not None:
         if not isinstance(pointers, dict):
             errors.append("status: 'current_agent_sessions' must be an object")
@@ -3717,10 +3813,13 @@ def validate_status_schema(status: dict) -> list[str]:
                 except HandsoffError as exc:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
+                allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths", "result_available"}
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
-                        or set(failure) - {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation"} \
+                        or set(failure) - allowed_fields \
                         or failure.get("session_id") != session_id:
                     errors.append(f"status: agent failure {session_id!r} has invalid fields")
+                if isinstance(failure, dict) and (not isinstance(failure.get("changed_paths", []), list) or len(failure.get("changed_paths", [])) > 64):
+                    errors.append(f"{label} changed_paths is invalid")
                 if normalized and sessions[session_id].get("state") not in \
                         AGENT_SESSION_TERMINAL_STATES - {"completed"}:
                     errors.append(f"status: agent failure {session_id!r} is not terminal")
@@ -7390,7 +7489,7 @@ HANDSOFF_GENERATED_NAMES = frozenset({
     ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
     # Agent output is gitignored Handsoff runtime state, not repository evidence.
     ".handsoff-agent-output.json",
-    LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE,
+    LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE, PREFLIGHT_FILE,
     ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,
     "__pycache__", ".git",
 })
@@ -7460,6 +7559,49 @@ def repository_digest(root: Path, cfg: dict | None = None) -> str:
             continue
         pairs.append([relative, _digest_entry(root, relative)])
     return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
+
+
+def repository_digest_entries(root: Path, cfg: dict | None = None) -> dict[str, str | None]:
+    """Return per-path working-tree digests so a sandbox violation can name files.
+
+    Handsoff state is excluded for the same reason as repository_digest: its own
+    bookkeeping must not look like an agent edit.
+    """
+    names = cfg or load_config(root)
+    state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
+    listed = []
+    try:
+        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), capture_output=True, check=True).stdout
+        untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=str(root), capture_output=True, check=True).stdout
+        listed = [x.decode("utf-8", "replace") for x in (tracked + untracked).split(b"\0") if x]
+    except (OSError, subprocess.SubprocessError):
+        for directory, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in HANDSOFF_GENERATED_NAMES)
+            listed.extend(str(Path(directory).joinpath(f).relative_to(root).as_posix()) for f in files)
+    return {path: _digest_entry(root, path) for path in sorted(set(listed)) if not _digest_excluded(path, state_files)}
+
+
+def record_session_result(root: Path, session_id: str, kind: str, payload: dict) -> dict:
+    """Persist validated protocol state before broker dispatch can lose it."""
+    if kind not in {"review", "design", "supervisor_request"} or not isinstance(payload, dict):
+        raise HandsoffError("session result is invalid")
+    with project_lock(root.resolve()):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        session = (status.get("agent_sessions") or {}).get(session_id)
+        if not isinstance(session, dict):
+            raise HandsoffError("agent session was not found")
+        result = {"kind": kind, "payload": deepcopy(payload),
+                  "recorded_at": datetime.now(timezone.utc).isoformat(),
+                  "adopted_at": None, "adopted_by": None}
+        proposed = deepcopy(status)
+        proposed["agent_sessions"][session_id]["result"] = result
+        errors = validate_status_schema(proposed)
+        if errors:
+            raise HandsoffError(errors[0])
+        commit(root, cfg, status=proposed, event_kind="agent_session_result_recorded",
+               event_message="Managed agent protocol result persisted", session_id=session_id, result_kind=kind)
+        return deepcopy(result)
 
 
 def verification_config_hash(cfg: dict) -> str:
@@ -8182,7 +8324,7 @@ FAILURE_CATEGORIES = (
     "auth_failure", "rate_limit", "context_exhaustion",
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
     "reviewer_modified_project",
-    "network", "target_service", "external_timeout", "dispatch_failed",
+    "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
 )
 
 _FAILURE_REASON_LABELS = {
@@ -8202,6 +8344,7 @@ _FAILURE_REASON_LABELS = {
     "reviewer_modified_project": "managed Reviewer modified the project tree",
     "external_timeout": "external operation exceeded its declared timeout",
     "dispatch_failed": "host dispatch failed",
+    "no_artifact": "process exited 0 without a protocol result",
 }
 
 # Order matters: tier 3 checks these in sequence and the first match wins,
@@ -8217,7 +8360,7 @@ _TAIL_PATTERNS = (
     ("context_exhaustion", re.compile(r"context length exceeded|context window|maximum context|prompt is too long", re.IGNORECASE)),
     ("runtime_environment", re.compile(
         r"readonly database|read-only database|failed to initialize.*app-server|"
-        r"cannot establish repository identity|operation not permitted",
+        r"cannot establish repository identity|operation not permitted|SSL certificate verification failed|permission denied",
         re.IGNORECASE,
     )),
 )
@@ -8283,9 +8426,10 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
 RECOVERABLE_FAILURE_CATEGORIES = {
     "auth_failure", "rate_limit", "context_exhaustion", "timeout",
     "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost", "external_timeout",
+    "no_artifact",
 }
 FALLBACK_SKIP_REASONS = {
-    "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent",
+    "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent", "environment_failure",
 }
 
 
@@ -8365,6 +8509,9 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
             skipped.append({"index": index, "reason": "invalid_profile"})
             continue
         identity = (profile["adapter"], profile["model"])
+        if failure_category == "runtime_environment":
+            skipped.append({"index": index, "reason": "environment_failure"})
+            continue
         if not adapter_availability[profile["adapter"]]:
             skipped.append({"index": index, "reason": "adapter_unavailable"})
         elif identity in attempted:

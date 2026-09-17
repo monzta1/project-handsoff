@@ -26,10 +26,18 @@ implementer = []
 reviewer = []
 
 [agent_budget]
+# Per-adapter defaults: Codex architect 40000, supervisor 24000, implementer 80000, reviewer 80000.
 architect = 40000
 supervisor = 24000
 implementer = 80000
-reviewer = 40000
+reviewer = 80000
+# Optional follow-up design budget. Without it, derive from packet size with a 40000 minimum.
+# followup_design = 40000
+
+[adapters]
+# Optional absolute or project-relative executable overrides.
+# codex = "/path/to/codex"
+# claude = "/path/to/claude"
 
 [recovery]
 enabled = true

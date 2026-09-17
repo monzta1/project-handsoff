@@ -16,6 +16,7 @@ handsoff-design-evidence.json
 .handsoff-dashboard-owner.json
 .handsoff-live.json
 .handsoff-output-liveness.json
+.handsoff-preflight.json
 .handsoff-agent-output.json
 .handsoff-agent-output.lock
 .handsoff-verify-inflight/

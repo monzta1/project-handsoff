@@ -7,7 +7,7 @@ verification_log = "handsoff-verifications.jsonl"
 
 [workflow]
 # Automatically launch the next managed role from an owned dashboard.
-auto_handoff = true
+auto_handoff = false
 max_design_rounds = 3
 max_review_rounds = 3
 stall_minutes = 10
@@ -82,6 +82,11 @@ operation_grace_seconds = 120
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+  "python3 -m unittest tests.test_session_artifacts -v",
+  "python3 -m unittest tests.test_claude_adapter -v",
+  "python3 -m unittest tests.test_adapter_preflight -v",
+  "python3 -m unittest tests.test_agent_budget -v",
+  "python3 -m unittest tests.test_reviewer_sandbox -v",
   "python3 -m unittest tests.test_supervisor_recovery -v",
   "python3 -m unittest tests.test_design_convergence -v",
   "python3 -m unittest tests.test_governance_cross -v",

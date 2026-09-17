@@ -315,19 +315,24 @@ def _documentation_diagnosis(root: Path, identity: dict, cfg: dict | None = None
             "supported_project_pin": identity.get("compatibility")}
 
 
-def doctor(root: Path) -> dict:
+def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
     identity = lib.validate_runtime_integrity(root)
     cfg = lib.load_config(root)
     runtime_paths, legacy_runtime_paths = _runtime_path_diagnosis(root, identity)
     documentation = _documentation_diagnosis(root, identity, cfg)
+    permissions = lib.implementer_allowed_tools(cfg, root)
+    warnings = [f"check command cannot be expressed: {command!r}" for command in cfg["check_commands"] if not command.strip() or "\n" in command or "\r" in command]
     return {"ok": True, "root": str(root), "engine": identity,
             "config": str(root / "handsoff.toml"),
-            "adapters": lib.adapter_availability(),
+            "adapters": lib.adapter_availability(cfg),
+            "preflight": None if skip_preflight else lib.adapter_preflight(cfg, root),
             "state_present": lib.status_path(root, cfg).exists(),
             "console_executable": _canonical_executable(),
             "legacy_runtime_paths": legacy_runtime_paths,
             "runtime_paths": runtime_paths,
             "documentation": documentation,
+            "implementer_permissions": permissions,
+            "warnings": warnings,
             "migration_required": identity["source"] == "project-drop-in",
             "python": ".".join(map(str, sys.version_info[:3]))}
 
@@ -385,6 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("doctor")
     check.add_argument("root", nargs="?", default=".")
     check.add_argument("--docs-only", action="store_true", help="run only the documentation audit")
+    check.add_argument("--skip-preflight", action="store_true")
     sub.add_parser("commands", help="print the argparse command reference")
     upgrade = sub.add_parser("upgrade")
     upgrade.add_argument("root", nargs="?", default=".")
@@ -458,7 +464,7 @@ def main() -> int:
                 if not result["diagnostics"]:
                     print("DOCUMENTATION_OK")
                 return 1 if result["diagnostics"] else 0
-            result = doctor(root)
+            result = doctor(root, skip_preflight=args.skip_preflight)
         elif args.command == "commands":
             print(_commands_reference(), end="")
             return 0

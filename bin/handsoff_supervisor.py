@@ -61,6 +61,7 @@ OPERATION_REGISTRY = {
     "record-review": {"class": "agent-only", "surface": "review-attempts-panel"},
     "review-attempt-start": {"class": "agent-only", "surface": "review-attempts-panel"},
     "record-review-findings": {"class": "agent-only", "surface": "review-attempts-panel"},
+    "session-result-adopt": {"class": "operator-facing", "surface": "review-attempts-panel"},
     "review-cap-override": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "recover": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "watch": {"class": "automatic", "surface": "live-status"},
@@ -2342,6 +2343,39 @@ def cmd_record_review(args) -> int:
     return 0
 
 
+def cmd_session_result_adopt(args) -> int:
+    """Replay a persisted result after dispatch loss, preserving canonical gates."""
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    actor = lib.validate_agent_actor(args.by)
+    with lib.project_lock(root):
+        status, acceptance, records, problems = _load_all(root, cfg)
+        session = (status.get("agent_sessions") or {}).get(args.session)
+        result = session.get("result") if isinstance(session, dict) else None
+        if not isinstance(result, dict):
+            print("SESSION_RESULT_ADOPT_REFUSED: no persisted result")
+            return 1
+        if result.get("adopted_at") is not None:
+            print("SESSION_RESULT_ADOPT_REFUSED: result is already adopted")
+            return 1
+        import handsoff_broker as broker
+        payload = result["payload"]
+        if result["kind"] == "review":
+            request = broker._reviewer_result_request(root, args.session, payload, actor=actor)
+        elif result["kind"] == "design":
+            request = {"actor": "supervisor", "project_root": str(root), "command": "design-propose", "by": actor, "proposal": payload}
+        else:
+            request = dict(payload); request["by"] = actor
+        broker.execute_request(root, request, capability=broker._SUPERVISOR_HOST_CAPABILITY)
+        proposed = deepcopy(status)
+        adopted = proposed["agent_sessions"][args.session]["result"]
+        adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
+        adopted["adopted_by"] = actor
+        lib.commit(root, cfg, status=proposed, event_kind="session_result_adopted", event_message="Persisted session result adopted", session_id=args.session, by=actor)
+    print("SESSION_RESULT_ADOPTED")
+    return 0
+
+
 def cmd_verify_live(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -3562,6 +3596,10 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--no-cache", action="store_true",
                         help="launch every needed command even when an eligible record for its binding exists")
 
+    adopt = sub.add_parser("session-result-adopt")
+    adopt.add_argument("--session", required=True)
+    adopt.add_argument("--by", required=True)
+
     release_plan = sub.add_parser("release-plan", help="record semantic release class and verification policy")
     release_plan.add_argument("--version", required=True)
     release_plan.add_argument("--by", required=True)
@@ -3966,6 +4004,7 @@ def main() -> int:
         "record-review": cmd_record_review,
         "review-attempt-start": cmd_review_attempt_start,
         "record-review-findings": cmd_record_review_findings,
+        "session-result-adopt": cmd_session_result_adopt,
         "review-cap-override": cmd_review_cap_override,
         "recover": cmd_recover,
         "watch": cmd_watch,

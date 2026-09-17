@@ -69,7 +69,11 @@ def _effective_token_budget(configured: int, role: str, context: dict | None) ->
     """Follow-up design turns receive the packet, not another discovery budget."""
     if role in {"architect", "reviewer"} and isinstance(context, dict) \
             and int(context.get("review_attempts", 0) or 0) > 0:
-        return min(configured, FOLLOWUP_DESIGN_TOKEN_BUDGET)
+        packet_bytes = int(context.get("packet_stdin_bytes", 0) or 0) or len(str(context.get("packet_stdin", "")).encode())
+        if not packet_bytes:
+            return min(configured, FOLLOWUP_DESIGN_TOKEN_BUDGET)
+        default = max(40_000, packet_bytes // 3 + 30_000)
+        return min(configured, context.get("followup_design_token_budget", default))
     return configured
 
 
@@ -97,11 +101,13 @@ def _codex_argv(executable: str, role: str, model: str, token_budget: int,
     return argv
 
 
-def _reviewer_scratch(root: Path, adapter: str, role: str) -> Path | None:
+def _reviewer_scratch(root: Path, adapter: str, role: str, *, create: bool = True) -> Path | None:
     """Create the per-session boundary required by a Codex Reviewer."""
     if role != "reviewer" or adapter != "codex":
         return None
     root = root.resolve()
+    if not create:
+        return root / ".handsoff-reviewer-inspect"
     scratch = Path(tempfile.mkdtemp(prefix="handsoff-reviewer-")).resolve()
     assert not (scratch == root or root in scratch.parents)
     return scratch
@@ -249,7 +255,7 @@ def _phase2_design_reviewer_selection(root: Path, cfg: dict, role: str, *, which
     return lib.select_design_reviewer_profile(cfg, status, acceptance, which=which)
 
 
-def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -> LaunchSpec:
+def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, skip_preflight: bool = False, inspection: bool = False) -> LaunchSpec:
     root = root.resolve()
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
@@ -263,9 +269,17 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
             status = lib.load_unique_json(status_file)
             if status.get("phase_number") == 2 and not status.get("design_proposal"):
                 raise lib.HandsoffError("reviewer launch refused: no design proposal is recorded; run design-propose or an Architect session first")
+            if status.get("phase_number") == 5:
+                if not status.get("original_symptom_resolved"):
+                    raise lib.HandsoffError("reviewer launch refused: run handsoff_supervisor.py record-symptom-resolved --evidence <run_id> --by ACTOR first")
+                acceptance = lib.load_unique_json(lib.acceptance_path(root, lib.load_config(root)))
+                missing = [c.get("id") for c in acceptance.get("criteria", []) if c.get("verification") == "automated" and not c.get("evidence")]
+                if missing:
+                    raise lib.HandsoffError("reviewer launch refused: run handsoff_supervisor.py verify --criterion <id> --by ACTOR for: " + ", ".join(missing))
     if lib.agent_profiles(cfg)[role]["adapter"] == lib.HOST_AGENT_ADAPTER:
         raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
-    context = lib.managed_design_context(root, role)
+    context = lib.managed_design_context(root, role) or {}
+    context["followup_design_token_budget"] = cfg.get("followup_design_token_budget") or max(40_000, len(build_role_input(root, role, task).encode()) // 3 + 30_000)
     token_budget = _effective_token_budget(cfg["agent_token_budgets"][role], role, context)
     _refuse_reviewer_launch_over_budget(root, cfg, role)
     selection = _phase2_design_reviewer_selection(root, cfg, role, which=which)
@@ -298,19 +312,32 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
             resolution_source = "configured"
     stdin = build_role_input(root, role, task)
     packet = applicable_design_review_packet(root, cfg, role)
-    executable = which(adapter)
+    executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
         # An auto-detected adapter is by construction installed, so only a
         # recommended default or an explicit selection can land here.
         raise lib.HandsoffError(lib.unavailable_adapter_message(role, adapter, model, resolution_source))
     executable = str(Path(executable).resolve())
+    if not skip_preflight:
+        try:
+            preflight = json.loads((root / lib.PREFLIGHT_FILE).read_text(encoding="utf-8"))
+            item = preflight.get(adapter, {})
+            checked = datetime.fromisoformat(item.get("checked_at", "")).astimezone(timezone.utc)
+            if item.get("state") == "unreachable" and datetime.now(timezone.utc) - checked < timedelta(hours=24):
+                raise lib.HandsoffError(f"{adapter} pre-flight unreachable: {item.get('reason')}")
+        except FileNotFoundError:
+            pass
 
-    scratch = _reviewer_scratch(root, adapter, role)
+    scratch = _reviewer_scratch(root, adapter, role, create=not inspection)
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
-        permission_mode = "plan" if role in {"reviewer", "supervisor"} else "acceptEdits"
-        argv = [executable, "-p", "--permission-mode", permission_mode]
+        permission_mode = "default" if role in {"reviewer", "supervisor"} else "acceptEdits"
+        argv = [executable, "-p", "--output-format", "stream-json", "--permission-mode", permission_mode]
+        if role in {"reviewer", "supervisor"}:
+            argv.extend(["--allowedTools", ""])
+        else:
+            argv.extend(["--allowedTools", ",".join(lib.implementer_allowed_tools(cfg, root))])
         if model != lib.DEFAULT_AGENT_MODEL:
             argv.extend(["--model", model])
 
@@ -362,8 +389,12 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
-        mode = "plan" if role in {"reviewer", "supervisor"} else "acceptEdits"
-        argv = [executable, "-p", "--permission-mode", mode]
+        mode = "default" if role in {"reviewer", "supervisor"} else "acceptEdits"
+        argv = [executable, "-p", "--output-format", "stream-json", "--permission-mode", mode]
+        if role in {"reviewer", "supervisor"}:
+            argv.extend(["--allowedTools", ""])
+        else:
+            argv.extend(["--allowedTools", ",".join(lib.implementer_allowed_tools(lib.load_config(root), root))])
         if model != lib.DEFAULT_AGENT_MODEL:
             argv.extend(["--model", model])
     return LaunchSpec(
@@ -772,8 +803,9 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     portable_output = _PortableOutput(
         root, session_id, spec.role, spec.adapter, spec.stdin, child_env,
     )
-    repository_digest_before = lib.repository_digest(root, lib.load_config(root)) \
-        if spec.role == "reviewer" else None
+    repository_digest_before = ({"entries": lib.repository_digest_entries(root, lib.load_config(root)),
+                                 "digest": lib.repository_digest(root, lib.load_config(root))}
+                                if spec.role == "reviewer" else None)
     try:
         process = popen_factory(
             list(spec.argv),
@@ -796,11 +828,14 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     beacon = _LiveBeacon(root, session_id, spec.role, process, beacon_interval)
     beacon.start()
     try:
-        return _run_managed_process(
+        result = _run_managed_process(
             spec, root, session_id, process, timeout, capture_supervisor, portable_output,
             repository_digest_before=repository_digest_before,
             beacon=beacon,
         )
+        if spec.env_overrides and spec.role == "reviewer":
+            shutil.rmtree(spec.cwd, ignore_errors=True)
+        return result
     finally:
         beacon.finish()
         portable_output.finish()
@@ -821,6 +856,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     question_lines = [0]
     stdout_tail = [""]
     stderr_tail = [""]
+    def persist_new(items, kind):
+        if items:
+            lib.record_session_result(root, session_id, kind, items[-1])
     try:
         lib.transition_agent_session(root, session_id, "running")
     except Exception:
@@ -888,10 +926,13 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         _parse_operation_line(line, root, session_id, spec.role)
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
+                            persist_new(supervisor_requests, "supervisor_request")
                         if spec.role == "reviewer":
                             _parse_reviewer_line(line, reviewer_results, protocol_errors)
+                            persist_new(reviewer_results, "review")
                         if spec.role == "architect":
                             _parse_architect_line(line, architect_results, protocol_errors)
+                            persist_new(architect_results, "design")
                     if len(pending.encode("utf-8")) > 65536:
                         if pending.startswith(SUPERVISOR_REQUEST_PREFIX):
                             protocol_errors.append("Supervisor broker request exceeded 65536 bytes")
@@ -903,10 +944,13 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     _parse_operation_line(pending, root, session_id, spec.role)
                     if capture_supervisor:
                         _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
+                        persist_new(supervisor_requests, "supervisor_request")
                     if spec.role == "reviewer":
                         _parse_reviewer_line(pending, reviewer_results, protocol_errors)
+                        persist_new(reviewer_results, "review")
                     if spec.role == "architect":
                         _parse_architect_line(pending, architect_results, protocol_errors)
+                        persist_new(architect_results, "design")
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
@@ -1123,13 +1167,20 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         )
         raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
     if spec.role == "reviewer":
-        digest_after = lib.repository_digest(root, lib.load_config(root))
-        if repository_digest_before != digest_after:
+        before = repository_digest_before.get("entries", {}) if isinstance(repository_digest_before, dict) else {}
+        after = lib.repository_digest_entries(root, lib.load_config(root))
+        changed_paths = [path for path in sorted(set(before) | set(after))
+                         if before.get(path) != after.get(path)][:64]
+        digest_changed = isinstance(repository_digest_before, dict) and repository_digest_before.get("digest") != lib.repository_digest(root, lib.load_config(root))
+        if changed_paths or (digest_changed and str(spec.cwd) == str(root)):
             failure = {"category": "reviewer_modified_project",
                        "reason": "managed Reviewer modified the project tree",
-                       "tail_sha256": hashlib.sha256(b"").hexdigest()}
+                       "tail_sha256": hashlib.sha256(b"").hexdigest(), "changed_paths": changed_paths or ["<repository-digest-changed>"]}
             lib.transition_agent_session(root, session_id, "failed", exit_code=1, failure=failure)
             raise AgentLaunchError("Reviewer modified the project tree", session_id)
+        if changed_paths:
+            lib.append_event(root, lib.load_config(root), "host_edited_during_review",
+                             "Host edited project during scratch review", session_id=session_id, paths=changed_paths)
     if reviewer_results:
         try:
             import handsoff_broker as broker
@@ -1137,7 +1188,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         except Exception as exc:
             lib.transition_agent_session(
                 root, session_id, "failed", exit_code=1,
-                failure={"category": "dispatch_failed", "reason": str(exc)[:200],
+                failure={"category": "dispatch_failed", "reason": str(exc)[:200], "result_available": True,
                          "tail_sha256": hashlib.sha256(b"").hexdigest()},
             )
             raise AgentLaunchError(
@@ -1171,10 +1222,15 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         except Exception as exc:
             lib.transition_agent_session(
                 root, session_id, "failed", exit_code=1,
-                failure={"category": "dispatch_failed", "reason": str(exc)[:200],
+                failure={"category": "dispatch_failed", "reason": str(exc)[:200], "result_available": True,
                          "tail_sha256": hashlib.sha256(b"").hexdigest()},
             )
             raise AgentLaunchError(str(exc)[:200], session_id) from exc
+    if spec.role in {"reviewer", "architect", "supervisor"} and not reviewer_results and not architect_results and not supervisor_requests and question_lines[0] == 0:
+        failure = {"category": "no_artifact", "reason": "process exited 0 without a protocol result",
+                   "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
+        lib.transition_agent_session(root, session_id, "failed", exit_code=0, failure=failure)
+        raise AgentLaunchError(failure["reason"], session_id)
     lib.transition_agent_session(root, session_id, "completed", exit_code=0)
     for problem in question_errors:
         sys.stderr.write(f"HANDSOFF_QUESTION_WARNING: {problem}\n")
@@ -1265,6 +1321,9 @@ def _raise_question_line(root: Path, role: str, session_id: str, line: str, erro
 
 def _parse_supervisor_line(line: str, requests: list[dict], errors: list[str]) -> None:
     if not line.startswith(SUPERVISOR_REQUEST_PREFIX):
+        for logical in _claude_logical_lines(line):
+            if logical != line:
+                _parse_supervisor_line(logical, requests, errors)
         return
     payload = line[len(SUPERVISOR_REQUEST_PREFIX):].strip()
     if len(requests) >= MAX_SUPERVISOR_REQUESTS:
@@ -1278,12 +1337,43 @@ def _parse_supervisor_line(line: str, requests: list[dict], errors: list[str]) -
 
 def _parse_reviewer_line(line: str, results: list[dict], errors: list[str]) -> None:
     if not line.startswith(REVIEW_RESULT_PREFIX):
+        for logical in _claude_logical_lines(line):
+            if logical != line:
+                _parse_reviewer_line(logical, results, errors)
         return
     payload = line[len(REVIEW_RESULT_PREFIX):].strip()
     try:
         results.append(__import__("handsoff_broker").parse_reviewer_result(payload))
     except lib.HandsoffError as exc:
         errors.append(str(exc))
+
+
+def _claude_logical_lines(line: str) -> list[str]:
+    """Extract assistant text from one Claude stream event.
+
+    Claude's final event can be a tool result or tool call, so protocol
+    parsing must consume assistant text as it arrives instead of waiting for
+    a final-message event. Non-JSON output remains compatible with adapters
+    and older fake processes that write protocol text directly.
+    """
+    try:
+        event = json.loads(line)
+    except (ValueError, TypeError):
+        return [line]
+    if not isinstance(event, dict):
+        return []
+    texts = []
+    def collect(value):
+        if isinstance(value, dict):
+            if value.get("type") in {"text", "text_delta"} and isinstance(value.get("text"), str):
+                texts.append(value["text"])
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+    collect(event)
+    return "\n".join(texts).splitlines() if texts else []
 
 
 def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> None:
@@ -1312,6 +1402,9 @@ def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> 
 
 def _parse_architect_line(line: str, results: list[dict], errors: list[str]) -> None:
     if not line.startswith(DESIGN_RESULT_PREFIX):
+        for logical in _claude_logical_lines(line):
+            if logical != line:
+                _parse_architect_line(logical, results, errors)
         return
     payload = line[len(DESIGN_RESULT_PREFIX):].strip()
     try:
@@ -1335,13 +1428,14 @@ def main() -> int:
                 "--by", default=None,
                 help="runtime actor identity (default: '<resolved-adapter>-<role>')",
             )
+            command.add_argument("--skip-preflight", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "launch" and os.environ.get(MANAGED_ROLE_ENV):
             raise lib.HandsoffError(
                 "managed roles cannot launch nested agents; return a structured request to the host Supervisor"
             )
-        spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task)
+        spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False), inspection=args.command == "inspect")
         if args.command == "inspect":
             print(json.dumps({
                 "role": spec.role,
