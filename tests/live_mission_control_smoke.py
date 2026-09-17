@@ -85,6 +85,10 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-mc-") as tmp:
         assert len(kinds) == 22 and kinds[0] == "design_approve" and "launch_role" in kinds and "engine_migrate" in kinds, kinds
         assert all(item["availability"] in {"actionable", "unavailable", "read_only"} for item in inventory), inventory
         assert all(item["reason"] or item["consequence"] for item in inventory), inventory
+        live_keys = {"seconds_since_activity", "process_signal", "stall_warning", "stall_threshold_minutes", "assessment"}
+        assert live_keys <= set(payload["status"].get("activity") or {}), payload["status"].get("activity")
+        cli_status = json.loads(run("supervisor", "--root", str(project), "status").stdout)
+        assert cli_status["activity"]["stall_warning"] == payload["status"]["activity"]["stall_warning"], (cli_status["activity"], payload["status"]["activity"])
         engine = payload["operations"]["engine"]
         assert engine["version"] == expected_version and engine["execution"] == "unavailable", engine
         assert len(engine["commands"]) == 8 and all(str(project) in c for c in engine["commands"].values()), engine["commands"]

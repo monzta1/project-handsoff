@@ -63,6 +63,8 @@
           <div class="mission-state" id="mission-state">IN PROGRESS</div>
         </section>
 
+        <section id="consistency-fault" class="consistency-fault hidden" role="alert" aria-live="polite"><strong>CONSISTENCY FAULT</strong><span id="consistency-fault-message"></span></section>
+
         <section id="input-alert" class="input-alert hidden" role="alert" aria-live="assertive">
           <div class="input-alert-beacon" aria-hidden="true"><span>!</span></div>
           <div class="input-alert-copy">
@@ -167,6 +169,7 @@
         <section id="agent-output-panel" class="panel agent-output-panel hidden" aria-live="polite">
           <div class="section-head"><div><p class="panel-label">MISSION TELEMETRY</p><h2>Managed crew signal</h2></div><span id="agent-output-state" class="section-meta">NO SIGNAL</span></div>
           <p id="agent-output-meta" class="agent-output-meta">No managed session selected.</p>
+          <div id="agent-output-timing" class="agent-output-timing"></div>
           <pre id="agent-output-log" class="agent-output-log"></pre>
           <div id="operation-panel" class="operation-panel">
             <div class="operation-head"><span class="panel-label">EXTERNAL OPERATION</span><span id="operation-state" class="section-meta operation-state-unavailable">UNAVAILABLE</span></div>

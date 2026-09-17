@@ -86,6 +86,8 @@ commands = [
   "python3 -m unittest tests.test_work_items -v",
   "python3 -m unittest tests.test_advance_progress -v",
   "python3 -m unittest tests.test_design_binding -v",
+  "python3 -m unittest tests.test_status_truth -v",
+  "node --test tests/dashboard/agent_panel_states.test.js",
   "python3 -m unittest tests.test_supervisor_recovery -v",
   "python3 -m unittest tests.test_design_convergence -v",
   "python3 -m unittest tests.test_governance_cross -v",

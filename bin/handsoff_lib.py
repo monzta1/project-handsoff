@@ -4279,7 +4279,8 @@ def design_review_budget(status: dict, cfg: dict) -> dict:
     the authorization is unconsumed, no second managed launch is permitted.
     Legacy status files without the fields read as zero attempts and no
     authorization, which reproduces the pre-#35 behavior below the limit."""
-    attempts = int(status.get("design_review_attempts", 0) or 0)
+    recorded_reviews = len(status.get("design_review_history") or [])
+    attempts = max(int(status.get("design_review_attempts", 0) or 0), recorded_reviews)
     limit = int(cfg.get("max_autonomous_design_reviews", DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS))
     authorization = status.get("design_review_authorization")
     authorized = isinstance(authorization, dict) and authorization.get("consumed_at") is None
@@ -4433,19 +4434,49 @@ def design_reviewer_selection_view(cfg: dict, status: dict, acceptance: dict, *,
     if isinstance(review, dict) and isinstance(review.get("reviewer_profile"), dict):
         profile = review["reviewer_profile"]
         current = {field: profile.get(field) for field in DESIGN_REVIEWER_PROFILE_FIELDS}
+    sessions = status.get("agent_sessions") if isinstance(status, dict) else {}
+    live_reviewers = sorted(
+        (session for session in (sessions or {}).values()
+         if isinstance(session, dict) and session.get("role") == "reviewer"
+         and session.get("state") in AGENT_SESSION_LIVE_STATES),
+        key=lambda item: item.get("started_at") or "",
+    )
+    consistency_errors = []
+    if live_reviewers:
+        newest = live_reviewers[-1]
+        current = {"actor": newest.get("actor"), "session_id": newest.get("session_id"),
+                   "adapter": newest.get("adapter"),
+                   "attempt": max(int(status.get("design_review_attempts", 0) or 0),
+                                  len(status.get("design_review_history") or [])) + 1,
+                   "state": newest.get("state")}
+        selection_metadata = status.get("design_reviewer_selection")
+        if not isinstance(selection_metadata, dict):
+            consistency_errors.append(f"live reviewer session {newest.get('session_id')} has no selection metadata")
+        else:
+            recorded = selection_metadata.get("current") if isinstance(selection_metadata.get("current"), dict) else None
+            if recorded is None:
+                consistency_errors.append(f"live reviewer session {newest.get('session_id')} has no selection metadata")
+            elif recorded.get("session_id") not in (None, newest.get("session_id")) \
+                    or (recorded.get("actor") and recorded.get("actor") != newest.get("actor")):
+                consistency_errors.append(
+                    f"selection metadata names {recorded.get('actor')} ({recorded.get('session_id')}) "
+                    f"but the newest live reviewer is {newest.get('actor')} ({newest.get('session_id')})")
+        if len(live_reviewers) > 1:
+            consistency_errors.append("unexpected_live_sessions: " + ", ".join(
+                item.get("session_id", "") for item in live_reviewers[:-1]))
     tier, reason = select_design_reviewer_tier(cfg, status, acceptance)
     lookup = which or shutil.which
     try:
         profile = design_reviewer_tier_profile(cfg, tier, which=lookup, require_available=False)
     except HandsoffError as exc:
-        return {"current": current,
+        return {"current": current, "consistency_errors": consistency_errors,
                 "next": {"tier": tier, "reason": reason, "adapter": None, "model": None, "error": str(exc)}}
     error = None
     try:
         select_design_reviewer_profile(cfg, status, acceptance, which=lookup)
     except HandsoffError as exc:
         error = str(exc)
-    return {"current": current,
+    return {"current": current, "consistency_errors": consistency_errors,
             "next": {"tier": tier, "reason": reason, "adapter": profile["adapter"],
                      "model": profile["model"], "error": error}}
 
@@ -6797,6 +6828,69 @@ def read_live_beacon(root: Path) -> dict | None:
     return beacon
 
 
+def liveness_view(status: dict, root: Path, cfg: dict,
+                  now: datetime | None = None) -> dict:
+    """Return the single activity truth used by status and Mission Control.
+
+    A beacon bound to the current live session is authoritative because it is
+    written by the managed process itself.  Session liveness is the next
+    useful signal, and the workflow timestamp is the final legacy fallback.
+    Pure: it never takes the project lock or writes, because status and the
+    dashboard snapshot call it while already holding the lock (a nested
+    flock deadlocks). Ledgering the stall transition is
+    record_stall_transition, which those callers run inside their lock.
+    """
+    now = now or datetime.now(timezone.utc)
+    beacon = read_live_beacon(root)
+    session = _live_focus_session(status)
+    session_id = session.get("session_id") if session else None
+    matching = beacon if beacon and session_id and beacon.get("session_id") == session_id \
+        and session.get("state") in AGENT_SESSION_LIVE_STATES else None
+    beacon_seconds = _seconds_since(matching.get("beacon_at"), now) if matching else None
+    signal = "none"
+    if matching:
+        signal = "fresh" if beacon_seconds is not None and 0 <= beacon_seconds <= LIVE_BEACON_FRESH_SECONDS else "stale"
+    session_seconds = None
+    if session:
+        session_live = read_session_liveness(root)
+        stamp = session_live.get(session_id) if session_id else None
+        session_seconds = _seconds_since(stamp, now)
+    chosen = beacon_seconds if matching and beacon_seconds is not None else session_seconds
+    if chosen is None:
+        chosen = _seconds_since(status.get("updated_at"), now)
+    seconds = max(int(chosen), 0) if chosen is not None else None
+    threshold = int(float(cfg.get("stall_minutes", 10) or 10) * 60)
+    warning = None
+    if status.get("status") == "in_progress" and seconds is not None and seconds >= threshold \
+            and not isinstance(status.get("human_pause"), dict):
+        warning = f"no update in {int(seconds / 60)} minutes (limit {int(threshold / 60)})"
+    assessment = recovery_assessment(status, cfg, read_session_liveness(root),
+                                     read_events(root, cfg), now, root=root)
+    return {"seconds_since_activity": seconds, "process_signal": signal,
+            "stall_warning": warning, "stall_threshold_minutes": int(threshold / 60),
+            "assessment": assessment}
+
+
+def record_stall_transition(root: Path, cfg: dict, warning: str | None) -> str | None:
+    """Ledger a stall warning's appearance or disappearance exactly once.
+    Caller must hold project_lock. Status is re-read from disk here rather
+    than trusted from the caller, so two callers that loaded the same
+    snapshot before either committed still produce one event: the second
+    one sees the bit already flipped. Returns the event kind written."""
+    status = load_unique_json(status_path(root, cfg))
+    if warning and not status.get("stall_reported"):
+        status["stall_reported"] = True
+        commit(root, cfg, status=status, event_kind="stall_reported",
+               event_message="Stall warning served")
+        return "stall_reported"
+    if warning is None and status.get("stall_reported"):
+        status["stall_reported"] = False
+        commit(root, cfg, status=status, event_kind="stall_cleared",
+               event_message="Stall warning cleared")
+        return "stall_cleared"
+    return None
+
+
 # --------------------------------------------------------------------------
 # #41: output liveness. The managed child's stdout/stderr readers note every
 # chunk here; nothing below ever records content, appends an event, or
@@ -7129,32 +7223,41 @@ def agent_output_view(status: dict, root: Path, *, now: datetime | None = None) 
     session_id = session.get("session_id")
     store = _read_agent_output_store(root)
     record = store.get("sessions", {}).get(session_id)
+    now = now or datetime.now(timezone.utc)
+    started_at = session.get("started_at")
+    elapsed_seconds = _seconds_since(started_at, now)
+    beacon = read_live_beacon(root)
+    beacon_age = _seconds_since(beacon.get("beacon_at"), now) if beacon and beacon.get("session_id") == session_id else None
+    last_output_at = None
+    # Normalize the output record before judging state: the precedence
+    # below consults `entries`, which used to be assigned only after it.
+    entries = []
+    if isinstance(record, dict):
+        entries = [entry for entry in (record.get("entries") or [])
+                   if isinstance(entry, dict) and set(entry) == {"cursor", "at", "stream", "text"}]
+    state = "transport_disconnected"
+    if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
+        state = "completed" if session.get("state") == "completed" else "transport_disconnected"
+    elif beacon_age is not None and beacon_age > LIVE_BEACON_FRESH_SECONDS:
+        state = "stale_heartbeat"
+    elif isinstance(record, dict) and entries:
+        state = "active_output"
+    elif isinstance(record, dict):
+        state = "connected_no_output"
     if not isinstance(record, dict):
         return {
             "session_id": session_id, "role": session.get("role"),
             "adapter": session.get("adapter"), "state": "transport_disconnected",
+            "started_at": started_at, "elapsed_seconds": elapsed_seconds,
+            "last_heartbeat_age_seconds": beacon_age, "last_output_at": None,
             "cursor": 0, "dropped_entries": 0, "entries": [], "updated_at": None,
         }
-    entries = [entry for entry in (record.get("entries") or [])
-               if isinstance(entry, dict) and set(entry) == {"cursor", "at", "stream", "text"}]
-    session_state = session.get("state")
-    if session_state in AGENT_SESSION_TERMINAL_STATES:
-        transport_state = "completed" if session_state == "completed" else "failed"
-    else:
-        liveness = read_output_liveness(root)
-        persisted = int(record.get("source_bytes", 0))
-        missed = (isinstance(liveness, dict) and liveness.get("session_id") == session_id
-                  and int(liveness.get("bytes", 0)) > persisted)
-        if missed:
-            transport_state = "transport_disconnected"
-        elif entries:
-            age = _seconds_since(entries[-1].get("at"), now or datetime.now(timezone.utc))
-            transport_state = "running_output" if age is not None and age <= LIVE_BEACON_FRESH_SECONDS else "running_quiet"
-        else:
-            transport_state = "running_quiet"
+    last_output_at = entries[-1].get("at") if entries else record.get("updated_at")
     return {
         "session_id": session_id, "role": record.get("role"), "adapter": record.get("adapter"),
-        "state": transport_state, "cursor": int(record.get("cursor", 0)),
+        "state": state, "started_at": started_at, "elapsed_seconds": elapsed_seconds,
+        "last_heartbeat_age_seconds": beacon_age, "last_output_at": last_output_at,
+        "cursor": int(record.get("cursor", 0)),
         "dropped_entries": int(record.get("dropped_entries", 0)),
         "entries": entries, "updated_at": record.get("updated_at"),
     }
@@ -8672,9 +8775,13 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
     elapsed = max((end - start).total_seconds(), 0) if start and end else None
 
     phase_cursor = start
-    phase_number = 1
+    phase_number = int(status.get("phase_number", 1) or 1) if not ordered_events else 1
     phase_seconds = {str(number): 0.0 for number in PHASES}
     for event in ordered_events:
+        if event.get("kind") == "initialized" and isinstance(event.get("phase_number"), int):
+            phase_number = event["phase_number"]
+            phase_cursor = parsed(event.get("at")) or phase_cursor
+            continue
         if event.get("kind") != "phase_advanced" or not isinstance(event.get("phase_number"), int):
             continue
         at = parsed(event.get("at"))

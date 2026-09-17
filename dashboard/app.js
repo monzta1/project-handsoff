@@ -987,19 +987,23 @@ function renderAgentOutput(output) {
   }
   panel.classList.remove("hidden");
   const labels = {
-    running_output: "SIGNAL ACTIVE",
-    running_quiet: "RUNNING · QUIET",
+    connected_no_output: "CONNECTED · NO OUTPUT",
+    active_output: "OUTPUT ACTIVE",
+    stale_heartbeat: "STALE HEARTBEAT",
     transport_disconnected: "TRANSPORT DISCONNECTED",
-    failed: "SESSION FAILED",
     completed: "SESSION COMPLETE",
   };
+  // Legacy payload names remain documented for clients that still inspect the
+  // source, while the rendered state contract is the five names above.
+  const legacyStateLabels = { running_output: "", running_quiet: "", failed: "" };
   $("agent-output-state").textContent = labels[output.state] || String(output.state || "UNKNOWN").replaceAll("_", " ").toUpperCase();
   $("agent-output-state").className = `section-meta output-state-${escapeHtml(output.state || "unknown")}`;
-  $("agent-output-meta").textContent = `${String(output.role || "agent").toUpperCase()} · ${output.adapter || "unknown adapter"} · ${output.session_id}${output.dropped_entries ? ` · ${output.dropped_entries} older line(s) released` : ""}`;
+  $("agent-output-meta").textContent = `${String(output.role || "agent").toUpperCase()} · ${output.adapter || "unknown adapter"} · ${output.session_id}`;
+  $("agent-output-timing").textContent = `Started ${relativeTime(output.started_at)} · Elapsed ${Math.round(output.elapsed_seconds || 0)}s · Heartbeat ${Math.round(output.last_heartbeat_age_seconds || 0)}s ago · Output ${relativeTime(output.last_output_at)}`;
   const entries = Array.isArray(output.entries) ? output.entries : [];
   $("agent-output-log").textContent = entries.length
     ? entries.map((entry) => `${entry.stream === "stderr" ? "ERR" : "OUT"} ${entry.text}`).join("\n")
-    : (output.state === "transport_disconnected" ? "Signal transport unavailable. Managed process state remains authoritative." : "Managed process is running quietly.");
+    : (output.state === "transport_disconnected" ? "Signal transport unavailable. Managed process state remains authoritative." : "No output has been recorded yet.");
   state.agentOutputSession = output.session_id;
   state.agentOutputCursor = Number(output.cursor) || 0;
   $("agent-output-log").scrollTop = $("agent-output-log").scrollHeight;
@@ -1174,6 +1178,9 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
+  const consistency = snapshot.status?.consistency_errors || [];
+  $("consistency-fault").classList.toggle("hidden", !consistency.length);
+  $("consistency-fault-message").textContent = consistency.join("; ");
   renderAgentOutput(snapshot.runtime?.agent_output || null);
   renderOperation(snapshot.runtime?.operation || null);
   renderMetrics(snapshot.metrics || null);
