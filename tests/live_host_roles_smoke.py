@@ -49,10 +49,19 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-host-") as tmp:
                                     "verification": ["manual check"]}), encoding="utf-8")
     result = run("supervisor", "--root", str(project), "design-propose", "--file", str(proposal), "--by", "host-architect")
     assert result.stdout.startswith("DESIGN_PROPOSAL_RECORDED: "), result.stdout
+    status = json.loads(run("supervisor", "--root", str(project), "status").stdout)
+    drift = status.get("evidence_drift")
+    assert isinstance(drift, dict) and set(drift) >= {"current", "stale", "unknown", "refresh_commands"}, drift
+    run("supervisor", "--root", str(project), "criterion-update", "REQ-001", "--type", "primary_fix",
+        "--verification", "manual", "--requirement", "[#1] Tagged to the registered issue")
+    removed = run("supervisor", "--root", str(project), "work-items-sync", "--by", "host-supervisor", "--item", "#2")
+    assert removed.returncode == 0, removed.stdout
+    removed = run("supervisor", "--root", str(project), "work-item-remove", "issue-2", "--by", "host-supervisor")
+    assert removed.stdout.strip() == "WORK_ITEM_REMOVED: issue-2", removed.stdout
 
     bad = toml.read_text(encoding="utf-8").replace('reviewer = "codex"', 'reviewer = "host"')
     toml.write_text(bad, encoding="utf-8")
     refused = run("supervisor", "--root", str(project), "status", check=False)
     assert refused.returncode != 0 and "cannot be host" in (refused.stdout + refused.stderr), refused
 
-print(f"LIVE_HOST_ROLES_OK installed={identity['version']} host_launch_refused=yes design_propose=yes sync_skip=yes reviewer_host_refused=yes")
+print(f"LIVE_HOST_ROLES_OK installed={identity['version']} host_launch_refused=yes design_propose=yes sync_skip=yes drift_report=yes work_item_remove=yes reviewer_host_refused=yes")
