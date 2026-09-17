@@ -668,9 +668,11 @@ def build_snapshot(root: Path) -> dict:
             # #41: one activity reading (output record read once) feeds the
             # stall warning, the activity note, and the live view, the same
             # function `status` prints, so CLI and dashboard cannot disagree.
-            activity_view = lib.activity_view(status, cfg, root)
-            stall = activity_view["stall_warning"]
-            activity = activity_view["activity_note"]
+            liveness = lib.liveness_view(status, root, cfg)
+            stall = liveness["stall_warning"]
+            lib.record_stall_transition(root, cfg, stall)
+            activity_view = liveness
+            activity = stall
             # #33: the live session view, from structured state plus the beacon.
             live = lib.live_status(status, cfg, root)
             agent_output = lib.agent_output_view(status, root)
@@ -684,9 +686,7 @@ def build_snapshot(root: Path) -> dict:
                                     "at": None, "by": None, "head": None, "commit_matches_head": False,
                                     "truncated": False, "exit_code": None}
                                    for entry in cfg.get("design_evidence", [])]
-            recovery_assessment = lib.recovery_assessment(
-                status, cfg, lib.read_session_liveness(root), events, root=root,
-            )
+            recovery_assessment = liveness["assessment"]
             try:
                 tranche_proposal = json.loads((root / tranche.PROPOSAL_FILE).read_text(encoding="utf-8"))
                 if tranche.proposal_hash(tranche_proposal) != tranche_proposal.get("proposal_hash"):
@@ -716,6 +716,11 @@ def build_snapshot(root: Path) -> dict:
         display_status["status"] = "closed"
         display_status["phase"] = "Run closed"
     display_status["phase"] = _display_phase_name(status)
+    display_status["stall_warning"] = liveness["stall_warning"]
+    display_status["live"] = live
+    display_status["activity"] = liveness
+    display_status["process_signal"] = liveness["process_signal"]
+    display_status["consistency_errors"] = design_reviewer_selection.get("consistency_errors", [])
     actors = {
         "architect": ((status.get("design_review") or {}).get("architect")
                       or (status.get("design_approved") or {}).get("architect")),

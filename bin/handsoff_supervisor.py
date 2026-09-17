@@ -262,9 +262,10 @@ def cmd_status(args) -> int:
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems, root=root)
         # #41: the same activity reading the dashboard snapshot carries.
-        activity_view = lib.activity_view(status, cfg, root)
-        warning = activity_view["stall_warning"]
-        activity = activity_view["activity_note"]
+        liveness = lib.liveness_view(status, root, cfg)
+        warning = liveness["stall_warning"]
+        lib.record_stall_transition(root, cfg, warning)
+        activity = None
         live = lib.live_status(status, cfg, root)
         budget = lib.design_review_budget(status, cfg)
         reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
@@ -283,13 +284,15 @@ def cmd_status(args) -> int:
         "design_review": status.get("design_review"),
         "design_review_attempts": budget["attempts"], "design_review_budget": budget,
         "design_reviewer_selection": reviewer_selection,
+        "consistency_errors": reviewer_selection.get("consistency_errors", []),
         "amendment": lib.amendment_view(status, acceptance, cfg, verifications),
         "reviewed_by": status.get("reviewed_by"),
         "live_verification_id": status.get("live_verification_id"),
         "verification_runs": len(verifications),
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
         "evidence_drift": lib.evidence_drift(root, cfg, acceptance, verifications),
-        "stall_warning": warning, "activity_note": activity, "activity": activity_view, "live": live,
+        "stall_warning": warning, "activity_note": activity, "activity": liveness, "live": live,
+        "process_signal": liveness["process_signal"],
         "questions": lib.questions_view(status),
         "unattributed_criteria": lib.derive_work_items(status, acceptance, cfg)["unattributed_criteria"],
         "crew": lib.crew_view(cfg),
