@@ -1,14 +1,14 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "8989083739a87f90a49a7e1d63c153533f99b7f4d54971e80674aeebcb14d4b1",
+    "bin/handsoff_agent.py": "d2b206a01ae0b8c423e85ee4f0d77a35908898824dbd175cf02ed15c9ee5329e",
     "bin/handsoff_analyzer.py": "420f4aa811549ee2b60f9c0f980402dd1ee32ebe71b358104f69522720606567",
     "bin/handsoff_broker.py": "80bfd8160ba33672eae63aa185106d512d9bb3dfab993f102558a81bc88fff30",
-    "bin/handsoff_cli.py": "ca2de23e447460c769554c2dd40ef73f86de99db8f0a55272be59eb3abcde5da",
-    "bin/handsoff_dashboard.py": "f3db6eb4c32547202b78182b9ab697d85576ae5f1e16a0c96b95c31ec4f44b29",
+    "bin/handsoff_cli.py": "0a6930606e2f26caff3f1c0f787bca4ff5ccbd4af643c0b959a64a273d3bc449",
+    "bin/handsoff_dashboard.py": "e40c0ecdc330c3d3b85b9cdefc13ebeff1b8b4ca3aa9cf587bd221dafc2e62d3",
     "bin/handsoff_fleet.py": "e5f165607bf13b32dbbc87dc9902c56a2412e501497892786029ccc1b7bdaab6",
-    "bin/handsoff_lib.py": "38383b0f6210c617e3ac24b524fd5b53cbf8822686bf7dc5b5dea932c4bb26ea",
+    "bin/handsoff_lib.py": "fa5907d401c14972bf8ee82ec72c2f26dc62f7dbed09d01a5a167ae0f9201938",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
-    "bin/handsoff_supervisor.py": "a8a0708dbfdc32ee5fa1f3fc48fed7d6f2d0bcf9503e4446908f2b048ea58d88",
+    "bin/handsoff_supervisor.py": "d72fa1e3e091a2f0dcbc92f9348bebff9098e2eb8271667314eeba556cbcc3d7",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
     "dashboard/app.js": "3ec22dbf04ce85947913f64637b715de267bddfac60a281ebaed55dab9125e9d",
@@ -18,7 +18,7 @@
     "fleet/app.js": "6d8182f1dfcf79002831f99ee5f4ac35920381f4a890b2fa7dbfaab45d1323c2",
     "fleet/index.html": "c4382739a1b48fd4fdb3aa6f9439ac171e265cf200da549090380bd668ac2d99",
     "fleet/styles.css": "eb75553935ec0c4154f90511be929333265ffe0b576d11945d889102bb1f595d",
-    "prompts/architect.md": "833a15416eb938f547aadaf4148f9401100c78843849f815f478900c3f4f8bef",
+    "prompts/architect.md": "e108ca1a921acc8ec2233a6348bb7a5fb795be407c62692c7333af62e6bcde60",
     "prompts/implementer.md": "6c1fb77bbf2d808361948bd966befd072d8a3631da68e0ffdebe4ba230802dd4",
     "prompts/reviewer.md": "0fcadd97e5afd36063ddfa68928e6192f2bdfc73f05ae12a1f5579b21f5595eb",
     "prompts/supervisor.md": "9b7125fedc597dfa3bf0a172763485057b10476139489111552602f05a58b618",
@@ -27,5 +27,5 @@
     "templates/handsoff.toml": "b626ee53fc6b875b23cfc072bc10cc3d04a012e559b899e8b8fe529920110600"
   },
   "schema": 1,
-  "version": "v0.3.13"
+  "version": "v0.3.14"
 }

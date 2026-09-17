@@ -157,8 +157,19 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
 
 
 def _durable_results(results: list[dict]) -> list[dict]:
-    """Do not persist command output, which may contain secrets; retain hashes and metadata."""
-    return [{k: v for k, v in result.items() if k != "output_tail"} for result in results]
+    """Persist redacted tails only for failed checks, never for successes.
+
+    Failed checks need bounded diagnosis, but successful output needs no
+    diagnosis and may echo secrets, so successful records stay tail-less.
+    """
+    durable = []
+    for result in results:
+        item = {k: v for k, v in result.items() if k != "output_tail"}
+        if result.get("exit_code", 0) != 0 or result.get("timed_out"):
+            tail = result.get("output_tail", "")
+            item["output_tail"] = lib.redact_output_text(tail)[-lib.CHECK_OUTPUT_TAIL_CHARS:]
+        durable.append(item)
+    return durable
 
 
 def _audit_errors(root: Path, cfg: dict, status: dict, records: list[dict],
@@ -3514,7 +3525,7 @@ def cmd_run_reopen(args) -> int:
     return 0
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Project Handsoff supervisor and gatekeeper")
     p.add_argument("--root", default=None, help="project root (default: nearest ancestor with handsoff.toml, else cwd)")
     sub = p.add_subparsers(dest="command", required=True)
@@ -3919,7 +3930,11 @@ def main() -> int:
     gate.add_argument("--approve", action="store_true")
     gate.add_argument("--by", default=None)
 
-    args = p.parse_args()
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     handlers = {
         "init": cmd_init, "status": cmd_status, "validate": cmd_validate,
         "advance": cmd_advance, "deployment-gate": cmd_deployment_gate,

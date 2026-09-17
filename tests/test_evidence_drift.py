@@ -43,6 +43,32 @@ class EvidenceDriftTests(HandsoffTestCase):
         drift = lib.evidence_drift(self.tmp, cfg, acceptance, records)
         self.assertEqual(drift["stale"], ["REQ-001"])
 
+    def test_failed_check_tail_is_redacted_and_success_has_no_tail(self):
+        """REQ-002: retain only redacted failure diagnosis, never success output."""
+        toml = self.tmp / "handsoff.toml"
+        (self.tmp / "fail_check.py").write_text(
+            "print('token=ghp_abcdefghijklmnopqrstuvwxyz0123456789')\n"
+            "raise SystemExit(1)\n")
+        toml.write_text(toml.read_text().replace(
+            "commands = []",
+            'commands = ["python3 fail_check.py", "true"]'))
+        self.init()
+        self.assertEqual(run(["criterion-update", "REQ-001", "--test",
+                              "python3 fail_check.py"], self.tmp).returncode, 0)
+        self.assertEqual(run(["criterion-add", "REQ-002", "--type", "supporting",
+                              "--requirement", "Successful checks remain tail-less", "--verification", "automated",
+                              "--test", "true"], self.tmp).returncode, 0)
+        failed = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer"], self.tmp)
+        self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+        records, _ = lib.load_verifications(self.tmp, lib.load_config(self.tmp))
+        failed_record = records[-1]["results"][0]
+        self.assertIn("output_tail", failed_record)
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz0123456789", failed_record["output_tail"])
+        passed = run(["verify", "--criterion", "REQ-002", "--by", "test-implementer"], self.tmp)
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        records, _ = lib.load_verifications(self.tmp, lib.load_config(self.tmp))
+        self.assertNotIn("output_tail", records[-1]["results"][0])
+
     def test_legacy_record_is_unknown(self):
         self.init()
         cfg = lib.load_config(self.tmp)

@@ -51,4 +51,12 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-doctor-") as tmp:
     assert documentation["installed_engine"] == expected_version, documentation
     assert readme.read_bytes() == before, "documentation audit rewrote README.md"
 
-print(f"LIVE_DOCTOR_OK installed={identity['version']} project_owned_dashboard=yes documentation_audit=yes")
+    docs_only = subprocess.run([HANDSOFF, "doctor", str(project), "--docs-only"], capture_output=True, text=True)
+    assert docs_only.returncode == 1 and "README.md" in docs_only.stdout and ":obsolete-command-path:" in docs_only.stdout, docs_only
+    readme.write_text("Run `handsoff supervisor status` to check.\n", encoding="utf-8")
+    clean = subprocess.run([HANDSOFF, "doctor", str(project), "--docs-only"], capture_output=True, text=True)
+    assert clean.returncode == 0 and "DOCUMENTATION_OK" in clean.stdout, clean
+    commands = subprocess.run([HANDSOFF, "commands"], capture_output=True, text=True, check=True).stdout
+    assert "## doctor" in commands and "--docs-only" in commands and "## verify" in commands, commands[:400]
+
+print(f"LIVE_DOCTOR_OK installed={identity['version']} project_owned_dashboard=yes documentation_audit=yes docs_only=yes commands_reference=yes")

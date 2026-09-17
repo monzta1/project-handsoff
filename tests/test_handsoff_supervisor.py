@@ -940,6 +940,15 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        (self.tmp / ".handsoff-version").write_text((ROOT / ".handsoff-version").read_text())
+        (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
+            "schema": 1,
+            "files": {
+                f"prompts/{role}.md": hashlib.sha256(
+                    (self.tmp / "prompts" / f"{role}.md").read_bytes()).hexdigest()
+                for role in ("architect", "implementer", "reviewer")
+            },
+        }))
 
     def _runtime(self):
         sys.path.insert(0, str(BIN))
@@ -1056,6 +1065,15 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        (self.tmp / ".handsoff-version").write_text((ROOT / ".handsoff-version").read_text())
+        (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
+            "schema": 1,
+            "files": {
+                f"prompts/{role}.md": hashlib.sha256(
+                    (self.tmp / "prompts" / f"{role}.md").read_bytes()).hexdigest()
+                for role in ("architect", "implementer", "reviewer")
+            },
+        }))
         sys.path.insert(0, str(BIN))
         import handsoff_agent
         import handsoff_dashboard
@@ -8104,6 +8122,15 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         build_launch_spec before any session, event, or authorization
         write; after authorization the same call succeeds."""
         self._exhaust()
+        # #84: a Phase 2 reviewer launch is refused without a recorded
+        # proposal before the budget is even consulted; give this fixture a
+        # proposal so the budget refusal under test is the one that fires.
+        import re
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(re.sub(r'^architect = "[a-z-]+"$', 'architect = "host"', toml.read_text(), count=1, flags=re.M))
+        self.lib.record_design_proposal(self.tmp, None, {
+            "summary": "budget fixture", "approach": ["one"], "tradeoffs": [], "decisions": ["one"],
+            "constraints": [], "verification": ["one"]}, architect_actor="host-architect")
         which = lambda name: f"/bin/{name}" if name == "codex" else None
         before = self._files_snapshot()
         with self.assertRaisesRegex(self.lib.HandsoffError, "design-review-authorize") as ctx:
@@ -8157,6 +8184,15 @@ class TestDesignReviewPacket(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        (self.tmp / ".handsoff-version").write_text((ROOT / ".handsoff-version").read_text())
+        (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
+            "schema": 1,
+            "files": {
+                f"prompts/{role}.md": hashlib.sha256(
+                    (self.tmp / "prompts" / f"{role}.md").read_bytes()).hexdigest()
+                for role in ("architect", "implementer", "reviewer")
+            },
+        }))
         sys.path.insert(0, str(BIN))
         import handsoff_agent
         import handsoff_broker
@@ -8185,11 +8221,17 @@ class TestDesignReviewPacket(HandsoffTestCase):
     def _prepare(self):
         """Phase 2 with a real criterion and no review recorded yet."""
         self.init("Issue 36 fixture")
+        config = self.tmp / "handsoff.toml"
+        config.write_text(config.read_text().replace('architect = "auto"', 'architect = "host"'))
         criterion = run(["criterion-update", "REQ-001", "--requirement",
                          "A real, independently reviewable design criterion"], cwd=self.tmp)
         self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
         phase2 = run(["advance", "2", "20"], cwd=self.tmp)
         self.assertEqual(phase2.returncode, 0, phase2.stdout + phase2.stderr)
+        proposal = {field: (["fixture"] if field in {"approach", "decisions", "verification"} else [])
+                    for field in self.lib.DESIGN_PROPOSAL_FIELDS}
+        proposal["summary"] = "Fixture design proposal"
+        self.lib.record_design_proposal(self.tmp, None, proposal, architect_actor="host")
 
     def _review(self, *findings, decision="--request-changes", summary="Design needs work"):
         args = ["record-design-review", "--by", "design-reviewer", "--architect", "architect-1",
@@ -8221,6 +8263,10 @@ class TestDesignReviewPacket(HandsoffTestCase):
         edited = run(["criterion-update", "REQ-001", "--requirement",
                       "A real criterion, revised with a failure mode"], cwd=self.tmp)
         self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+        proposal = {field: (["fixture"] if field in {"approach", "decisions", "verification"} else [])
+                    for field in self.lib.DESIGN_PROPOSAL_FIELDS}
+        proposal["summary"] = "Revised fixture design proposal"
+        self.lib.record_design_proposal(self.tmp, None, proposal, architect_actor="host")
 
     @staticmethod
     def _sid(number):
@@ -8238,7 +8284,9 @@ class TestDesignReviewPacket(HandsoffTestCase):
         self.assertNotIn("design_review_packet", self.read_status())
         text = self.runtime.build_role_input(self.tmp, "reviewer", "Review the design")
         self.assertNotIn(self.PACKET_HEADING, text)
-        self.assertTrue(text.startswith((self.tmp / "prompts" / "reviewer.md").read_text().rstrip()))
+        prompt = (self.tmp / "prompts" / "reviewer.md").read_text().rstrip()
+        self.assertLess(text.index("# Project root (read-only)"), text.index(prompt.splitlines()[0]))
+        self.assertIn("Review the design", text)
         spec = self.runtime.build_launch_spec(self.tmp, "reviewer", "Review the design", which=self.which)
         self.assertIsNone(spec.packet_id)
         self.assertIsNone(spec.design_hash)
@@ -8579,9 +8627,10 @@ class TestDesignReviewPacket(HandsoffTestCase):
         heading, _, rest = spec.stdin.partition("\n\n")
         packet_json, _, rest = rest.partition("\n\n")
         self.assertEqual(json.loads(packet_json), packet)
-        self.assertTrue(rest.startswith((self.tmp / "prompts" / "reviewer.md").read_text().rstrip()))
+        prompt = (self.tmp / "prompts" / "reviewer.md").read_text().rstrip()
+        self.assertLess(rest.index("# Project root (read-only)"), rest.index(prompt.splitlines()[0]))
         self.assertIn("# Assigned task\n\nReview the revision", rest)
-        self.assertNotIn("private", spec.stdin)
+        self.assertNotIn("private", json.dumps(packet))
         # Other roles never see a packet, even in Phase 2.
         for role in ("architect", "implementer", "supervisor"):
             self.assertNotIn(self.PACKET_HEADING, self.runtime.build_role_input(self.tmp, role, "Work"))
@@ -8656,12 +8705,18 @@ class TestDesignReviewPacket(HandsoffTestCase):
         edited = run(["criterion-update", "REQ-001", "--requirement",
                       "Edited again after the packet was generated"], cwd=self.tmp)
         self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+        proposal = {field: (["fixture"] if field in {"approach", "decisions", "verification"} else [])
+                    for field in self.lib.DESIGN_PROPOSAL_FIELDS}
+        proposal["summary"] = "Current fixture design proposal"
+        self.lib.record_design_proposal(self.tmp, None, proposal, architect_actor="host")
         status = self.read_status()
         self.assertEqual(status["design_review_packet"], packet, "the stored packet is untouched")
         self.assertNotEqual(packet["design_hash"], self.lib.design_hash(self.read_acceptance()["criteria"]))
         text = self.runtime.build_role_input(self.tmp, "reviewer", "Review")
         self.assertNotIn(self.PACKET_HEADING, text)
-        self.assertTrue(text.startswith((self.tmp / "prompts" / "reviewer.md").read_text().rstrip()))
+        prompt = (self.tmp / "prompts" / "reviewer.md").read_text().rstrip()
+        self.assertLess(text.index("# Project root (read-only)"), text.index(prompt.splitlines()[0]))
+        self.assertIn("Review", text)
         spec = self.runtime.build_launch_spec(self.tmp, "reviewer", "Review", which=self.which)
         self.assertIsNone(spec.packet_id)
         self.assertIsNone(spec.design_hash)

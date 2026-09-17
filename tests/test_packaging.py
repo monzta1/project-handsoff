@@ -159,6 +159,61 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertFalse(diagnosis["documentation"]["stale"])
         self.assertEqual(diagnosis["documentation"]["diagnostics"], [])
 
+    def test_documentation_files_limit_scan(self):
+        root = self.base / "configured-files"
+        cli.init_project(root, None)
+        (root / "one.md").write_text("download/v0.1.0\n")
+        (root / "two.md").write_text("download/v0.1.0\n")
+        (root / "handsoff.toml").write_text("[documentation]\nfiles = ['one.md']\n")
+        cfg = lib.load_config(root)
+        self.assertEqual([p.name for p in cli._documentation_files(root, cfg)], ["one.md"])
+
+    def test_documentation_exclude_glob_drops_matching_file(self):
+        root = self.base / "configured-exclude"
+        cli.init_project(root, None)
+        (root / "skip.md").write_text("download/v0.1.0\n")
+        (root / "keep.md").write_text("download/v0.1.0\n")
+        (root / "handsoff.toml").write_text("[documentation]\nexclude = ['skip.md']\n")
+        paths = cli._documentation_files(root, lib.load_config(root))
+        self.assertEqual([p.name for p in paths], ["keep.md"])
+
+    def test_intentional_marker_moves_finding_to_suppressed(self):
+        root = self.base / "marker"
+        cli.init_project(root, None)
+        (root / "README.md").write_text("<!-- handsoff-doc: intentional -->\ndownload/v0.1.0\n")
+        result = cli.doctor(root)["documentation"]
+        self.assertFalse(result["stale"])
+        self.assertEqual(result["diagnostics"], [])
+        self.assertEqual(result["suppressed"][0]["code"], "obsolete-release-reference")
+
+    def test_install_rollback_reference_is_suppressed(self):
+        result = cli._documentation_diagnosis(ROOT, {"version": CURRENT_VERSION}, lib.load_config(ROOT))
+        install = [item for item in result["diagnostics"] if item["path"] == str(ROOT / "INSTALL.md")]
+        self.assertNotIn("obsolete-release-reference", [item["code"] for item in install])
+
+    def test_doctor_docs_only_returns_one_for_stale_and_zero_for_clean(self):
+        root = self.base / "docs-only"
+        cli.init_project(root, None)
+        (root / "README.md").write_text("download/v0.1.0\n")
+        with mock.patch.object(sys, "argv", ["handsoff", "doctor", str(root), "--docs-only"]), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as output:
+            self.assertEqual(cli.main(), 1)
+        self.assertRegex(output.getvalue().strip(), r"^.+:obsolete-release-reference:.+$")
+        (root / "README.md").write_text("Run handsoff doctor .\n")
+        with mock.patch.object(sys, "argv", ["handsoff", "doctor", str(root), "--docs-only"]), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as output:
+            self.assertEqual(cli.main(), 0)
+        self.assertEqual(output.getvalue().strip(), "DOCUMENTATION_OK")
+
+    def test_commands_reference_comes_from_both_argparse_trees(self):
+        with mock.patch.object(sys, "argv", ["handsoff", "commands"]), \
+                mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as output:
+            self.assertEqual(cli.main(), 0)
+        rendered = output.getvalue()
+        self.assertIn("## doctor", rendered)
+        self.assertIn("## advance", rendered)
+        self.assertIn("--docs-only", rendered)
+
     def test_project_prompt_override_is_explicit_and_hash_bound(self):
         root = self.base / "override"
         cli.init_project(root, None)

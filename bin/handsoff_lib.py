@@ -43,6 +43,33 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+_OUTPUT_TOKEN_PATTERNS = (
+    re.compile(r"\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+)
+_OUTPUT_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)([\"']?[A-Z0-9_.-]*(?:API[_-]?KEY|TOKEN|PASSWORD|SECRET|CREDENTIAL|AUTH|COOKIE|PRIVATE[_-]?KEY)"
+    r"[A-Z0-9_.-]*[\"']?\s*[=:]\s*[\"']?)[^\s,}\"']+"
+)
+
+
+def redact_output_text(text: str) -> str:
+    """Redact credential-shaped values before diagnostic output is persisted.
+
+    Verification failures need a bounded tail for diagnosis, while successful
+    checks deliberately remain tail-less because successful output needs no
+    diagnosis and may echo secrets. This pure function is shared with the
+    portable agent output path so both persistence paths use the same policy.
+    """
+    try:
+        redacted = _OUTPUT_ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", text)
+        for pattern in _OUTPUT_TOKEN_PATTERNS:
+            redacted = pattern.sub("[REDACTED]", redacted)
+        return redacted
+    except Exception:
+        return "[OUTPUT REDACTION FAILED]"
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
@@ -259,6 +286,7 @@ DEFAULT_CONFIG = {
     "require_live_verification": True,
     "deployment_requires_explicit_approval": True,
     "check_commands": [],
+    "documentation": {"files": [], "exclude": []},
     "live_check_commands": [],
     "check_timeout_seconds": 600,
     "tickets": [],
@@ -611,6 +639,7 @@ def load_config(root: Path) -> dict:
     cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
     cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
     cfg["analysis"] = dict(DEFAULT_CONFIG["analysis"])
+    cfg["documentation"] = {key: list(value) for key, value in DEFAULT_CONFIG["documentation"].items()}
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -627,14 +656,15 @@ def load_config(root: Path) -> dict:
     fallback_policy = raw.get("fallback_policy", {})
     agent_budget = raw.get("agent_budget", {})
     checks = raw.get("checks", {})
+    documentation = raw.get("documentation", {})
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, checks, recovery, regression_gate, analysis)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, checks, documentation, recovery, regression_gate, analysis)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, recovery, regression_gate, and analysis must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, documentation, recovery, regression_gate, and analysis must be tables"
         )
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
@@ -744,6 +774,11 @@ def load_config(root: Path) -> dict:
     if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
         raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
     cfg["check_timeout_seconds"] = timeout_value
+    for key in ("files", "exclude"):
+        value = documentation.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+            raise HandsoffError(f"handsoff.toml: documentation.{key} must be a list of non-empty strings")
+        cfg["documentation"][key] = list(value)
     unknown_gate = set(regression_gate) - set(DEFAULT_CONFIG["regression_gate"])
     if unknown_gate:
         raise HandsoffError(f"handsoff.toml: regression_gate has unknown keys: {', '.join(sorted(unknown_gate))}")
@@ -4734,17 +4769,23 @@ def managed_design_context(root: Path, role: str) -> dict | None:
         return None
     latest = status.get("design_review") or {}
     findings = latest.get("findings") or latest_design_review_findings(status)
+    bounded_findings = [item for item in findings
+                        if isinstance(item, dict) and isinstance(item.get("text"), str)][:32]
     return {
         "feature": status.get("feature") or acceptance.get("feature"),
         "next_action": status.get("next_action"),
         "review_attempts": int(status.get("design_review_attempts", 0) or 0),
         "review_summary": latest.get("summary"),
         "findings": [{"id": item.get("id"), "text": item.get("text")} for item in findings if isinstance(item, dict)][:32],
+        "prior_findings": [{"number": number, "text": item["text"][:512]}
+                           for number, item in enumerate(bounded_findings, 1)],
         "criteria": [{key: item.get(key) for key in ("id", "type", "requirement", "verification", "tests")}
                      for item in acceptance.get("criteria", [])[:64] if isinstance(item, dict)],
         "design_proposal": status.get("design_proposal"),
         "instructions": ("Use this packet first. Do not list or search the whole repository. "
-                         "Inspect only files needed to resolve a named finding."),
+                         "Inspect only files needed to resolve a named finding. "
+                         "Judge only prior findings the revision leaves unanswered; a finding "
+                         "answered by number with a concrete change is settled."),
     }
 
 

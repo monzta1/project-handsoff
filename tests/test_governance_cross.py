@@ -39,6 +39,9 @@ class GovernanceCrossTests(unittest.TestCase):
         return json.loads((self.root / name).read_text())
 
     def request(self):
+        release = self.cli("release-plan", "--version", "v0.3.13", "--by", "test-pilot",
+                           "--full-regression-override-reason", "REQ-002 focused governance change")
+        self.assertEqual(release.returncode, 0, release.stdout + release.stderr)
         result = self.cli("regression-request", "--group", "python-full", "--by", "codex-supervisor")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return self.read("handsoff-status.json")["regression_requests"][-1]

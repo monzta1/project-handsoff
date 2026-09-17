@@ -85,6 +85,19 @@ class TestDesignReviewHold(HandsoffTestCase):
         self.assertEqual(handsoff_lib.managed_handoff_role(self.read_status(), cfg), None)
         self.assertEqual(session["role"], "reviewer")
 
+    def test_approved_last_attempt_requests_design_approval_not_budget(self):
+        """REQ-002: approval is the remaining human gate after budget exhaustion."""
+        self._exhaust()
+        self.assertEqual(run(["design-review-authorize", "--by", "pilot"], self.tmp).returncode, 0)
+        approved = run(["record-design-review", "--by", "reviewer-final", "--architect", "architect-1",
+                        "--approve", "--summary", "Final approved design"], self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+        status = self.read_status()
+        cfg = handsoff_lib.load_config(self.tmp)
+        request = handsoff_dashboard._input_request(status, cfg)
+        self.assertEqual(request["kind"], "design_approval")
+        self.assertNotEqual(request["kind"], "design_review_budget")
+
     def test_authorization_is_refused_after_close(self):
         self._exhaust()
         cfg = handsoff_lib.load_config(self.tmp)

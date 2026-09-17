@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import re
@@ -251,21 +252,29 @@ def _canonical_executable() -> str:
     return shutil.which("handsoff") or "handsoff"
 
 
-def _documentation_files(root: Path) -> list[Path]:
-    files = [path for path in root.iterdir()
-             if path.is_file() and path.suffix.lower() in {".md", ".txt"}]
-    docs = root / "docs"
-    if docs.is_dir():
-        files.extend(path for path in docs.rglob("*")
-                     if path.is_file() and path.suffix.lower() in {".md", ".txt"})
-    return sorted(set(files), key=lambda path: path.relative_to(root).as_posix())
+def _documentation_files(root: Path, cfg: dict) -> list[Path]:
+    """Select documentation deterministically, respecting project-owned scope."""
+    configured = cfg.get("documentation", {})
+    if configured.get("files"):
+        candidates = [root / relative for relative in configured["files"]]
+    else:
+        candidates = [path for path in root.iterdir() if path.is_file()]
+        docs = root / "docs"
+        if docs.is_dir():
+            candidates.extend(docs.rglob("*"))
+    excludes = configured.get("exclude", [])
+    return sorted({path for path in candidates if path.is_file()
+                   and path.suffix.lower() in {".md", ".txt"}
+                   and not any(fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern)
+                               for pattern in excludes)},
+                   key=lambda path: path.relative_to(root).as_posix())
 
 
-def _documentation_diagnosis(root: Path, identity: dict) -> dict:
+def _documentation_diagnosis(root: Path, identity: dict, cfg: dict | None = None) -> dict:
     """Read-only documentation check based on the active installation identity."""
     executable = _canonical_executable()
     installed = str(identity["version"])
-    diagnostics = []
+    diagnostics, suppressed = [], []
     old_version = re.compile(
         r"(?:(?:releases?/)?download/v|releases?/v|Handsoff\s+v|pin\s+v)([0-9]+\.[0-9]+\.[0-9]+)",
         re.IGNORECASE,
@@ -273,19 +282,35 @@ def _documentation_diagnosis(root: Path, identity: dict) -> dict:
     old_command = re.compile(
         r"(?:python\d*(?:\.\d+)?\s+)?(?:\S*/)?bin/handsoff_(?:supervisor|dashboard|agent|cli|fleet)\.py"
     )
-    for path in _documentation_files(root):
+    for path in _documentation_files(root, cfg or lib.load_config(root)):
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
+        lines = text.splitlines()
+        intentional = set()
+        for index, line in enumerate(lines[:-1]):
+            if line.strip() in {"handsoff-doc: intentional", "<!-- handsoff-doc: intentional -->"}:
+                intentional.add(index + 1)
         for match in old_version.finditer(text):
+            line_number = text.count("\n", 0, match.start())
+            target = {"path": str(path), "code": "obsolete-release-reference",
+                      "detail": f"references v{match.group(1)}; installed engine is {installed}"}
+            if line_number in intentional:
+                suppressed.append(target)
+                continue
             if "v" + match.group(1) != installed and match.group(1) != installed.lstrip("v"):
-                diagnostics.append({"path": str(path), "code": "obsolete-release-reference",
-                                     "detail": f"references v{match.group(1)}; installed engine is {installed}"})
-        if old_command.search(text) or "version-specific-venv" in text:
-            diagnostics.append({"path": str(path), "code": "obsolete-command-path",
-                                 "detail": f"use the installed executable {executable}"})
-    return {"stale": bool(diagnostics), "diagnostics": diagnostics,
+                diagnostics.append(target)
+        command_match = old_command.search(text)
+        if command_match or "version-specific-venv" in text:
+            target = {"path": str(path), "code": "obsolete-command-path",
+                      "detail": f"use the installed executable {executable}"}
+            command_line = text.count("\n", 0, command_match.start()) if command_match else -1
+            if command_line in intentional:
+                suppressed.append(target)
+            else:
+                diagnostics.append(target)
+    return {"stale": bool(diagnostics), "diagnostics": diagnostics, "suppressed": suppressed,
             "installed_engine": installed, "canonical_executable": executable,
             "supported_project_pin": identity.get("compatibility")}
 
@@ -294,7 +319,7 @@ def doctor(root: Path) -> dict:
     identity = lib.validate_runtime_integrity(root)
     cfg = lib.load_config(root)
     runtime_paths, legacy_runtime_paths = _runtime_path_diagnosis(root, identity)
-    documentation = _documentation_diagnosis(root, identity)
+    documentation = _documentation_diagnosis(root, identity, cfg)
     return {"ok": True, "root": str(root), "engine": identity,
             "config": str(root / "handsoff.toml"),
             "adapters": lib.adapter_availability(),
@@ -327,7 +352,7 @@ def _dispatch_supervisor(args: list[str]) -> int:
     return _dispatch(handsoff_supervisor.main, args)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     # Passthrough commands own their entire remaining argv, including
     # options such as --root. Dispatch before argparse so no `--` separator
     # is ever required from the global CLI.
@@ -351,6 +376,8 @@ def main() -> int:
     init.add_argument("--dry-run", action="store_true")
     check = sub.add_parser("doctor")
     check.add_argument("root", nargs="?", default=".")
+    check.add_argument("--docs-only", action="store_true", help="run only the documentation audit")
+    sub.add_parser("commands", help="print the argparse command reference")
     upgrade = sub.add_parser("upgrade")
     upgrade.add_argument("root", nargs="?", default=".")
     upgrade.add_argument("--to", required=True)
@@ -372,6 +399,36 @@ def main() -> int:
     # #72: a run-owned dashboard is what Fleet links to and what releases its
     # port on completion; the stable command must be able to start one.
     dash.add_argument("--owned-by-run", action="store_true")
+    return parser
+
+
+def _commands_reference() -> str:
+    """Render both parser trees so the reference cannot drift from argparse."""
+    parsers = [("handsoff", build_parser()), ("supervisor", handsoff_supervisor.build_parser())]
+    output = []
+    for prefix, parser in parsers:
+        actions = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+        for name, command in actions.choices.items():
+            output.append(f"## {name}")
+            output.append(command.format_help().strip())
+            for action in command._actions:
+                if action.dest == "help":
+                    continue
+                names = ", ".join(action.option_strings or [action.dest])
+                details = []
+                if action.choices:
+                    details.append("choices: " + ", ".join(map(str, action.choices)))
+                if action.default not in (None, argparse.SUPPRESS, False, []):
+                    details.append(f"default: {action.default}")
+                if action.help:
+                    details.append(action.help)
+                output.append(f"- {names}: {'; '.join(details)}")
+            output.append("")
+    return "\n".join(output)
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
     try:
         if args.command == "version":
@@ -381,7 +438,19 @@ def main() -> int:
         if args.command == "init":
             result = init_project(_root(args.root), args.pin, dry_run=args.dry_run)
         elif args.command == "doctor":
-            result = doctor(_root(args.root))
+            root = _root(args.root)
+            if args.docs_only:
+                identity = lib.validate_runtime_integrity(root)
+                result = _documentation_diagnosis(root, identity, lib.load_config(root))
+                for item in result["diagnostics"]:
+                    print(f'{item["path"]}:{item["code"]}:{item["detail"]}')
+                if not result["diagnostics"]:
+                    print("DOCUMENTATION_OK")
+                return 1 if result["diagnostics"] else 0
+            result = doctor(root)
+        elif args.command == "commands":
+            print(_commands_reference(), end="")
+            return 0
         elif args.command == "upgrade":
             result = change_pin(_root(args.root), args.to, dry_run=args.dry_run, action="upgrade")
         elif args.command == "rollback":

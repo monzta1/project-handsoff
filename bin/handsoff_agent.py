@@ -609,9 +609,7 @@ def _redact_output_line(line: str, prompt_lines: set[str], prompt_fragments: tup
         redacted = _COOKIE_PATTERN.sub(lambda match: match.group(1) + "[REDACTED]", redacted)
         redacted = _ASSIGNMENT_PATTERN.sub(lambda match: match.group(1) + "[REDACTED]", redacted)
         redacted = _URL_USERINFO_PATTERN.sub(lambda match: match.group(1) + "[REDACTED]@", redacted)
-        for pattern in _TOKEN_PATTERNS:
-            redacted = pattern.sub("[REDACTED]", redacted)
-        return redacted
+        return lib.redact_output_text(redacted)
     except Exception:
         return _SAFE_REDACTION_FAILURE
 
