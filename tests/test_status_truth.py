@@ -129,6 +129,36 @@ class StatusTruthTests(unittest.TestCase):
         view = lib.design_reviewer_selection_view(deepcopy(lib.DEFAULT_CONFIG), self.status, {})
         self.assertTrue(any("unexpected_live_sessions" in item for item in view["consistency_errors"]))
 
+    def test_selection_metadata_naming_another_reviewer_is_a_consistency_error(self):
+        sid = "hs-" + "2" * 32
+        self.status["agent_sessions"][sid] = {"session_id": sid, "role": "reviewer", "actor": "codex-reviewer",
+            "adapter": "codex", "state": "running", "started_at": "2026-01-01T00:30:00+00:00"}
+        self.status["design_reviewer_selection"] = {"current": {"actor": "old-reviewer", "session_id": "hs-" + "9" * 32}}
+        view = lib.design_reviewer_selection_view(deepcopy(lib.DEFAULT_CONFIG), self.status, {})
+        self.assertEqual(view["current"]["session_id"], sid)
+        self.assertTrue(any("old-reviewer" in item and "codex-reviewer" in item for item in view["consistency_errors"]),
+                        view["consistency_errors"])
+
+    def test_agent_output_states_with_an_output_record(self):
+        # Regression: entries were read before assignment whenever a record
+        # existed, so no live session could render a state.
+        self.status["agent_sessions"][self.sid].update({"role": "implementer", "adapter": "codex", "state": "running"})
+        record = {"session_id": self.sid, "role": "implementer", "adapter": "codex", "cursor": 0,
+                  "dropped_entries": 0, "entries": [], "updated_at": self.now.isoformat()}
+        (self.root / lib.OUTPUT_RECORD_FILE if hasattr(lib, "OUTPUT_RECORD_FILE") else lib.agent_output_path(self.root)).write_text(
+            json.dumps({"schema": 1, "order": [self.sid], "sessions": {self.sid: record}}))
+        self.beacon(self.now - timedelta(seconds=1))
+        view = lib.agent_output_view(self.status, self.root, now=self.now)
+        self.assertEqual(view["state"], "connected_no_output", view)
+        record["entries"] = [{"cursor": 1, "at": self.now.isoformat(), "stream": "stdout", "text": "hello"}]
+        lib.agent_output_path(self.root).write_text(json.dumps({"schema": 1, "order": [self.sid], "sessions": {self.sid: record}}))
+        view = lib.agent_output_view(self.status, self.root, now=self.now)
+        self.assertEqual(view["state"], "active_output", view)
+        self.assertEqual(view["last_output_at"], self.now.isoformat())
+        self.beacon(self.now - timedelta(seconds=120))
+        view = lib.agent_output_view(self.status, self.root, now=self.now)
+        self.assertEqual(view["state"], "stale_heartbeat", view)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

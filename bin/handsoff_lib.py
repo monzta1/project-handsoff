@@ -4413,6 +4413,15 @@ def design_reviewer_selection_view(cfg: dict, status: dict, acceptance: dict, *,
         selection_metadata = status.get("design_reviewer_selection")
         if not isinstance(selection_metadata, dict):
             consistency_errors.append(f"live reviewer session {newest.get('session_id')} has no selection metadata")
+        else:
+            recorded = selection_metadata.get("current") if isinstance(selection_metadata.get("current"), dict) else None
+            if recorded is None:
+                consistency_errors.append(f"live reviewer session {newest.get('session_id')} has no selection metadata")
+            elif recorded.get("session_id") not in (None, newest.get("session_id")) \
+                    or (recorded.get("actor") and recorded.get("actor") != newest.get("actor")):
+                consistency_errors.append(
+                    f"selection metadata names {recorded.get('actor')} ({recorded.get('session_id')}) "
+                    f"but the newest live reviewer is {newest.get('actor')} ({newest.get('session_id')})")
         if len(live_reviewers) > 1:
             consistency_errors.append("unexpected_live_sessions: " + ", ".join(
                 item.get("session_id", "") for item in live_reviewers[:-1]))
@@ -7157,6 +7166,12 @@ def agent_output_view(status: dict, root: Path, *, now: datetime | None = None) 
     beacon = read_live_beacon(root)
     beacon_age = _seconds_since(beacon.get("beacon_at"), now) if beacon and beacon.get("session_id") == session_id else None
     last_output_at = None
+    # Normalize the output record before judging state: the precedence
+    # below consults `entries`, which used to be assigned only after it.
+    entries = []
+    if isinstance(record, dict):
+        entries = [entry for entry in (record.get("entries") or [])
+                   if isinstance(entry, dict) and set(entry) == {"cursor", "at", "stream", "text"}]
     state = "transport_disconnected"
     if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
         state = "completed" if session.get("state") == "completed" else "transport_disconnected"
@@ -7174,8 +7189,6 @@ def agent_output_view(status: dict, root: Path, *, now: datetime | None = None) 
             "last_heartbeat_age_seconds": beacon_age, "last_output_at": None,
             "cursor": 0, "dropped_entries": 0, "entries": [], "updated_at": None,
         }
-    entries = [entry for entry in (record.get("entries") or [])
-               if isinstance(entry, dict) and set(entry) == {"cursor", "at", "stream", "text"}]
     last_output_at = entries[-1].get("at") if entries else record.get("updated_at")
     return {
         "session_id": session_id, "role": record.get("role"), "adapter": record.get("adapter"),
