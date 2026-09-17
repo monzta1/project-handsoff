@@ -191,3 +191,17 @@ class VersionedRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StableDashboardCommandTests(unittest.TestCase):
+    """#72: the stable `handsoff dashboard` command forwards --owned-by-run so
+    Fleet can link to dashboards started through the installed CLI."""
+
+    def test_owned_by_run_is_forwarded_to_the_supervisor(self):
+        forwarded = []
+        with mock.patch.object(cli, "_dispatch_supervisor", side_effect=lambda call: forwarded.append(call) or 0), \
+                mock.patch.object(sys, "argv", ["handsoff", "dashboard", "--root", "/tmp/p", "--port", "8801",
+                                                "--no-open", "--owned-by-run"]):
+            self.assertEqual(cli.main(), 0)
+        self.assertEqual(forwarded, [["--root", "/tmp/p", "dashboard", "--host", "127.0.0.1", "--port", "8801",
+                                      "--no-open", "--owned-by-run"]])

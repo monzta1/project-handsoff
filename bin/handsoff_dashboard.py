@@ -13,6 +13,7 @@ import hmac
 import json
 import re
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -40,6 +41,89 @@ ASSETS = {
 MAX_SETTINGS_BODY = 16 * 1024
 # #48: sixteen answers of up to 1024 characters each, plus envelope.
 MAX_QUESTION_BATCH_BODY = 64 * 1024
+
+# Dashboard requests are intentionally tracked in memory as well as by the
+# CLI's lock files.  The map lets a running Pilot operation be displayed
+# without exposing subprocess output or creating a second evidence channel.
+_VERIFY_RUNS: dict[str, dict] = {}
+_VERIFY_RUNS_LOCK = threading.Lock()
+
+
+def _verification_view(root: Path, cfg: dict, records: list[dict]) -> dict:
+    """Expose only bounded verification state, never check output."""
+    inflight = list(lib.verify_inflight_bindings(root))
+    with _VERIFY_RUNS_LOCK:
+        for item in _VERIFY_RUNS.values():
+            if item.get("root") == str(root):
+                inflight.append(item["command"])
+    latest = {}
+    for record in records:
+        if record.get("kind") != "checks":
+            continue
+        for criterion in record.get("criteria", []):
+            latest.setdefault(criterion, {"ok": record.get("ok"), "at": record.get("at"),
+                                          "run_id": record.get("run_id")})
+    live = next(({"ok": r.get("ok"), "at": r.get("at"), "run_id": r.get("run_id")}
+                 for r in reversed(records) if r.get("kind") == "live"), None)
+    return {"in_flight": sorted(set(inflight)), "latest": latest, "live": live}
+
+
+def _engine_view(root: Path) -> dict:
+    """Render safe CLI forms and catch preview failures as data."""
+    identity = lib.runtime_identity(root)
+    version = identity["version"]
+    root_text = str(root)
+    commands = {
+        "install": f"handsoff init {root_text}",
+        "upgrade_preview": f"handsoff upgrade {root_text} --to {version} --dry-run",
+        "upgrade": f"handsoff upgrade {root_text} --to {version}",
+        "rollback_preview": f"handsoff rollback {root_text} --dry-run",
+        "rollback": f"handsoff rollback {root_text}",
+        "migrate_preview": f"handsoff migrate {root_text} --dry-run",
+        "migrate": f"handsoff migrate {root_text}",
+        "doctor": f"handsoff doctor {root_text}",
+    }
+    try:
+        upgrade = __import__("handsoff_cli").change_pin(root, version, dry_run=True, action="upgrade")
+    except (lib.HandsoffError, OSError) as exc:
+        upgrade = {"error": str(exc)}
+    try:
+        migrate = __import__("handsoff_cli").migrate_project(root, dry_run=True)
+    except (lib.HandsoffError, OSError) as exc:
+        migrate = {"error": str(exc)}
+    return {**{key: identity.get(key) for key in ("version", "source", "source_root", "compatibility")},
+            "pin": identity.get("compatibility"), "commands": commands,
+            "previews": {"upgrade": upgrade, "migrate": migrate},
+            "execution": "unavailable",
+            "execution_reason": "execution is not offered while a dashboard is serving this root"}
+
+
+def _start_verification(root: Path, kind: str, criteria: list[str] | None = None) -> None:
+    """Run the canonical supervisor command asynchronously and retain its exit state."""
+    started_at = datetime.now(timezone.utc).isoformat()
+    command = [sys.executable, str(Path(__file__).with_name("handsoff_supervisor.py")),
+               "--root", str(root)]
+    if kind == "verify":
+        command += ["verify"]
+        for criterion in criteria or []:
+            command += ["--criterion", criterion]
+    else:
+        command += ["verify-live"]
+    command += ["--by", "Mission Control Pilot"]
+    key = started_at + ":" + kind
+    with _VERIFY_RUNS_LOCK:
+        _VERIFY_RUNS[key] = {"root": str(root), "command": " ".join(command), "state": "running"}
+    def worker():
+        try:
+            result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    check=False)
+            exit_code = result.returncode
+        except OSError:
+            exit_code = 1
+        with _VERIFY_RUNS_LOCK:
+            if key in _VERIFY_RUNS:
+                _VERIFY_RUNS[key]["state"] = f"finished exit {exit_code}"
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def _settings_view(cfg: dict) -> dict:
@@ -361,13 +445,7 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
 
 def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict]:
     """Canonical current Pilot actions; every id is bound to displayed state."""
-    seed = {
-        "updated_at": status.get("updated_at"), "kind": input_request.get("kind"),
-        "escalation": status.get("escalation"),
-        "amendment_hash": (status.get("amendment") or {}).get("amendment_hash"),
-        "regression": (lib.active_regression_request(status) or {}).get("command_sha256"),
-    }
-    binding = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+    binding = _operation_binding(status, input_request)
     actions = []
 
     operation_by_kind = {
@@ -443,6 +521,17 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
         consequence = "Cancels the owned live session and records closure" if live else "Records closure and releases run-owned resources"
         add("run_close", "Cleanly close run", consequence, reason=True, tone="danger", confirmation=True)
     return actions
+
+
+def _operation_binding(status: dict, input_request: dict) -> str:
+    """Use the legacy state binding for both action lists and inventory."""
+    seed = {
+        "updated_at": status.get("updated_at"), "kind": input_request.get("kind"),
+        "escalation": status.get("escalation"),
+        "amendment_hash": (status.get("amendment") or {}).get("amendment_hash"),
+        "regression": (lib.active_regression_request(status) or {}).get("command_sha256"),
+    }
+    return hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
 
 
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
@@ -616,6 +705,8 @@ def build_snapshot(root: Path) -> dict:
     audit_healthy = not gate_errors and not audit_errors
     input_request = _input_request(status, cfg, root, acceptance, verifications)
     operator_actions = _operator_actions(status, cfg, input_request)
+    operations_inventory = lib.operation_inventory(status, acceptance, cfg, root,
+                                                    _operation_binding(status, input_request))
     display_status = dict(status)
     display_status["verification_progress"] = status.get("progress", 0)
     display_status["progress"] = _display_progress(status)
@@ -788,6 +879,9 @@ def build_snapshot(root: Path) -> dict:
         "settings": _settings_view(cfg),
         "input_required": input_request,
         "operator_actions": operator_actions,
+        "operations": {"inventory": operations_inventory,
+                        "verification": _verification_view(root, cfg, verifications),
+                        "engine": _engine_view(root)},
         "activity_note": activity,
         "activity": activity_view,
         "live": live,
@@ -823,34 +917,36 @@ class DashboardServer(ThreadingHTTPServer):
             if self.owned_by_run:
                 threading.Thread(target=self._orchestration_loop, daemon=True).start()
 
-    def _launch_managed_role(self, role: str, task: str) -> int:
+    def _launch_managed_role(self, role: str, task: str, actor: str = "Mission Control Pilot") -> int:
         import handsoff_agent
         spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
-        return handsoff_agent.execute_with_recovery(spec)
+        return handsoff_agent.execute_with_recovery(spec, actor=actor)
 
     def _orchestration_loop(self):
         while not self._watchdog_stop.wait(1.0):
             try:
-                cfg = lib.load_config(self.project_root)
-                with lib.project_lock(self.project_root):
-                    status = lib.load_unique_json(lib.status_path(self.project_root, cfg))
-                # A current independent review plus human approval is a
-                # deterministic gate transition.  Do it in the trusted host
-                # instead of paying a Supervisor model to invent an advance
-                # request for a decision that has already been made.
-                if supervisor.advance_approved_design(self.project_root):
-                    continue
-                role = lib.managed_handoff_role(status, cfg)
-                if role is None:
-                    continue
-                next_action = str(status.get("next_action") or "Continue the current workflow step.")
-                task = (f"Continue the managed Handsoff workflow as {role}. Execute this current next action: "
-                        f"{next_action} Use the role's required structured protocol and Handsoff commands; "
-                        "use the supplied managed design context instead of rediscovering the repository; "
-                        "do not stop at narration, repeat evidenced work, or run a full regression suite.")
-                self._launch_managed_role(role, task)
+                self._orchestrate_once()
             except Exception as exc:
                 print(f"HANDSOFF_ORCHESTRATION_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def _orchestrate_once(self):
+        """Advance approved design state, then optionally hand off one role."""
+        cfg = lib.load_config(self.project_root)
+        with lib.project_lock(self.project_root):
+            status = lib.load_unique_json(lib.status_path(self.project_root, cfg))
+        if supervisor.advance_approved_design(self.project_root):
+            return
+        if not cfg.get("auto_handoff", True):
+            return
+        role = lib.managed_handoff_role(status, cfg)
+        if role is None:
+            return
+        next_action = str(status.get("next_action") or "Continue the current workflow step.")
+        task = (f"Continue the managed Handsoff workflow as {role}. Execute this current next action: "
+                f"{next_action} Use the role's required structured protocol and Handsoff commands; "
+                "use the supplied managed design context instead of rediscovering the repository; "
+                "do not stop at narration, repeat evidenced work, or run a full regression suite.")
+        self._launch_managed_role(role, task)
 
     def _watchdog_loop(self):
         cfg = lib.load_config(self.project_root)
@@ -1058,7 +1154,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_shutdown()
             return
         if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
-                        "/api/init", "/api/operator-action",
+                        "/api/init", "/api/operator-action", "/api/launch-role", "/api/verify", "/api/verify-live",
                         "/api/lane-confirm", "/api/tranche-approval",
                         "/api/regression-decision", "/api/question-answer", "/api/question-answers",
                         "/api/design-review-authorize", "/api/pilot-note", "/api/amendment-approval"}:
@@ -1084,6 +1180,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             requested = _strict_json_object(self.rfile.read(length))
+            if path in {"/api/verify", "/api/verify-live"}:
+                expected = {"action_id", "criteria"} if path == "/api/verify" else {"action_id"}
+                if set(requested) != expected or not isinstance(requested.get("action_id"), str) \
+                        or path == "/api/verify" and (not isinstance(requested.get("criteria"), list)
+                        or not all(isinstance(value, str) for value in requested["criteria"])
+                        or not requested["criteria"]):
+                    raise lib.HandsoffError("verification request has an invalid shape")
+                snapshot = build_snapshot(self.server.project_root)
+                kind = "verify" if path == "/api/verify" else "verify_live"
+                item_kind = "verify_criterion" if kind == "verify" else "verify_live"
+                item = next((x for x in snapshot["operations"]["inventory"] if x["kind"] == item_kind), None)
+                reason = None
+                if not item or item.get("action_id") != requested["action_id"]:
+                    reason = "The displayed verification action is stale"
+                elif item.get("availability") != "actionable":
+                    reason = item.get("reason") or "verification is unavailable"
+                elif kind == "verify":
+                    allowed = set(item.get("criteria") or [])
+                    invalid = [value for value in requested["criteria"] if value not in allowed]
+                    if invalid:
+                        reason = f"unknown or non-automated criteria: {', '.join(invalid)}"
+                if reason is None and lib.verify_inflight_bindings(self.server.project_root):
+                    reason = "verification already in flight"
+                criteria = requested.get("criteria", [])
+                cfg = lib.load_config(self.server.project_root)
+                lib.commit(self.server.project_root, cfg, event_kind="pilot_verification_requested",
+                           event_message="Mission Control Pilot requested verification", kind=kind,
+                           criteria=criteria, accepted=reason is None, reason=reason,
+                           by="Mission Control Pilot")
+                if reason:
+                    self._json_response(HTTPStatus.CONFLICT, {"ok": False, "error": reason})
+                    return
+                _start_verification(self.server.project_root, kind, criteria)
+                self._json_response(HTTPStatus.OK, {"ok": True, "kind": kind, "criteria": criteria})
+                return
             if path == "/api/init":
                 if set(requested) != {"feature", "issue", "lane"} \
                         or not isinstance(requested.get("feature"), str) \
@@ -1186,6 +1317,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                         {"ok": False, "error": "The workflow gate rejected this action"})
                     return
                 self._json_response(HTTPStatus.OK, {"ok": True, "kind": kind})
+                return
+            if path == "/api/launch-role":
+                if set(requested) != {"action_id", "role", "task"} or not all(isinstance(requested.get(k), str) for k in requested):
+                    raise lib.HandsoffError("launch role requires action_id, role, and task")
+                task = requested["task"]
+                task_sha256 = hashlib.sha256(task.encode("utf-8")).hexdigest()
+                pilot = "Mission Control Pilot"
+                reason = None
+                # build_snapshot and lib.commit each take the project lock
+                # themselves (flock is not reentrant); the action_id binding
+                # carries the staleness guarantee across the two calls.
+                snapshot = build_snapshot(self.server.project_root)
+                item = next((x for x in snapshot["operations"]["inventory"] if x["kind"] == "launch_role"), None)
+                if not item or item.get("action_id") != requested["action_id"]:
+                    reason = "The displayed launch role action is stale"
+                elif requested["role"] != item.get("role"):
+                    reason = "role is not the assigned launch role"
+                elif requested["role"] == "host":
+                    reason = "host roles cannot be launched as managed sessions"
+                elif item.get("availability") != "actionable":
+                    reason = item.get("reason") or "role is not launchable"
+                elif not task.strip():
+                    reason = "task must be a non-empty string"
+                elif len(task) > 4000:
+                    reason = "task exceeds 4000 characters"
+                cfg = lib.load_config(self.server.project_root)
+                lib.commit(self.server.project_root, cfg, event_kind="pilot_launch_requested",
+                           event_message="Mission Control Pilot requested a managed role launch",
+                           role=requested["role"], accepted=reason is None,
+                           reason=reason, task_sha256=task_sha256, by=pilot)
+                if reason:
+                    self._json_response(HTTPStatus.CONFLICT, {"ok": False, "error": reason})
+                    return
+                threading.Thread(target=self.server._launch_managed_role,
+                                 args=(requested["role"], task, pilot), daemon=True).start()
+                self._json_response(HTTPStatus.OK, {"ok": True, "role": requested["role"], "session_launching": True})
                 return
             if path == "/api/lane-confirm":
                 if set(requested) != {"item"} or not isinstance(requested.get("item"), str):

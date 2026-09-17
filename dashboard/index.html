@@ -87,6 +87,10 @@
           <div class="section-head"><div><p class="panel-label">PILOT OPERATIONS</p><h2>Available command decisions</h2></div><span id="operator-actions-count" class="section-meta">0 ACTIONS</span></div>
           <p class="operator-actions-intro">Every control is bound to the mission state displayed here. Stale commands are rejected safely.</p>
           <div id="operator-actions-list" class="operator-actions-list"></div>
+          <div id="operator-inventory" class="operator-inventory"></div>
+          <div id="launch-role-section" class="operator-form-section"><h3>LAUNCH ROLE</h3><form id="launch-role-form"><label>ROLE<select id="launch-role-role"></select></label><label>TASK<textarea id="launch-role-task" maxlength="4000" rows="4"></textarea></label><p id="launch-role-consequence" class="operator-consequence"></p><button type="submit">LAUNCH ROLE</button><p id="launch-role-result" class="operator-form-result" aria-live="polite"></p></form></div>
+          <div id="verify-section" class="operator-form-section"><h3>VERIFY</h3><form id="verify-form"><div id="verify-criteria" class="verify-criteria"></div><button type="submit">RUN CHECKS</button><button id="verify-live" type="button">VERIFY LIVE</button><p id="verify-status" class="operator-form-result" aria-live="polite"></p></form><table class="verification-latest"><thead><tr><th>CRITERION</th><th>OK</th><th>AT</th></tr></thead><tbody id="verification-latest"></tbody></table></div>
+          <div id="engine-panel" class="operator-form-section"></div>
         </section>
 
         <section id="regression-alert" class="regression-card panel hidden" aria-live="polite">

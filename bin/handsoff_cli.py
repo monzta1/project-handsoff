@@ -369,6 +369,9 @@ def main() -> int:
     dash.add_argument("--host", default="127.0.0.1")
     dash.add_argument("--port", type=int, default=8765)
     dash.add_argument("--no-open", action="store_true")
+    # #72: a run-owned dashboard is what Fleet links to and what releases its
+    # port on completion; the stable command must be able to start one.
+    dash.add_argument("--owned-by-run", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "version":
@@ -396,6 +399,8 @@ def main() -> int:
             call += ["dashboard", "--host", args.host, "--port", str(args.port)]
             if args.no_open:
                 call.append("--no-open")
+            if args.owned_by_run:
+                call.append("--owned-by-run")
             return _dispatch_supervisor(call)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0

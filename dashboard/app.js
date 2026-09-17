@@ -435,13 +435,16 @@ function renderInputAlert(inputRequest, feature, regression) {
   state.alertSignature = signature;
 }
 
-function renderOperatorActions(actions = []) {
+function renderOperations(operations = {}, actions = []) {
+  const OP_CLASSES = ["op-actionable", "op-unavailable", "op-readonly"];
   const panel = $("operator-actions-panel");
   if (!panel) return;
-  panel.classList.toggle("hidden", actions.length === 0);
-  $("operator-actions-count").textContent = `${actions.length} ACTION${actions.length === 1 ? "" : "S"}`;
+  const inventory = operations.inventory || [];
+  panel.classList.toggle("hidden", actions.length === 0 && inventory.length === 0);
+  $("operator-actions-count").textContent = `${actions.length + inventory.length} OPERATION${actions.length + inventory.length === 1 ? "" : "S"}`;
   const list = $("operator-actions-list");
   list.replaceChildren();
+  const actionKinds = new Set(actions.map((action) => action.kind));
   for (const action of actions) {
     const card = document.createElement("article");
     card.className = `operator-action operator-action-${action.tone || "primary"}`;
@@ -470,7 +473,41 @@ function renderOperatorActions(actions = []) {
     card.append(copy, controls);
     list.append(card);
   }
+  $("operator-inventory").innerHTML = ["actionable", "unavailable", "read_only"].map((availability) => {
+    const entries = inventory.filter((item) => item.availability === availability && !(availability === "actionable" && actionKinds.has(item.kind)));
+    if (!entries.length) return "";
+    const css = availability === "read_only" ? "readonly" : availability === "unavailable" ? "unavailable" : "actionable";
+    const detail = (item) => availability === "unavailable" ? escapeHtml(item.reason) : escapeHtml(item.consequence);
+    return `<div class="operator-inventory-group"><h3>${availability.replace("_", " ").toUpperCase()}</h3>${entries.map((item) => `<article class="operator-inventory-item ${OP_CLASSES[["actionable", "unavailable", "read_only"].indexOf(availability)]}"><strong>${escapeHtml(item.label || item.kind)}</strong><p>${detail(item)}</p></article>`).join("")}</div>`;
+  }).join("");
+  const launch = inventory.find((item) => item.kind === "launch_role");
+  const launchForm = $("launch-role-form");
+  const launchSelect = $("launch-role-role");
+  launchSelect.replaceChildren(...(launch?.launchable_roles || []).map((role) => new Option(role, role)));
+  $("launch-role-consequence").innerHTML = escapeHtml(launch?.consequence || launch?.reason || "Launch role unavailable");
+  const launchButton = launchForm.querySelector("button");
+  launchButton.disabled = !launch || launch.availability !== "actionable";
+  launchButton.title = launch?.reason || "";
+  launchForm.onsubmit = (event) => { event.preventDefault(); if (launch) postOperation("/api/launch-role", { action_id: launch.action_id, role: launchSelect.value, task: $("launch-role-task").value }, $("launch-role-result")); };
+  const verify = inventory.find((item) => item.kind === "verify_criterion");
+  const live = inventory.find((item) => item.kind === "verify_live");
+  const inFlight = operations.verification?.in_flight || [];
+  $("verify-form").querySelectorAll("button").forEach((button) => { button.disabled = inFlight.length > 0; });
+  $("verify-criteria").innerHTML = (verify?.criteria || []).map((id) => `<label><input type="checkbox" value="${escapeHtml(id)}"> ${escapeHtml(id)}</label>`).join("");
+  $("verify-form").onsubmit = (event) => { event.preventDefault(); if (verify) postOperation("/api/verify", { action_id: verify.action_id, criteria: [...$("verify-criteria").querySelectorAll("input:checked")].map((input) => input.value) }, $("verify-status")); };
+  $("verify-live").onclick = () => { if (live) postOperation("/api/verify-live", { action_id: live.action_id }, $("verify-status")); };
+  $("verify-status").textContent = inFlight.length ? `CHECKS IN FLIGHT: ${inFlight.join(", ")}` : "";
+  $("verification-latest").innerHTML = Object.entries(operations.verification?.latest || {}).map(([criterion, result]) => `<tr><td>${escapeHtml(criterion)}</td><td>${result.ok ? "YES" : "NO"}</td><td>${escapeHtml(result.at)}</td></tr>`).join("");
+  const engine = operations.engine || {};
+  $("engine-panel").innerHTML = `<h3>ENGINE</h3><p>${escapeHtml(engine.version)} · ${escapeHtml(engine.source)} · pin ${escapeHtml(engine.pin)} · ${escapeHtml(engine.compatibility)}</p><div class="engine-commands">${Object.entries(engine.commands || {}).map(([name, command]) => `<div><code>${escapeHtml(command)}</code><button type="button" data-copy-command="${escapeHtml(command)}">COPY</button></div>`).join("")}</div><p class="engine-previews">${Object.entries(engine.previews || {}).map(([name, preview]) => `<span>${escapeHtml(name)}: ${escapeHtml(typeof preview === "string" ? preview : JSON.stringify(preview))}</span>`).join(" ")}</p><p class="engine-reason">${escapeHtml(engine.execution_reason)}</p>`;
+  $("engine-panel").querySelectorAll("[data-copy-command]").forEach((button) => button.onclick = () => navigator.clipboard.writeText(button.dataset.copyCommand));
 }
+
+function postOperation(url, body, resultElement) {
+  return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error || `Request returned ${response.status}`); resultElement.textContent = result.message || result.status || "Request accepted"; await refresh(); }).catch((error) => { resultElement.textContent = error.message; });
+}
+
+function renderOperatorActions(actions = []) { renderOperations({}, actions); }
 
 async function executeOperatorAction(action, reason, button) {
   if (action.requires_reason && !reason.trim()) {
@@ -1141,7 +1178,7 @@ function render(snapshot) {
   renderOperation(snapshot.runtime?.operation || null);
   renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
-  renderOperatorActions(snapshot.operator_actions || []);
+  renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);
   renderRegression(snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   setFaviconState(status.status === "complete" ? "complete"

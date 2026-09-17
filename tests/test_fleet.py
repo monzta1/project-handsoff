@@ -152,6 +152,83 @@ class FleetMissionControlTests(unittest.TestCase):
         self.assertIn("/api/reopen-run", script)
         self.assertIn("EventSource", script)
 
+    def owned_dashboard(self, root, host="127.0.0.1", token="fleet-run-token"):
+        server = dashboard.DashboardServer(("127.0.0.1", 0), root,
+                                           run_token=token,
+                                           root_sha256=lib.dashboard_root_sha256(root))
+        lib.write_dashboard_owner(root, pid=os.getpid(), host=host,
+                                  port=server.server_address[1], run_token=token,
+                                  root_sha256=lib.dashboard_root_sha256(root), feature="Fleet")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread
+
+    def test_project_view_exposes_verified_loopback_dashboard_url(self):
+        root = self.project("healthy-nav")
+        fleet.register_project(root, self.registry)
+        server, thread = self.owned_dashboard(root)
+        try:
+            view = fleet.build_fleet(self.registry)["projects"][0]
+            self.assertEqual(view["dashboard_url"], f"http://127.0.0.1:{server.server_port}/")
+        finally:
+            server.shutdown(); server.server_close(); thread.join(2)
+
+    def test_project_view_missing_owner_explains_no_dashboard(self):
+        root = self.project("missing-nav")
+        fleet.register_project(root, self.registry)
+        view = fleet.build_fleet(self.registry)["projects"][0]
+        self.assertIsNone(view["dashboard_url"])
+        self.assertEqual(view["dashboard_note"], "no run-owned dashboard")
+
+    def test_project_view_stale_token_explains_stale_ownership(self):
+        root = self.project("stale-nav")
+        fleet.register_project(root, self.registry)
+        server, thread = self.owned_dashboard(root, token="actual-token")
+        try:
+            lib.write_dashboard_owner(root, pid=os.getpid(), host="127.0.0.1",
+                                      port=server.server_port, run_token="wrong-token",
+                                      root_sha256=lib.dashboard_root_sha256(root), feature="Fleet")
+            view = fleet.build_fleet(self.registry)["projects"][0]
+            self.assertIsNone(view["dashboard_url"])
+            self.assertIn("stale", view["dashboard_note"])
+        finally:
+            server.shutdown(); server.server_close(); thread.join(2)
+
+    def test_project_view_foreign_root_is_stale(self):
+        root = self.project("foreign-nav")
+        other = self.project("other-root")
+        fleet.register_project(root, self.registry)
+        server, thread = self.owned_dashboard(root)
+        try:
+            lib.write_dashboard_owner(root, pid=os.getpid(), host="127.0.0.1",
+                                      port=server.server_port, run_token="fleet-run-token",
+                                      root_sha256=lib.dashboard_root_sha256(other), feature="Fleet")
+            view = fleet.build_fleet(self.registry)["projects"][0]
+            self.assertIsNone(view["dashboard_url"])
+            self.assertIn("stale", view["dashboard_note"])
+        finally:
+            server.shutdown(); server.server_close(); thread.join(2)
+
+    def test_project_view_ignores_foreign_owner_host_when_verified(self):
+        root = self.project("host-nav")
+        fleet.register_project(root, self.registry)
+        server, thread = self.owned_dashboard(root, host="evil.example")
+        try:
+            view = fleet.build_fleet(self.registry)["projects"][0]
+            self.assertEqual(view["dashboard_url"], f"http://127.0.0.1:{server.server_port}/")
+        finally:
+            server.shutdown(); server.server_close(); thread.join(2)
+
+    def test_project_view_loses_url_after_owned_server_release(self):
+        root = self.project("released-nav")
+        fleet.register_project(root, self.registry)
+        server, thread = self.owned_dashboard(root)
+        self.assertIsNotNone(fleet.build_fleet(self.registry)["projects"][0]["dashboard_url"])
+        server.shutdown(); server.server_close(); thread.join(2)
+        lib.remove_dashboard_owner_if_token(root, "fleet-run-token")
+        view = fleet.build_fleet(self.registry)["projects"][0]
+        self.assertIsNone(view["dashboard_url"])
+
 
 if __name__ == "__main__":
     unittest.main()

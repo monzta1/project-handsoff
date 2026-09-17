@@ -6,6 +6,8 @@ event_log = "handsoff-events.jsonl"
 verification_log = "handsoff-verifications.jsonl"
 
 [workflow]
+# Automatically launch the next managed role from an owned dashboard.
+auto_handoff = true
 max_design_rounds = 3
 max_review_rounds = 3
 max_autonomous_design_reviews = 2

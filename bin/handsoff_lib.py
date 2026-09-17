@@ -249,6 +249,7 @@ DEFAULT_CONFIG = {
     "event_log": "handsoff-events.jsonl",
     "verification_log": "handsoff-verifications.jsonl",
     "max_design_rounds": 3,
+    "auto_handoff": True,
     "max_review_rounds": 3,
     "stall_minutes": 10,
     "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
@@ -645,7 +646,7 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, int) or isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be an integer")
         cfg[key] = value
-    for key in ("require_live_verification", "deployment_requires_explicit_approval"):
+    for key in ("auto_handoff", "require_live_verification", "deployment_requires_explicit_approval"):
         value = workflow.get(key, cfg[key])
         if not isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
@@ -3962,6 +3963,147 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         if checklist.get(field) not in allowed:
             errors.append(f"review gate: checklist field '{field}' is incomplete")
     return errors
+
+
+def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
+                        action_binding: str) -> list[dict]:
+    """Return every Pilot-facing operation, including blocked previews.
+
+    The dashboard used to show only the next permitted buttons.  That made a
+    missing button ambiguous: unavailable, already satisfied, or simply not
+    implemented.  This table makes that distinction explicit while keeping
+    action ids bound to the same state hash used by the legacy endpoint.
+    """
+    specs = [
+        ("design_approve", "design-approve", "Authorize the reviewed design", "primary", False),
+        ("design_reject", "design-reject", "Request a design revision", "danger", True),
+        ("deployment_approve", "deployment-gate", "Authorize live verification", "primary", False),
+        ("deployment_hold", "human-pause-start", "Hold deployment", "danger", True),
+        ("design_review_authorize", "design-review-authorize", "Permit one more design review", "primary", False),
+        ("design_review_escalate", "design-review-escalate", "Escalate the reviewer tier", "primary", True),
+        ("review_cap_override", "review-cap-override", "Extend the implementation review cap once", "primary", True),
+        ("recovery_acknowledge", "recovery-acknowledge", "Clear the recovery hold", "primary", True),
+        ("recover", "recover", "Retry one bounded recovery attempt", "primary", True),
+        ("pause", "human-pause-start", "Pause the mission", "muted", True),
+        ("resume", "human-pause-end", "Resume the mission", "primary", False),
+        ("run_close", "run-close", "Close the run and release resources", "danger", True),
+        ("run_reopen", "run-reopen", "Reopen the run", "primary", True),
+        ("regression_accept", "regression-decide", "Accept the requested regression", "primary", False),
+        ("regression_decline", "regression-decide", "Decline the requested regression", "danger", False),
+        ("regression_cancel", "regression-cancel", "Cancel the regression request", "danger", False),
+        ("launch_role", "launch-role", "Launch a selected managed role", "primary", False),
+        ("verify_criterion", "verify", "Run focused criterion verification", "primary", False),
+        ("verify_live", "verify-live", "Run live verification", "primary", False),
+        ("engine_upgrade", "engine-upgrade", "Preview an engine upgrade", "muted", False),
+        ("engine_rollback", "engine-rollback", "Preview an engine rollback", "muted", False),
+        ("engine_migrate", "engine-migrate", "Preview engine migration", "muted", False),
+    ]
+    closed = isinstance(status.get("run_closed"), dict)
+    complete = status.get("status") == "complete" or int(status.get("phase_number", 0) or 0) >= 8
+    phase = int(status.get("phase_number", 0) or 0)
+    review = status.get("design_review") or {}
+    review_ready = review.get("decision") == "approved"
+    design_pending = bool(status.get("requires_design_approval")) and review_ready and not status.get("design_approved")
+    deployment_pending = phase == 7 and not status.get("deployment_approved")
+    budget = design_review_budget(status, cfg)
+    regression = active_regression_request(status)
+    escalation = status.get("escalation") or {}
+    recovery_hold = escalation.get("kind") in {"recovery_exhausted", "recovery_paused"}
+    automated = [c.get("id") for c in acceptance.get("criteria", [])
+                 if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+    try:
+        verification_in_flight = bool(verify_inflight_bindings(root))
+    except OSError:
+        verification_in_flight = False
+    launch_role = assigned_role(status)
+    launch_reason = None
+    launch_profile = None
+    if status.get("status") != "in_progress":
+        launch_reason = "run is not in progress"
+    elif closed:
+        launch_reason = "run is closed"
+    elif launch_role not in {"implementer", "reviewer"}:
+        launch_reason = "current phase does not assign implementer or reviewer"
+    else:
+        launch_profile = resolved_agent_profiles(cfg).get(launch_role)
+        if not launch_profile or launch_profile.get("adapter") == HOST_AGENT_ADAPTER:
+            launch_reason = f"{launch_role} is host-driven"
+        elif current_agent_sessions(status).get(launch_role):
+            launch_reason = f"a live {launch_role} session already exists"
+        elif phase == 2 and launch_role == "reviewer" and not status.get("design_proposal"):
+            launch_reason = "reviewer launch requires a design proposal"
+    actionable = set()
+    if design_pending: actionable |= {"design_approve", "design_reject"}
+    if deployment_pending: actionable |= {"deployment_approve", "deployment_hold"}
+    if phase == 2 and budget.get("exhausted"): actionable |= {"design_review_authorize", "design_review_escalate"}
+    if recovery_hold: actionable |= {"recovery_acknowledge", "recover"}
+    if escalation.get("kind") == "review_cap_exhausted": actionable.add("review_cap_override")
+    if regression and regression.get("state") in {"awaiting_approval", "accepted"}: actionable |= {"regression_accept", "regression_decline", "regression_cancel"}
+    if not closed and not complete:
+        if status.get("human_pause"): actionable.add("resume")
+        else: actionable.add("pause")
+        actionable.add("run_close")
+    elif closed and not complete: actionable.add("run_reopen")
+    result = []
+    for kind, operation, consequence, tone, requires_reason in specs:
+        if kind in {"engine_upgrade", "engine_rollback", "engine_migrate"}:
+            availability, reason = "read_only", "execution is not offered while a dashboard is serving this root"
+        elif kind == "launch_role":
+            if launch_reason:
+                availability, reason = "unavailable", launch_reason
+            else:
+                availability, reason = "actionable", ""
+                consequence = (f"launches a managed {launch_role}: {launch_profile['adapter']} "
+                               f"({launch_profile['model']}), budget {cfg['agent_token_budgets'][launch_role]} tokens")
+        elif kind in {"verify_criterion", "verify_live"}:
+            if closed:
+                availability, reason = "unavailable", "run is closed"
+            elif complete:
+                availability, reason = "unavailable", "run is complete"
+            elif kind == "verify_criterion":
+                if phase < 4 or phase > 7:
+                    availability, reason = "unavailable", f"verification requires Phase 4 to 7, current phase is {phase}"
+                elif verification_in_flight:
+                    availability, reason = "unavailable", "verification already in flight"
+                elif not automated:
+                    availability, reason = "unavailable", "no automated criteria"
+                else:
+                    availability, reason = "actionable", ""
+                    consequence = "runs the configured checks for the selected criteria as Mission Control Pilot and appends ledger records"
+            elif phase not in {7, 8}:
+                availability, reason = "unavailable", f"live verification requires Phase 7 or 8, current phase is {phase}"
+            elif verification_in_flight:
+                availability, reason = "unavailable", "verification already in flight"
+            else:
+                availability, reason = "actionable", ""
+                consequence = "runs [checks].live_commands as Mission Control Pilot"
+        elif kind in actionable:
+            availability, reason = "actionable", ""
+        elif closed:
+            availability, reason = "unavailable", "run is closed"
+        elif complete:
+            availability, reason = "unavailable", "run is complete"
+        elif kind.startswith("design_") and not review_ready:
+            availability, reason = "unavailable", "design review is not approved yet"
+        elif kind.startswith("deployment_"):
+            availability, reason = "unavailable", "no deployment approval is pending"
+        elif kind.startswith("regression_"):
+            availability, reason = "unavailable", "no regression request is pending"
+        elif kind == "design_review_authorize":
+            availability, reason = "unavailable", "budget is not exhausted"
+        else:
+            availability, reason = "unavailable", "operation is not currently applicable"
+        entry = {"kind": kind, "operation": operation, "availability": availability,
+                       "reason": reason, "consequence": consequence,
+                       "action_id": f"{kind}:{action_binding}" if availability == "actionable" else None,
+                       "requires_reason": requires_reason, "tone": tone}
+        if kind == "verify_criterion":
+            entry["criteria"] = automated if availability == "actionable" else []
+        if kind == "launch_role":
+            entry["launchable_roles"] = [launch_role] if availability == "actionable" else []
+            entry["role"] = launch_role
+        result.append(entry)
+    return result
 
 
 def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bool:
@@ -7317,6 +7459,32 @@ def reusable_check_record(records: list[dict], command: str, binding: str,
 
 def verify_inflight_lock_path(root: Path, binding: str) -> Path:
     return root / VERIFY_INFLIGHT_DIR / f"{binding}.lock"
+
+def verify_inflight_bindings(root: Path) -> list[str]:
+    """Binding ids whose verify lock is held right now. Lock files are
+    never unlinked (unlinking a flock file races with the next opener), so
+    a file on disk proves nothing; only a lock that refuses LOCK_NB is in
+    flight (#72). Without fcntl nothing can be proven, so nothing is
+    reported."""
+    directory = root / VERIFY_INFLIGHT_DIR
+    if fcntl is None or not directory.is_dir():
+        return []
+    held = []
+    for path in sorted(directory.iterdir()):
+        if not path.is_file():
+            continue
+        try:
+            with path.open("r+") as fh:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    held.append(path.name[:-5] if path.name.endswith(".lock") else path.name)
+                else:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            continue
+    return held
+
 
 
 @contextmanager

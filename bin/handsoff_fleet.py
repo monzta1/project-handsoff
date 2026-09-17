@@ -119,6 +119,17 @@ def _engine_version(root: Path) -> str:
 def project_view(entry: dict) -> dict:
     root = Path(entry["root"])
     owner = _owner_view(root)
+    # REQ-006: Fleet may link only to a currently verified run-owned listener.
+    # The loopback URL is deliberate so registry metadata can never redirect a
+    # Fleet operator to a host chosen by project data or a stale owner file.
+    if owner is None:
+        dashboard_url, dashboard_note = None, "no run-owned dashboard"
+    elif owner.get("health") == "stale":
+        dashboard_url, dashboard_note = None, f"dashboard ownership is stale: {owner.get('reason', 'unknown reason')}"
+    elif owner.get("health") == "healthy" and type(owner.get("port")) is int and 1 <= owner["port"] <= 65535:
+        dashboard_url, dashboard_note = f"http://127.0.0.1:{owner['port']}/", ""
+    else:
+        dashboard_url, dashboard_note = None, "run dashboard is unavailable"
     try:
         snap = dashboard.build_snapshot(root)
     except Exception as exc:  # fleet must retain a broken project as an actionable row
@@ -129,7 +140,8 @@ def project_view(entry: dict) -> dict:
         return {"root": str(root), "name": root.name, "registered_at": entry["registered_at"],
                 "initialized": False, "state": "orphaned" if not root.exists() else "quiet",
                 "error": snap.get("error"), "owner": owner, "binding": binding,
-                "engine_version": _engine_version(root), "decisions": []}
+                "engine_version": _engine_version(root), "decisions": [],
+                "dashboard_url": dashboard_url, "dashboard_note": dashboard_note}
     status = snap["status"]
     live = snap.get("live") or {}
     closed = isinstance(status.get("run_closed"), dict) or status.get("status") == "closed"
@@ -166,6 +178,7 @@ def project_view(entry: dict) -> dict:
         "engine_version": _engine_version(root), "binding": binding,
         "updated_at": status.get("updated_at"), "run_closed": status.get("run_closed"),
         "sessions": list((snap.get("runtime", {}).get("current_sessions") or {}).values()),
+        "dashboard_url": dashboard_url, "dashboard_note": dashboard_note,
     }
 
 
