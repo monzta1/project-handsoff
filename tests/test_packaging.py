@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.test_handsoff_supervisor import ROOT, BIN, run
 
@@ -98,6 +99,65 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertEqual((root / "handsoff-events.jsonl").read_bytes(), ledger)
         self.assertEqual(lib.validate_runtime_integrity(root)["source"], "installed-engine")
         self.assertEqual(dashboard.build_snapshot(root)["project"]["feature"], "Preserve this run")
+
+    def test_doctor_preserves_project_owned_runtime_named_directory(self):
+        root = self._drop_in("mixed-runtime")
+        customer_file = root / "bin" / "customer-build-tool.py"
+        customer_file.write_text("print('owned by project')\n", encoding="utf-8")
+        custom_prompt = root / "prompts" / "project-specialist.md"
+        custom_prompt.write_text("Project-owned specialist prompt.\n", encoding="utf-8")
+        diagnosis = cli.doctor(root)
+        bin_entry = next(item for item in diagnosis["runtime_paths"]
+                         if item["path"] == str(root / "bin"))
+        prompt_entry = next(item for item in diagnosis["runtime_paths"]
+                            if item["path"] == str(root / "prompts"))
+        self.assertEqual(bin_entry["classification"], "project-owned")
+        self.assertEqual(prompt_entry["classification"], "project-owned")
+        self.assertNotIn(str(root / "bin"), diagnosis["legacy_runtime_paths"])
+        self.assertNotIn(str(root / "prompts"), diagnosis["legacy_runtime_paths"])
+        preview = cli.migrate_project(root, dry_run=True)
+        self.assertNotIn("bin", preview["move"])
+        self.assertNotIn("prompts", preview["move"])
+        applied = cli.migrate_project(root, dry_run=False)
+        self.assertTrue(customer_file.is_file())
+        self.assertTrue(custom_prompt.is_file())
+        self.assertFalse((Path(applied["backup"]) / "bin").exists())
+        self.assertFalse((Path(applied["backup"]) / "prompts").exists())
+        overrides = json.loads((root / lib.OVERRIDES_FILE).read_text(encoding="utf-8"))
+        self.assertNotIn("prompts/project-specialist.md", overrides["files"])
+        self.assertIn("prompts/architect.md", overrides["files"])
+
+    def test_doctor_documentation_audit_is_read_only_and_identity_driven(self):
+        root = self.base / "documentation-audit"
+        cli.init_project(root, None)
+        readme = root / "README.md"
+        readme.write_text(
+            "Run python3 bin/handsoff_supervisor.py and download/v0.1.0.\n",
+            encoding="utf-8",
+        )
+        before = {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in root.rglob("*") if path.is_file()}
+        with mock.patch.object(cli.shutil, "which", return_value="/opt/tools/handsoff"):
+            diagnosis = cli.doctor(root)
+        after = {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in root.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+        self.assertTrue(diagnosis["documentation"]["stale"])
+        self.assertEqual(diagnosis["documentation"]["canonical_executable"], "/opt/tools/handsoff")
+        self.assertEqual(diagnosis["documentation"]["installed_engine"], CURRENT_VERSION)
+        self.assertEqual(diagnosis["documentation"]["supported_project_pin"], "0.3.*")
+        self.assertEqual(
+            [item["code"] for item in diagnosis["documentation"]["diagnostics"]],
+            ["obsolete-release-reference", "obsolete-command-path"],
+        )
+
+    def test_doctor_clean_documentation_is_not_stale(self):
+        root = self.base / "clean-documentation"
+        cli.init_project(root, None)
+        (root / "README.md").write_text("Run handsoff doctor .\n", encoding="utf-8")
+        diagnosis = cli.doctor(root)
+        self.assertFalse(diagnosis["documentation"]["stale"])
+        self.assertEqual(diagnosis["documentation"]["diagnostics"], [])
 
     def test_project_prompt_override_is_explicit_and_hash_bound(self):
         root = self.base / "override"

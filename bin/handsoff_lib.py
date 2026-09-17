@@ -376,7 +376,7 @@ def version_satisfies(version: str, pin: str) -> bool:
 def _runtime_identity_with_manifest(root: Path) -> dict:
     """Exact engine source, pin, manifest identity, and compatibility."""
     root = Path(root).resolve()
-    drop_in = (root / RUNTIME_MANIFEST_FILE).is_file() and (root / "bin" / "handsoff_lib.py").is_file()
+    drop_in = _looks_like_runtime_drop_in(root)
     source = "project-drop-in" if drop_in else "installed-engine"
     path = root / RUNTIME_MANIFEST_FILE if drop_in else engine_root() / RUNTIME_MANIFEST_FILE
     try:
@@ -409,6 +409,24 @@ def _runtime_identity_with_manifest(root: Path) -> dict:
         "compatibility": pin, "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "manifest": manifest,
     }
+
+
+def _looks_like_runtime_drop_in(root: Path) -> bool:
+    """Recognize a copied engine from its signed runtime, never its names.
+
+    A project is allowed to have directories called ``bin`` or ``schemas``.
+    Those names alone are not evidence that an engine was copied into it.
+    """
+    manifest_path = Path(root) / RUNTIME_MANIFEST_FILE
+    library = Path(root) / "bin" / "handsoff_lib.py"
+    if not manifest_path.is_file() or not library.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected = manifest.get("files", {}).get("bin/handsoff_lib.py")
+        return isinstance(expected, str) and hashlib.sha256(library.read_bytes()).hexdigest() == expected
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def runtime_identity(root: Path) -> dict:
@@ -466,7 +484,7 @@ def project_resource_path(root: Path, relative: str) -> Path:
     """Resolve an optional thin-project override only when hash-declared."""
     root = Path(root).resolve()
     candidate = (root / relative).resolve()
-    drop_in = (root / RUNTIME_MANIFEST_FILE).is_file() and (root / "bin" / "handsoff_lib.py").is_file()
+    drop_in = _looks_like_runtime_drop_in(root)
     if drop_in:
         return candidate
     if candidate.is_file():
@@ -3389,8 +3407,10 @@ def validate_status_schema(status: dict) -> list[str]:
                     or rid in recovery_ids or item.get("role") not in SELECTABLE_AGENT_ROLES \
                     or item.get("trigger") not in RECOVERY_TRIGGERS \
                     or item.get("state") not in RECOVERY_STATES \
-                    or item.get("attempt") != index + 1 \
                     or not isinstance(item.get("cap"), int) \
+                    or not isinstance(item.get("attempt"), int) \
+                    or isinstance(item.get("attempt"), bool) \
+                    or not 1 <= item.get("attempt") <= item.get("cap") \
                     or not all(isinstance(item.get(k), str) and item[k].strip()
                                for k in ("holder", "reason", "at")):
                 errors.append(f"status: recovery_attempts[{index}] is invalid")
@@ -4321,7 +4341,7 @@ def assigned_role(status: dict) -> str | None:
             7: "supervisor", 8: "supervisor"}.get(phase)
 
 
-def managed_handoff_role(status: dict) -> str | None:
+def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
     """Return the next role only for an already-managed, decision-free chain.
 
     Recovery deliberately refuses to manufacture a first session for a
@@ -4352,6 +4372,10 @@ def managed_handoff_role(status: dict) -> str | None:
     if target is None:
         return None
     phase = int(status.get("phase_number", 1) or 1)
+    if target == "reviewer" and phase == 2 and cfg is not None:
+        budget = design_review_budget(status, cfg)
+        if design_review_launch_refusal(budget, status):
+            return None
     sessions = [item for item in (status.get("agent_sessions") or {}).values()
                 if isinstance(item, dict)]
     if any(item.get("state") in AGENT_SESSION_LIVE_STATES for item in sessions):
@@ -4367,8 +4391,14 @@ def managed_handoff_role(status: dict) -> str | None:
     source = max(relevant, key=lambda item: item["ended_at"])
     if source.get("role") == target:
         return None
+    # A terminal assignment from an earlier phase must not suppress the
+    # same role's new assignment in this phase. This matters most when a
+    # Phase-2 Supervisor request failed before the trusted host advanced an
+    # approved design to Phase 3.
     target_sessions = [item for item in sessions
-                       if item.get("role") == target and isinstance(item.get("ended_at"), str)]
+                       if item.get("role") == target
+                       and item.get("phase_number") == phase
+                       and isinstance(item.get("ended_at"), str)]
     if target_sessions and max(item["ended_at"] for item in target_sessions) >= source["ended_at"]:
         return None
     return target

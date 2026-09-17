@@ -134,6 +134,63 @@ class RecoveryTests(unittest.TestCase):
         self.assertGreaterEqual(advanced["progress"], status["progress"])
         self.assertFalse(supervisor.advance_approved_design(self.root))
 
+    def test_recovery_attempt_numbers_restart_for_each_episode(self):
+        status = self.read_status()
+        now = datetime.now(timezone.utc).isoformat()
+        def attempt(rid, source, target):
+            return {
+                "recovery_id": rid, "role": "supervisor", "trigger": "worker_terminal",
+                "from_session_id": source, "to_session_id": target,
+                "attempt": 1, "cap": 3, "holder": "watchdog", "state": "failed",
+                "reason": "HandsoffError", "at": now, "launched_at": now,
+                "ended_at": now,
+            }
+        status["recovery_attempts"] = [
+            attempt("hv-" + "1" * 32, "hs-" + "1" * 32, "hs-" + "2" * 32),
+            attempt("hv-" + "2" * 32, "hs-" + "3" * 32, "hs-" + "4" * 32),
+        ]
+        errors = lib.validate_status_schema(status)
+        self.assertFalse([error for error in errors if "recovery_attempts" in error], errors)
+
+    def test_terminal_role_from_prior_phase_does_not_block_new_assignment(self):
+        now = datetime.now(timezone.utc)
+        reviewer_id = "hs-" + "5" * 32
+        old_supervisor_id = "hs-" + "6" * 32
+        status = self.read_status()
+        reviewer = self.session(
+            reviewer_id, "reviewer", "completed",
+            (now - timedelta(minutes=2)).isoformat(),
+        )
+        reviewer["phase_number"] = 2
+        old_supervisor = self.session(
+            old_supervisor_id, "supervisor", "failed",
+            (now - timedelta(minutes=1)).isoformat(),
+        )
+        old_supervisor["phase_number"] = 2
+        status.update(
+            phase_number=3, phase=lib.PHASES[3], status="in_progress",
+            agent_sessions={reviewer_id: reviewer, old_supervisor_id: old_supervisor},
+            current_agent_sessions={
+                "reviewer": reviewer_id, "supervisor": old_supervisor_id,
+            },
+        )
+        self.assertEqual(lib.managed_handoff_role(status), "supervisor")
+
+    def test_exhausted_design_review_budget_does_not_spin_handoff(self):
+        status = self.read_status()
+        now = datetime.now(timezone.utc).isoformat()
+        architect_id = "hs-" + "7" * 32
+        architect = self.session(architect_id, "architect", "completed", now)
+        architect["phase_number"] = 2
+        status.update(
+            phase_number=2, phase=lib.PHASES[2], status="in_progress",
+            design_review_attempts=2, design_review=None,
+            design_proposal={"based_on_review_attempt": 2},
+            agent_sessions={architect_id: architect},
+            current_agent_sessions={"architect": architect_id},
+        )
+        self.assertIsNone(lib.managed_handoff_role(status, lib.load_config(self.root)))
+
     def test_bounded_architect_proposal_hands_revision_to_reviewer(self):
         now = datetime.now(timezone.utc)
         sid = "hs-" + "d" * 32

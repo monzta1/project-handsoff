@@ -822,7 +822,7 @@ class DashboardServer(ThreadingHTTPServer):
                 # request for a decision that has already been made.
                 if supervisor.advance_approved_design(self.project_root):
                     continue
-                role = lib.managed_handoff_role(status)
+                role = lib.managed_handoff_role(status, cfg)
                 if role is None:
                     continue
                 next_action = str(status.get("next_action") or "Continue the current workflow step.")

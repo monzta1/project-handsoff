@@ -948,10 +948,26 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         failure = lib.classify_runtime_failure(
             exit_code=process.returncode, stderr_tail=stderr_tail[0], stdout_tail=stdout_tail[0],
         )
-        lib.transition_agent_session(
-            root, session_id, "failed", exit_code=process.returncode, failure=failure,
+        complete_protocol = not protocol_errors and (
+            (spec.role == "architect" and len(architect_results) == 1)
+            or (spec.role == "reviewer" and len(reviewer_results) == 1)
+            or (capture_supervisor and bool(supervisor_requests))
+            or question_lines[0] > 0
         )
-        raise AgentLaunchError(f"{spec.adapter} exited with status {process.returncode}", session_id)
+        if failure["category"] == "token_budget_exhaustion" and complete_protocol:
+            # Codex may emit the complete final protocol line and then exit
+            # non-zero while its rollout-budget wrapper accounts for the
+            # just-finished turn. The validated transaction is the useful
+            # terminal result; discarding it forces an identical paid retry.
+            sys.stderr.write(
+                "HANDSOFF_AGENT_WARNING: accepted complete structured result "
+                "before trailing token-budget exhaustion\n"
+            )
+        else:
+            lib.transition_agent_session(
+                root, session_id, "failed", exit_code=process.returncode, failure=failure,
+            )
+            raise AgentLaunchError(f"{spec.adapter} exited with status {process.returncode}", session_id)
     if protocol_errors:
         lib.transition_agent_session(
             root, session_id, "failed", exit_code=1,

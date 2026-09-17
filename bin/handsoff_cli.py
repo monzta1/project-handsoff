@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -120,17 +121,27 @@ def migrate_project(root: Path, *, dry_run: bool) -> dict:
         raise lib.HandsoffError("project already uses the installed thin runtime")
     version = identity["version"]
     backup = root / ".handsoff" / "legacy-runtime" / version.lstrip("v")
-    parts = [item for item in LEGACY_PARTS if (root / item).exists()]
+    runtime_paths, _ = _runtime_path_diagnosis(root, identity)
+    parts = [Path(item["path"]).name for item in runtime_paths
+             if item["classification"] == "copied-runtime"]
     prompt_overrides = {}
     prompts = root / "prompts"
     if prompts.is_dir():
-        for path in prompts.glob("*.md"):
-            relative = f"prompts/{path.name}"
-            engine = lib.engine_resource_path(relative)
-            if not engine.is_file() or hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(engine.read_bytes()).digest():
-                prompt_overrides[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-        if not prompt_overrides:
+        signatures = _runtime_signatures()
+        prompt_entry = _classify_runtime_path(root, "prompts", signatures, identity)
+        if prompt_entry["classification"] == "copied-runtime" and "prompts" not in parts:
             parts.append("prompts")
+        else:
+            # Once the runtime manifest is moved, every project prompt left
+            # behind is an override, even when it happened to match the old
+            # bundled prompt. Binding every retained prompt preserves mixed
+            # project-owned directories without creating undeclared files.
+            allowed_prompts = {f"{role}.md" for role in lib.SELECTABLE_AGENT_ROLES}
+            for path in sorted(prompts.glob("*.md")):
+                if path.name not in allowed_prompts:
+                    continue
+                relative = f"prompts/{path.name}"
+                prompt_overrides[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     plan = {"root": str(root), "version": version, "backup": str(backup), "move": parts,
             "preserved_state": ["handsoff-status.json", "handsoff-acceptance.json",
                                 "handsoff-events.jsonl", "handsoff-verifications.jsonl"],
@@ -157,16 +168,141 @@ def migrate_project(root: Path, *, dry_run: bool) -> dict:
     return plan
 
 
+def _runtime_signatures() -> dict[str, str]:
+    manifest_path = lib.engine_root() / lib.RUNTIME_MANIFEST_FILE
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        signatures = manifest.get("files", {})
+    except (OSError, ValueError):
+        return {}
+    return signatures if isinstance(signatures, dict) else {}
+
+
+def _runtime_payload_files(path: Path, root: Path) -> set[str]:
+    ignored_names = {".DS_Store"}
+    files = set()
+    for candidate in path.rglob("*"):
+        if not candidate.is_file() or candidate.name in ignored_names \
+                or "__pycache__" in candidate.parts or candidate.suffix == ".pyc":
+            continue
+        files.add(candidate.relative_to(root).as_posix())
+    return files
+
+
+def _classify_runtime_path(root: Path, part: str, signatures: dict[str, str],
+                           identity: dict) -> dict:
+    path = root / part
+    if path.is_file():
+        engine_manifest = lib.engine_root() / lib.RUNTIME_MANIFEST_FILE
+        try:
+            same_manifest = hashlib.sha256(path.read_bytes()).digest() \
+                == hashlib.sha256(engine_manifest.read_bytes()).digest()
+        except OSError:
+            same_manifest = False
+        copied = part == lib.RUNTIME_MANIFEST_FILE \
+            and identity.get("source") == "project-drop-in" and same_manifest
+        return {
+            "path": str(path),
+            "classification": "copied-runtime" if copied else "project-owned",
+            "source": "validated-runtime-identity" if copied else "project-content",
+            "reason": "validated project drop-in manifest" if copied
+                      else "file is not the validated runtime manifest",
+        }
+    expected = {relative: digest for relative, digest in signatures.items()
+                if relative.startswith(part + "/")}
+    actual = _runtime_payload_files(path, root) if path.is_dir() else set()
+    missing = sorted(set(expected) - actual)
+    extra = sorted(actual - set(expected))
+    changed = []
+    for relative in sorted(set(expected) & actual):
+        try:
+            digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        except OSError:
+            digest = ""
+        if digest != expected[relative]:
+            changed.append(relative)
+    copied = bool(expected) and not missing and not extra and not changed
+    reason = "all runtime files match the manifest exactly" if copied else \
+        f"project content differs from runtime manifest (missing={len(missing)}, changed={len(changed)}, extra={len(extra)})"
+    return {
+        "path": str(path),
+        "classification": "copied-runtime" if copied else "project-owned",
+        "source": "runtime-manifest" if copied else "project-content",
+        "reason": reason,
+    }
+
+
+def _runtime_path_diagnosis(root: Path, identity: dict) -> tuple[list[dict], list[str]]:
+    """Classify paths only when exact manifest evidence proves ownership."""
+    signatures = _runtime_signatures()
+    found, legacy = [], []
+    for part in (*LEGACY_PARTS, "prompts"):
+        path = root / part
+        if not path.exists():
+            continue
+        entry = _classify_runtime_path(root, part, signatures, identity)
+        found.append(entry)
+        if entry["classification"] == "copied-runtime":
+            legacy.append(str(path))
+    return found, legacy
+
+
+def _canonical_executable() -> str:
+    return shutil.which("handsoff") or "handsoff"
+
+
+def _documentation_files(root: Path) -> list[Path]:
+    files = [path for path in root.iterdir()
+             if path.is_file() and path.suffix.lower() in {".md", ".txt"}]
+    docs = root / "docs"
+    if docs.is_dir():
+        files.extend(path for path in docs.rglob("*")
+                     if path.is_file() and path.suffix.lower() in {".md", ".txt"})
+    return sorted(set(files), key=lambda path: path.relative_to(root).as_posix())
+
+
+def _documentation_diagnosis(root: Path, identity: dict) -> dict:
+    """Read-only documentation check based on the active installation identity."""
+    executable = _canonical_executable()
+    installed = str(identity["version"])
+    diagnostics = []
+    old_version = re.compile(
+        r"(?:(?:releases?/)?download/v|releases?/v|Handsoff\s+v|pin\s+v)([0-9]+\.[0-9]+\.[0-9]+)",
+        re.IGNORECASE,
+    )
+    old_command = re.compile(
+        r"(?:python\d*(?:\.\d+)?\s+)?(?:\S*/)?bin/handsoff_(?:supervisor|dashboard|agent|cli|fleet)\.py"
+    )
+    for path in _documentation_files(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for match in old_version.finditer(text):
+            if "v" + match.group(1) != installed and match.group(1) != installed.lstrip("v"):
+                diagnostics.append({"path": str(path), "code": "obsolete-release-reference",
+                                     "detail": f"references v{match.group(1)}; installed engine is {installed}"})
+        if old_command.search(text) or "version-specific-venv" in text:
+            diagnostics.append({"path": str(path), "code": "obsolete-command-path",
+                                 "detail": f"use the installed executable {executable}"})
+    return {"stale": bool(diagnostics), "diagnostics": diagnostics,
+            "installed_engine": installed, "canonical_executable": executable,
+            "supported_project_pin": identity.get("compatibility")}
+
+
 def doctor(root: Path) -> dict:
     identity = lib.validate_runtime_integrity(root)
     cfg = lib.load_config(root)
-    legacy_runtime_paths = [str(root / item) for item in LEGACY_PARTS if (root / item).exists()]
+    runtime_paths, legacy_runtime_paths = _runtime_path_diagnosis(root, identity)
+    documentation = _documentation_diagnosis(root, identity)
     return {"ok": True, "root": str(root), "engine": identity,
             "config": str(root / "handsoff.toml"),
             "adapters": lib.adapter_availability(),
             "state_present": lib.status_path(root, cfg).exists(),
-            "console_executable": str(Path(sys.argv[0]).expanduser().resolve()),
+            "console_executable": _canonical_executable(),
             "legacy_runtime_paths": legacy_runtime_paths,
+            "runtime_paths": runtime_paths,
+            "documentation": documentation,
             "migration_required": identity["source"] == "project-drop-in",
             "python": ".".join(map(str, sys.version_info[:3]))}
 

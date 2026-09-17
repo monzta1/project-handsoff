@@ -152,6 +152,29 @@ class TestAgentTokenBudget(HandsoffTestCase):
                 beacon_interval=0.01,
             )
 
+    def test_complete_protocol_survives_trailing_budget_exit(self):
+        self.init("Keep a complete result despite trailing budget accounting")
+        payload = (
+            'HANDSOFF_DESIGN_PROPOSAL: {"summary":"Complete design",'
+            '"approach":["Change one boundary"],"tradeoffs":[],'
+            '"decisions":["Keep compatibility"],"constraints":[],'
+            '"verification":["Run the focused test"]}\n'
+        )
+        process = _CompletedProcess(payload)
+        process.returncode = 1
+        process.stderr = io.StringIO("ERROR: shared rollout token budget exhausted\n")
+        spec = runtime.LaunchSpec(
+            "architect", "codex", "default", ("/bin/codex", "exec", "-"),
+            str(self.tmp), "bounded architect prompt", token_budget=16_000,
+        )
+        self.assertEqual(runtime.execute_launch(
+            spec, popen_factory=mock.Mock(return_value=process), beacon_interval=0.01,
+        ), 0)
+        status = self.read_status()
+        session = status["agent_sessions"][status["current_agent_sessions"]["architect"]]
+        self.assertEqual(session["state"], "completed")
+        self.assertEqual(status["design_proposal"]["summary"], "Complete design")
+
     def test_budget_exhaustion_never_spends_again_on_a_fallback(self):
         failure = lib.classify_runtime_failure(
             exit_code=1, stderr_tail="shared rollout token budget exhausted",
