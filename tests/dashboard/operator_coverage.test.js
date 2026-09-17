@@ -43,6 +43,7 @@ test("unavailable operations fold into one closed disclosure grouped by reason",
   assert.match(block, /<details class="operator-inventory-group operator-inventory-collapsed"><summary>\$\{entries\.length\} UNAVAILABLE<\/summary>/);
   assert.match(block, /byReason/);
   assert.doesNotMatch(block, /availability === "unavailable" \? escapeHtml\(item\.reason\)/);
-  assert.match(block, /AVAILABLE\$\{blocked \? ` \/ \$\{blocked\} UNAVAILABLE` : ""\}/);
+  assert.match(block, /\$\{decisions\.length\} PENDING/);
+  assert.match(block, /ROUTINE_KINDS = new Set\(\["pause", "resume", "run_close", "run_reopen"\]\)/);
   assert.match(css, /\.operator-inventory-collapsed summary/);
 });

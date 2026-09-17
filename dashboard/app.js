@@ -357,11 +357,11 @@ function releasePlanText(plan) {
   if (!plan) return "";
   return [
     `Release: ${plan.version} · ${String(plan.release_class || "unknown").toUpperCase()}`,
-    `Full regression eligible: ${plan.full_regression_eligible ? "YES" : "NO — TARGETED TESTS ONLY"}`,
+    `Full regression eligible: ${plan.full_regression_eligible ? "YES" : "NO, TARGETED TESTS ONLY"}`,
     plan.full_regression_override_reason ? `Override: ${plan.full_regression_override_reason}` : null,
     `Planned by: ${plan.planned_by || "unknown"} · ${plan.planned_at || "unknown"}`,
     "Targeted checks:",
-    ...(plan.targeted_checks || []).map((item) => `  ${item.command} — ${item.reason}`),
+    ...(plan.targeted_checks || []).map((item) => `  ${item.command}: ${item.reason}`),
     `Full groups: ${(plan.regression_groups || []).join(", ") || "none"}`,
   ].filter(Boolean).join("\n");
 }
@@ -442,11 +442,17 @@ function renderOperations(operations = {}, actions = []) {
   const inventory = operations.inventory || [];
   panel.classList.toggle("hidden", actions.length === 0 && inventory.length === 0);
   const actionKinds = new Set(actions.map((action) => action.kind));
-  const usable = actions.length + inventory.filter((item) => item.availability === "actionable" && !actionKinds.has(item.kind)).length;
-  const blocked = inventory.filter((item) => item.availability === "unavailable").length;
-  $("operator-actions-count").textContent = `${usable} AVAILABLE${blocked ? ` / ${blocked} UNAVAILABLE` : ""}`;
+  // Routine controls (pause, resume, close, reopen) are always offered, so
+  // they live in the console; the decisions panel keeps only the calls that
+  // actually gate the mission.
+  const ROUTINE_KINDS = new Set(["pause", "resume", "run_close", "run_reopen"]);
+  const decisions = actions.filter((action) => !ROUTINE_KINDS.has(action.kind));
+  const routine = actions.filter((action) => ROUTINE_KINDS.has(action.kind));
+  $("operator-actions-count").textContent = `${decisions.length} PENDING`;
   const list = $("operator-actions-list");
   list.replaceChildren();
+  const routineList = $("operator-routine-list");
+  if (routineList) routineList.replaceChildren();
   for (const action of actions) {
     const card = document.createElement("article");
     card.className = `operator-action operator-action-${action.tone || "primary"}`;
@@ -473,7 +479,8 @@ function renderOperations(operations = {}, actions = []) {
     button.addEventListener("click", () => executeOperatorAction(action, reason?.value || "", button));
     controls.append(button);
     card.append(copy, controls);
-    list.append(card);
+    if (ROUTINE_KINDS.has(action.kind) && routineList) routineList.append(card);
+    else list.append(card);
   }
   // Unavailable operations are folded into one closed disclosure with a
   // single line per reason. A complete run has eighteen of them and every
@@ -514,8 +521,25 @@ function renderOperations(operations = {}, actions = []) {
   $("verify-status").textContent = inFlight.length ? `CHECKS IN FLIGHT: ${inFlight.join(", ")}` : "";
   $("verification-latest").innerHTML = Object.entries(operations.verification?.latest || {}).map(([criterion, result]) => `<tr><td>${escapeHtml(criterion)}</td><td>${result.ok ? "YES" : "NO"}</td><td>${escapeHtml(result.at)}</td></tr>`).join("");
   const engine = operations.engine || {};
-  $("engine-panel").innerHTML = `<h3>ENGINE</h3><p>${escapeHtml(engine.version)} · ${escapeHtml(engine.source)} · pin ${escapeHtml(engine.pin)} · ${escapeHtml(engine.compatibility)}</p><div class="engine-commands">${Object.entries(engine.commands || {}).map(([name, command]) => `<div><code>${escapeHtml(command)}</code><button type="button" data-copy-command="${escapeHtml(command)}">COPY</button></div>`).join("")}</div><p class="engine-previews">${Object.entries(engine.previews || {}).map(([name, preview]) => `<span>${escapeHtml(name)}: ${escapeHtml(typeof preview === "string" ? preview : JSON.stringify(preview))}</span>`).join(" ")}</p><p class="engine-reason">${escapeHtml(engine.execution_reason)}</p>`;
+  // The engine pane leads with one identity line; the copyable commands and
+  // the raw upgrade/migrate previews sit behind closed disclosures so they
+  // never push mission state off the screen.
+  const commandRows = Object.entries(engine.commands || {}).map(([name, command]) => `<div><code>${escapeHtml(command)}</code><button type="button" data-copy-command="${escapeHtml(command)}">COPY</button></div>`).join("");
+  const previewRows = Object.entries(engine.previews || {}).map(([name, preview]) => `<span><strong>${escapeHtml(name)}</strong> ${escapeHtml(typeof preview === "string" ? preview : JSON.stringify(preview))}</span>`).join("");
+  $("engine-panel").innerHTML = `<p class="engine-summary">${escapeHtml(engine.version)} <span>${escapeHtml(engine.source)} · pin ${escapeHtml(engine.pin)} · ${escapeHtml(engine.compatibility)}</span></p><p class="engine-reason">${escapeHtml(engine.execution_reason)}</p>${commandRows ? `<details class="engine-details"><summary>${Object.keys(engine.commands || {}).length} COMMANDS</summary><div class="engine-commands">${commandRows}</div></details>` : ""}${previewRows ? `<details class="engine-details"><summary>PREVIEWS</summary><div class="engine-previews">${previewRows}</div></details>` : ""}`;
   $("engine-panel").querySelectorAll("[data-copy-command]").forEach((button) => button.onclick = () => navigator.clipboard.writeText(button.dataset.copyCommand));
+  const clear = $("decisions-clear");
+  if (clear) clear.classList.toggle("hidden", decisions.length > 0 || state.inputRequired);
+}
+
+// The Pilot console is tabbed: operations inventory, launch, verify and
+// engine each get a pane so the rail never stacks four forms end to end.
+function bindConsoleTabs() {
+  const tabs = [...document.querySelectorAll(".console-tab")];
+  tabs.forEach((tab) => tab.addEventListener("click", () => {
+    tabs.forEach((other) => { other.classList.toggle("is-active", other === tab); other.setAttribute("aria-selected", other === tab ? "true" : "false"); });
+    document.querySelectorAll(".console-pane").forEach((pane) => pane.classList.toggle("is-active", pane.id === tab.dataset.tab));
+  }));
 }
 
 function postOperation(url, body, resultElement) {
@@ -749,13 +773,13 @@ function renderWorkItems(workItems) {
   $("ticket-list").innerHTML = items.map((item) => `
     <tr data-item-id="${escapeHtml(item.id)}">
       <td><code>${escapeHtml(item.id)}</code></td>
-      <td>${item.number ? `#${escapeHtml(item.number)}` : "—"}</td>
+      <td>${item.number ? `#${escapeHtml(item.number)}` : "n/a"}</td>
       <td>${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
       <td><span class="ticket-state">${escapeHtml(workItemLaneLabel(item))}</span><small>${escapeHtml(workItemLaneDetail(item))}</small>${smallFixCanConfirm(item) ? `<button class="mini-action lane-confirm" data-item="${escapeHtml(item.id)}">CONFIRM</button>` : ""}</td>
       <td><strong>${escapeHtml(workItemProgressLabel(item))}</strong></td>
       <td><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
-      <td>${escapeHtml(item.phase_or_next || "—")}</td>
-      <td>${escapeHtml(item.blocker || "—")}</td>
+      <td>${escapeHtml(item.phase_or_next || "n/a")}</td>
+      <td>${escapeHtml(item.blocker || "n/a")}</td>
       <td>${escapeHtml(relativeTime(item.updated_at))}</td>
     </tr>`).join("");
   document.querySelectorAll(".lane-confirm").forEach((button) => {
@@ -1063,7 +1087,7 @@ function renderOperation(operation) {
 
 function metricDuration(value) {
   const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (!Number.isFinite(seconds) || seconds < 0) return "n/a";
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   return `${(seconds / 3600).toFixed(1)}h`;
@@ -1214,7 +1238,7 @@ function render(snapshot) {
   $("progress-value").textContent = Math.round(progress);
   $("progress-ring").style.setProperty("--progress", `${progress * 3.6}deg`);
   $("progress-ring").classList.toggle("is-complete", complete);
-  $("phase-kicker").textContent = complete ? "OBJECTIVES NEUTRALIZED · MISSION COMPLETE" : `PHASE ${status.phase_number} OF 8`;
+  $("phase-kicker").textContent = complete ? "MISSION COMPLETE" : `PHASE ${status.phase_number} OF 8`;
   $("phase-name").textContent = status.phase;
   $("status-updated").textContent = `State updated ${relativeTime(status.updated_at)}`;
   $("design-rounds").textContent = `${policy.design_round} / ${policy.max_design_rounds}`;
@@ -1226,7 +1250,7 @@ function render(snapshot) {
 
   renderPhases(snapshot.phases);
 
-  $("supervisor-panel").className = `supervisor-panel panel ${supervisor.tone}`;
+  $("supervisor-panel").className = `briefing ${supervisor.tone}`;
   $("briefing-state").textContent = supervisor.label.toUpperCase();
   $("supervisor-headline").textContent = supervisor.headline;
   $("supervisor-summary").textContent = supervisor.summary;
@@ -1340,18 +1364,18 @@ function setConnectionStatus(label) {
 
 function connectEventStream() {
   if (!("EventSource" in window)) {
-    setConnectionStatus("TACTICAL LINK: POLLING");
+    setConnectionStatus("LINK: POLLING");
     return;
   }
   const events = new EventSource("/api/events");
   state.eventStream = events;
   events.addEventListener("ready", () => {
-    setConnectionStatus("TACTICAL LINK: LIVE");
+    setConnectionStatus("LINK: LIVE");
     refresh();
   });
   events.addEventListener("invalidate", refresh);
-  events.onopen = () => setConnectionStatus("TACTICAL LINK: LIVE");
-  events.onerror = () => setConnectionStatus("TACTICAL LINK: RECONNECTING");
+  events.onopen = () => setConnectionStatus("LINK: LIVE");
+  events.onerror = () => setConnectionStatus("LINK: RECONNECTING");
 }
 
 refresh();
@@ -1363,6 +1387,7 @@ $("design-review-authorize").addEventListener("click", authorizeDesignReviewAtte
 $("amendment-approve").addEventListener("click", approveAmendment);
 $("pilot-note-form").addEventListener("submit", sendPilotNote);
 $("mission-init-form").addEventListener("submit", initializeMission);
+bindConsoleTabs();
 $("regression-accept").addEventListener("click", () => decideRegression("accept"));
 $("regression-decline").addEventListener("click", () => decideRegression("decline"));
 $("settings-toggle").addEventListener("click", openSettings);

@@ -14,16 +14,24 @@
     <header class="topbar">
       <a class="brand" href="/" aria-label="Handsoff E.V.E. Mission Control">
         <span class="brand-mark">E<span>//</span>V</span>
-        <span class="brand-copy"><strong>HANDSOFF</strong><small>E.V.E. MISSION CONTROL</small></span>
+        <span class="brand-copy"><strong>HANDSOFF</strong><small>MISSION CONTROL</small></span>
       </a>
+      <div class="topbar-mission">
+        <p class="eyebrow"><span id="project-name">PROJECT</span><span class="sep">/</span><span id="engine-version">ENGINE UNKNOWN</span></p>
+        <h1 id="feature-name">Acquiring mission telemetry…</h1>
+      </div>
+      <div class="topbar-state">
+        <span class="phase-pill" id="phase-kicker">PHASE 1 OF 8</span>
+        <span class="mission-state" id="mission-state">STANDBY</span>
+      </div>
       <div class="topbar-meta">
-        <span class="connection"><i></i><span id="connection-status">TACTICAL LINK: CONNECTING</span></span>
-        <span id="last-sync">Acquiring telemetry…</span>
+        <span class="connection"><i></i><span id="connection-status">LINK: CONNECTING</span></span>
+        <span id="last-sync" class="last-sync">Acquiring telemetry…</span>
         <form id="pilot-note-form" class="pilot-note" autocomplete="off" aria-label="Pilot note for the archive analyzer">
-          <input id="pilot-note-text" class="pilot-note-input" type="text" maxlength="512" placeholder="Pilot note (1 to 512 chars)" aria-label="Pilot note text">
+          <input id="pilot-note-text" class="pilot-note-input" type="text" maxlength="512" placeholder="Pilot note" aria-label="Pilot note text">
           <button id="pilot-note-send" class="pilot-note-send" type="submit">SEND</button>
         </form>
-        <button id="settings-toggle" class="settings-toggle" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">AGENT SETTINGS</button>
+        <button id="settings-toggle" class="settings-toggle" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">CREW</button>
       </div>
     </header>
 
@@ -36,8 +44,8 @@
 
     <main id="dashboard" aria-live="polite">
       <section id="empty-state" class="empty-state hidden">
-        <span class="empty-code">SYSTEM ONLINE · NO ACTIVE MISSION</span>
-        <h1>System online. Welcome back, Pilot.</h1>
+        <p class="empty-code">NO ACTIVE RUN</p>
+        <h2>Initialize a mission</h2>
         <p id="empty-message">No Mission Objective detected. Initialize a Ship Feature and E.V.E. will acquire it automatically.</p>
         <form id="mission-init-form" class="mission-init-form" autocomplete="off">
           <label>MISSION OBJECTIVE<input id="mission-init-feature" type="text" maxlength="240" required placeholder="Describe the feature or repair"></label>
@@ -48,204 +56,212 @@
       </section>
 
       <div id="active-state" class="hidden">
-        <section class="mission-header">
-          <div>
-            <p class="eyebrow"><span id="project-name">PROJECT</span> / ACTIVE MISSION OBJECTIVE</p>
-            <h1 id="feature-name">Acquiring mission telemetry…</h1>
-            <p class="project-root"><span id="project-root"></span> · ENGINE <span id="engine-version">UNKNOWN</span></p>
-          </div>
-          <div class="role-chiclets" id="role-chiclets" role="status" aria-label="Who is currently working">
-            <span class="chiclet" data-role="architect"><i aria-hidden="true"></i>ARCHITECT</span>
-            <span class="chiclet" data-role="supervisor"><i aria-hidden="true"></i>SUPERVISOR</span>
-            <span class="chiclet" data-role="implementer"><i aria-hidden="true"></i>IMPLEMENTER</span>
-            <span class="chiclet" data-role="reviewer"><i aria-hidden="true"></i>REVIEWER</span>
-          </div>
-          <div class="mission-state" id="mission-state">IN PROGRESS</div>
-        </section>
-
-        <section id="consistency-fault" class="consistency-fault hidden" role="alert" aria-live="polite"><strong>CONSISTENCY FAULT</strong><span id="consistency-fault-message"></span></section>
-
-        <section id="input-alert" class="input-alert hidden" role="alert" aria-live="assertive">
-          <div class="input-alert-beacon" aria-hidden="true"><span>!</span></div>
-          <div class="input-alert-copy">
-            <span>MISSION HOLD ENGAGED</span>
-            <h2>PILOT AUTHORIZATION REQUIRED</h2>
-            <p id="input-alert-message">Holding position. Awaiting your command, Pilot.</p>
-            <div id="input-alert-cards" class="input-alert-cards hidden"></div>
-            <pre id="regression-details" class="regression-details hidden"></pre>
-          </div>
-          <div class="input-alert-actions">
-            <button id="design-approve" class="authorize-button hidden" type="button">AUTHORIZE DESIGN</button>
-            <button id="deployment-approve" class="authorize-button hidden" type="button">AUTHORIZE DEPLOYMENT</button>
-            <button id="design-review-authorize" class="authorize-button hidden" type="button">AUTHORIZE ONE MORE DESIGN REVIEW</button>
-            <button id="amendment-approve" class="authorize-button hidden" type="button">APPROVE AMENDMENT</button>
-            <button id="regression-accept" class="authorize-button hidden" type="button">ACCEPT REGRESSION</button>
-            <button id="regression-decline" class="alert-button hidden" type="button">DECLINE</button>
-            <button id="enable-alerts" class="alert-button" type="button">Enable tactical alerts</button>
-          </div>
-        </section>
-
-        <section id="operator-actions-panel" class="panel operator-actions-panel hidden" aria-live="polite">
-          <div class="section-head"><div><p class="panel-label">PILOT OPERATIONS</p><h2>Available command decisions</h2></div><span id="operator-actions-count" class="section-meta">0 ACTIONS</span></div>
-          <p class="operator-actions-intro">Every control is bound to the mission state displayed here. Stale commands are rejected safely.</p>
-          <div id="operator-actions-list" class="operator-actions-list"></div>
-          <div id="operator-inventory" class="operator-inventory"></div>
-          <div id="launch-role-section" class="operator-form-section"><h3>LAUNCH ROLE</h3><form id="launch-role-form"><label>ROLE<select id="launch-role-role"></select></label><label>TASK<textarea id="launch-role-task" maxlength="4000" rows="4"></textarea></label><p id="launch-role-consequence" class="operator-consequence"></p><button type="submit">LAUNCH ROLE</button><p id="launch-role-result" class="operator-form-result" aria-live="polite"></p></form></div>
-          <div id="verify-section" class="operator-form-section"><h3>VERIFY</h3><form id="verify-form"><div id="verify-criteria" class="verify-criteria"></div><button type="submit">RUN CHECKS</button><button id="verify-live" type="button">VERIFY LIVE</button><p id="verify-status" class="operator-form-result" aria-live="polite"></p></form><table class="verification-latest"><thead><tr><th>CRITERION</th><th>OK</th><th>AT</th></tr></thead><tbody id="verification-latest"></tbody></table></div>
-          <div id="engine-panel" class="operator-form-section"></div>
-        </section>
-
-        <section id="regression-alert" class="regression-card panel hidden" aria-live="polite">
-          <div class="panel-label">REGRESSION AUTHORIZATION</div>
-          <pre id="regression-status-details" class="regression-details"></pre>
-          <p id="regression-last" class="regression-last"></p>
-        </section>
-
         <section class="phase-rail-wrap" aria-label="Mission flight plan and delivery phases">
           <div class="phase-rail" id="phase-rail"></div>
         </section>
 
-        <section class="hero-grid">
-          <article class="progress-panel panel">
-            <div class="panel-label">MISSION TRAJECTORY</div>
-            <div class="progress-body">
-              <div class="progress-ring" id="progress-ring"><div><strong id="progress-value">0</strong><span>%</span></div></div>
-              <div class="progress-copy">
-                <span id="phase-kicker">PHASE 1 OF 8</span>
+        <section id="consistency-fault" class="consistency-fault hidden" role="alert" aria-live="polite"><strong>CONSISTENCY FAULT</strong><span id="consistency-fault-message"></span></section>
+
+        <section class="bridge" aria-label="Mission bridge">
+          <article class="panel now-panel">
+            <div class="now-head">
+              <div class="progress-ring" id="progress-ring" aria-label="Mission progress"><div><strong id="progress-value">0</strong><span>%</span></div></div>
+              <div class="now-copy">
+                <p class="panel-label">CURRENT PHASE</p>
                 <h2 id="phase-name">Orient</h2>
-                <p id="status-updated">Awaiting initial telemetry</p>
-                <p id="design-review-budget">Design review 0/0</p>
-                <p id="design-review-packet">Delta packet: none (first review gets the full task)</p>
-                <p id="design-reviewer-profile">Review profile: not selected</p>
+                <p id="status-updated" class="now-updated">Awaiting initial telemetry</p>
               </div>
             </div>
-            <div class="mini-stats">
-              <div><span>Design cycles</span><strong id="design-rounds">0 / 3</strong></div>
-              <div><span>Review cycles</span><strong id="review-rounds">0 / 3</strong></div>
-              <div><span>Diagnostic runs</span><strong id="evidence-runs">0</strong></div>
-            </div>
-          </article>
-
-          <article class="supervisor-panel panel" id="supervisor-panel">
-            <div class="supervisor-topline">
-              <div class="supervisor-id"><span class="supervisor-avatar">E</span><div><strong>E.V.E.</strong><small>ENHANCED VIRTUAL ENVIRONMENT</small></div></div>
-              <span class="briefing-state" id="briefing-state">SCANNING</span>
-            </div>
-            <div class="supervisor-message">
-              <span class="quote-mark">“</span>
-              <h2 id="supervisor-headline">Analyzing current trajectory, Pilot.</h2>
-              <p id="supervisor-summary"></p>
-            </div>
             <div class="next-action">
-              <span>TACTICAL DIRECTIVE</span>
+              <span>NEXT ACTION</span>
               <strong id="supervisor-next"></strong>
             </div>
-            <p class="reassurance" id="supervisor-reassurance"></p>
+            <div class="role-chiclets" id="role-chiclets" role="status" aria-label="Who is currently working">
+              <span class="chiclet" data-role="supervisor"><i></i>SUPERVISOR</span>
+              <span class="chiclet" data-role="architect"><i></i>ARCHITECT</span>
+              <span class="chiclet" data-role="implementer"><i></i>IMPLEMENTER</span>
+              <span class="chiclet" data-role="reviewer"><i></i>REVIEWER</span>
+            </div>
+            <dl class="now-facts">
+              <div><dt>Design cycles</dt><dd id="design-rounds">0 / 3</dd></div>
+              <div><dt>Review cycles</dt><dd id="review-rounds">0 / 3</dd></div>
+              <div><dt>Diagnostic runs</dt><dd id="evidence-runs">0</dd></div>
+            </dl>
+            <p class="now-detail" id="design-review-budget">Design review 0/0</p>
+            <p class="now-detail" id="design-review-packet">Delta packet: none</p>
+            <p class="now-detail" id="design-reviewer-profile">Review profile: not selected</p>
+            <p class="project-root"><span id="project-root"></span></p>
+          </article>
+
+          <article class="panel decisions-panel" id="decisions-panel">
+            <div class="section-head"><div><p class="panel-label">PILOT DECISIONS</p><h2>Your call</h2></div><span id="operator-actions-count" class="section-meta">0 AVAILABLE</span></div>
+            <section id="input-alert" class="input-alert hidden" role="alert" aria-live="assertive">
+              <div class="input-alert-beacon" aria-hidden="true"><span></span></div>
+              <div class="input-alert-copy">
+                <span>AUTHORIZATION REQUIRED</span>
+                <p id="input-alert-message">Holding position. Awaiting your command, Pilot.</p>
+                <div id="input-alert-cards" class="input-alert-cards hidden"></div>
+                <pre id="regression-details" class="regression-details hidden"></pre>
+              </div>
+              <div class="input-alert-actions">
+                <button id="design-approve" class="authorize-button hidden" type="button">AUTHORIZE DESIGN</button>
+                <button id="deployment-approve" class="authorize-button hidden" type="button">AUTHORIZE DEPLOYMENT</button>
+                <button id="design-review-authorize" class="authorize-button hidden" type="button">AUTHORIZE ONE MORE DESIGN REVIEW</button>
+                <button id="amendment-approve" class="authorize-button hidden" type="button">APPROVE AMENDMENT</button>
+                <button id="regression-accept" class="authorize-button hidden" type="button">ACCEPT REGRESSION</button>
+                <button id="regression-decline" class="alert-button hidden" type="button">DECLINE</button>
+              </div>
+            </section>
+            <div id="operator-actions-list" class="operator-actions-list"></div>
+            <p id="decisions-clear" class="decisions-clear">No Pilot decision pending. The crew is proceeding on its own authority.</p>
+            <button id="enable-alerts" class="alert-button" type="button">Enable desktop alerts</button>
+          </article>
+
+          <article class="panel signals-panel">
+            <div class="section-head"><div><p class="panel-label">SIGNALS</p><h2>Mission integrity</h2></div></div>
+            <div class="signal-grid">
+              <div class="signal-card"><span>Objectives</span><strong id="acceptance-score">0 / 0</strong><small>criteria confirmed</small></div>
+              <div class="signal-card"><span>Original symptom</span><strong id="symptom-state">OPEN</strong><small id="symptom-detail">not yet confirmed resolved</small></div>
+              <div class="signal-card"><span>Ledger</span><strong id="audit-state">SCANNING</strong><small id="audit-detail">validating chains</small></div>
+              <div class="signal-card"><span>Deployment</span><strong id="approval-state">PENDING</strong><small id="approval-detail">Pilot authorization required</small></div>
+            </div>
+            <div class="briefing" id="supervisor-panel">
+              <div class="briefing-head"><span class="panel-label">E.V.E. BRIEFING</span><span class="briefing-state" id="briefing-state">SCANNING</span></div>
+              <h3 id="supervisor-headline">Analyzing current trajectory, Pilot.</h3>
+              <p id="supervisor-summary"></p>
+              <p class="reassurance" id="supervisor-reassurance"></p>
+            </div>
           </article>
         </section>
 
-        <section class="signal-grid">
-          <article class="signal-card"><span>Objective integrity</span><strong id="acceptance-score">0 / 0</strong><small>criteria confirmed</small></article>
-          <article class="signal-card"><span>Primary threat state</span><strong id="symptom-state">OPEN</strong><small id="symptom-detail">neutralization unconfirmed</small></article>
-          <article class="signal-card"><span>Flight recorder</span><strong id="audit-state">SCANNING</strong><small id="audit-detail">validating ledgers</small></article>
-          <article class="signal-card"><span>Launch authority</span><strong id="approval-state">PENDING</strong><small id="approval-detail">Pilot authorization required</small></article>
-        </section>
+        <section class="workspace">
+          <div class="workspace-main">
+            <section id="regression-alert" class="regression-card panel hidden" aria-live="polite">
+              <div class="section-head"><div><p class="panel-label">REGRESSION GATE</p><h2>Full regression request</h2></div></div>
+              <pre id="regression-status-details" class="regression-details"></pre>
+              <p id="regression-last" class="regression-last"></p>
+            </section>
 
-        <section id="metrics-panel" class="panel metrics-panel">
-          <div class="section-head"><div><p class="panel-label">MISSION ECONOMICS</p><h2>Delivery performance</h2></div><span id="metrics-token-state" class="section-meta">TOKENS UNKNOWN</span></div>
-          <div class="metrics-grid">
-            <div><span>Elapsed</span><strong id="metrics-elapsed">—</strong></div>
-            <div><span>Managed sessions</span><strong id="metrics-sessions">0</strong></div>
-            <div><span>Failures / replacements</span><strong id="metrics-failures">0 / 0</strong></div>
-            <div><span>Review cycles</span><strong id="metrics-reviews">0 / 0</strong></div>
-            <div><span>Verification time</span><strong id="metrics-verification">—</strong></div>
-            <div><span>Pilot wait</span><strong id="metrics-pilot-wait">—</strong></div>
-            <div><span>Total tokens</span><strong id="metrics-tokens">UNKNOWN</strong></div>
+            <section id="questions-panel" class="panel questions-panel hidden" aria-live="polite">
+              <div class="section-head"><div><p class="panel-label">QUESTIONS</p><h2>Crew questions for the Pilot</h2></div><span id="questions-state" class="section-meta">NONE OPEN</span></div>
+              <p id="questions-headline" class="questions-headline">No open questions</p>
+              <div id="questions-list" class="questions-list"></div>
+            </section>
+
+            <section id="amendment-panel" class="panel amendment-panel hidden" aria-live="polite">
+              <div class="section-head"><div><p class="panel-label">AMENDMENT</p><h2>Scoped post-approval amendment</h2></div><span id="amendment-state" class="section-meta">PENDING REVIEW</span></div>
+              <p id="amendment-headline" class="amendment-headline">No amendment open</p>
+              <p id="amendment-decision" class="amendment-decision">No decision pending</p>
+              <ul id="amendment-list" class="amendment-list"></ul>
+            </section>
+
+            <article class="panel acceptance-panel">
+              <div class="section-head"><div><p class="panel-label">OBJECTIVES</p><h2>Acceptance criteria</h2></div><div class="legend"><span class="pass-dot">Passing</span><span class="open-dot">Open</span></div></div>
+              <div id="criteria-list" class="criteria-list"></div>
+            </article>
+
+            <section id="ticket-panel" class="panel ticket-panel hidden">
+              <div class="section-head"><div><p class="panel-label">DELIVERY QUEUE</p><h2>Work items</h2></div><span id="ticket-total" class="section-meta">0 ITEMS</span></div>
+              <div class="ticket-table-wrap">
+                <table class="ticket-table">
+                  <thead><tr><th>Item</th><th>Issue</th><th>Title</th><th>Lane</th><th>Progress</th><th>Status</th><th>Phase / next</th><th>Blocker</th><th>Updated</th></tr></thead>
+                  <tbody id="ticket-list"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section id="tranche-panel" class="panel ticket-panel hidden">
+              <div class="section-head"><div><p class="panel-label">BACKLOG</p><h2>Proposed tranche</h2></div><button id="tranche-approve" type="button">AUTHORIZE TRANCHE</button></div>
+              <div id="tranche-list" class="tranche-list"></div>
+            </section>
+
+            <section id="agent-output-panel" class="panel agent-output-panel hidden" aria-live="polite">
+              <div class="section-head"><div><p class="panel-label">TELEMETRY</p><h2>Managed crew signal</h2></div><span id="agent-output-state" class="section-meta">NO SIGNAL</span></div>
+              <p id="agent-output-meta" class="agent-output-meta">No managed session selected.</p>
+              <div id="agent-output-timing" class="agent-output-timing"></div>
+              <pre id="agent-output-log" class="agent-output-log"></pre>
+              <div id="operation-panel" class="operation-panel">
+                <div class="operation-head"><span class="panel-label">EXTERNAL OPERATION</span><span id="operation-state" class="section-meta operation-state-unavailable">UNAVAILABLE</span></div>
+                <p id="operation-meta" class="operation-meta">No operation telemetry reported by this session.</p>
+                <div id="operation-history" class="operation-history"></div>
+              </div>
+            </section>
+
+            <article class="panel activity-panel">
+              <div class="section-head"><div><p class="panel-label">FLIGHT LOG</p><h2>Mission chronology</h2></div><span id="event-total" class="section-meta">0 EVENTS</span></div>
+              <div id="event-list" class="event-list"></div>
+            </article>
+
+            <article class="panel evidence-panel">
+              <div class="section-head"><div><p class="panel-label">DIAGNOSTICS</p><h2>Evidence ledger</h2></div><span id="verification-total" class="section-meta">0 RUNS</span></div>
+              <div id="verification-list" class="verification-list"></div>
+            </article>
           </div>
-          <div id="metrics-phase-list" class="metrics-phase-list"></div>
-          <div id="metrics-session-list" class="metrics-phase-list"></div>
-        </section>
 
-        <section id="agent-output-panel" class="panel agent-output-panel hidden" aria-live="polite">
-          <div class="section-head"><div><p class="panel-label">MISSION TELEMETRY</p><h2>Managed crew signal</h2></div><span id="agent-output-state" class="section-meta">NO SIGNAL</span></div>
-          <p id="agent-output-meta" class="agent-output-meta">No managed session selected.</p>
-          <div id="agent-output-timing" class="agent-output-timing"></div>
-          <pre id="agent-output-log" class="agent-output-log"></pre>
-          <div id="operation-panel" class="operation-panel">
-            <div class="operation-head"><span class="panel-label">EXTERNAL OPERATION</span><span id="operation-state" class="section-meta operation-state-unavailable">UNAVAILABLE</span></div>
-            <p id="operation-meta" class="operation-meta">No operation telemetry reported by this session.</p>
-            <div id="operation-history" class="operation-history"></div>
-          </div>
-        </section>
+          <aside class="workspace-rail">
+            <section id="operator-actions-panel" class="panel operator-actions-panel hidden" aria-live="polite">
+              <div class="section-head"><div><p class="panel-label">OPERATIONS</p><h2>Pilot console</h2></div></div>
+              <div class="console-tabs" role="tablist" aria-label="Pilot console sections">
+                <button type="button" class="console-tab is-active" data-tab="console-operations" role="tab" aria-selected="true">OPERATIONS</button>
+                <button type="button" class="console-tab" data-tab="console-launch" role="tab" aria-selected="false">LAUNCH</button>
+                <button type="button" class="console-tab" data-tab="console-verify" role="tab" aria-selected="false">VERIFY</button>
+                <button type="button" class="console-tab" data-tab="console-engine" role="tab" aria-selected="false">ENGINE</button>
+              </div>
+              <div id="console-operations" class="console-pane is-active" role="tabpanel">
+                <div id="operator-routine-list" class="operator-actions-list operator-routine-list"></div>
+                <div id="operator-inventory" class="operator-inventory"></div>
+              </div>
+              <div id="console-launch" class="console-pane" role="tabpanel">
+                <div id="launch-role-section" class="operator-form-section"><form id="launch-role-form"><label>ROLE<select id="launch-role-role"></select></label><label>TASK<textarea id="launch-role-task" maxlength="4000" rows="4"></textarea></label><p id="launch-role-consequence" class="operator-consequence"></p><button type="submit">LAUNCH ROLE</button><p id="launch-role-result" class="operator-form-result" aria-live="polite"></p></form></div>
+              </div>
+              <div id="console-verify" class="console-pane" role="tabpanel">
+                <div id="verify-section" class="operator-form-section"><form id="verify-form"><div id="verify-criteria" class="verify-criteria"></div><div class="verify-buttons"><button type="submit">RUN CHECKS</button><button id="verify-live" type="button">VERIFY LIVE</button></div><p id="verify-status" class="operator-form-result" aria-live="polite"></p></form><table class="verification-latest"><thead><tr><th>CRITERION</th><th>OK</th><th>AT</th></tr></thead><tbody id="verification-latest"></tbody></table></div>
+              </div>
+              <div id="console-engine" class="console-pane" role="tabpanel">
+                <div id="engine-panel" class="operator-form-section"></div>
+              </div>
+            </section>
 
-        <section id="ticket-panel" class="panel ticket-panel hidden">
-          <div class="section-head"><div><p class="panel-label">DELIVERY QUEUE</p><h2>Work-item status</h2></div><span id="ticket-total" class="section-meta">0 ITEMS</span></div>
-          <div class="ticket-table-wrap">
-            <table class="ticket-table">
-              <thead><tr><th>Item</th><th>Issue</th><th>Title</th><th>Lane</th><th>Progress</th><th>Status</th><th>Phase / next</th><th>Blocker</th><th>Updated</th></tr></thead>
-              <tbody id="ticket-list"></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section id="tranche-panel" class="panel ticket-panel hidden">
-          <div class="section-head"><div><p class="panel-label">BACKLOG VECTOR</p><h2>Proposed tranche</h2></div><button id="tranche-approve" type="button">AUTHORIZE TRANCHE</button></div>
-          <div id="tranche-list" class="tranche-list"></div>
-        </section>
-
-        <section id="design-evidence-panel" class="panel design-evidence-panel hidden">
-          <div class="section-head"><div><p class="panel-label">DESIGN EVIDENCE</p><h2>Cached measurements</h2></div><span id="design-evidence-total" class="section-meta">0 ARTIFACTS</span></div>
-          <div id="design-evidence-list" class="design-evidence-list"></div>
-        </section>
-
-        <section id="amendment-panel" class="panel amendment-panel hidden" aria-live="polite">
-          <div class="section-head"><div><p class="panel-label">AMENDMENT</p><h2>Scoped post-approval amendment</h2></div><span id="amendment-state" class="section-meta">PENDING REVIEW</span></div>
-          <p id="amendment-headline" class="amendment-headline">No amendment open</p>
-          <p id="amendment-decision" class="amendment-decision">No decision pending</p>
-          <ul id="amendment-list" class="amendment-list"></ul>
-        </section>
-
-        <section id="questions-panel" class="panel questions-panel hidden" aria-live="polite">
-          <div class="section-head"><div><p class="panel-label">QUESTIONS</p><h2>Crew questions for the Pilot</h2></div><span id="questions-state" class="section-meta">NONE OPEN</span></div>
-          <p id="questions-headline" class="questions-headline">No open questions</p>
-          <div id="questions-list" class="questions-list"></div>
-        </section>
-
-        <section class="content-grid">
-          <article class="panel acceptance-panel">
-            <div class="section-head"><div><p class="panel-label">MISSION OBJECTIVES</p><h2>Victory conditions</h2></div><div class="legend"><span class="pass-dot">Neutralized</span><span class="open-dot">Active</span></div></div>
-            <div id="criteria-list" class="criteria-list"></div>
-          </article>
-
-          <aside class="right-stack">
             <article id="review-attempts-panel" class="panel review-attempts-panel hidden">
-              <div class="section-head"><div><p class="panel-label">REVIEW CONVERGENCE</p><h2>Implementation review attempts</h2></div><span id="review-attempt-count" class="section-meta">0 ATTEMPTS</span></div>
+              <div class="section-head"><div><p class="panel-label">REVIEW</p><h2>Implementation review attempts</h2></div><span id="review-attempt-count" class="section-meta">0 ATTEMPTS</span></div>
               <div id="review-attempt-list" class="replacement-list"></div>
             </article>
+
             <article class="panel attention-panel">
-              <div class="section-head"><div><p class="panel-label">INCOMING TRANSMISSIONS</p><h2>Tactical alerts</h2></div><span class="count-badge" id="attention-count">0</span></div>
+              <div class="section-head"><div><p class="panel-label">ALERTS</p><h2>Needs attention</h2></div><span class="count-badge" id="attention-count">0</span></div>
               <div id="attention-list" class="attention-list"></div>
             </article>
+
             <article class="panel crew-panel">
-              <div class="section-head"><div><p class="panel-label">COMMAND CREW · THIS RUN</p><h2>Recorded mission identities</h2></div></div>
+              <div class="section-head"><div><p class="panel-label">CREW</p><h2>Recorded identities</h2></div></div>
               <div id="crew-list" class="crew-list"></div>
             </article>
+
             <article class="panel replacement-panel">
-              <div class="section-head"><div><p class="panel-label">FAILOVER TELEMETRY</p><h2>Agent replacements</h2></div><span id="replacement-count" class="section-meta">0 EVENTS</span></div>
+              <div class="section-head"><div><p class="panel-label">FAILOVER</p><h2>Replacements and recoveries</h2></div><span id="replacement-count" class="section-meta">0 EVENTS</span></div>
               <div id="replacement-list" class="replacement-list"></div>
             </article>
-          </aside>
-        </section>
 
-        <section class="lower-grid">
-          <article class="panel activity-panel">
-            <div class="section-head"><div><p class="panel-label">FLIGHT LOG</p><h2>Mission chronology</h2></div><span id="event-total" class="section-meta">0 EVENTS</span></div>
-            <div id="event-list" class="event-list"></div>
-          </article>
-          <article class="panel evidence-panel">
-            <div class="section-head"><div><p class="panel-label">SYSTEM DIAGNOSTICS</p><h2>Evidence telemetry</h2></div><span id="verification-total" class="section-meta">0 RUNS</span></div>
-            <div id="verification-list" class="verification-list"></div>
-          </article>
+            <section id="metrics-panel" class="panel metrics-panel">
+              <div class="section-head"><div><p class="panel-label">ECONOMICS</p><h2>Delivery performance</h2></div><span id="metrics-token-state" class="section-meta">TOKENS UNKNOWN</span></div>
+              <div class="metrics-grid">
+                <div><span>Elapsed</span><strong id="metrics-elapsed">n/a</strong></div>
+                <div><span>Sessions</span><strong id="metrics-sessions">0</strong></div>
+                <div><span>Failures / replacements</span><strong id="metrics-failures">0 / 0</strong></div>
+                <div><span>Review cycles</span><strong id="metrics-reviews">0 / 0</strong></div>
+                <div><span>Verification time</span><strong id="metrics-verification">n/a</strong></div>
+                <div><span>Pilot wait</span><strong id="metrics-pilot-wait">n/a</strong></div>
+                <div><span>Total tokens</span><strong id="metrics-tokens">UNKNOWN</strong></div>
+              </div>
+              <div id="metrics-phase-list" class="metrics-phase-list"></div>
+              <div id="metrics-session-list" class="metrics-phase-list"></div>
+            </section>
+
+            <section id="design-evidence-panel" class="panel design-evidence-panel hidden">
+              <div class="section-head"><div><p class="panel-label">DESIGN EVIDENCE</p><h2>Cached measurements</h2></div><span id="design-evidence-total" class="section-meta">0 ARTIFACTS</span></div>
+              <div id="design-evidence-list" class="design-evidence-list"></div>
+            </section>
+          </aside>
         </section>
       </div>
     </main>
