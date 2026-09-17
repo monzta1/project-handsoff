@@ -1,7 +1,7 @@
 # Install and upgrade Handsoff
 
 Use one long-lived virtual environment and one stable command path. Projects then
-contain configuration, a compatible version pin, and mission state—not a copied
+contain configuration, a compatible version pin, and mission state, not a copied
 Handsoff engine. Upgrading that single environment updates every compatible thin
 project without leaving launch scripts pointed at an old release.
 
@@ -52,6 +52,17 @@ handsoff upgrade /absolute/path/to/project --to v0.3.17
 ```
 
 Replace `v0.3.17` with the release being installed.
+
+## After an upgrade: an in-flight run
+
+If an upgrade finds a run that is still in progress, choose one of these actions:
+
+- Recover keeps the run and its ledgers and retries the assigned role once:
+  `handsoff supervisor --root /absolute/path/to/project recover --by ACTOR`
+- Close keeps the ledgers, releases the dashboard, and marks the run closed:
+  `handsoff supervisor --root /absolute/path/to/project run-close --by ACTOR --reason TEXT`
+- Reopen restores a closed run at its recorded phase:
+  `handsoff supervisor --root /absolute/path/to/project run-reopen --by ACTOR --reason TEXT`
 
 ## Minor or major upgrade
 

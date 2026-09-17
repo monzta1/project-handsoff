@@ -355,6 +355,9 @@ MAX_AGENT_SESSIONS = 64
 RUNTIME_MANIFEST_FILE = "handsoff-runtime.json"
 VERSION_PIN_FILE = ".handsoff-version"
 OVERRIDES_FILE = "handsoff-overrides.json"
+ROLE_PROTOCOL_PREFIXES = {"reviewer": "HANDSOFF_REVIEW_RESULT:",
+                          "architect": "HANDSOFF_DESIGN_PROPOSAL:",
+                          "supervisor": "HANDSOFF_BROKER_REQUEST:"}
 AGENT_SESSION_ID_PATTERN = re.compile(r"^hs-[0-9a-f]{32}$")
 AGENT_SESSION_LIVE_STATES = {"launching", "running"}
 AGENT_SESSION_TERMINAL_STATES = {
@@ -534,11 +537,86 @@ def project_resource_path(root: Path, relative: str) -> Path:
             raise HandsoffError(f"project override {relative} is not declared in {OVERRIDES_FILE}") from exc
         files = overrides.get("files") if isinstance(overrides, dict) else None
         expected = files.get(relative) if isinstance(files, dict) else None
+        if expected is None:
+            raise HandsoffError(f"project override {relative} is not declared in {OVERRIDES_FILE}")
         actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
         if expected != actual:
             raise HandsoffError(f"project override hash mismatch: {relative}")
         return candidate
     return engine_resource_path(relative)
+
+
+def prompt_override_diagnosis(root: Path) -> list[dict]:
+    """Classify project prompt overrides against the installed engine contract.
+
+    A runtime drop-in (the engine checkout itself) owns its prompts outright,
+    so it has nothing to declare and reports an empty list."""
+    root = Path(root).resolve()
+    if _looks_like_runtime_drop_in(root):
+        return []
+    override_path = root / OVERRIDES_FILE
+    declared = {}
+    if override_path.is_file():
+        try:
+            value = json.loads(override_path.read_text(encoding="utf-8"))
+            declared = value.get("files", {}) if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            declared = {}
+    prompt_dir = root / "prompts"
+    paths = {f"prompts/{role}.md": prompt_dir / f"{role}.md" for role in SELECTABLE_AGENT_ROLES}
+    paths.update({key: root / key for key in declared if isinstance(key, str) and key.startswith("prompts/")})
+    result = []
+    for relative in sorted(paths):
+        role = Path(relative).stem
+        if role not in SELECTABLE_AGENT_ROLES:
+            continue
+        path = paths[relative]
+        present = path.is_file()
+        expected_prefix = ROLE_PROTOCOL_PREFIXES.get(role)
+        if not present:
+            if relative in declared:
+                result.append({"role": role, "path": relative, "state": "declared_missing",
+                               "declared": True, "expected_prefix": expected_prefix,
+                               "detail": "declared override file is missing"})
+            continue
+        if relative not in declared:
+            result.append({"role": role, "path": relative, "state": "undeclared",
+                           "declared": False, "expected_prefix": expected_prefix,
+                           "detail": "project prompt is not declared"})
+            continue
+        text = path.read_text(encoding="utf-8")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if declared[relative] != actual:
+            state, detail = "declared_hash_mismatch", "declared hash differs"
+        elif expected_prefix and expected_prefix not in text:
+            state, detail = "declared_stale_protocol", f"missing {expected_prefix}"
+        else:
+            state, detail = "declared_current", "override matches the engine contract"
+        result.append({"role": role, "path": relative, "state": state, "declared": True,
+                       "expected_prefix": expected_prefix, "detail": detail})
+    return result
+
+
+def run_triage(root: Path, cfg: dict) -> dict | None:
+    path = status_path(Path(root), cfg)
+    if not path.is_file():
+        return None
+    status = load_unique_json(path)
+    if status.get("status") == "complete" or int(status.get("phase_number", 0) or 0) >= 8:
+        return None
+    escalation = status.get("escalation")
+    kind = escalation.get("kind") if isinstance(escalation, dict) else None
+    root_text = str(Path(root).resolve())
+    return {"phase_number": status.get("phase_number"), "status": status.get("status"),
+            "escalation_kind": kind, "blocked": status.get("status") == "blocked" or bool(escalation),
+            "options": [
+                {"action": "recover", "command": f"handsoff supervisor --root {root_text} recover --by ACTOR",
+                 "preserves": "Recover keeps the run and its ledgers and retries the assigned role once."},
+                {"action": "close", "command": f"handsoff supervisor --root {root_text} run-close --by ACTOR --reason TEXT",
+                 "preserves": "Close keeps the ledgers, releases the dashboard and marks the run closed."},
+                {"action": "reopen", "command": f"handsoff supervisor --root {root_text} run-reopen --by ACTOR --reason TEXT",
+                 "preserves": "Reopen restores a closed run at its recorded phase."},
+            ]}
 MAX_AGENT_REPLACEMENTS = 32
 MAX_QUALITY_FINDINGS = 32
 AGENT_REPLACEMENT_TRIGGERS = {"runtime_failure", "quality_finding"}
