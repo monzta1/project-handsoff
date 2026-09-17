@@ -54,7 +54,8 @@ identity = json.loads(run("version", "--json").stdout)
 assert identity["source"] == "installed-engine" and identity["version"] == expected_version, identity
 
 with tempfile.TemporaryDirectory(prefix="handsoff-live-mc-") as tmp:
-    project = Path(tmp) / "thin-project"
+    project = (Path(tmp) / "thin-project").resolve()
+    project.parent.mkdir(parents=True, exist_ok=True)
     registry = Path(tmp) / "fleet.json"
     env = dict(os.environ, HANDSOFF_FLEET_REGISTRY=str(registry))
     run("init", str(project))
