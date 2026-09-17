@@ -148,6 +148,8 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
         status["phase"] = lib.PHASES[rollback_to]
         status["status"] = "in_progress"
         status["progress"] = min(status.get("progress", 0), 40 if rollback_to == 4 else 50)
+        # #110: a rolled-back run must not keep telling the Pilot to deploy.
+        status["next_action"] = lib.NEXT_ACTION_DEFAULTS[rollback_to]
     if invalidate_design:
         for key in ("design_approved", "design_review", "design_proposal"):
             if status.get(key) is not None:
