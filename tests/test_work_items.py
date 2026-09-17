@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 import sys
 import unittest
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_lib as lib  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from test_handsoff_supervisor import HandsoffTestCase, run, approve_design_review  # noqa: E402
 
 
 def criterion(cid, requirement, state="not_tested", evidence=None):
@@ -66,7 +69,12 @@ class WorkItemTests(unittest.TestCase):
         items[0].update(title="New display title", url="https://new", github_state="closed", notes="observed")
         self.assertEqual(before, lib.work_item_scope_hash(items))
         items[0]["required"] = False
-        self.assertNotEqual(before, lib.work_item_scope_hash(items))
+        self.assertEqual(before, lib.work_item_scope_hash(items))
+
+    def test_scope_hash_matches_legacy_required_digest(self):
+        items = [{"id": "issue-31", "kind": "issue", "number": 31, "required": True}]
+        self.assertTrue(lib.scope_hash_matches(
+            lib.work_item_scope_hashes(items)["legacy"], items))
 
     def test_canonical_state_drives_rows_and_global_gates_outrank_done(self):
         acceptance = {"feature": "Ship #31 and #29", "criteria": [
@@ -76,7 +84,7 @@ class WorkItemTests(unittest.TestCase):
         acceptance["work_items"] = lib.derive_work_item_registry(acceptance, self.cfg, now=self.now)
         rows = lib.derive_work_items(self.status(), acceptance, self.cfg)
         self.assertEqual({item["id"]: item["status"] for item in rows["items"]},
-                         {"issue-29": "not_started", "issue-31": "done"})
+                         {"issue-29": "not_started", "issue-31": "in_progress"})
         status = self.status()
         status["regression_requests"] = [{"state": "awaiting_approval", "group": "full"}]
         waiting = lib.derive_work_items(status, acceptance, self.cfg)
@@ -88,17 +96,72 @@ class WorkItemTests(unittest.TestCase):
         reviewed = lib.derive_work_items(status, acceptance, self.cfg)
         self.assertEqual({item["status"] for item in reviewed["items"]}, {"in_review"})
 
-    def test_persisted_registry_exposes_unattributed_required_work(self):
-        acceptance = {"feature": "Ship #31 and #29", "criteria": [
+    def test_single_item_registry_exposes_unknown_tag_as_unattributed(self):
+        acceptance = {"feature": "Ship #31", "criteria": [
             criterion("REQ-001", "[#31] Track reviews", "passing", ["vr-1"]),
-            criterion("REQ-U", "No item tag", "passing", ["vr-2"]),
+            criterion("REQ-U", "[#123] Unknown issue", "passing", ["vr-2"]),
         ]}
-        acceptance["work_items"] = lib.derive_work_item_registry(acceptance, self.cfg, now=self.now)
+        acceptance["work_items"] = [next(item for item in lib.derive_work_item_registry(
+            acceptance, self.cfg, now=self.now) if item["id"] == "issue-31")]
         rows = lib.derive_work_items(self.status(), acceptance, self.cfg)
         unattributed = next(item for item in rows["items"] if item["id"] == "unattributed")
         self.assertTrue(unattributed["required"])
-        self.assertEqual(unattributed["status"], "done")
-        self.assertTrue(rows["multi"])
+        self.assertEqual(unattributed["criteria"], ["REQ-U"])
+        self.assertEqual(rows["unattributed_criteria"], ["REQ-U"])
+
+
+class WorkItemCliTests(HandsoffTestCase):
+    def test_metadata_update_survives_decisions(self):
+        # REQ-006: metadata edits do not invalidate decisions or scope.
+        initialized = run(["init", "Ship issue work", "--item", "#70", "--item", "#71"], cwd=self.tmp)
+        self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        criterion = run(["criterion-update", "REQ-001", "--requirement", "[#70] Keep issue work"], cwd=self.tmp)
+        self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+        phase_two = run(["advance", "2", "20"], cwd=self.tmp)
+        self.assertEqual(phase_two.returncode, 0, phase_two.stdout + phase_two.stderr)
+        review = approve_design_review(self.tmp)
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
+        self.assertIsNotNone(self.advance_to(4))
+        before = self.read_status()
+        updated = run(["work-item-update", "issue-71", "--optional", "--by", "supervisor",
+                       "--notes", "n", "--title", "t"], cwd=self.tmp)
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        after = self.read_status()
+        self.assertIsNotNone(after["design_approved"])
+        self.assertEqual(after["phase_number"], before["phase_number"])
+        event = json.loads((self.tmp / "handsoff-events.jsonl").read_text().splitlines()[-1])
+        self.assertFalse(event["scope_changed"])
+
+    def test_sync_skips_title_ask_beside_issue_items(self):
+        # REQ-005: feature-title asks are skipped beside persisted issue items.
+        initialized = run(["init", "Feature without issue refs", "--item", "#70"], cwd=self.tmp)
+        self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        synced = run(["work-items-sync", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        self.assertIn("WORK_ITEM_SYNC_SKIPPED: ask-", synced.stdout)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-70"])
+
+    def test_sync_item_appends_explicit_issue(self):
+        # REQ-005: an explicit --item deliberately adds the issue.
+        initialized = run(["init", "Feature without issue refs", "--item", "#70"], cwd=self.tmp)
+        self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        self.assertIn("issue-90", [item["id"] for item in self.read_acceptance()["work_items"]])
+
+    def test_scope_frozen_after_deployment_approval(self):
+        # REQ-006: deployment approval freezes scope-changing syncs.
+        initialized = run(["init", "Feature without issue refs", "--item", "#70"], cwd=self.tmp)
+        self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        cfg = lib.load_config(self.tmp)
+        status = self.read_status()
+        status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat()}
+        lib.commit(self.tmp, cfg, status=status, event_kind="test_deployment_approved", event_message="test")
+        before = [item["id"] for item in self.read_acceptance()["work_items"]]
+        synced = run(["work-items-sync", "--by", "supervisor", "--item", "#91"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 1)
+        self.assertIn("work-item scope is frozen after deployment approval", synced.stdout)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], before)
 
 
 if __name__ == "__main__":

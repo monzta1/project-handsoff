@@ -10,6 +10,8 @@ from unittest import mock
 
 from tests.test_handsoff_supervisor import ROOT, BIN, normalize_fixture_config, run
 
+CURRENT_VERSION = json.loads((ROOT / "handsoff-runtime.json").read_text())["version"]
+
 import sys
 sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard
@@ -55,7 +57,7 @@ class FleetMissionControlTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in snapshot["projects"]], ["alpha", "beta"])
         self.assertEqual(len(fleet.load_registry(self.registry)), 2)
         self.assertNotEqual(snapshot["projects"][0]["binding"], snapshot["projects"][1]["binding"])
-        self.assertEqual(snapshot["projects"][0]["engine_version"], "v0.3.5")
+        self.assertEqual(snapshot["projects"][0]["engine_version"], CURRENT_VERSION)
 
     def test_dashboard_progress_uses_phase_floor_and_preserves_verification_score(self):
         root = self.project("progress")

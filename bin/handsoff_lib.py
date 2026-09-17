@@ -303,6 +303,8 @@ AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
 SELECTABLE_AGENT_ROLES = AGENT_ROLES
 LEGACY_AGENT_ROLES = ("architect", "implementer", "reviewer")
 SELECTABLE_AGENT_ADAPTERS = ("codex", "claude")
+HOST_AGENT_ADAPTER = "host"
+HOST_CAPABLE_ROLES = ("supervisor", "architect")
 AUTO_AGENT_ADAPTER = "auto"
 LEGACY_UNCONFIGURED_AGENT_ADAPTER = "configure-me"
 AGENT_SETTING_ADAPTERS = (AUTO_AGENT_ADAPTER, *SELECTABLE_AGENT_ADAPTERS)
@@ -656,7 +658,11 @@ def load_config(root: Path) -> dict:
         value = value.strip()
         if value == LEGACY_UNCONFIGURED_AGENT_ADAPTER:
             continue
+        if value not in AGENT_SETTING_ADAPTERS and value != HOST_AGENT_ADAPTER:
+            raise HandsoffError(f"handsoff.toml: agents.{role} must be exactly 'auto', 'codex', 'claude', or 'host'")
         cfg["agents"][role] = value
+        if value == HOST_AGENT_ADAPTER and role not in HOST_CAPABLE_ROLES:
+            raise HandsoffError(f"[agents].{role} cannot be host: only supervisor and architect may be host-driven")
         cfg["profile_sources"][role]["adapter"] = EXPLICIT_PROFILE_SOURCE
     for role in SELECTABLE_AGENT_ROLES:
         if role in models:
@@ -1002,7 +1008,8 @@ def validate_agent_actor(value: object) -> str:
 
 def agent_profiles(cfg: dict) -> dict:
     return {
-        role: {"adapter": cfg["agents"][role], "model": cfg["models"][role]}
+        role: {"adapter": cfg["agents"][role],
+               "model": None if cfg["agents"][role] == HOST_AGENT_ADAPTER else cfg["models"][role]}
         for role in SELECTABLE_AGENT_ROLES
     }
 
@@ -1068,6 +1075,9 @@ def resolved_agent_profiles(cfg: dict, *, which=None, require_available: bool = 
     resolved = {}
     for role, profile in configured.items():
         adapter = profile["adapter"]
+        if adapter == HOST_AGENT_ADAPTER:
+            resolved[role] = {"adapter": adapter, "model": None, "source": dict(sources[role])}
+            continue
         if adapter in {AUTO_AGENT_ADAPTER, LEGACY_UNCONFIGURED_AGENT_ADAPTER}:
             if automatic is None and require_available:
                 raise HandsoffError(
@@ -1329,8 +1339,11 @@ def update_agent_config(root: Path, assignments: dict) -> dict:
             raise HandsoffError("each agent profile must contain exactly adapter and model")
         adapters = {role: value["adapter"] for role, value in assignments.items()}
         models = {role: validate_agent_model(value["model"]) for role, value in assignments.items()}
-    if any(value not in AGENT_SETTING_ADAPTERS for value in adapters.values()):
-        raise HandsoffError("agent adapters must be exactly 'auto', 'codex', or 'claude'")
+    if any(value not in AGENT_SETTING_ADAPTERS and value != HOST_AGENT_ADAPTER for value in adapters.values()):
+        raise HandsoffError("agent adapters must be exactly 'auto', 'codex', 'claude', or 'host'")
+    for role, adapter in adapters.items():
+        if adapter == HOST_AGENT_ADAPTER and role not in HOST_CAPABLE_ROLES:
+            raise HandsoffError(f"[agents].{role} cannot be host: only supervisor and architect may be host-driven")
     path = root / "handsoff.toml"
     if tomllib is None:
         raise HandsoffError("agent settings require Python 3.11+ TOML support")
@@ -1384,8 +1397,10 @@ def update_agent_settings(root: Path, payload: object) -> dict:
         if not isinstance(profile, dict) or set(profile) != {"adapter", "model"}:
             raise HandsoffError(f"profiles.{role} must contain exactly adapter and model")
         adapter = profile.get("adapter")
-        if adapter not in AGENT_SETTING_ADAPTERS:
-            raise HandsoffError(f"profiles.{role}.adapter must be auto, codex, or claude")
+        if adapter not in AGENT_SETTING_ADAPTERS and adapter != HOST_AGENT_ADAPTER:
+            raise HandsoffError(f"profiles.{role}.adapter must be auto, codex, claude, or host")
+        if adapter == HOST_AGENT_ADAPTER and role not in HOST_CAPABLE_ROLES:
+            raise HandsoffError(f"[agents].{role} cannot be host: only supervisor and architect may be host-driven")
         normalized_profiles[role] = {
             "adapter": adapter, "model": validate_agent_model(profile.get("model")),
         }
@@ -3877,7 +3892,7 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("review gate: acceptance changed since review; record a new review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("review gate: workflow policy changed since review; record a new review")
-    if "work_items" in acceptance and review.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
+    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"]):
         errors.append("review gate: work-item scope changed since review; record a new review")
     reviewer = review.get("by")
     if not reviewer:
@@ -3923,7 +3938,7 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
     if approval.get("config_hash") != config_hash(cfg):
         errors.append("design gate: workflow policy changed since design approval; record a new approval")
-    if "work_items" in acceptance and approval.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
+    if "work_items" in acceptance and not scope_hash_matches(approval.get("scope_hash"), acceptance["work_items"]):
         errors.append("design gate: work-item scope changed since design approval; record a new approval")
     proposal = status.get("design_proposal")
     if isinstance(proposal, dict) and approval.get("proposal_hash") != proposal.get("proposal_hash"):
@@ -3955,7 +3970,7 @@ def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str
         errors.append("design review gate: criteria changed since design review; record a new design review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("design review gate: workflow policy changed since design review; record a new design review")
-    if "work_items" in acceptance and review.get("scope_hash") != work_item_scope_hash(acceptance["work_items"]):
+    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"]):
         errors.append("design review gate: work-item scope changed since design review; record a new design review")
     proposal = status.get("design_proposal")
     if isinstance(proposal, dict) and review.get("proposal_hash") != proposal.get("proposal_hash"):
@@ -4371,6 +4386,11 @@ def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
     target = assigned_role(status)
     if target is None:
         return None
+    if cfg is not None:
+        if cfg.get("agents", {}).get(target) == HOST_AGENT_ADAPTER:
+            return None
+        if cfg.get("agents", {}).get("supervisor") == HOST_AGENT_ADAPTER and target != "reviewer":
+            return None
     phase = int(status.get("phase_number", 1) or 1)
     if target == "reviewer" and phase == 2 and cfg is not None:
         budget = design_review_budget(status, cfg)
@@ -4429,8 +4449,14 @@ def validate_design_proposal(value: object) -> dict:
     return result
 
 
-def record_design_proposal(root: Path, session_id: str, value: object) -> dict:
-    """Persist one bounded Architect proposal, bound to current criteria."""
+def record_design_proposal(root: Path, session_id: str | None, value: object,
+                           *, architect_actor: str | None = None) -> dict:
+    """Persist one bounded proposal through the same managed and host path.
+
+    The host Architect has no managed session, but must receive identical
+    criterion, review-budget, and event bindings so later review cannot tell
+    which execution surface produced the proposal.
+    """
     proposal = validate_design_proposal(value)
     root = root.resolve()
     with project_lock(root):
@@ -4439,17 +4465,19 @@ def record_design_proposal(root: Path, session_id: str, value: object) -> dict:
         acceptance = load_unique_json(acceptance_path(root, cfg))
         sessions = status.get("agent_sessions") or {}
         current = status.get("current_agent_sessions") or {}
-        session = sessions.get(session_id)
-        if not isinstance(session, dict) or session.get("role") != "architect" \
-                or current.get("architect") != session_id \
-                or session.get("state") not in AGENT_SESSION_LIVE_STATES:
-            raise HandsoffError("design proposal must come from the current live Architect session")
+        session = sessions.get(session_id) if session_id is not None else None
+        if session_id is not None:
+            if not isinstance(session, dict) or session.get("role") != "architect" \
+                    or current.get("architect") != session_id \
+                    or session.get("state") not in AGENT_SESSION_LIVE_STATES:
+                raise HandsoffError("design proposal must come from the current live Architect session")
+        actor = session.get("actor") if session is not None else validate_agent_actor(architect_actor)
         if int(status.get("phase_number", 1) or 1) not in {1, 2}:
             raise HandsoffError("design proposal can only be recorded in Phase 1 or Phase 2")
         now = datetime.now(timezone.utc).isoformat()
         bound = {
             **proposal,
-            "architect": session.get("actor"),
+            "architect": actor,
             "session_id": session_id,
             "at": now,
             "design_hash": design_hash(acceptance.get("criteria", [])),
@@ -4460,12 +4488,20 @@ def record_design_proposal(root: Path, session_id: str, value: object) -> dict:
         proposed["design_proposal"] = bound
         proposed["design_review"] = None
         proposed["design_approved"] = None
-        proposed["status"] = "in_progress"
-        proposed["next_action"] = "Independent Reviewer evaluates the bounded design proposal and current criteria."
+        budget = design_review_budget(status, cfg)
+        refusal = design_review_launch_refusal(budget, status)
+        if refusal is not None:
+            proposed["status"] = "blocked"
+            proposed["authorization_hold"] = "design_review"
+            proposed["next_action"] = "Revised design proposal recorded; " + design_review_budget_exhausted_message(budget)
+        else:
+            proposed["status"] = "in_progress"
+            proposed.pop("authorization_hold", None)
+            proposed["next_action"] = "Independent Reviewer evaluates the bounded design proposal and current criteria."
         proposed["updated_at"] = now
         commit(root, cfg, status=proposed, event_kind="design_proposal_recorded",
                event_message="Bounded Architect design proposal recorded",
-               architect=session.get("actor"), session_id=session_id,
+               architect=actor, session_id=session_id,
                proposal_hash=bound["proposal_hash"], design_hash=bound["design_hash"],
                based_on_review_attempt=bound["based_on_review_attempt"],
                counts={field: len(bound[field]) for field in DESIGN_PROPOSAL_FIELDS[1:]})
@@ -4601,6 +4637,9 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
             return result
     if role is None:
         result["reason"] = "no_assigned_role"
+        return result
+    if cfg.get("agents", {}).get(role) == HOST_AGENT_ADAPTER:
+        result["reason"] = "host_role"
         return result
     sessions = status.get("agent_sessions") or {}
     current = status.get("current_agent_sessions") or {}
@@ -5210,11 +5249,27 @@ def effective_work_items(acceptance: dict, cfg: dict) -> tuple[list[dict], str]:
 
 
 def work_item_scope_hash(items: list[dict]) -> str:
-    scope = sorted(({
+    scope = sorted(({"id": item.get("id"), "kind": item.get("kind"),
+                    "number": item.get("number")} for item in items),
+                   key=lambda item: item["id"] or "")
+    return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def work_item_scope_hashes(items: list[dict]) -> dict[str, str]:
+    """Return current and pre-REQ-006 scope digests for gate compatibility."""
+    current = work_item_scope_hash(items)
+    legacy_scope = sorted(({
         "id": item.get("id"), "kind": item.get("kind"),
         "number": item.get("number"), "required": item.get("required", True),
     } for item in items), key=lambda item: item["id"] or "")
-    return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    legacy = hashlib.sha256(json.dumps(legacy_scope, sort_keys=True,
+                                       separators=(",", ":")).encode()).hexdigest()
+    return {"current": current, "legacy": legacy}
+
+
+def scope_hash_matches(recorded: object, items: list[dict]) -> bool:
+    """Accept either digest so existing approvals remain valid after migration."""
+    return recorded in work_item_scope_hashes(items).values()
 
 
 def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
@@ -5379,7 +5434,7 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
             item_id = registry[0]["id"]
         if item_id in mapping:
             mapping[item_id].append(criterion)
-        elif multi:
+        elif item_id is not None:
             mapping.setdefault("unattributed", []).append(criterion)
     rows = list(registry)
     if "unattributed" in mapping and not any(item["id"] == "unattributed" for item in rows):
@@ -5432,8 +5487,10 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
                          "phase_or_next": status.get("next_action") or status.get("phase"),
                          "blocker": blocker, "discrepancy": discrepancy})
     counts = {state: sum(item["status"] == state for item in rendered) for state in WORK_ITEM_STATES}
+    unattributed_criteria = [c.get("id") for c in mapping.get("unattributed", [])]
     return {"multi": len(rendered) > 1, "registry": source,
             "tickets_config_deprecated": bool(cfg.get("tickets")) and source == "persisted",
+            "unattributed_criteria": unattributed_criteria,
             "items": rendered, "aggregate": {"total": len(rendered), "done": counts["done"],
                                                "counts": counts,
                                                "progress": overall_item_progress(status, acceptance, cfg)}}

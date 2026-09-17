@@ -59,7 +59,7 @@ reviewer = []
 architect = 40000
 supervisor = 24000
 implementer = 80000
-reviewer = 40000
+reviewer = 80000
 
 [recovery]
 enabled = true
@@ -79,6 +79,9 @@ poll_seconds = 30
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+  "python3 -m unittest tests.test_design_review_hold -v",
+  "python3 -m unittest tests.test_host_roles -v",
+  "python3 -m unittest tests.test_work_items -v",
   "python3 -m unittest tests.test_packaging -v",
   "python3 -m unittest tests.test_handsoff_supervisor.TestSmallFixLane -v",
   "node --test tests/dashboard/work_item_lanes.test.js",

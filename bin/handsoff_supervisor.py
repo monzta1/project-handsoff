@@ -54,6 +54,7 @@ OPERATION_REGISTRY = {
     "design-reject": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "record-design-review": {"class": "agent-only", "surface": "review-attempts-panel"},
     "design-review-packet": {"class": "automatic", "surface": "design-review-packet"},
+    "design-propose": {"class": "automatic", "surface": "design-review-packet"},
     "design-review-authorize": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "design-review-escalate": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "record-review": {"class": "agent-only", "surface": "review-attempts-panel"},
@@ -277,6 +278,7 @@ def cmd_status(args) -> int:
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
         "stall_warning": warning, "activity_note": activity, "activity": activity_view, "live": live,
         "questions": lib.questions_view(status),
+        "unattributed_criteria": lib.derive_work_items(status, acceptance, cfg)["unattributed_criteria"],
         "crew": lib.crew_view(cfg),
         "event_log_intact": not log_problems, "event_log_problems": log_problems,
     }, indent=2))
@@ -785,13 +787,17 @@ def cmd_work_items_sync(args) -> int:
         lib.ensure_no_launched_regression(status)
         before_items, _ = lib.effective_work_items(acceptance, cfg)
         before_scope = lib.work_item_scope_hash(before_items)
-        derived = lib.derive_work_item_registry(acceptance, cfg)
+        derived = lib.derive_work_item_registry(acceptance, cfg, explicit_items=args.item)
         existing = acceptance.get("work_items")
         if isinstance(existing, list):
             by_id = {item["id"]: item for item in existing}
             for item in derived:
                 current = by_id.get(item["id"])
                 if current is None:
+                    if not args.item and any(candidate.get("kind") == "issue" for candidate in existing) \
+                            and item.get("kind") == "ask":
+                        print(f"WORK_ITEM_SYNC_SKIPPED: {item['id']} (feature-title ask not added beside explicit issue items; pass --item to add it deliberately)")
+                        continue
                     existing.append(item)
                 elif args.from_tickets:
                     current["title"], current["url"] = item["title"], item["url"]
@@ -801,6 +807,9 @@ def cmd_work_items_sync(args) -> int:
             persisted = derived
         acceptance["work_items"] = persisted
         after_scope = lib.work_item_scope_hash(persisted)
+        if isinstance(status.get("deployment_approved"), dict) and before_scope != after_scope:
+            print("SHIP_FEATURE_BLOCKED: work-item scope is frozen after deployment approval; revoke the approval or archive the run before changing the item set")
+            return 1
         bootstrap = False
         decisions = [status.get("design_review"), status.get("design_approved")]
         scope_missing = any(isinstance(record, dict) and not record.get("scope_hash")
@@ -884,6 +893,7 @@ def cmd_work_item_update(args) -> int:
             print(f"SHIP_FEATURE_BLOCKED: unknown work item {args.item}")
             return 1
         before_scope = lib.work_item_scope_hash(items)
+        deployment_approved = status.get("deployment_approved")
         for field in ("title", "url", "github_state", "notes"):
             value = getattr(args, field)
             if value is not None:
@@ -902,6 +912,9 @@ def cmd_work_item_update(args) -> int:
             delivery[args.item]["implemented_by"] = lib.validate_agent_actor(args.implemented_by)
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         after_scope = lib.work_item_scope_hash(items)
+        if isinstance(deployment_approved, dict) and before_scope != after_scope:
+            print("SHIP_FEATURE_BLOCKED: work-item scope is frozen after deployment approval; revoke the approval or archive the run before changing the item set")
+            return 1
         if before_scope != after_scope:
             _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = item["updated_at"]
@@ -1747,6 +1760,7 @@ def cmd_record_design_review(args) -> int:
             # Pilot's command is the next action, verbatim, so status and
             # the Mission Control banner both carry it.
             status["status"] = "blocked"
+            status["authorization_hold"] = "design_review"
             status["next_action"] = lib.design_review_budget_exhausted_message(after)
             lib.commit(root, cfg, status=status, extra_events=[review_event],
                       event_kind="design_review_budget_exhausted",
@@ -1759,6 +1773,32 @@ def cmd_record_design_review(args) -> int:
             lib.commit(root, cfg, status=status, event_kind=event_kind, event_message=message,
                        reviewer_session_id=getattr(args, "session", None), **fields)
     print("DESIGN_REVIEW_APPROVED" if args.approve else "DESIGN_CHANGES_REQUESTED")
+    return 0
+
+
+def cmd_design_propose(args) -> int:
+    """Record a JSON proposal supplied by the host-driven Architect."""
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    if cfg["agents"].get("architect") != lib.HOST_AGENT_ADAPTER:
+        print('SHIP_FEATURE_BLOCKED: design-propose is only for a host Architect; set [agents].architect = "host"')
+        return 1
+    try:
+        actor = lib.validate_agent_actor(args.by)
+        value = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    except (OSError, ValueError, lib.HandsoffError) as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
+    status = lib.load_unique_json(lib.status_path(root, cfg))
+    if int(status.get("phase_number", 1) or 1) not in {1, 2}:
+        print("SHIP_FEATURE_BLOCKED: design proposal can only be recorded in Phase 1 or Phase 2")
+        return 1
+    try:
+        recorded = lib.record_design_proposal(root, None, value, architect_actor=actor)
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
+    print(f"DESIGN_PROPOSAL_RECORDED: {recorded['proposal_hash']}")
     return 0
 
 
@@ -1852,6 +1892,9 @@ def cmd_design_review_authorize(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if isinstance(status.get("run_closed"), dict):
+            print("SHIP_FEATURE_BLOCKED: run is closed; reopen it before authorizing a design review")
+            return 1
         budget = lib.design_review_budget(status, cfg)
         if budget["authorized"]:
             print("SHIP_FEATURE_BLOCKED: an unconsumed design-review authorization already exists "
@@ -1870,6 +1913,7 @@ def cmd_design_review_authorize(args) -> int:
             "launch_session_id": None, "consumed_at": None,
         }
         status["status"] = "in_progress"
+        status.pop("authorization_hold", None)
         status["next_action"] = f"Launch the authorized design-review attempt {budget['next_attempt']}"
         status["updated_at"] = now
         lib.commit(root, cfg, status=status, event_kind="design_review_attempt_authorized",
@@ -3482,6 +3526,8 @@ def main() -> int:
     work_sync = sub.add_parser("work-items-sync")
     work_sync.add_argument("--by", required=True)
     work_sync.add_argument("--from-tickets", action="store_true")
+    work_sync.add_argument("--item", action="append", default=[],
+                           help="explicit work item to add, repeatable")
 
     work_activate = sub.add_parser("work-item-activate")
     work_activate.add_argument("item")
@@ -3565,6 +3611,10 @@ def main() -> int:
                                help="only with --request-changes: the design needs structural rework, so the "
                                "next attempt goes to the primary reviewer tier even when a follow-up "
                                "reviewer profile is configured (#37)")
+
+    design_propose = sub.add_parser("design-propose", help="record a host Architect design proposal")
+    design_propose.add_argument("--file", required=True, help="JSON proposal file")
+    design_propose.add_argument("--by", required=True, help="host Architect identity")
 
     design_review_packet = sub.add_parser(
         "design-review-packet",
@@ -3831,6 +3881,7 @@ def main() -> int:
         "design-reject": cmd_design_reject,
         "record-design-review": cmd_record_design_review,
         "design-review-packet": cmd_design_review_packet,
+        "design-propose": cmd_design_propose,
         "design-review-authorize": cmd_design_review_authorize,
         "design-review-escalate": cmd_design_review_escalate,
         "record-review": cmd_record_review,

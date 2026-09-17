@@ -227,6 +227,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which) -
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
+    if lib.agent_profiles(cfg)[role]["adapter"] == lib.HOST_AGENT_ADAPTER:
+        raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
     context = lib.managed_design_context(root, role)
     token_budget = _effective_token_budget(cfg["agent_token_budgets"][role], role, context)
     _refuse_reviewer_launch_over_budget(root, cfg, role)
@@ -304,6 +306,8 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
             f"replacement input must be non-empty and at most {MAX_REPLACEMENT_INPUT_BYTES} UTF-8 bytes"
         )
     adapter = profile.get("adapter")
+    if adapter == lib.HOST_AGENT_ADAPTER:
+        raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
     model = lib.validate_agent_model(profile.get("model"))
     if adapter not in lib.SELECTABLE_AGENT_ADAPTERS:
         raise lib.HandsoffError("reserved fallback adapter is invalid")

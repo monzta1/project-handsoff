@@ -61,6 +61,10 @@ def _settings_view(cfg: dict) -> dict:
         "default_adapter": lib.default_agent_adapter(),
         "default_order": list(lib.DEFAULT_AGENT_PREFERENCE),
         "allowed_adapters": list(lib.AGENT_SETTING_ADAPTERS),
+        "allowed_adapters_by_role": {
+            role: list(lib.AGENT_SETTING_ADAPTERS) + ([lib.HOST_AGENT_ADAPTER] if role in lib.HOST_CAPABLE_ROLES else [])
+            for role in lib.SELECTABLE_AGENT_ROLES
+        },
         "availability": lib.adapter_availability(),
         "availability_scope": (
             "Executable discovery only; it does not prove authentication, account entitlement, "
@@ -285,7 +289,7 @@ def _input_request(status: dict, cfg: dict) -> dict:
     # #35 follow-up: an exhausted design-review budget is a Pilot decision
     # with its own control, like the design and deployment gates.
     budget = lib.design_review_budget(status, cfg)
-    budget_exhausted = phase == 2 and budget.get("exhausted") and status.get("authorization_hold") == "design_review"
+    budget_exhausted = phase == 2 and budget.get("exhausted") and not isinstance(status.get("run_closed"), dict)
     required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
         or older_signal or bool(amendment) or bool(questions)
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
