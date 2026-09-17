@@ -20,6 +20,7 @@ CURRENT_VERSION = json.loads((ROOT / "handsoff-runtime.json").read_text())["vers
 
 class VersionedRuntimeTests(unittest.TestCase):
     def setUp(self):
+        os.environ["HANDSOFF_SKIP_PREFLIGHT"] = "1"
         self.base = Path(tempfile.mkdtemp(prefix="handsoff-package-test-"))
         self.old_archive = os.environ.get("HANDSOFF_ARCHIVE_DIR")
         os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.base / "archive")

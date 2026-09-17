@@ -149,6 +149,8 @@ def approve_design_review(cwd, architect="test-architect", reviewer="test-design
 
 class HandsoffTestCase(unittest.TestCase):
     def setUp(self):
+        # No fixture may spend a real model call on adapter pre-flight (#91).
+        os.environ["HANDSOFF_SKIP_PREFLIGHT"] = "1"
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-test-"))
         for name in ("handsoff.toml", "handsoff-runtime.json"):
             shutil.copy(ROOT / name, self.tmp / name)

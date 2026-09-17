@@ -1231,6 +1231,12 @@ def adapter_availability(cfg: dict | None = None, *, which=None) -> dict:
     return result
 
 def adapter_preflight(cfg: dict, root: Path, which=shutil.which, runner=subprocess.run, timeout=60) -> dict:
+    # Tests and CI set HANDSOFF_SKIP_PREFLIGHT=1: a unit test must never
+    # make a real model call, and doctor is called by many fixtures.
+    if os.environ.get("HANDSOFF_SKIP_PREFLIGHT") == "1":
+        return {adapter: {"state": "not_checked", "reason": "HANDSOFF_SKIP_PREFLIGHT=1",
+                          "checked_at": None, "executable": None}
+                for adapter in SELECTABLE_AGENT_ADAPTERS}
     """Probe each configured CLI once with a tiny prompt, recording bounded diagnostic state."""
     result = {}
     for adapter in SELECTABLE_AGENT_ADAPTERS:

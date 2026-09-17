@@ -9,6 +9,18 @@ import handsoff_lib as lib
 
 
 class AdapterPreflightTests(unittest.TestCase):
+    """These tests exercise pre-flight itself with fake executables, so the
+    fixture-wide skip must be lifted here and restored afterwards."""
+
+    def setUp(self):
+        import os
+        self._skip = os.environ.pop("HANDSOFF_SKIP_PREFLIGHT", None)
+
+    def tearDown(self):
+        import os
+        if self._skip is not None:
+            os.environ["HANDSOFF_SKIP_PREFLIGHT"] = self._skip
+
     def fake(self, root, code):
         path = root / "fake"
         path.write_text("#!/bin/sh\n" + code)
