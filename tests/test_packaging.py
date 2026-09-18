@@ -305,3 +305,25 @@ class PassthroughCommandTests(unittest.TestCase):
         with mock.patch.object(sys, "argv", ["handsoff", "supervisor", "status"]):
             parser = cli.build_parser()
         self.assertTrue(hasattr(parser, "parse_args"))
+
+
+class WheelShipsEveryRuntimeFile(unittest.TestCase):
+    """The manifest's RUNTIME_FILES and pyproject's shipped files are two
+    hand-maintained lists. A runtime file added to one but not the other
+    installs an engine whose doctor refuses every project ("runtime files
+    do not match release"), which is exactly what v0.3.21's first wheel
+    did with the Regression Console."""
+
+    def test_pyproject_ships_every_manifest_runtime_file(self):
+        import tomllib
+        sys.path.insert(0, str(BIN))
+        import handsoff_manifest as manifest
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        tool = pyproject["tool"]["setuptools"]
+        shipped = {f"bin/{module}.py" for module in tool["py-modules"]}
+        for files in tool["data-files"].values():
+            shipped.update(files)
+        missing = sorted(set(manifest.RUNTIME_FILES) - shipped)
+        self.assertEqual(missing, [], f"runtime files the wheel would not ship: {missing}")
+        unlisted = sorted(path for path in shipped if path.startswith("bin/") and path not in manifest.RUNTIME_FILES)
+        self.assertEqual(unlisted, [], f"shipped modules the manifest does not guard: {unlisted}")
