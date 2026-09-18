@@ -677,7 +677,7 @@ def build_snapshot(root: Path) -> dict:
             stall = liveness["stall_warning"]
             lib.record_stall_transition(root, cfg, stall)
             activity_view = liveness
-            activity = stall
+            activity = liveness.get("activity_note")
             # #33: the live session view, from structured state plus the beacon.
             live = lib.live_status(status, cfg, root)
             agent_output = lib.agent_output_view(status, root)

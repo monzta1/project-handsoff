@@ -294,7 +294,7 @@ def cmd_status(args) -> int:
         liveness = lib.liveness_view(status, root, cfg)
         warning = liveness["stall_warning"]
         lib.record_stall_transition(root, cfg, warning)
-        activity = None
+        activity = liveness.get("activity_note")
         live = lib.live_status(status, cfg, root)
         budget = lib.design_review_budget(status, cfg)
         reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)

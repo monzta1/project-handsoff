@@ -100,7 +100,7 @@ class StatusTruthTests(unittest.TestCase):
         self.beacon(self.now - timedelta(seconds=1))
         view = lib.liveness_view(self.status, self.root, self.cfg, self.now)
         self.assertEqual(set(view), {"seconds_since_activity", "process_signal", "stall_warning",
-                                     "stall_threshold_minutes", "assessment"})
+                                     "stall_threshold_minutes", "assessment", "activity_note"})
 
     def test_agent_output_states_have_timing_contract(self):
         self.status["agent_sessions"][self.sid].update({"role": "implementer", "adapter": "codex"})

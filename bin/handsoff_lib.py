@@ -7413,19 +7413,28 @@ def liveness_view(status: dict, root: Path, cfg: dict,
         stamp = session_live.get(session_id) if session_id else None
         session_seconds = _seconds_since(stamp, now)
     chosen = beacon_seconds if matching and beacon_seconds is not None else session_seconds
-    if chosen is None:
-        chosen = _seconds_since(status.get("updated_at"), now)
-    seconds = max(int(chosen), 0) if chosen is not None else None
+    # #34 and #41 (restored after the #94 rework): a bound heartbeat (a
+    # background wait) and bound managed output are liveness too; the
+    # freshest signal wins, and updated_at is the final fallback.
+    output_record = output_liveness_for(status, read_output_liveness(root))
+    output_seconds = _seconds_since(output_record.get("output_at"), now) if output_record else None
+    heartbeat_seconds = _seconds_since(bound_heartbeat_at(status), now)
+    updated_seconds = _seconds_since(status.get("updated_at"), now)
+    candidates = [value for value in (chosen, output_seconds, heartbeat_seconds) if value is not None]
+    if not candidates and updated_seconds is not None:
+        candidates = [updated_seconds]
+    seconds = max(int(min(candidates)), 0) if candidates else None
     threshold = int(float(cfg.get("stall_minutes", 10) or 10) * 60)
     warning = None
     if status.get("status") == "in_progress" and seconds is not None and seconds >= threshold \
             and not isinstance(status.get("human_pause"), dict):
         warning = f"no update in {int(seconds / 60)} minutes (limit {int(threshold / 60)})"
+    note = activity_note(status, cfg, now=now, output_liveness=read_output_liveness(root))
     assessment = recovery_assessment(status, cfg, read_session_liveness(root),
                                      read_events(root, cfg), now, root=root)
     return {"seconds_since_activity": seconds, "process_signal": signal,
             "stall_warning": warning, "stall_threshold_minutes": int(threshold / 60),
-            "assessment": assessment}
+            "activity_note": note, "assessment": assessment}
 
 
 def record_stall_transition(root: Path, cfg: dict, warning: str | None) -> str | None:
