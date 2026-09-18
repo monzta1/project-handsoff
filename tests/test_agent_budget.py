@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from unittest import mock
 
-from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
@@ -82,6 +82,12 @@ class TestAgentTokenBudget(HandsoffTestCase):
 
         self.assertEqual(runtime._effective_token_budget(40_000, "architect", {"review_attempts": 1}), 16_000)
         self.assertEqual(runtime._effective_token_budget(40_000, "reviewer", {"review_attempts": 2}), 16_000)
+        # #114: with no packet but a derived follow-up budget, the derived
+        # value wins over the 16k constant (still capped by the role ceiling).
+        self.assertEqual(runtime._effective_token_budget(80_000, "reviewer",
+                         {"review_attempts": 2, "followup_design_token_budget": 52_000}), 52_000)
+        self.assertEqual(runtime._effective_token_budget(40_000, "reviewer",
+                         {"review_attempts": 2, "followup_design_token_budget": 52_000}), 40_000)
         self.assertEqual(runtime._effective_token_budget(40_000, "architect", {"review_attempts": 0}), 40_000)
 
     def test_supervisor_narration_without_protocol_is_a_failed_session(self):
@@ -174,6 +180,33 @@ class TestAgentTokenBudget(HandsoffTestCase):
         session = status["agent_sessions"][status["current_agent_sessions"]["architect"]]
         self.assertEqual(session["state"], "completed")
         self.assertEqual(status["design_proposal"]["summary"], "Complete design")
+
+    def test_reviewer_verdict_on_stderr_before_budget_error_is_kept(self):
+        # #114: Codex wrote the verdict and the budget error to stderr
+        # together; the verdict is complete and must be persisted.
+        self.init("Keep a stderr verdict")
+        run(["criterion-update", "REQ-001", "--requirement", "A reviewed requirement"], cwd=self.tmp)
+        run(["advance", "2", "20"], cwd=self.tmp)
+        verdict = ('HANDSOFF_REVIEW_RESULT: {"kind":"design","decision":"approved","summary":"fine",'
+                   '"findings":[],"structural_blocker":false,"symptom_reproduced":"not_applicable","tests_executed":"no"}\n')
+        process = _CompletedProcess("")
+        process.returncode = 1
+        process.stderr = io.StringIO(verdict + "ERROR: shared rollout token budget exhausted\n")
+        spec = runtime.LaunchSpec(
+            "reviewer", "codex", "default", ("/bin/codex", "exec", "-"),
+            str(self.tmp), "bounded reviewer prompt", token_budget=16_000,
+        )
+        # Dispatch may still refuse (this fixture has no proposal to bind to);
+        # what matters is that the parsed verdict survives for adoption.
+        try:
+            runtime.execute_launch(spec, popen_factory=mock.Mock(return_value=process), beacon_interval=0.01)
+        except (runtime.AgentLaunchError, lib.HandsoffError):
+            pass
+        status = self.read_status()
+        session = next(v for v in status["agent_sessions"].values() if v["role"] == "reviewer")
+        self.assertIsNotNone(session.get("result"), session)
+        self.assertEqual(session["result"]["kind"], "review")
+        self.assertEqual(session["result"]["payload"]["decision"], "approved")
 
     def test_budget_exhaustion_never_spends_again_on_a_fallback(self):
         failure = lib.classify_runtime_failure(
