@@ -1047,24 +1047,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _same_origin_allowed(self) -> bool:
-        origin = self.headers.get("Origin")
-        if not origin:
-            return False
+        # #124: loopback always; otherwise one configured [dashboard]
+        # public_origins entry, compared exactly.
         try:
-            parsed = urlsplit(origin)
-            port = parsed.port
-        except ValueError:
-            return False
-        return (
-            parsed.scheme == "http"
-            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-            and port == self.server.server_port
-            and not parsed.username
-            and not parsed.password
-            and parsed.path in {"", "/"}
-            and not parsed.query
-            and not parsed.fragment
-        )
+            public = lib.load_config(self.server.project_root).get("public_origins", [])
+        except lib.HandsoffError:
+            public = []
+        return lib.origin_allowed(self.headers.get("Origin"), self.server.server_port, public)
 
     def _send_event(self, event: str, data: dict) -> None:
         payload = f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode("utf-8")

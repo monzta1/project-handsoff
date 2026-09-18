@@ -291,6 +291,10 @@ DEFAULT_CONFIG = {
     "digest_ignore": [],
     "implementer_commands": [],
     "documentation": {"files": [], "exclude": []},
+    # #124: exact browser origins (scheme://host[:port]) that may drive the
+    # run dashboard through a tunnel or private network; loopback is always
+    # accepted. Fleet reads HANDSOFF_PUBLIC_ORIGINS instead (no project).
+    "public_origins": [],
     "live_check_commands": [],
     "check_timeout_seconds": 600,
     "tickets": [],
@@ -382,6 +386,56 @@ AGENT_SESSION_FIELDS = {
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
     *AGENT_SESSION_OPTIONAL_FIELDS,
 }
+
+
+def normalize_public_origins(value, label: str) -> list[str]:
+    """#124: an origin is scheme://host[:port], nothing else. Each entry is
+    canonicalised (lowercase scheme and host, explicit port dropped only
+    when it is the scheme default) so comparison is exact, never a prefix."""
+    from urllib.parse import urlsplit
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise HandsoffError(f"{label} must be a list of non-empty origin strings")
+    result = []
+    for item in value:
+        parts = urlsplit(item.strip())
+        if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path not in {"", "/"} \
+                or parts.query or parts.fragment or parts.username or parts.password:
+            raise HandsoffError(f"{label} entry {item!r} must be scheme://host[:port] with no path")
+        port = parts.port
+        default = 443 if parts.scheme == "https" else 80
+        host = parts.hostname.lower()
+        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port and port != default else "")
+        if canonical not in result:
+            result.append(canonical)
+    return result
+
+
+def origin_allowed(origin: str | None, server_port: int, public_origins: list[str]) -> bool:
+    """Loopback on the server's own port is always allowed; otherwise the
+    origin must equal one configured public origin exactly."""
+    from urllib.parse import urlsplit
+    if not origin:
+        return False
+    try:
+        parts = urlsplit(origin)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.username or parts.password or parts.path not in {"", "/"} or parts.query or parts.fragment:
+        return False
+    if parts.scheme == "http" and parts.hostname in {"127.0.0.1", "localhost", "::1"} and port == server_port:
+        return True
+    try:
+        canonical = normalize_public_origins([origin], "origin")[0]
+    except HandsoffError:
+        return False
+    return canonical in public_origins
+
+
+def fleet_public_origins() -> list[str]:
+    raw = os.environ.get("HANDSOFF_PUBLIC_ORIGINS", "")
+    entries = [item for item in raw.split(",") if item.strip()]
+    return normalize_public_origins(entries, "HANDSOFF_PUBLIC_ORIGINS") if entries else []
 
 
 def engine_root() -> Path:
@@ -746,6 +800,7 @@ def load_config(root: Path) -> dict:
     checks = raw.get("checks", {})
     implementer = raw.get("implementer", {})
     documentation = raw.get("documentation", {})
+    dashboard_table = raw.get("dashboard", {})
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
@@ -893,6 +948,9 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
             raise HandsoffError(f"handsoff.toml: documentation.{key} must be a list of non-empty strings")
         cfg["documentation"][key] = list(value)
+    if not isinstance(dashboard_table, dict):
+        raise HandsoffError("handsoff.toml: dashboard must be a table")
+    cfg["public_origins"] = normalize_public_origins(dashboard_table.get("public_origins", []), "handsoff.toml: dashboard.public_origins")
     unknown_gate = set(regression_gate) - set(DEFAULT_CONFIG["regression_gate"])
     if unknown_gate:
         raise HandsoffError(f"handsoff.toml: regression_gate has unknown keys: {', '.join(sorted(unknown_gate))}")
