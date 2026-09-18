@@ -8,8 +8,10 @@ commands exposed by the supervisor CLI.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
+import io
 import json
 import re
 import os
@@ -342,7 +344,7 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     A narrow phrase check supports older state written before that convention.
     """
     if isinstance(status.get("run_closed"), dict):
-        return {"required": False, "kind": None, "message": None, "request_id": None,
+        return {"required": False, "kind": None, "message": None, "blockers": [], "request_id": None,
                 "amendment_id": None, "amendment_decision": None, "question_id": None,
                 "question_cards": []}
     workflow_status = str(status.get("status") or "")
@@ -389,6 +391,7 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
         or older_signal or bool(amendment) or bool(questions)
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
+    blockers: list[str] = []
     if regression:
         kind = "regression_approval"
         message = (f"Full regression '{regression.get('group')}' requested. Review its exact commands "
@@ -432,7 +435,12 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
     elif design_approval_missing:
         kind = "design_approval"
-        message = "Independent design review is approved. Authorize this exact design to open Phase 3."
+        blockers = lib.design_approval_blockers(status, acceptance or {}, cfg) if acceptance is not None else []
+        if blockers:
+            message = ("Independent design review is approved, but the design gate cannot take the "
+                       "authorization yet: " + "; ".join(blockers) + ".")
+        else:
+            message = "Independent design review is approved. Authorize this exact design to open Phase 3."
     elif workflow_status == "blocked":
         kind = "blocked"
         message = next_action
@@ -441,11 +449,33 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
         message = next_action
     return {"required": required, "kind": kind if required else None,
             "message": message if required else None,
+            "blockers": blockers if required and kind == "design_approval" else [],
             "request_id": regression.get("request_id") if regression else None,
             "amendment_id": amendment.get("amendment_id") if amendment else None,
             "amendment_decision": amendment_decision,
             "question_id": questions[0].get("question_id") if questions else None,
             "question_cards": lib.question_cards(status) if questions else []}
+
+
+def _run_gate(command_fn, command) -> tuple[int, str | None]:
+    """Run a Supervisor command in-process and keep its refusal text. The
+    commands explain a refusal on stdout (SHIP_FEATURE_BLOCKED ...); a
+    Mission Control button that only said "the gate rejected this" left
+    the Pilot pressing it again with no way to learn why."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = command_fn(command)
+    if code == 0:
+        return 0, None
+    text = buffer.getvalue()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    start = next((i for i, line in enumerate(lines) if line.startswith("SHIP_FEATURE_BLOCKED")), None)
+    if start is None:
+        return code, None
+    reason = lines[start][len("SHIP_FEATURE_BLOCKED"):].lstrip(": ").strip()
+    details = [line.lstrip("- ").strip() for line in lines[start + 1:] if line.startswith("-")]
+    reason = "; ".join([part for part in [reason, *details] if part])
+    return code, reason[:600] or None
 
 
 def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict]:
@@ -1291,17 +1321,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pilot = "Mission Control Pilot"
                 status = snapshot.get("status") or {}
                 kind = action["kind"]
+                gate_reason = None
                 if kind == "design_approve":
                     review = status.get("design_review") or {}
                     command = argparse.Namespace(root=root_arg, by=pilot, architect=review.get("architect"),
                                                  summary="Pilot authorized the reviewed design in Mission Control.",
                                                  redesigns_settled_work=None)
-                    code = supervisor.cmd_design_approve(command)
+                    code, gate_reason = _run_gate(supervisor.cmd_design_approve, command)
                 elif kind == "design_reject":
-                    code = supervisor.cmd_design_reject(argparse.Namespace(
+                    code, gate_reason = _run_gate(supervisor.cmd_design_reject, argparse.Namespace(
                         root=root_arg, by=pilot, reason=reason))
                 elif kind == "deployment_approve":
-                    code = supervisor.cmd_deployment_gate(argparse.Namespace(
+                    code, gate_reason = _run_gate(supervisor.cmd_deployment_gate, argparse.Namespace(
                         root=root_arg, approve=True, revoke=False, auto=False, by=pilot, reason=None))
                 elif kind in {"deployment_hold", "pause"}:
                     code = supervisor.cmd_human_pause_start(argparse.Namespace(
@@ -1355,8 +1386,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 else:
                     raise lib.HandsoffError("unsupported operator action")
                 if code != 0:
-                    self._json_response(HTTPStatus.CONFLICT,
-                                        {"ok": False, "error": "The workflow gate rejected this action"})
+                    self._json_response(HTTPStatus.CONFLICT, {
+                        "ok": False,
+                        "error": gate_reason or "The workflow gate rejected this action",
+                    })
                     return
                 self._json_response(HTTPStatus.OK, {"ok": True, "kind": kind})
                 return
@@ -1501,10 +1534,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     summary="Pilot authorized the independently reviewed design in Mission Control.",
                     redesigns_settled_work=None,
                 )
-                if supervisor.cmd_design_approve(command) != 0:
+                code, gate_reason = _run_gate(supervisor.cmd_design_approve, command)
+                if code != 0:
                     self._json_response(
                         HTTPStatus.CONFLICT,
-                        {"ok": False, "error": "The design approval gate rejected this authorization"},
+                        {"ok": False, "error": gate_reason or "The design approval gate rejected this authorization"},
                     )
                     return
                 approved = lib.load_unique_json(lib.status_path(
@@ -1558,10 +1592,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     root=str(self.server.project_root), approve=True, revoke=False, auto=False,
                     by="Mission Control Pilot", reason=None,
                 )
-                if supervisor.cmd_deployment_gate(command) != 0:
+                code, gate_reason = _run_gate(supervisor.cmd_deployment_gate, command)
+                if code != 0:
                     self._json_response(
                         HTTPStatus.CONFLICT,
-                        {"ok": False, "error": "The deployment gate rejected this authorization"},
+                        {"ok": False, "error": gate_reason or "The deployment gate rejected this authorization"},
                     )
                     return
                 approved = lib.load_unique_json(lib.status_path(

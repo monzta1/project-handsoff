@@ -298,7 +298,11 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
 .mini-action { height: 28px; padding: 0 10px; border: 1px solid var(--accent-line); border-radius: 5px; background: var(--accent-soft); color: var(--accent); font: 700 10px/1 var(--sans); letter-spacing: .06em; cursor: pointer; }
 
 .ticket-table-wrap { overflow-x: auto; }
-.ticket-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+/* Tables keep whole words: the workspace's overflow-wrap: anywhere would
+   otherwise let a nine-column table squeeze to one character per line. */
+.ticket-table, .verification-latest { width: 100%; border-collapse: collapse; font-size: 12px; overflow-wrap: normal; }
+.ticket-table td, .ticket-table th { min-width: 72px; }
+.ticket-table td:nth-child(3) { min-width: 180px; }
 .ticket-table th { padding: 6px 8px; border-bottom: 1px solid var(--line-strong); color: var(--faint); font: 700 9.5px/1.2 var(--sans); letter-spacing: .1em; text-align: left; text-transform: uppercase; }
 .ticket-table td { padding: 9px 8px; border-bottom: 1px solid var(--line); color: var(--muted); vertical-align: top; }
 .ticket-table td:nth-child(3) { color: var(--ink); }
@@ -553,6 +557,15 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
   .mission-init-form { grid-template-columns: 1fr; width: 100%; }
   .now-facts { grid-template-columns: 1fr 1fr 1fr; }
   .legend { display: none; }
+  /* Work items become stacked cards: one row per field, label left. */
+  .ticket-table thead { display: none; }
+  .ticket-table, .ticket-table tbody, .ticket-table tr, .ticket-table td { display: block; min-width: 0; }
+  .ticket-table tr { margin: 0 0 10px; padding: 4px 0 2px; border: 1px solid var(--line); border-radius: 8px; background: rgba(0, 0, 0, .18); }
+  .ticket-table td { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .ticket-table tr td:last-child { border-bottom: 0; }
+  .ticket-table td::before { content: attr(data-label); color: var(--faint); font: 700 9.5px/1.6 var(--sans); letter-spacing: .1em; text-transform: uppercase; }
+  .ticket-table td:nth-child(3) { color: var(--ink); }
+  .verification-latest th, .verification-latest td { padding: 6px 4px; }
 }
 
 /* ---------- bridge instruments ---------- */

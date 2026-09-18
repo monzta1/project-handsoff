@@ -412,9 +412,20 @@ function renderInputAlert(inputRequest, feature, regression) {
   const regressionDetails = $("regression-details");
   regressionDetails.classList.toggle("hidden", state.inputKind !== "regression_approval");
   regressionDetails.textContent = regressionRecordText(state.regressionRequest);
+  const blockers = Array.isArray(inputRequest?.blockers) ? inputRequest.blockers : [];
+  state.inputBlockers = blockers;
   if (state.inputKind === "design_approval" && signature !== state.alertSignature) {
     approvalButton.disabled = false;
     approvalButton.textContent = "AUTHORIZE DESIGN";
+  }
+  // The gate would refuse: say why on the card and keep the button parked
+  // until the Supervisor clears it, instead of inviting a click that fails.
+  if (state.inputKind === "design_approval" && blockers.length) {
+    approvalButton.disabled = true;
+    approvalButton.textContent = "AUTHORIZATION BLOCKED";
+    approvalButton.title = blockers.join("; ");
+  } else if (state.inputKind === "design_approval") {
+    approvalButton.title = "";
   }
   if (state.inputKind === "deployment_approval" && signature !== state.alertSignature) {
     deploymentButton.disabled = false;
@@ -446,7 +457,13 @@ function renderOperations(operations = {}, actions = []) {
   // they live in the console; the decisions panel keeps only the calls that
   // actually gate the mission.
   const ROUTINE_KINDS = new Set(["pause", "resume", "run_close", "run_reopen"]);
-  const decisions = actions.filter((action) => !ROUTINE_KINDS.has(action.kind));
+  // The authorization card above already carries the control for the
+  // decision the run is waiting on; listing it here too put two AUTHORIZE
+  // DESIGN buttons on screen.
+  const ALERT_KINDS = { design_approval: "design_approve", deployment_approval: "deployment_approve",
+                        amendment_approval: "amendment_approve", design_review_budget: "design_review_authorize" };
+  const carriedByAlert = state.inputRequired ? ALERT_KINDS[state.inputKind] : null;
+  const decisions = actions.filter((action) => !ROUTINE_KINDS.has(action.kind) && action.kind !== carriedByAlert);
   const routine = actions.filter((action) => ROUTINE_KINDS.has(action.kind));
   $("operator-actions-count").textContent = `${decisions.length} PENDING`;
   const list = $("operator-actions-list");
@@ -455,10 +472,11 @@ function renderOperations(operations = {}, actions = []) {
   // time wiped whatever the Pilot was typing into a reason field. Keep the
   // cards when the bound action ids are unchanged, and carry typed drafts
   // across a rebuild otherwise.
-  const signature = actions.map((action) => action.action_id).join("|");
+  const shown = [...decisions, ...routine];
+  const signature = shown.map((action) => action.action_id).join("|");
   state.reasonDrafts = state.reasonDrafts || {};
   document.querySelectorAll("[data-reason-for]").forEach((input) => { if (input.value) state.reasonDrafts[input.dataset.reasonFor] = input.value; });
-  if (signature === state.actionSignature && list.childElementCount + (routineList ? routineList.childElementCount : 0) === actions.length) {
+  if (signature === state.actionSignature && list.childElementCount + (routineList ? routineList.childElementCount : 0) === shown.length) {
     renderInventory(inventory, actionKinds, OP_CLASSES);
     renderConsoleForms(inventory, operations, actions);
     return;
@@ -466,7 +484,7 @@ function renderOperations(operations = {}, actions = []) {
   state.actionSignature = signature;
   list.replaceChildren();
   if (routineList) routineList.replaceChildren();
-  for (const action of actions) {
+  for (const action of shown) {
     const card = document.createElement("article");
     card.className = `operator-action operator-action-${action.tone || "primary"}`;
     const copy = document.createElement("div");
@@ -798,15 +816,15 @@ function renderWorkItems(workItems) {
   $("ticket-total").textContent = `${items.length} ITEM${items.length === 1 ? "" : "S"}`;
   $("ticket-list").innerHTML = items.map((item) => `
     <tr data-item-id="${escapeHtml(item.id)}">
-      <td><code>${escapeHtml(item.id)}</code></td>
-      <td>${item.number ? `#${escapeHtml(item.number)}` : "n/a"}</td>
-      <td>${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
-      <td><span class="ticket-state">${escapeHtml(workItemLaneLabel(item))}</span><small>${escapeHtml(workItemLaneDetail(item))}</small>${smallFixCanConfirm(item) ? `<button class="mini-action lane-confirm" data-item="${escapeHtml(item.id)}">CONFIRM</button>` : ""}</td>
-      <td><strong>${escapeHtml(workItemProgressLabel(item))}</strong></td>
-      <td><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
-      <td>${escapeHtml(item.phase_or_next || "n/a")}</td>
-      <td>${escapeHtml(item.blocker || "n/a")}</td>
-      <td>${escapeHtml(relativeTime(item.updated_at))}</td>
+      <td data-label="Item"><code>${escapeHtml(item.id)}</code></td>
+      <td data-label="Issue">${item.number ? `#${escapeHtml(item.number)}` : "n/a"}</td>
+      <td data-label="Title">${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
+      <td data-label="Lane"><span class="ticket-state">${escapeHtml(workItemLaneLabel(item))}</span><small>${escapeHtml(workItemLaneDetail(item))}</small>${smallFixCanConfirm(item) ? `<button class="mini-action lane-confirm" data-item="${escapeHtml(item.id)}">CONFIRM</button>` : ""}</td>
+      <td data-label="Progress"><strong>${escapeHtml(workItemProgressLabel(item))}</strong></td>
+      <td data-label="Status"><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
+      <td data-label="Phase / next">${escapeHtml(item.phase_or_next || "n/a")}</td>
+      <td data-label="Blocker">${escapeHtml(item.blocker || "n/a")}</td>
+      <td data-label="Updated">${escapeHtml(relativeTime(item.updated_at))}</td>
     </tr>`).join("");
   document.querySelectorAll(".lane-confirm").forEach((button) => {
     button.addEventListener("click", async () => {

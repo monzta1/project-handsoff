@@ -10252,6 +10252,27 @@ def parse_question_candidate(raw: object) -> dict:
     return {"text": text, "truncated": False, "options": options, "recommended": recommended, "form_error": None}
 
 
+def design_approval_blockers(status: dict, acceptance: dict, cfg: dict) -> list[str]:
+    """The deterministic reasons `design-approve` would refuse right now,
+    in the gate's own words, so Mission Control can say them before the
+    Pilot presses the button instead of after. Ledger audits are left to
+    the gate itself (they need the files); these read the registry only."""
+    blockers: list[str] = []
+    criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
+    if any(c.get("requirement") == PLACEHOLDER_REQUIREMENT and c.get("tests") == PLACEHOLDER_TESTS for c in criteria):
+        blockers.append("the acceptance registry still contains init's untouched placeholder criterion; "
+                        "author a real criterion first")
+    try:
+        rows = derive_work_items(status, acceptance, cfg)["items"]
+    except Exception:
+        rows = []
+    missing = [row["id"] for row in rows if row.get("required", True) and not row.get("criteria")]
+    if missing:
+        blockers.append(f"required work items have no criteria: {', '.join(missing)}; "
+                        "tag a criterion [#N] or work-item-remove them")
+    return blockers
+
+
 def open_questions(status: dict, *, blocking_only: bool = False) -> list[dict]:
     items = status.get("pending_questions") if isinstance(status, dict) else None
     if not isinstance(items, list):

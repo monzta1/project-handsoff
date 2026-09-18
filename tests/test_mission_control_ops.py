@@ -363,3 +363,72 @@ class DeploymentApprovalHttpTests(LaunchRoleHttpTests):
             server.shutdown(); server.server_close()
         self.assertEqual(status, 200, payload)
         self.assertEqual(self.read_status()["deployment_approved"]["by"], "Mission Control Pilot")
+
+
+class DesignApprovalGateReasonTests(LaunchRoleHttpTests):
+    """A Pilot who presses AUTHORIZE DESIGN while the gate cannot take it
+    must learn why: the card names the blockers before the click, the
+    button is parked, and the endpoint relays the gate's own refusal text
+    (field report 2026-09-18: two buttons on screen, neither "worked",
+    the reason lived only in the server's stdout)."""
+
+    def _reviewed_with_unscoped_item(self):
+        started = run(["init", "Approve with an unscoped item", "--item", "#1 Scoped item"], cwd=self.tmp)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        authored = run(["criterion-update", "REQ-001", "--requirement",
+                        "[#1] Dashboard approval fixture has a real acceptance criterion"], cwd=self.tmp)
+        self.assertEqual(authored.returncode, 0, authored.stdout + authored.stderr)
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        synced = run(["work-items-sync", "--by", "supervisor", "--item", "#94 Unscoped follow-up"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        reviewed = approve_design_review(self.tmp, architect="arch-ui", reviewer="reviewer-ui")
+        self.assertEqual(reviewed.returncode, 0, reviewed.stdout + reviewed.stderr)
+
+    def test_blockers_are_named_on_the_card_and_the_endpoint_relays_the_gate_reason(self):
+        self._reviewed_with_unscoped_item()
+        snapshot = dashboard.build_snapshot(self.tmp)
+        request = snapshot["input_required"]
+        self.assertEqual(request["kind"], "design_approval")
+        self.assertEqual(len(request["blockers"]), 1)
+        self.assertIn("issue-94", request["blockers"][0])
+        self.assertIn("cannot take the authorization yet", request["message"])
+        self.assertIn("issue-94", request["message"])
+        action = next(a for a in snapshot["operator_actions"] if a["kind"] == "design_approve")
+        server = self._serve()
+        try:
+            legacy_status, legacy = self._post(server, "/api/design-approval", {})
+            action_status, via_action = self._post(server, "/api/operator-action",
+                                                   {"action_id": action["action_id"], "reason": None})
+        finally:
+            server.shutdown(); server.server_close()
+        self.assertEqual(legacy_status, 409, legacy)
+        self.assertIn("required work items have no criteria: issue-94", legacy["error"])
+        self.assertEqual(action_status, 409, via_action)
+        self.assertIn("required work items have no criteria: issue-94", via_action["error"])
+        self.assertIsNone(self.read_status()["design_approved"])
+
+    def test_clearing_the_blocker_clears_the_card_and_the_button_approves(self):
+        self._reviewed_with_unscoped_item()
+        removed = run(["work-item-remove", "issue-94", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        request = dashboard.build_snapshot(self.tmp)["input_required"]
+        self.assertEqual((request["kind"], request["blockers"]), ("design_approval", []))
+        self.assertNotIn("cannot take", request["message"])
+        server = self._serve()
+        try:
+            status, payload = self._post(server, "/api/design-approval", {})
+        finally:
+            server.shutdown(); server.server_close()
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(self.read_status()["design_approved"]["by"], "Mission Control Pilot")
+
+    def test_design_approval_blockers_helper(self):
+        cfg = lib.load_config(self.tmp)
+        status = {"work_item_delivery": {}}
+        acceptance = {"criteria": [{"id": "REQ-001", "requirement": lib.PLACEHOLDER_REQUIREMENT,
+                                    "tests": list(lib.PLACEHOLDER_TESTS), "state": "failing"}],
+                      "work_items": []}
+        blockers = lib.design_approval_blockers(status, acceptance, cfg)
+        self.assertEqual(len(blockers), 1)
+        self.assertIn("placeholder", blockers[0])
+        self.assertEqual(lib.design_approval_blockers(status, {"criteria": [{"id": "REQ-001", "requirement": "[#1] real", "tests": ["x"]}], "work_items": []}, cfg), [])
