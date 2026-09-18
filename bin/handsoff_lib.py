@@ -291,6 +291,10 @@ DEFAULT_CONFIG = {
     "digest_ignore": [],
     "implementer_commands": [],
     "documentation": {"files": [], "exclude": []},
+    # #124: exact browser origins (scheme://host[:port]) that may drive the
+    # run dashboard through a tunnel or private network; loopback is always
+    # accepted. Fleet reads HANDSOFF_PUBLIC_ORIGINS instead (no project).
+    "public_origins": [],
     "live_check_commands": [],
     "check_timeout_seconds": 600,
     "tickets": [],
@@ -382,6 +386,56 @@ AGENT_SESSION_FIELDS = {
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
     *AGENT_SESSION_OPTIONAL_FIELDS,
 }
+
+
+def normalize_public_origins(value, label: str) -> list[str]:
+    """#124: an origin is scheme://host[:port], nothing else. Each entry is
+    canonicalised (lowercase scheme and host, explicit port dropped only
+    when it is the scheme default) so comparison is exact, never a prefix."""
+    from urllib.parse import urlsplit
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise HandsoffError(f"{label} must be a list of non-empty origin strings")
+    result = []
+    for item in value:
+        parts = urlsplit(item.strip())
+        if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path not in {"", "/"} \
+                or parts.query or parts.fragment or parts.username or parts.password:
+            raise HandsoffError(f"{label} entry {item!r} must be scheme://host[:port] with no path")
+        port = parts.port
+        default = 443 if parts.scheme == "https" else 80
+        host = parts.hostname.lower()
+        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port and port != default else "")
+        if canonical not in result:
+            result.append(canonical)
+    return result
+
+
+def origin_allowed(origin: str | None, server_port: int, public_origins: list[str]) -> bool:
+    """Loopback on the server's own port is always allowed; otherwise the
+    origin must equal one configured public origin exactly."""
+    from urllib.parse import urlsplit
+    if not origin:
+        return False
+    try:
+        parts = urlsplit(origin)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.username or parts.password or parts.path not in {"", "/"} or parts.query or parts.fragment:
+        return False
+    if parts.scheme == "http" and parts.hostname in {"127.0.0.1", "localhost", "::1"} and port == server_port:
+        return True
+    try:
+        canonical = normalize_public_origins([origin], "origin")[0]
+    except HandsoffError:
+        return False
+    return canonical in public_origins
+
+
+def fleet_public_origins() -> list[str]:
+    raw = os.environ.get("HANDSOFF_PUBLIC_ORIGINS", "")
+    entries = [item for item in raw.split(",") if item.strip()]
+    return normalize_public_origins(entries, "HANDSOFF_PUBLIC_ORIGINS") if entries else []
 
 
 def engine_root() -> Path:
@@ -480,6 +534,56 @@ def runtime_identity(root: Path) -> dict:
     identity = _runtime_identity_with_manifest(root)
     identity.pop("manifest", None)
     return identity
+
+
+def ledger_engine_identity(root: Path) -> dict | None:
+    """#117: the three identity fields an event carries so an archive can
+    say which engine ran it; None when the identity cannot be read (the
+    event is still written, the field is just absent)."""
+    try:
+        identity = runtime_identity(Path(root))
+    except (HandsoffError, OSError, ValueError):
+        return None
+    return {"version": identity.get("version"), "source": identity.get("source"),
+            "manifest_sha256": identity.get("manifest_sha256")}
+
+
+def retire_finished_run(root: Path, cfg: dict) -> Path | None:
+    """#118: move a complete or closed run's ledgers into
+    .handsoff-archive/<UTC date>-<slug>/ so the next mission can start;
+    None (and nothing moved) when the run is still in progress or the
+    status cannot be read."""
+    root = Path(root)
+    try:
+        status = load_unique_json(status_path(root, cfg))
+    except (HandsoffError, OSError, ValueError):
+        return None
+    # Only a recorded completion or closure counts; a run at Phase 8 whose
+    # status is still in_progress has not finished (review finding).
+    finished = status.get("status") in {"complete", "closed"} \
+        or isinstance(status.get("run_closed"), dict)
+    if not finished:
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "-", str(status.get("feature") or "run").lower()).strip("-")[:48] or "run"
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    target = root / ".handsoff-archive" / f"{stamp}-{slug}"
+    target.mkdir(parents=True, exist_ok=False)
+    moved = [status_path(root, cfg), acceptance_path(root, cfg), event_log_path(root, cfg),
+             verification_log_path(root, cfg), event_head_path(root), root / ".handsoff-digests"]
+    for path in moved:
+        if path.exists():
+            path.rename(target / path.name)
+    return target
+
+
+def engine_history(events: list[dict]) -> list[dict]:
+    """Distinct engine identities in ledger order (#117)."""
+    seen = []
+    for event in events or []:
+        engine = event.get("engine") if isinstance(event, dict) else None
+        if isinstance(engine, dict) and engine not in seen:
+            seen.append(engine)
+    return seen
 
 
 def validate_runtime_integrity(root: Path) -> dict:
@@ -746,6 +850,7 @@ def load_config(root: Path) -> dict:
     checks = raw.get("checks", {})
     implementer = raw.get("implementer", {})
     documentation = raw.get("documentation", {})
+    dashboard_table = raw.get("dashboard", {})
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
@@ -893,6 +998,9 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
             raise HandsoffError(f"handsoff.toml: documentation.{key} must be a list of non-empty strings")
         cfg["documentation"][key] = list(value)
+    if not isinstance(dashboard_table, dict):
+        raise HandsoffError("handsoff.toml: dashboard must be a table")
+    cfg["public_origins"] = normalize_public_origins(dashboard_table.get("public_origins", []), "handsoff.toml: dashboard.public_origins")
     unknown_gate = set(regression_gate) - set(DEFAULT_CONFIG["regression_gate"])
     if unknown_gate:
         raise HandsoffError(f"handsoff.toml: regression_gate has unknown keys: {', '.join(sorted(unknown_gate))}")
@@ -2250,6 +2358,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             extra_events=extra_events or None,
             event_kind="agent_session_launching",
             event_message=f"Managed {role} agent session is launching",
+            engine=ledger_engine_identity(root),
             session_id=session_id, role=role, actor=actor, adapter=adapter,
             requested_model=requested_model, reported_model=None,
             resolution_source=resolution_source, state="launching",
@@ -3979,7 +4088,7 @@ def validate_status_schema(status: dict) -> list[str]:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
                 allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
-                                  "result_available", "adopted", "scratch_path", "auto_retry_authorized"}
+                                  "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged"}
                 if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
                     errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
@@ -4313,6 +4422,17 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     regression = active_regression_request(status)
     escalation = status.get("escalation") or {}
     recovery_hold = escalation.get("kind") in {"recovery_exhausted", "recovery_paused"}
+    # #123: a replacement paused on a non-recoverable failure has no
+    # escalation record, yet the Pilot must be able to clear it here.
+    replacement_pause = None
+    if not recovery_hold and not closed and not complete:
+        try:
+            assessment = recovery_assessment(status, cfg, {}, [], root=root)
+        except (HandsoffError, OSError, ValueError):
+            assessment = {}
+        if assessment.get("reason") == "non_recoverable_failure":
+            replacement_pause = (status.get("agent_failures") or {}).get(assessment.get("lost_session_id")) or {}
+            recovery_hold = True
     automated = [c.get("id") for c in acceptance.get("criteria", [])
                  if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
     try:
@@ -4326,13 +4446,16 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
         launch_reason = "run is not in progress"
     elif closed:
         launch_reason = "run is closed"
-    elif launch_role not in {"implementer", "reviewer"}:
-        launch_reason = "current phase does not assign implementer or reviewer"
+    elif launch_role not in SELECTABLE_AGENT_ROLES:
+        launch_reason = "current phase assigns no managed role"
     else:
         launch_profile = resolved_agent_profiles(cfg).get(launch_role)
+        current_session = current_agent_sessions(status).get(launch_role)
         if not launch_profile or launch_profile.get("adapter") == HOST_AGENT_ADAPTER:
             launch_reason = f"{launch_role} is host-driven"
-        elif current_agent_sessions(status).get(launch_role):
+        elif current_session and current_session.get("state") in AGENT_SESSION_LIVE_STATES:
+            # #123: only a live session blocks a launch; a failed one is
+            # exactly what a relaunch replaces.
             launch_reason = f"a live {launch_role} session already exists"
         elif phase == 2 and launch_role == "reviewer" and not status.get("design_proposal"):
             launch_reason = "reviewer launch requires a design proposal"
@@ -4341,7 +4464,8 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     if deployment_pending: actionable |= {"deployment_approve", "deployment_hold"}
     if deployment_revoke: actionable.add("deployment_revoke")
     if phase == 2 and budget.get("exhausted"): actionable |= {"design_review_authorize", "design_review_escalate"}
-    if recovery_hold: actionable |= {"recovery_acknowledge", "recover"}
+    if recovery_hold: actionable.add("recovery_acknowledge")
+    if recovery_hold and not replacement_pause: actionable.add("recover")
     if escalation.get("kind") == "review_cap_exhausted": actionable.add("review_cap_override")
     if regression and regression.get("state") in {"awaiting_approval", "accepted"}: actionable |= {"regression_accept", "regression_decline", "regression_cancel"}
     if not closed and not complete:
@@ -4407,6 +4531,9 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
         if kind == "launch_role":
             entry["launchable_roles"] = [launch_role] if availability == "actionable" else []
             entry["role"] = launch_role
+        if kind == "recovery_acknowledge" and replacement_pause:
+            entry["consequence"] = (f"Clears the replacement pause after a {replacement_pause.get('category')} failure "
+                                    f"({replacement_pause.get('reason')}); relaunch the role afterwards")
         result.append(entry)
     return result
 
@@ -4920,6 +5047,15 @@ def _minutes_since(timestamp: str | None, now: datetime) -> float | None:
     return (now - last).total_seconds() / 60
 
 
+def implementation_evidence_complete(status: dict) -> bool:
+    """#122: every automated criterion passing and the original symptom
+    resolved, read from the run's own coverage bookkeeping."""
+    coverage = status.get("requirement_coverage") if isinstance(status.get("requirement_coverage"), dict) else {}
+    symptom = bool(coverage.get("original_symptom_resolved") or status.get("original_symptom_evidence_id"))
+    counts = {key: int(coverage.get(key, 0) or 0) for key in ("passing", "failing", "not_tested", "blocked")}
+    return symptom and counts["passing"] > 0 and counts["failing"] + counts["not_tested"] + counts["blocked"] == 0
+
+
 def assigned_role(status: dict) -> str | None:
     if status.get("status") == "complete":
         return None
@@ -4946,8 +5082,43 @@ def assigned_role(status: dict) -> str | None:
         # Supervisor advances to Phase 6. The watchdog must not recover
         # that deliberately completed reviewer during this interval.
         return "supervisor"
+    if phase == 4 and implementation_evidence_complete(status):
+        # #122: the Implementer's assignment ends with the last piece of
+        # evidence; the Supervisor advances to Phase 5.
+        return "supervisor"
     return {3: "supervisor", 4: "implementer", 5: "reviewer", 6: "implementer",
             7: "supervisor", 8: "supervisor"}.get(phase)
+
+
+# #121: what an orchestration launch tells each role. The Supervisor gets
+# the run's next_action (it is the one who acts on it); the sandboxed
+# roles get their own instruction and never a Supervisor-facing command.
+ORCHESTRATION_TASKS = {
+    "architect": ("Act as the Architect for this mission. Your sandbox is read-only and that is expected: "
+                  "record acceptance criteria with a HANDSOFF_BROKER_REQUEST criteria transaction and end with your "
+                  "HANDSOFF_DESIGN_PROPOSAL; the host records both. Do not run supervisor commands and do not ask "
+                  "permission for the assigned scope."),
+    "implementer": ("Act as the Implementer against the approved design and the supplied managed design context. "
+                    "Implement, run the linked checks with verify, record the resolved symptom, and stop; do not "
+                    "repeat evidenced work or run a full regression suite."),
+    "reviewer": ("Act as the independent Reviewer. Your sandbox is read-only and that is expected: read the diff and "
+                 "the acceptance registry, run the linked checks, and end with exactly one HANDSOFF_REVIEW_RESULT "
+                 "line; the host records it. Do not run supervisor commands. structural_blocker is true only when "
+                 "the design itself cannot satisfy a criterion; a blocked recording is never a structural blocker."),
+}
+
+
+def orchestration_task(role: str, status: dict, *, objective: str | None = None) -> str:
+    if role == "supervisor":
+        next_action = str(status.get("next_action") or "Continue the current workflow step.")
+        return (f"Continue the managed Handsoff workflow as supervisor. Execute this current next action: "
+                f"{next_action} Use the required broker protocol; use the supplied managed design context instead "
+                "of rediscovering the repository; do not stop at narration, repeat evidenced work, or run a full "
+                "regression suite.")
+    text = ORCHESTRATION_TASKS.get(role, f"Continue the managed Handsoff workflow as {role}.")
+    if objective:
+        text = f"Mission objective: {objective}\n\n{text}"
+    return text
 
 
 def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
@@ -4968,9 +5139,20 @@ def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
         return None
     if isinstance(status.get("human_pause"), dict) or isinstance(status.get("background_wait"), dict):
         return None
-    if any(isinstance(item, dict) and item.get("state") == "pending"
+    if any(isinstance(item, dict) and item.get("answer") is None and item.get("state", "pending") == "pending"
            for item in status.get("pending_questions") or []):
         return None
+    # #120: a question answered but not yet delivered relaunches the role
+    # that asked it, unless that role already has a live session.
+    undelivered = [item for item in status.get("pending_questions") or []
+                   if isinstance(item, dict) and item.get("answer") is not None and not item.get("delivered_at")]
+    if undelivered:
+        asker = undelivered[-1].get("role")
+        live = any(isinstance(item, dict) and item.get("state") in AGENT_SESSION_LIVE_STATES
+                   and item.get("role") == asker for item in (status.get("agent_sessions") or {}).values())
+        if asker in SELECTABLE_AGENT_ROLES and not live \
+                and not (cfg is not None and cfg.get("agents", {}).get(asker) == HOST_AGENT_ADAPTER):
+            return asker
     if any(isinstance(item, dict) and item.get("state") in {"awaiting_approval", "accepted", "launched"}
            for item in status.get("regression_requests") or []):
         return None
@@ -4979,6 +5161,9 @@ def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
         return None
     target = assigned_role(status)
     if target is None:
+        return None
+    if target == "reviewer" and isinstance(status.get("review"), dict):
+        # #125: a recorded review is never re-run by orchestration.
         return None
     if cfg is not None:
         if cfg.get("agents", {}).get(target) == HOST_AGENT_ADAPTER:
@@ -5330,6 +5515,7 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         if isinstance(candidate, dict) and candidate.get("state") in {
                 "failed", "timed_out", "failed_to_start", "cancelled"} \
                 and isinstance(failure, dict) and not failure.get("adopted") \
+                and not failure.get("acknowledged") \
                 and not failure.get("auto_retry_authorized") \
                 and failure.get("category") not in RECOVERABLE_FAILURE_CATEGORIES:
             result.update(reason="non_recoverable_failure", assigned_role=current_role,

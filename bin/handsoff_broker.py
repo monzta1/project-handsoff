@@ -343,6 +343,50 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     raise lib.HandsoffError(f"broker refuses unknown workflow command: {command}")
 
 
+ARCHITECT_CRITERIA_FIELDS = {"actor", "project_root", "action", "operations", "by"}
+
+
+def parse_architect_request(text: str) -> dict:
+    """#121: the Architect's only broker request, a criteria transaction
+    {actor architect, project_root, action criteria, operations, by}.
+    Operations are validated by the criteria planner on execution."""
+    value = parse_request(text)
+    if not isinstance(value, dict) or set(value) != ARCHITECT_CRITERIA_FIELDS:
+        raise lib.HandsoffError("Architect broker request must have exactly actor, project_root, action, operations, by")
+    if value.get("actor") != "architect" or value.get("action") != "criteria":
+        raise lib.HandsoffError("Architect broker request must be actor architect, action criteria")
+    if not isinstance(value.get("operations"), list) or not value["operations"] or len(value["operations"]) > 32:
+        raise lib.HandsoffError("Architect criteria request needs 1 to 32 operations")
+    if not isinstance(value.get("by"), str) or not value["by"].strip():
+        raise lib.HandsoffError("Architect criteria request needs a non-empty by")
+    return value
+
+
+def execute_architect_criteria(root: Path, request: dict, *, capability: object,
+                               workflow_popen=subprocess.Popen) -> int:
+    """Run the Architect's criteria transaction through criteria-apply on
+    the host, exactly as a Supervisor request would."""
+    root = root.resolve()
+    if capability is not _SUPERVISOR_HOST_CAPABILITY:
+        raise lib.HandsoffError("broker accepts requests only from the trusted host context")
+    if request.get("project_root") != str(root):
+        raise lib.HandsoffError("broker request project_root does not match the active project root")
+    import json as _json
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", prefix="handsoff-criteria-", delete=False, encoding="utf-8") as handle:
+        _json.dump({"operations": request["operations"]}, handle)
+        path = handle.name
+    try:
+        translated = {"actor": "supervisor", "project_root": str(root), "action": "workflow",
+                      "command": "criteria-apply", "file": path, "by": request["by"]}
+        return execute_request(root, translated, capability=capability, workflow_popen=workflow_popen)
+    finally:
+        try:
+            Path(path).unlink()
+        except OSError:
+            pass
+
+
 def execute_request(root: Path, request: dict, *, capability: object,
                     workflow_popen=subprocess.Popen,
                     agent_launcher=agent_runtime.execute_with_recovery) -> int:
@@ -458,7 +502,9 @@ def parse_reviewer_result(text: str) -> dict:
     if not isinstance(value["structural_blocker"], bool):
         raise lib.HandsoffError("Reviewer structural_blocker must be boolean")
     if value["kind"] != "design" and value["structural_blocker"]:
-        raise lib.HandsoffError("structural_blocker applies only to design review")
+        raise lib.HandsoffError("structural_blocker applies only to design review; a blocked recording is never a structural blocker")
+    if value["decision"] == "approved" and value["structural_blocker"]:
+        raise lib.HandsoffError("Reviewer approval contradicts structural_blocker true; approve, or request changes with the blocker as a finding")
     if value["symptom_reproduced"] not in {"yes", "not_applicable"}:
         raise lib.HandsoffError("Reviewer symptom_reproduced is invalid")
     if value.get("tests_executed", "unknown") not in {"yes", "no", "unknown"}:

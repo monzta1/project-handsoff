@@ -76,3 +76,9 @@ ignore = []
 approval_timeout_minutes = 30
 launch_window_minutes = 10
 full_regression_major_only = true
+
+[dashboard]
+# Exact browser origins (scheme://host[:port]) allowed to drive Mission
+# Control through a tunnel or private network (#124). Loopback is always
+# allowed. See docs/REMOTE-ACCESS.md; the app itself has no login.
+public_origins = []

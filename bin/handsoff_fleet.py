@@ -184,8 +184,20 @@ def project_view(entry: dict) -> dict:
     }
 
 
-def build_fleet(path: Path | None = None) -> dict:
-    projects = [project_view(entry) for entry in load_registry(path)]
+def _public_dashboard_url(project: dict, public_base: str | None) -> dict:
+    """#124: through a tunnel the loopback link does not resolve; when the
+    request came in on a configured public origin, link the owned port on
+    that host instead (the port itself is still what the tunnel exposes)."""
+    if not public_base or not project.get("dashboard_url"):
+        return project
+    from urllib.parse import urlsplit
+    port = urlsplit(project["dashboard_url"]).port
+    base = urlsplit(public_base)
+    return {**project, "dashboard_url": f"{base.scheme}://{base.hostname}:{port}/"}
+
+
+def build_fleet(path: Path | None = None, public_base: str | None = None) -> dict:
+    projects = [_public_dashboard_url(project_view(entry), public_base) for entry in load_registry(path)]
     decisions = [{"root": item["root"], "project": item["name"], "feature": item.get("feature"), **action}
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
@@ -224,17 +236,35 @@ class FleetHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _same_origin(self):
+        # #124: loopback always; otherwise one HANDSOFF_PUBLIC_ORIGINS entry, exactly.
         try:
-            origin = urlsplit(self.headers.get("Origin", ""))
-            return origin.scheme == "http" and origin.hostname in {"127.0.0.1", "localhost", "::1"} \
-                and origin.port == self.server.server_port and not origin.username and not origin.password
-        except ValueError:
-            return False
+            public = lib.fleet_public_origins()
+        except lib.HandsoffError:
+            public = []
+        return lib.origin_allowed(self.headers.get("Origin"), self.server.server_port, public)
+
+    def _public_base(self) -> str | None:
+        """The public scheme://host this request arrived on, when it is a
+        configured public origin; None for loopback requests."""
+        try:
+            public = lib.fleet_public_origins()
+        except lib.HandsoffError:
+            return None
+        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").strip()
+        scheme = (self.headers.get("X-Forwarded-Proto") or "http").strip().lower()
+        for candidate in (f"{scheme}://{host}", f"https://{host}"):
+            try:
+                canonical = lib.normalize_public_origins([candidate], "request")[0]
+            except lib.HandsoffError:
+                continue
+            if canonical in public:
+                return canonical
+        return None
 
     def do_GET(self):  # noqa: N802
         path = urlsplit(self.path).path
         if path == "/api/fleet":
-            self._json(HTTPStatus.OK, build_fleet(self.server.registry))
+            self._json(HTTPStatus.OK, build_fleet(self.server.registry, public_base=self._public_base()))
             return
         if path == "/api/events":
             self.send_response(HTTPStatus.OK)

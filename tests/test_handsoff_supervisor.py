@@ -12645,17 +12645,20 @@ class TestRecoveryNoManagedSession(HandsoffTestCase):
         self.assertEqual((silent["state"], silent["lost_session_id"]),
                          ("worker_silent", sid))
 
-    def test_pilot_approved_design_assigns_supervisor_not_finished_reviewer(self):
+    def test_pilot_approved_design_assigns_nobody_not_finished_reviewer(self):
+        # A Pilot-approved design is advanced deterministically by the
+        # owned dashboard; no role is assigned, and the finished reviewer
+        # is never recovered.
         status = self.read_status()
         status.update(phase_number=2, design_approved={"by": "pilot"})
-        self.assertEqual(self.lib.assigned_role(status), "supervisor")
+        self.assertIsNone(self.lib.assigned_role(status))
         result = self.lib.recovery_assessment(
             status, self.lib.load_config(self.tmp), {},
             [{"kind": "agent_session_completed", "role": "reviewer"}],
             datetime.now(timezone.utc) + timedelta(minutes=30),
         )
         self.assertEqual((result["state"], result["reason"]),
-                         ("not_applicable", "no_managed_session"))
+                         ("not_applicable", "no_assigned_role"))
 
     def test_approved_implementation_review_assigns_supervisor_not_finished_reviewer(self):
         status = self.read_status()

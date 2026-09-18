@@ -140,11 +140,22 @@ class MissionControlOpsTests(HandsoffTestCase):
         self.init(); self._phase(4)
         self.assertRegex(next(x for x in self.inventory() if x["kind"] == "launch_role")["action_id"], r"^launch_role:")
 
-    def test_launch_role_unavailable_for_unassigned_phase(self):
+    def test_launch_role_offers_the_managed_supervisor_at_phase_three(self):
+        # #119: every managed role is launchable from Mission Control.
         self.init(); self._phase(3)
         item = next(x for x in self.inventory() if x["kind"] == "launch_role")
+        self.assertEqual(item["availability"], "actionable", item)
+        self.assertEqual(item["launchable_roles"], ["supervisor"])
+
+    def test_launch_role_unavailable_for_a_host_supervisor(self):
+        self.init()
+        toml = self.tmp / "handsoff.toml"
+        import re
+        toml.write_text(re.sub(r'^supervisor = "[a-z]+"$', 'supervisor = "host"', toml.read_text(), count=1, flags=re.M))
+        self._phase(3)
+        item = next(x for x in self.inventory() if x["kind"] == "launch_role")
         self.assertEqual(item["availability"], "unavailable")
-        self.assertIn("does not assign", item["reason"])
+        self.assertIn("host-driven", item["reason"])
 
     def test_dashboard_payload_does_not_expose_environment_secrets(self):
         self.init(); os.environ["MISSION_TEST_TOKEN"] = "never-include-this-value"

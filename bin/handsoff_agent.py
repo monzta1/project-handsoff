@@ -182,6 +182,13 @@ def build_role_input(root: Path, role: str, task: str) -> str:
     if role == "reviewer":
         text = (f"# Project root (read-only)\n\n{root}: use git as `git -C {root} ...` and tests as `cd {root} && python3 -m unittest ...`. "
                 "Write only inside the current directory.\n\n" + text)
+    if role in {"architect", "reviewer"}:
+        # #121: the sandbox cannot take the project lock; the host records
+        # every protocol line, so supervisor commands are never the answer.
+        text = ("# Sandbox\n\nYour sandbox is read-only for the project. Do not run `handsoff supervisor` "
+                "commands; they will fail on the project lock. The host records your protocol lines "
+                "(HANDSOFF_BROKER_REQUEST criteria transactions and HANDSOFF_DESIGN_PROPOSAL for the Architect, "
+                "HANDSOFF_REVIEW_RESULT for the Reviewer).\n\n" + text)
     if role in DESIGN_EVIDENCE_ROLES:
         cfg = lib.load_config(root)
         context = lib.managed_design_context(root, role)
@@ -864,6 +871,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     supervisor_requests: list[dict] = []
     reviewer_results: list[dict] = []
     architect_results: list[dict] = []
+    architect_requests: list[dict] = []
     protocol_errors: list[str] = []
     question_errors: list[str] = []
     question_lines = [0]
@@ -944,6 +952,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                             _parse_reviewer_line(line, reviewer_results, protocol_errors)
                             persist_new(reviewer_results, "review")
                         if spec.role == "architect":
+                            _parse_architect_request_line(line, architect_requests, protocol_errors)
                             _parse_architect_line(line, architect_results, protocol_errors)
                             persist_new(architect_results, "design")
                     if len(pending.encode("utf-8")) > 65536:
@@ -962,6 +971,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         _parse_reviewer_line(pending, reviewer_results, protocol_errors)
                         persist_new(reviewer_results, "review")
                     if spec.role == "architect":
+                        _parse_architect_request_line(pending, architect_requests, protocol_errors)
                         _parse_architect_line(pending, architect_results, protocol_errors)
                         persist_new(architect_results, "design")
             except BaseException as exc:
@@ -1173,6 +1183,21 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(orchestration_noop=True),
         )
         raise AgentLaunchError("Architect exited without a structured design proposal or Pilot question", session_id)
+    if architect_requests:
+        # #121: the Architect's criteria land through the host before its
+        # proposal is bound to them.
+        broker = __import__("handsoff_broker")
+        for request in architect_requests:
+            try:
+                code = broker.execute_architect_criteria(root, request, capability=broker._SUPERVISOR_HOST_CAPABILITY)
+            except lib.HandsoffError as exc:
+                lib.transition_agent_session(root, session_id, "failed", exit_code=1,
+                                            failure=lib.classify_runtime_failure(orchestration_noop=True))
+                raise AgentLaunchError(f"Architect criteria request rejected: {str(exc)[:200]}", session_id) from exc
+            if code != 0:
+                lib.transition_agent_session(root, session_id, "failed", exit_code=1,
+                                            failure=lib.classify_runtime_failure(orchestration_noop=True))
+                raise AgentLaunchError("Architect criteria transaction was refused by criteria-apply", session_id)
     if architect_results:
         try:
             lib.record_design_proposal(root, session_id, architect_results[0])
@@ -1428,6 +1453,23 @@ def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> 
     except Exception:
         # Telemetry must never turn a managed child outcome into a failure.
         return
+
+
+def _parse_architect_request_line(line: str, requests: list[dict], errors: list[str]) -> None:
+    """#121: HANDSOFF_BROKER_REQUEST from the Architect is a criteria transaction."""
+    if not line.startswith(SUPERVISOR_REQUEST_PREFIX):
+        for logical in _claude_logical_lines(line):
+            if logical != line:
+                _parse_architect_request_line(logical, requests, errors)
+        return
+    payload = line[len(SUPERVISOR_REQUEST_PREFIX):].strip()
+    if len(requests) >= 8:
+        errors.append("Architect emitted more than 8 criteria requests")
+        return
+    try:
+        requests.append(__import__("handsoff_broker").parse_architect_request(payload))
+    except lib.HandsoffError as exc:
+        errors.append(str(exc))
 
 
 def _parse_architect_line(line: str, results: list[dict], errors: list[str]) -> None:

@@ -33,10 +33,15 @@ class TestDesignConvergence(HandsoffTestCase):
                 "decisions": list(decisions), "constraints": [], "verification": ["focused test"]}
 
     def _review(self):
-        result = run(["record-design-review", "--by", "design-reviewer", "--architect",
-                      "host-architect", "--request-changes", "--summary", "Needs convergence",
-                      "--finding", "Persisted field types are unspecified",
-                      "--finding", "The identifier range and storage bound are missing"], self.tmp)
+        # #112: a hand-recorded verdict must come from a different host
+        # session than the proposal, whatever session the harness runs in.
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "host-session-reviewer", "CODEX_COMPANION_SESSION_ID": ""}):
+            result = run(["record-design-review", "--by", "design-reviewer", "--architect",
+                          "host-architect", "--request-changes", "--summary", "Needs convergence",
+                          "--finding", "Persisted field types are unspecified",
+                          "--finding", "The identifier range and storage bound are missing"], self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_architect_prompt_requires_data_shape_and_revisions(self):

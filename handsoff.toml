@@ -102,6 +102,8 @@ commands = [
   "node --test tests/dashboard/fleet_open_dashboard.test.js",
   "node --test tests/dashboard/live_status.test.js",
   "node --test tests/dashboard/metrics.test.js",
+  "python3 -m unittest tests.test_managed_crew -v",
+  "python3 -m unittest tests.test_remote_access -v",
   "python3 -m unittest tests.test_operations -v",
   "node --test tests/dashboard/operation_telemetry.test.js",
   "python3 -m unittest tests.test_evidence_drift -v",
