@@ -1328,6 +1328,12 @@ function render(snapshot) {
   setFaviconState(status.status === "complete" ? "complete"
     : state.inputRequired ? "blocked" : "in_progress");
   $("project-name").textContent = snapshot.project.name.toUpperCase();
+  const projectLogo = $("project-logo");
+  if (snapshot.project.logo_url) {
+    if (projectLogo.getAttribute("src") !== snapshot.project.logo_url) projectLogo.src = snapshot.project.logo_url;
+    projectLogo.alt = snapshot.project.name;
+  }
+  projectLogo.classList.toggle("hidden", !snapshot.project.logo_url);
   $("feature-name").textContent = snapshot.project.feature;
   $("project-root").textContent = snapshot.root;
   $("engine-version").textContent = `${snapshot.engine?.version || "unknown"} · ${snapshot.engine?.source || "unknown source"}`;

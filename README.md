@@ -403,6 +403,18 @@ Three defects observed on three thin projects right after the v0.3.22 to v0.3.25
 
 `amendment-revise` records the cumulative delta as a history, so revising a criterion the open amendment already changed appends a second operation record for the same id. `recompute_amendment_hash` then compared EVERY record's resulting hash with the registry and refused the review with "no longer matches the reviewed amendment" although nothing had drifted. It now checks the last record per id; the full history still feeds `amendment_hash`, so a delta that drifted after review is still refused. Found on the first real revise against the same criterion (ToneCommand, HeadRush lane); the existing test revised twice and only asserted that approval fails for want of a review.
 
+### Project artwork on Mission Control and Fleet
+
+A project may carry its own logo: `[project] logo = "docs/img/logo.png"` in
+`handsoff.toml` (a png, jpg, webp or svg inside the project, under 4 MiB),
+or one of the conventional paths (`logo.png`, `logo.svg`, `docs/img/logo.png`,
+`ui/logo.png`, `assets/logo.png`, `static/logo.png`, `site/logo.png`) when the
+key is unset. The run dashboard shows it beside the mission title and serves it
+at `/project-logo`; Fleet shows it on the project's card through an opaque
+`/project-logo/<key>` route that never reveals the path. No logo, a missing
+file, a wrong type or a file outside the project simply means no logo; branding
+never blocks a run. Both dashboards carry the Handsoff mark in their header.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:

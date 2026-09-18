@@ -116,9 +116,23 @@ def _engine_version(root: Path) -> str:
         return "unknown"
 
 
+def logo_key(root: Path) -> str:
+    """Stable, opaque id for a registered root's logo route (never the path)."""
+    return hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:20]
+
+
+def project_logo_url(root: Path) -> str | None:
+    try:
+        found = lib.project_logo(root, lib.load_config(root))
+    except (lib.HandsoffError, OSError):
+        found = None
+    return f"/project-logo/{logo_key(root)}" if found else None
+
+
 def project_view(entry: dict) -> dict:
     root = Path(entry["root"])
     owner = _owner_view(root)
+    logo_url = project_logo_url(root) if root.exists() else None
     # REQ-006: Fleet may link only to a currently verified run-owned listener.
     # The loopback URL is deliberate so registry metadata can never redirect a
     # Fleet operator to a host chosen by project data or a stale owner file.
@@ -137,7 +151,7 @@ def project_view(entry: dict) -> dict:
     if not snap.get("initialized"):
         seed = {"root": str(root), "error": snap.get("error"), "owner": owner}
         binding = hashlib.sha256(json.dumps(seed, sort_keys=True).encode()).hexdigest()[:20]
-        return {"root": str(root), "name": root.name, "registered_at": entry["registered_at"],
+        return {"root": str(root), "name": root.name, "registered_at": entry["registered_at"], "logo_url": logo_url,
                 "initialized": False, "state": "orphaned" if not root.exists() else "quiet",
                 "error": snap.get("error"), "owner": owner, "binding": binding,
                 "engine_version": _engine_version(root), "decisions": [],
@@ -169,6 +183,7 @@ def project_view(entry: dict) -> dict:
     binding = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:20]
     return {
         "root": str(root), "name": root.name, "registered_at": entry["registered_at"], "initialized": True,
+        "logo_url": logo_url,
         "feature": snap.get("project", {}).get("feature"), "phase": status.get("phase"),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"), "state": state,
         "next_action": status.get("next_action"), "role": role,
@@ -284,6 +299,38 @@ class FleetHandler(BaseHTTPRequestHandler):
                     time.sleep(1)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
+            return
+        if path.startswith("/project-logo/"):
+            key = path[len("/project-logo/"):]
+            found = None
+            for entry in load_registry(self.server.registry):
+                root = Path(entry["root"])
+                if root.exists() and logo_key(root) == key:
+                    try:
+                        found = lib.project_logo(root, lib.load_config(root))
+                    except (lib.HandsoffError, OSError):
+                        found = None
+                    break
+            if not found:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "No project logo"})
+                return
+            try:
+                body = found[0].read_bytes()
+            except OSError:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "No project logo"})
+                return
+            self._headers(HTTPStatus.OK, found[1], len(body))
+            self.wfile.write(body)
+            return
+        if path == "/logo.png":
+            # The Handsoff mark, shared with Mission Control.
+            try:
+                body = lib.engine_resource_path("dashboard/logo.png").read_bytes()
+            except OSError:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+                return
+            self._headers(HTTPStatus.OK, "image/png", len(body))
+            self.wfile.write(body)
             return
         assets = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),

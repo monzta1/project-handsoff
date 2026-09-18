@@ -19,7 +19,7 @@ import handsoff_fleet as fleet
 import handsoff_lib as lib
 
 
-class FleetMissionControlTests(unittest.TestCase):
+class _FleetFixture(unittest.TestCase):
     def setUp(self):
         self.base = Path(tempfile.mkdtemp(prefix="handsoff-fleet-test-"))
         self.registry = self.base / "fleet.json"
@@ -47,6 +47,9 @@ class FleetMissionControlTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return root
 
+
+
+class FleetMissionControlTests(_FleetFixture):
     def test_registry_and_multi_project_snapshot_are_isolated(self):
         first = self.project("alpha")
         second = self.project("beta")
@@ -68,7 +71,9 @@ class FleetMissionControlTests(unittest.TestCase):
             lib.commit(root, cfg, status=status, event_kind="fixture_phase", event_message="fixture")
         snapshot = dashboard.build_snapshot(root)
         self.assertEqual(snapshot["status"]["progress"], 20)
-        self.assertEqual(snapshot["status"]["verification_progress"], 0)
+        # The work-item recompute keeps the "initialized" gate (5) as the
+        # verification floor; nothing is verified yet.
+        self.assertEqual(snapshot["status"]["verification_progress"], 5)
 
     def test_clean_close_and_reopen_are_audited_idempotent_and_non_destructive(self):
         root = self.project("closure")
@@ -232,3 +237,102 @@ class FleetMissionControlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProjectLogoTests(_FleetFixture):
+    """A project's own artwork ([project] logo, or a conventional path)
+    appears on its Fleet card and in its run dashboard header; the Fleet
+    header carries the Handsoff mark. Nothing outside the project can be
+    served, and a missing or oversized logo simply means no logo."""
+
+    PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6364f8cf"
+                        "c000000301010018dd8db00000000049454e44ae426082")
+
+    def _get(self, server, path):
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        return response.status, response.getheader("Content-Type"), body
+
+    def test_logo_helper_declared_conventional_and_refusals(self):
+        root = self.project("gamma")
+        cfg = lib.load_config(root)
+        self.assertIsNone(lib.project_logo(root, cfg))
+        (root / "docs" / "img").mkdir(parents=True)
+        (root / "docs" / "img" / "logo.png").write_bytes(self.PNG)
+        self.assertEqual(lib.project_logo(root, cfg), ((root / "docs" / "img" / "logo.png").resolve(), "image/png"))
+        (root / "art").mkdir()
+        (root / "art" / "mark.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+        self.assertEqual(lib.project_logo(root, {**cfg, "logo": "art/mark.svg"}), ((root / "art" / "mark.svg").resolve(), "image/svg+xml"))
+        # Declared but missing, wrong type, or escaping the root: no logo.
+        self.assertIsNone(lib.project_logo(root, {**cfg, "logo": "art/missing.png"}))
+        (root / "art" / "notes.txt").write_text("x")
+        self.assertIsNone(lib.project_logo(root, {**cfg, "logo": "art/notes.txt"}))
+        outside = self.base / "outside.png"
+        outside.write_bytes(self.PNG)
+        (root / "art" / "link.png").symlink_to(outside)
+        self.assertIsNone(lib.project_logo(root, {**cfg, "logo": "art/link.png"}))
+        big = root / "art" / "big.png"
+        big.write_bytes(b"\0" * (lib.MAX_PROJECT_LOGO_BYTES + 1))
+        self.assertIsNone(lib.project_logo(root, {**cfg, "logo": "art/big.png"}))
+        # The config key itself is validated as a safe relative path.
+        toml = root / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("[project]\n", '[project]\nlogo = "../escape.png"\n', 1))
+        with self.assertRaisesRegex(lib.HandsoffError, "project.logo"):
+            lib.load_config(root)
+
+    def test_fleet_and_dashboard_serve_the_declared_logo(self):
+        root = self.project("delta")
+        (root / "ui").mkdir()
+        (root / "ui" / "logo.png").write_bytes(self.PNG)
+        toml = root / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("[project]\n", '[project]\nlogo = "ui/logo.png"\n', 1))
+        plain = self.project("epsilon")
+        fleet.register_project(root, self.registry)
+        fleet.register_project(plain, self.registry)
+        snapshot = fleet.build_fleet(self.registry)
+        by_name = {item["name"]: item for item in snapshot["projects"]}
+        self.assertEqual(by_name["delta"]["logo_url"], f"/project-logo/{fleet.logo_key(root)}")
+        self.assertIsNone(by_name["epsilon"]["logo_url"])
+        self.assertNotIn(str(root), by_name["delta"]["logo_url"])
+        server = fleet.FleetServer(("127.0.0.1", 0), self.registry)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, content_type, body = self._get(server, by_name["delta"]["logo_url"])
+            self.assertEqual((status, content_type, body), (200, "image/png", self.PNG))
+            self.assertEqual(self._get(server, f"/project-logo/{fleet.logo_key(plain)}")[0], 404)
+            self.assertEqual(self._get(server, "/project-logo/not-a-key")[0], 404)
+            status, content_type, body = self._get(server, "/logo.png")
+            self.assertEqual((status, content_type), (200, "image/png"))
+            self.assertEqual(body, (ROOT / "dashboard" / "logo.png").read_bytes())
+            self.assertIn('<img class="brand-mark" src="/logo.png"', self._get(server, "/")[2].decode())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+        run_snapshot = dashboard.build_snapshot(root)
+        self.assertEqual(run_snapshot["project"]["logo_url"], "/project-logo")
+        self.assertIsNone(dashboard.build_snapshot(plain)["project"]["logo_url"])
+        run_server = dashboard.DashboardServer(("127.0.0.1", 0), root)
+        thread = threading.Thread(target=run_server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, content_type, body = self._get(run_server, "/project-logo")
+            self.assertEqual((status, content_type, body), (200, "image/png", self.PNG))
+        finally:
+            run_server.shutdown()
+            run_server.server_close()
+            thread.join(timeout=2)
+        plain_server = dashboard.DashboardServer(("127.0.0.1", 0), plain)
+        thread = threading.Thread(target=plain_server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertEqual(self._get(plain_server, "/project-logo")[0], 404)
+        finally:
+            plain_server.shutdown()
+            plain_server.server_close()
+            thread.join(timeout=2)

@@ -74,8 +74,8 @@ function projectCard(project) {
       ${lcd(project)}
       <span class="progress">${esc(project.progress ?? 0)}%</span>
     </div>
-    <h3>${esc(title)}</h3>
-    <p class="project-name">${esc(project.name)}</p>
+    <div class="project-title">${project.logo_url ? `<img class="project-logo" src="${esc(project.logo_url)}" alt="" width="44" height="44">` : ""}<div><h3>${esc(title)}</h3>
+    <p class="project-name">${esc(project.name)}</p></div></div>
     ${phaseRail(project)}
     <p class="phase">${phase}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}

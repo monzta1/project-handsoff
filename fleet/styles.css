@@ -54,8 +54,10 @@ button, input { font: inherit; }
 @keyframes signal-sweep { 0% { background-position: -40% 0; } 100% { background-position: 140% 0; } }
 .brand-mark { box-shadow: inset 0 0 14px rgba(95, 211, 255, .18), 0 0 18px rgba(95, 211, 255, .12); }
 .brand { display: flex; align-items: center; gap: 11px; color: var(--ink); text-decoration: none; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--accent-line); border-radius: 8px; color: var(--accent); font: 800 13px/1 var(--mono); letter-spacing: -1px; }
-.brand-mark span { color: var(--faint); }
+.brand-mark { display: block; width: 40px; height: 40px; border: 1px solid var(--accent-line); border-radius: 8px; object-fit: cover; background: #000; }
+.project-logo { flex: 0 0 auto; width: 44px; height: 44px; border: 1px solid var(--line-strong); border-radius: 9px; object-fit: cover; background: #000; box-shadow: 0 0 14px rgba(95, 211, 255, .18); }
+.project-title { display: flex; align-items: center; gap: 12px; margin: 0; }
+.project-title > div { min-width: 0; }
 .brand-copy { display: grid; gap: 1px; }
 .brand-copy strong { font-size: 13px; font-weight: 700; letter-spacing: .06em; }
 .brand-copy small { font: 600 9px/1.2 var(--sans); color: var(--faint); letter-spacing: .12em; }
@@ -114,7 +116,7 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .project[data-state="stalled"] .badge, .project[data-state="failed"] .badge, .project[data-state="orphaned"] .badge { color: var(--red); border-color: rgba(255, 123, 117, .45); background: var(--red-soft); }
 .progress { color: var(--ink); font: 700 14px/1 var(--mono); font-variant-numeric: tabular-nums; }
 .project h3 { margin: 0; font-size: 14.5px; font-weight: 600; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.project-name { margin: -4px 0 0; color: var(--faint); font: 600 10.5px/1.3 var(--mono); letter-spacing: .04em; }
+.project-name { margin: 2px 0 0; color: var(--faint); font: 600 10.5px/1.3 var(--mono); letter-spacing: .04em; }
 .mini-rail { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
 .mini-rail i { display: block; height: 3px; border-radius: 2px; background: rgba(148, 170, 190, .14); }
 .mini-rail i.complete { background: var(--accent); opacity: .55; }

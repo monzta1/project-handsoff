@@ -280,6 +280,7 @@ DEFAULT_SMALL_FIX_MAX_CHANGED_LINES = 200
 DEFAULT_SMALL_FIX_MAX_FILES = 6
 
 DEFAULT_CONFIG = {
+    "logo": None,
     "status_file": "handsoff-status.json",
     "acceptance_file": "handsoff-acceptance.json",
     "event_log": "handsoff-events.jsonl",
@@ -874,6 +875,10 @@ def load_config(root: Path) -> dict:
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
     cfg["verification_log"] = project.get("verification_log", cfg["verification_log"])
+    logo = project.get("logo")
+    if logo is not None and (not isinstance(logo, str) or not logo.strip()):
+        raise HandsoffError("handsoff.toml: project.logo must be a non-empty relative path when set")
+    cfg["logo"] = logo
     ignore = digest.get("ignore", [])
     if not isinstance(ignore, list) or not all(isinstance(item, str) for item in ignore):
         raise HandsoffError("handsoff.toml: digest.ignore must be a list of strings")
@@ -1113,8 +1118,10 @@ def load_config(root: Path) -> dict:
     cfg["tickets"] = normalized_tickets
     cfg["design_evidence"] = _validate_design_evidence_config(raw.get("design_evidence", []))
     resolved_root = root.resolve()
-    for key in ("status_file", "acceptance_file", "event_log", "verification_log"):
+    for key in ("status_file", "acceptance_file", "event_log", "verification_log", "logo"):
         value = cfg[key]
+        if key == "logo" and value is None:
+            continue
         if not isinstance(value, str) or not value.strip() or Path(value).is_absolute() or ".." in Path(value).parts:
             raise HandsoffError(f"handsoff.toml: project.{key} must be a safe relative path")
         # The string-only check above rejects ".." and absolute paths, but
@@ -10261,6 +10268,40 @@ def parse_question_candidate(raw: object) -> dict:
         if recommended not in options:
             return _question_form_failure(candidate, "recommended_not_offered")
     return {"text": text, "truncated": False, "options": options, "recommended": recommended, "form_error": None}
+
+
+PROJECT_LOGO_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                      ".webp": "image/webp", ".svg": "image/svg+xml"}
+PROJECT_LOGO_CANDIDATES = ("logo.png", "logo.svg", "docs/img/logo.png", "ui/logo.png", "assets/logo.png",
+                           "static/logo.png", "site/logo.png")
+MAX_PROJECT_LOGO_BYTES = 4 * 1024 * 1024
+
+
+def project_logo(root: Path, cfg: dict) -> tuple[Path, str] | None:
+    """The project's own artwork for Mission Control and Fleet: `[project]
+    logo` in handsoff.toml, else the first conventional path that exists.
+    The file must resolve inside the project, be a regular image of a known
+    type and stay under 4 MiB; otherwise there is no logo (never an error:
+    branding must not block a run)."""
+    root = Path(root).resolve()
+    declared = (cfg or {}).get("logo")
+    candidates = [declared] if declared else list(PROJECT_LOGO_CANDIDATES)
+    for relative in candidates:
+        try:
+            path = (root / relative).resolve()
+            path.relative_to(root)
+        except (ValueError, OSError):
+            continue
+        content_type = PROJECT_LOGO_TYPES.get(path.suffix.lower())
+        if content_type is None or not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > MAX_PROJECT_LOGO_BYTES:
+                continue
+        except OSError:
+            continue
+        return path, content_type
+    return None
 
 
 def design_approval_blockers(status: dict, acceptance: dict, cfg: dict) -> list[str]:

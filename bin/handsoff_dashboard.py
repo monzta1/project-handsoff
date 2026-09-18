@@ -895,7 +895,8 @@ def build_snapshot(root: Path) -> dict:
         "generated_at": generated_at,
         "root": str(root),
         "engine": lib.runtime_identity(root),
-        "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature"))},
+        "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature")),
+                    "logo_url": "/project-logo" if lib.project_logo(root, cfg) else None},
         "status": display_status,
         "phases": _phase_view(
             int(status.get("phase_number", 1) or 1),
@@ -1253,6 +1254,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/healthz":
             payload = b'{"ok":true}'
             self._headers(HTTPStatus.OK, "application/json; charset=utf-8", len(payload))
+            self.wfile.write(payload)
+            return
+        if path == "/project-logo":
+            # The project's own artwork ([project] logo, or a conventional
+            # path), served from inside the project only.
+            try:
+                found = lib.project_logo(self.server.project_root, lib.load_config(self.server.project_root))
+                payload = found[0].read_bytes() if found else None
+            except (lib.HandsoffError, OSError):
+                found, payload = None, None
+            if payload is None:
+                payload = b"No project logo"
+                self._headers(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", len(payload))
+                self.wfile.write(payload)
+                return
+            self._headers(HTTPStatus.OK, found[1], len(payload))
             self.wfile.write(payload)
             return
         asset = ASSETS.get(path)
