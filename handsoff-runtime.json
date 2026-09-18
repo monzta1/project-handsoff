@@ -24,7 +24,7 @@
     "prompts/supervisor.md": "ed4eac36f980288d9a4d7fba9215f51b5f46b8deb2ec8227f5554a3449aeee89",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
     "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63",
-    "templates/handsoff.toml": "b9e648cd5340dcda33f166ad59c7b4e04925a00b26a7805cea5e9fc71c1be5a5"
+    "templates/handsoff.toml": "4476cd3a19158ef6d4c8dbaa1af00eaf422590451cb162887b2413806d817c62"
   },
   "schema": 1,
   "version": "v0.3.19"
