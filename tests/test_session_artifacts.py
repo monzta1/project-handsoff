@@ -148,6 +148,13 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
         status = self.read_status()
         self.assertIsNotNone(status.get("review"))
         self.assertEqual(status["agent_sessions"][sid]["result"]["adopted_by"], "pilot")
+        # #115: the verdict is the reviewer's; the adopter is recorded beside it.
+        reviewer_actor = status["agent_sessions"][sid]["actor"]
+        self.assertEqual(status["review"]["by"], reviewer_actor)
+        self.assertEqual(status["reviewed_by"], reviewer_actor)
+        self.assertEqual(status["review"]["adopted_by"], "pilot")
+        self.assertEqual(status["review"]["adopted_session"], sid)
+        self.assertNotEqual(reviewer_actor, "pilot")
         again = run(["session-result-adopt", "--session", sid, "--by", "pilot"], cwd=self.tmp)
         self.assertEqual(again.returncode, 1)
         self.assertIn("already adopted", again.stdout)
