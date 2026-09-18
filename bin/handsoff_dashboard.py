@@ -501,8 +501,10 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
         add("amendment_approve", "Approve amendment", "Resumes the frozen phase with the reviewed delta")
         add("amendment_escalate", "Escalate to redesign", "Closes the amendment and returns to full design", reason=True, tone="danger")
     elif kind == "amendment_review":
-        add("amendment_review_approve", "Approve amendment review", "Moves the amendment to Pilot approval", reason=True)
-        add("amendment_review_reject", "Request amendment revision", "Returns the amendment for revision", reason=True, tone="danger")
+        # The amendment review is the independent Reviewer's decision
+        # (amendment-review is agent-only in OPERATION_REGISTRY); the Pilot
+        # launches the reviewer from the console, never records it here.
+        pass
     elif kind == "amendment_revision":
         add("amendment_escalate", "Escalate to redesign", "Closes the amendment and returns to full design", reason=True, tone="danger")
     escalation = status.get("escalation") or {}

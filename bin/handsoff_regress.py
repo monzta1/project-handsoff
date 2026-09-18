@@ -34,6 +34,10 @@ import handsoff_lib as lib  # noqa: E402
 
 PROGRESS_FILE = ".handsoff-regression.json"
 UNITTEST_LINE = re.compile(r"^(?P<test>test\w*) \((?P<where>[\w.]+)\)(?: \[[^\]]*\])? \.\.\. (?P<result>ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)$")
+# A test with a docstring prints its name on one line and "<first docstring
+# line> ... result" on the next.
+UNITTEST_HEAD = re.compile(r"^(?P<test>test\w*) \((?P<where>[\w.]+)\)(?: \[[^\]]*\])?$")
+UNITTEST_TAIL = re.compile(r"^.* \.\.\. (?P<result>ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)$")
 NODE_LINE = re.compile(r"^(?P<not>not )?ok (?P<num>\d+) - (?P<name>.*?)(?: # (?P<directive>SKIP|TODO).*)?$")
 MAX_RECENT = 64
 
@@ -96,14 +100,21 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int) -> int:
     log_path = Path(tempfile.gettempdir()) / f"handsoff-regress-{os.getpid()}.log"
     with log_path.open("a", encoding="utf-8") as log:
         assert process.stdout is not None
+        pending_name = None
         for line in process.stdout:
             log.write(line)
             text = line.rstrip("\n")
             match = UNITTEST_LINE.match(text)
             node = NODE_LINE.match(text) if match is None else None
-            if match:
-                result = match.group("result")
-                name = f"{match.group('where')}.{match.group('test')}"
+            head = UNITTEST_HEAD.match(text) if match is None and node is None else None
+            if head:
+                pending_name = f"{head.group('where')}.{head.group('test')}"
+                continue
+            tail = UNITTEST_TAIL.match(text) if match is None and node is None and pending_name else None
+            if match or tail:
+                result = (match or tail).group("result")
+                name = f"{match.group('where')}.{match.group('test')}" if match else pending_name
+                pending_name = None
                 entry["done"] += 1
                 if result == "ok" or result == "expected failure":
                     entry["passed"] += 1

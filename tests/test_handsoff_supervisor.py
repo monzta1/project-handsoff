@@ -114,6 +114,22 @@ def tearDownModule():
 _MODULE_ARCHIVE_DIR = None
 
 
+# #112 made hand-recorded reviews refuse the proposal's own host session.
+# The harness inherits this terminal's session id (Claude Code or Codex),
+# so every fixture command would otherwise look like a self-review on a
+# developer machine and pass on CI. Inherited ids are dropped; a test that
+# patches its own values keeps them.
+_INHERITED_HOST_SESSION = {key: os.environ.get(key) for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_COMPANION_SESSION_ID")}
+
+
+def _harness_env():
+    env = dict(os.environ)
+    for key, inherited in _INHERITED_HOST_SESSION.items():
+        if inherited and env.get(key) == inherited:
+            env.pop(key, None)
+    return env
+
+
 def run(args, cwd):
     args = list(args)
     # Evidence and item gates may legitimately move fixture progress beyond
@@ -132,14 +148,14 @@ def run(args, cwd):
                     activated = subprocess.run(
                         [sys.executable, str(BIN / "handsoff_supervisor.py"),
                          "work-item-activate", items[0]["id"], "--by", "test-supervisor"],
-                        cwd=cwd, capture_output=True, text=True, timeout=30,
+                        cwd=cwd, capture_output=True, text=True, timeout=30, env=_harness_env(),
                     )
                     if activated.returncode:
                         return activated
         except (OSError, ValueError, KeyError, TypeError):
             pass
     return subprocess.run([sys.executable, str(BIN / "handsoff_supervisor.py"), *args],
-                          cwd=cwd, capture_output=True, text=True, timeout=30)
+                          cwd=cwd, capture_output=True, text=True, timeout=30, env=_harness_env())
 
 
 def approve_design_review(cwd, architect="test-architect", reviewer="test-design-reviewer"):
@@ -3660,7 +3676,7 @@ class TestDerivedAndStrictState(HandsoffTestCase):
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(7, implemented_by="impl", reviewed_by="reviewer")
         self.assertEqual(run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp).returncode, 0)
-        changed = run(["criterion-update", "REQ-001", "--requirement", "A newly scoped outcome"], cwd=self.tmp)
+        changed = run(["criterion-update", "REQ-001", "--requirement", "A newly scoped outcome", "--revoke-approval"], cwd=self.tmp)
         self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
         s = self.read_status()
         self.assertIsNone(s["review"])
@@ -6351,7 +6367,11 @@ class TestCriteriaTransaction(HandsoffTestCase):
         return other
 
     def _write_tx(self, operations, root=None, name="tx.json"):
-        path = (root or self.tmp) / name
+        # Under .handsoff-fixture so the file is Handsoff side state, not
+        # repository content that would read as evidence drift (#98).
+        folder = (root or self.tmp) / ".handsoff-fixture"
+        folder.mkdir(exist_ok=True)
+        path = folder / name
         path.write_text(json.dumps({"operations": operations}))
         return path
 
@@ -6558,7 +6578,8 @@ class TestCriteriaTransaction(HandsoffTestCase):
     def test_transaction_file_bounds_are_enforced_before_anything_is_written(self):
         self._init_with_base()
         before = self._snapshot()
-        path = self.tmp / "tx.json"
+        (self.tmp / ".handsoff-fixture").mkdir(exist_ok=True)
+        path = self.tmp / ".handsoff-fixture" / "tx.json"
         cases = {
             "zero operations": json.dumps({"operations": []}),
             "sixty-five operations": json.dumps({"operations": [self._add(f"REQ-{n:03d}") for n in range(100, 165)]}),
@@ -6659,7 +6680,7 @@ class TestCriteriaTransaction(HandsoffTestCase):
             {"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 criterion REQ-002, revised"}},
             self._add("REQ-005"),
             {"op": "remove", "id": "REQ-004"},
-        ])
+        ], "--revoke-approval")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         after = self.read_status()
         self.assertIsNone(after["design_approved"])
@@ -6974,7 +6995,9 @@ class TestAmendmentLane(HandsoffTestCase):
     # -- fixture helpers ---------------------------------------------------
 
     def _write_tx(self, operations, name="tx.json"):
-        path = self.tmp / name
+        folder = self.tmp / ".handsoff-fixture"
+        folder.mkdir(exist_ok=True)
+        path = folder / name
         path.write_text(json.dumps({"operations": operations}))
         return path
 
@@ -7201,7 +7224,7 @@ class TestAmendmentLane(HandsoffTestCase):
 
         # The same transaction takes the ordinary path: design cleared, Phase 2.
         applied = self._ok(run(["criteria-apply", "--file", str(self._write_tx(cases["add operation"][0])),
-                                "--by", self.ARCHITECT], cwd=self.tmp))
+                                "--by", self.ARCHITECT, "--revoke-approval"], cwd=self.tmp))
         self.assertIn("CRITERIA_TRANSACTION_APPLIED", applied.stdout)
         status = self.read_status()
         self.assertEqual(status["phase_number"], 2)
@@ -7648,7 +7671,7 @@ class TestArchitectDesignReview(HandsoffTestCase):
         self.assertEqual(run(["advance", "3", "30"], cwd=self.tmp).returncode, 0)
 
         changed = run(["criterion-update", "REQ-001", "--requirement",
-                       "A revised independently reviewable criterion"], cwd=self.tmp)
+                       "A revised independently reviewable criterion", "--revoke-approval"], cwd=self.tmp)
         self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
         status = self.read_status()
         self.assertEqual(status["phase_number"], 2)
@@ -8885,6 +8908,7 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         self.tmp.mkdir()
         shutil.copytree(ROOT / "schemas", self.tmp / "schemas")
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
 
     def _prepare(self, followup=FOLLOWUP, criteria=("REQ-001",)):
         """Phase 2 with real criteria and no review recorded yet."""
@@ -8902,6 +8926,21 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
             self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
         phase2 = run(["advance", "2", "20"], cwd=self.tmp)
         self.assertEqual(phase2.returncode, 0, phase2.stdout + phase2.stderr)
+        # A Phase 2 reviewer launch needs a recorded proposal (#92); record
+        # one the way a managed Architect would, so the tier selection under
+        # test is the only thing that varies.
+        self.lib.record_design_proposal(self.tmp, None, {
+            "summary": "Issue 37 fixture proposal", "approach": ["one step"], "tradeoffs": [],
+            "decisions": ["one decision"], "constraints": [], "verification": ["true"]},
+            architect_actor="architect-1")
+
+    def _reproposal(self):
+        """A criterion change invalidates the proposal; record it again the
+        way an Architect revision would."""
+        self.lib.record_design_proposal(self.tmp, None, {
+            "summary": "Issue 37 fixture proposal, revised", "approach": ["one step"], "tradeoffs": [],
+            "decisions": ["one decision"], "constraints": [], "verification": ["true"]},
+            architect_actor="architect-1")
 
     def _review(self, *extra, decision="--request-changes", summary="Design needs work"):
         return run(["record-design-review", "--by", "design-reviewer", "--architect", "architect-1",
@@ -8935,8 +8974,19 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         return f"hs-{number:032x}"
 
     class _Process:
+        """A fake reviewer that emits one complete verdict (#87 fails a
+        session that exits without a protocol line). Dispatch is mocked
+        away in _launch so the tests below record their own reviews."""
         pid = None
         returncode = 0
+
+        def __init__(self):
+            import io
+            self.stdout = io.StringIO(
+                'HANDSOFF_REVIEW_RESULT: {"kind":"design","decision":"changes_requested","summary":"fixture",'
+                '"findings":["fixture finding"],"structural_blocker":false,"symptom_reproduced":"not_applicable"}\n')
+            self.stderr = io.StringIO("")
+            self.stdin = io.StringIO()
 
         def communicate(self, *, input, timeout):
             return None
@@ -8947,13 +8997,17 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         def wait(self, timeout=None):
             return 0
 
+        def poll(self):
+            return 0
+
         def kill(self):
             return None
 
     def _launch(self, spec, number):
-        return self.runtime.execute_launch(
-            spec, actor="managed-reviewer", popen_factory=mock.Mock(return_value=self._Process()),
-            session_id_factory=lambda: self._sid(number))
+        with mock.patch.object(self.broker, "dispatch_reviewer_result", return_value=None):
+            return self.runtime.execute_launch(
+                spec, actor="managed-reviewer", popen_factory=mock.Mock(return_value=self._Process()),
+                session_id_factory=lambda: self._sid(number))
 
     def test_config_requires_both_followup_keys_or_neither(self):
         self._write_toml(None)
@@ -9082,6 +9136,7 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
         self.assertEqual(self._tier(), ("primary", "criteria_structure_changed"))
         self.assertEqual(self._select()["adapter"], "codex")
+        self._reproposal()
         spec = self.runtime.build_launch_spec(self.tmp, "reviewer", "Review", which=self.both)
         self.assertEqual((spec.tier, spec.tier_reason), ("primary", "criteria_structure_changed"))
 
@@ -9155,6 +9210,7 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         self.assertEqual(self._files_snapshot(), before)
         criterion = run(["criterion-update", "REQ-001", "--requirement", "A real criterion"], cwd=self.tmp)
         self.assertEqual(criterion.returncode, 0)
+        self._reproposal()
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
         self.assertEqual(self._review().returncode, 0)
         self.assertEqual(self._tier(), ("followup", "delta_check"))
@@ -9351,7 +9407,7 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         self._prepare()
         with mock.patch.object(self.lib.shutil, "which", self.both):
             policy = self.dashboard.build_snapshot(self.tmp)["policy"]["design_reviewer_selection"]
-        self.assertEqual(policy, {"current": None,
+        self.assertEqual(policy, {"current": None, "consistency_errors": [],
                                   "next": {"tier": "primary", "reason": "first_review", "adapter": "codex",
                                            "model": "default", "error": None}})
         self.assertEqual(self._review().returncode, 0)
@@ -9626,7 +9682,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
             self.assertEqual(status["phase_number"], phase)
             self.assertIsNotNone(status["design_approved"])
 
-            r = run(["criterion-update", "REQ-001", "--requirement", "A changed outcome"], cwd=root)
+            r = run(["criterion-update", "REQ-001", "--requirement", "A changed outcome", "--revoke-approval"], cwd=root)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             after = json.loads((root / "handsoff-status.json").read_text())
             self.assertIsNone(after["design_approved"])
@@ -9758,7 +9814,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
             status.pop("design_review", None)
             self._write_status(status, root=root)
 
-            r = run(["criterion-update", "REQ-001", "--requirement", "A changed outcome"], cwd=root)
+            r = run(["criterion-update", "REQ-001", "--requirement", "A changed outcome", "--revoke-approval"], cwd=root)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             after = json.loads((root / "handsoff-status.json").read_text())
             # Pre-existing behavior: _invalidate_decisions only forces a
@@ -10113,7 +10169,7 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
         added = run(["criterion-add", "SUP-002", "--type", "supporting",
                     "--requirement", "A criterion added after approval.",
-                    "--verification", "automated", "--test", "true"], cwd=self.tmp)
+                    "--verification", "automated", "--test", "true", "--revoke-approval"], cwd=self.tmp)
         self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
         self.assertIsNone(self.read_status()["design_approved"])
         after_add = self.read_acceptance()
@@ -10141,7 +10197,7 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
         self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
         explicit_null = run(["criterion-add", "SUP-003", "--type", "supporting",
                             "--requirement", "A criterion with authored_by forced null.",
-                            "--verification", "automated", "--test", "true"], cwd=self.tmp)
+                            "--verification", "automated", "--test", "true", "--revoke-approval"], cwd=self.tmp)
         self.assertEqual(explicit_null.returncode, 0, explicit_null.stdout + explicit_null.stderr)
         acc = self.read_acceptance()
         for c in acc["criteria"]:
