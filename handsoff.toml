@@ -1,5 +1,5 @@
 [project]
-# logo = "docs/img/logo.png"   # optional project artwork for Mission Control and Fleet (png, jpg, webp or svg inside the project)
+logo = "dashboard/logo.png"   # the Handsoff mark: this project is Handsoff itself
 name = "project-handsoff"
 status_file = "handsoff-status.json"
 acceptance_file = "handsoff-acceptance.json"
