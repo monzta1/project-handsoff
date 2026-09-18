@@ -59,10 +59,7 @@ FOLLOWUP_DESIGN_TOKEN_BUDGET = 16_000
 # interactive Codex plugin/app/tool catalogue.  Disabling those optional
 # surfaces materially reduces the fixed prompt paid again on every tool
 # turn while leaving the OS sandbox and core shell/edit tools intact.
-CODEX_DISABLED_FEATURES = (
-    "plugins", "apps", "skill_search", "multi_agent", "goals",
-    "browser_use", "computer_use", "image_generation",
-)
+CODEX_DISABLED_FEATURES = lib.CODEX_DISABLED_FEATURES
 
 
 def _effective_token_budget(configured: int, role: str, context: dict | None) -> int:
@@ -83,26 +80,7 @@ def _effective_token_budget(configured: int, role: str, context: dict | None) ->
 
 def _codex_argv(executable: str, role: str, model: str, token_budget: int,
                 *, reviewer_sandbox: bool = False) -> list[str]:
-    sandbox = "workspace-write" if reviewer_sandbox or role == "implementer" else "read-only"
-    argv = [executable, "exec", "--ephemeral", "--sandbox", sandbox]
-    if reviewer_sandbox:
-        argv.append("--skip-git-repo-check")
-    for feature in CODEX_DISABLED_FEATURES:
-        argv.extend(["--disable", feature])
-    # Codex's native shared rollout meter stops the complete agent loop,
-    # including repeated tool/model turns.  Count both prefill and sampling
-    # tokens at full weight so cached or repeated context is not free from
-    # Handsoff's safety ceiling.
-    argv.extend([
-        "-c",
-        ("features.rollout_budget={enabled=true,"
-         f"limit_tokens={token_budget},reminder_at_remaining_tokens=[],"
-         "sampling_token_weight=1.0,prefill_token_weight=1.0}"),
-    ])
-    if model != lib.DEFAULT_AGENT_MODEL:
-        argv.extend(["--model", model])
-    argv.append("-")
-    return argv
+    return lib.codex_argv(executable, role, model, token_budget, reviewer_sandbox=reviewer_sandbox)
 
 
 def _reviewer_scratch(root: Path, adapter: str, role: str, *, create: bool = True) -> Path | None:
@@ -182,6 +160,8 @@ def build_role_input(root: Path, role: str, task: str) -> str:
     if role == "reviewer":
         text = (f"# Project root (read-only)\n\n{root}: use git as `git -C {root} ...` and tests as `cd {root} && python3 -m unittest ...`. "
                 "Write only inside the current directory.\n\n" + text)
+    if role == "implementer":
+        text = f"{lib.implementer_permissions_section(root)}\n\n{text}"
     if role in {"architect", "reviewer"}:
         # #121: the sandbox cannot take the project lock; the host records
         # every protocol line, so supervisor commands are never the answer.
@@ -293,9 +273,10 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
                 if not status.get("original_symptom_evidence_id"):
                     raise lib.HandsoffError("reviewer launch refused: run handsoff_supervisor.py record-symptom-resolved --evidence <run_id> --by ACTOR first")
                 acceptance = lib.load_unique_json(lib.acceptance_path(root, lib.load_config(root)))
-                missing = [c.get("id") for c in acceptance.get("criteria", []) if c.get("verification") == "automated" and not c.get("evidence")]
-                if missing:
-                    raise lib.HandsoffError("reviewer launch refused: run handsoff_supervisor.py verify --criterion <id> --by ACTOR for: " + ", ".join(missing))
+                records, _problems = lib.load_verifications(root, cfg)
+                gaps = lib.reviewer_launch_evidence_gaps(acceptance.get("criteria", []), records)
+                if gaps:
+                    raise lib.HandsoffError("reviewer launch refused, evidence still missing: " + "; ".join(gaps))
     if lib.agent_profiles(cfg)[role]["adapter"] == lib.HOST_AGENT_ADAPTER:
         raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
     context = lib.managed_design_context(root, role) or {}
@@ -352,14 +333,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
-        permission_mode = "default" if role in {"reviewer", "supervisor"} else "acceptEdits"
-        argv = [executable, "-p", "--output-format", "stream-json", "--permission-mode", permission_mode]
-        if role in {"reviewer", "supervisor"}:
-            argv.extend(["--allowedTools", ""])
-        else:
-            argv.extend(["--allowedTools", ",".join(lib.implementer_allowed_tools(cfg, root))])
-        if model != lib.DEFAULT_AGENT_MODEL:
-            argv.extend(["--model", model])
+        allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(cfg, root, which)
+        argv = lib.claude_argv(executable, role, allowed, model)
 
     return LaunchSpec(
         role=role,
@@ -409,14 +384,8 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
-        mode = "default" if role in {"reviewer", "supervisor"} else "acceptEdits"
-        argv = [executable, "-p", "--output-format", "stream-json", "--permission-mode", mode]
-        if role in {"reviewer", "supervisor"}:
-            argv.extend(["--allowedTools", ""])
-        else:
-            argv.extend(["--allowedTools", ",".join(lib.implementer_allowed_tools(lib.load_config(root), root))])
-        if model != lib.DEFAULT_AGENT_MODEL:
-            argv.extend(["--model", model])
+        allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(lib.load_config(root), root)
+        argv = lib.claude_argv(executable, role, allowed, model)
     return LaunchSpec(
         role, adapter, model, tuple(argv), str(scratch or root.resolve()), task, "fallback",
         token_budget=token_budget,

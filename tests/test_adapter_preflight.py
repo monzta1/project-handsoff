@@ -58,3 +58,57 @@ class AdapterPreflightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreflightUsesLaunchArgvTests(unittest.TestCase):
+    """Field-note defect 1: pre-flight passed with a hand-written text-mode argv
+    while the launch argv (stream-json) was refused by the CLI. The probe now
+    uses the launcher's own argv helpers, so such a flag fails pre-flight."""
+
+    def setUp(self):
+        import os
+        self._skip = os.environ.pop("HANDSOFF_SKIP_PREFLIGHT", None)
+
+    def tearDown(self):
+        import os
+        if self._skip is not None:
+            os.environ["HANDSOFF_SKIP_PREFLIGHT"] = self._skip
+
+    def test_probe_argv_matches_launch_shape(self):
+        seen = {}
+
+        class Completed:
+            returncode = 0
+            stderr = ""
+
+        def runner(argv, **kwargs):
+            seen[Path(argv[0]).name] = list(argv)
+            return Completed()
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            claude = root / "claude"; claude.write_text("#!/bin/sh\nexit 0\n"); claude.chmod(0o755)
+            codex = root / "codex"; codex.write_text("#!/bin/sh\nexit 0\n"); codex.chmod(0o755)
+            lib.adapter_preflight({"adapters": {"codex": str(codex), "claude": str(claude)}}, root, lambda _: None, runner=runner)
+        claude_argv = seen["claude"]
+        self.assertEqual(claude_argv[1:], lib.claude_argv(str(claude), "reviewer", [], lib.DEFAULT_AGENT_MODEL)[1:])
+        i = claude_argv.index("--output-format")
+        self.assertEqual(claude_argv[i - 1], "--verbose")
+        self.assertEqual(claude_argv[i + 1], "stream-json")
+        self.assertNotIn("--model", claude_argv)
+        codex_argv = seen["codex"]
+        self.assertEqual(codex_argv[1:], lib.codex_argv(str(codex), "reviewer", lib.DEFAULT_AGENT_MODEL, lib.MIN_AGENT_TOKEN_BUDGET)[1:])
+        self.assertIn("read-only", codex_argv)
+        self.assertEqual(codex_argv[-1], "-")
+
+    def test_flag_the_cli_refuses_fails_preflight(self):
+        """A stand-in CLI that rejects --verbose+stream-json the way the real one
+        rejected stream-json without it: the probe must report unreachable."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            claude = root / "claude"
+            claude.write_text('#!/bin/sh\ncase "$*" in *"--output-format stream-json"*) echo "Error: refused flag" >&2; exit 1;; esac\nexit 0\n')
+            claude.chmod(0o755)
+            item = lib.adapter_preflight({"adapters": {"claude": str(claude)}}, root, lambda _: None)["claude"]
+        self.assertEqual(item["state"], "unreachable")
+        self.assertIn("refused flag", item["reason"])

@@ -985,6 +985,14 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
             raise HandsoffError(f"handsoff.toml: checks.{toml_key} must be an array of non-empty command strings")
         cfg[config_key] = list(value)
+    # Field-note defect 5: a live command with shell operators used to pass
+    # validate, status and doctor and fail only at verify-live, after
+    # deployment approval. Refuse it at load with verify-live's own message.
+    for index, command in enumerate(cfg["live_check_commands"]):
+        try:
+            assert_plain_command(command)
+        except HandsoffError as exc:
+            raise HandsoffError(f"handsoff.toml: checks.live_commands[{index}]: {exc}") from exc
     implementer_commands = implementer.get("commands", [])
     if not isinstance(implementer_commands, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in implementer_commands):
         raise HandsoffError("handsoff.toml: implementer.commands must be an array of non-empty command strings")
@@ -1129,21 +1137,105 @@ def load_config(root: Path) -> dict:
     return cfg
 
 
-def implementer_allowed_tools(cfg: dict, root: Path | None = None) -> list[str]:
+#: The two supervisor operations an implementer may run, in every form the
+#: project can reach them by. Everything else stays with the host.
+IMPLEMENTER_SUPERVISOR_OPERATIONS = ("verify", "record-symptom-resolved")
+
+#: Codex sandbox flags shared by the launcher and the pre-flight probe.
+CODEX_DISABLED_FEATURES = (
+    "plugins", "apps", "skill_search", "multi_agent", "goals",
+    "browser_use", "computer_use", "image_generation",
+)
+#: Field-note defect 8: tests that bind a loopback listener are common;
+#: a workspace-write Codex sandbox gets network access so they can run.
+CODEX_WORKSPACE_NETWORK_FLAG = "sandbox_workspace_write.network_access=true"
+
+
+def claude_argv(executable: str, role: str, allowed_tools: list[str] | None, model: str = DEFAULT_AGENT_MODEL) -> list[str]:
+    """The one Claude Code argv shape Handsoff launches (and pre-flights).
+
+    `--verbose` sits next to `--output-format stream-json`: the Claude CLI
+    refuses stream-json under --print without it (field-note defect 1), so
+    every managed Claude role used to exit 1 at launch.
+    """
+    mode = "default" if role in {"reviewer", "supervisor", "architect"} else "acceptEdits"
+    argv = [str(executable), "-p", "--verbose", "--output-format", "stream-json", "--permission-mode", mode]
+    argv.extend(["--allowedTools", ",".join(allowed_tools or [])])
+    if model != DEFAULT_AGENT_MODEL:
+        argv.extend(["--model", model])
+    return argv
+
+
+def codex_argv(executable: str, role: str, model: str, token_budget: int, *, reviewer_sandbox: bool = False) -> list[str]:
+    """The one Codex argv shape Handsoff launches (and pre-flights)."""
+    workspace_write = reviewer_sandbox or role == "implementer"
+    sandbox = "workspace-write" if workspace_write else "read-only"
+    argv = [str(executable), "exec", "--ephemeral", "--sandbox", sandbox]
+    if reviewer_sandbox:
+        argv.append("--skip-git-repo-check")
+    for feature in CODEX_DISABLED_FEATURES:
+        argv.extend(["--disable", feature])
+    # Codex's native shared rollout meter stops the complete agent loop,
+    # including repeated tool/model turns.  Count both prefill and sampling
+    # tokens at full weight so cached or repeated context is not free from
+    # Handsoff's safety ceiling.
+    argv.extend([
+        "-c",
+        ("features.rollout_budget={enabled=true,"
+         f"limit_tokens={token_budget},reminder_at_remaining_tokens=[],"
+         "sampling_token_weight=1.0,prefill_token_weight=1.0}"),
+    ])
+    if workspace_write:
+        argv.extend(["-c", CODEX_WORKSPACE_NETWORK_FLAG])
+    if model != DEFAULT_AGENT_MODEL:
+        argv.extend(["--model", model])
+    argv.append("-")
+    return argv
+
+
+def implementer_supervisor_forms(root: Path | None, which=shutil.which) -> list[str]:
+    """The supervisor command prefixes that exist for this project: the
+    drop-in script when bin/handsoff_supervisor.py is in the tree, else the
+    installed console (`handsoff supervisor ...`) plus its resolved absolute
+    path so an allowlist matches however the implementer spells it."""
+    if root is not None and (Path(root) / "bin" / "handsoff_supervisor.py").is_file():
+        return ["python3 bin/handsoff_supervisor.py"]
+    forms = ["handsoff supervisor"]
+    console = which("handsoff")
+    if console:
+        forms.append(f"{Path(console).resolve()} supervisor")
+    return forms
+
+
+def implementer_allowed_tools(cfg: dict, root: Path | None = None, which=shutil.which) -> list[str]:
     """Build Claude's exact implementation tool surface from governed commands.
 
     The command prefixes are intentionally explicit: Claude may edit the
     workspace, but it can run only configured checks and the two evidence
-    operations needed to bind its work to the acceptance ledger.
+    operations needed to bind its work to the acceptance ledger, in the
+    command forms that exist for this project (field-note defect 2: an
+    installed-engine project has no bin/).
     """
     tools = [f"Bash({command})" for command in cfg.get("check_commands", [])]
-    tools.extend([
-        "Bash(python3 bin/handsoff_supervisor.py verify*)",
-        "Bash(python3 bin/handsoff_supervisor.py record-symptom-resolved*)",
-    ])
+    for form in implementer_supervisor_forms(root, which):
+        for operation in IMPLEMENTER_SUPERVISOR_OPERATIONS:
+            tools.append(f"Bash({form} {operation}*)")
     tools.extend(cfg.get("implementer_commands", []))
     tools.extend(["Read", "Edit", "Write", "Glob", "Grep"])
     return tools
+
+
+def implementer_permissions_section(root: Path | None, which=shutil.which) -> str:
+    """The role-input paragraph that tells a Claude implementer exactly which
+    supervisor command forms are permitted."""
+    forms = implementer_supervisor_forms(root, which)
+    lines = ["# Permitted supervisor commands", "",
+             "Run verify and record-symptom-resolved only in these exact forms (the launcher allows nothing else; "
+             "--root is unnecessary when run from the project root):"]
+    for form in forms:
+        for operation in IMPLEMENTER_SUPERVISOR_OPERATIONS:
+            lines.append(f"- `{form} {operation} ...`")
+    return "\n".join(lines)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -1451,7 +1543,12 @@ def adapter_preflight(cfg: dict, root: Path, which=shutil.which, runner=subproce
         executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
         item = {"state": "not_checked", "reason": "executable missing", "checked_at": datetime.now(timezone.utc).isoformat(), "executable": str(executable) if executable else None}
         if executable:
-            argv = [str(executable), "exec", "--ephemeral", "--sandbox", "read-only", "-"] if adapter == "codex" else [str(executable), "-p", "--output-format", "text"]
+            # Field-note defect 1: probe with the launch argv shape (read-only
+            # role, no model override) so a flag the CLI refuses fails here.
+            if adapter == "codex":
+                argv = codex_argv(str(executable), "reviewer", DEFAULT_AGENT_MODEL, MIN_AGENT_TOKEN_BUDGET)
+            else:
+                argv = claude_argv(str(executable), "reviewer", [], DEFAULT_AGENT_MODEL)
             try:
                 completed = runner(argv, input="Reply with OK", text=True, capture_output=True, timeout=timeout, cwd=str(root))
                 if completed.returncode == 0:
@@ -2147,6 +2244,9 @@ def open_review_attempt(status: dict, acceptance: dict, cfg: dict, *, by: str,
         "trigger": trigger, "trigger_detail": str(detail or "")[:512],
         "acceptance_hash": digest, "phase_number": int(status.get("phase_number", 1)),
         "disposition": "open", "findings": [],
+        # the criterion specs this attempt judged; record-review --reaffirm
+        # re-binds only while these are unchanged
+        "design_hash": design_hash(acceptance.get("criteria", [])),
     }
     attempts.append(attempt)
     status["review_round"] = used + 1
@@ -3775,7 +3875,7 @@ def validate_status_schema(status: dict) -> list[str]:
                 "disposition", "findings",
             }
             if not isinstance(attempt, dict) or not required.issubset(attempt) \
-                    or set(attempt) - required - {"tests_executed", "adopted_by", "adopted_session"}:
+                    or set(attempt) - required - {"tests_executed", "adopted_by", "adopted_session", "design_hash", "reaffirmed_at"}:
                 errors.append(f"{label} has invalid fields")
                 continue
             aid = attempt.get("attempt_id")
@@ -4056,7 +4156,8 @@ def validate_status_schema(status: dict) -> list[str]:
             result = session.get("result")
             if result is not None:
                 required = {"kind", "payload", "recorded_at", "adopted_at", "adopted_by"}
-                if not isinstance(result, dict) or set(result) != required or result.get("kind") not in {"review", "design", "supervisor_request"} or not isinstance(result.get("payload"), dict) or ((result.get("adopted_at") is None) != (result.get("adopted_by") is None)):
+                if not isinstance(result, dict) or set(result) - {"readoptions"} != required or result.get("kind") not in {"review", "design", "supervisor_request"} or not isinstance(result.get("payload"), dict) or ((result.get("adopted_at") is None) != (result.get("adopted_by") is None)) \
+                        or ("readoptions" in result and (not isinstance(result["readoptions"], list) or any(not isinstance(r, dict) or set(r) != {"at", "by"} for r in result["readoptions"]))):
                     errors.append(f"{label}.result is invalid")
     if pointers is not None:
         if not isinstance(pointers, dict):
@@ -4340,6 +4441,24 @@ def criterion_fully_evidenced(criterion: dict, verifications: list[dict]) -> boo
     as 'passing' until the browser half lands too."""
     required = VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
     return bool(required) and required <= valid_evidence_kinds(criterion, verifications)
+
+
+def reviewer_launch_evidence_gaps(criteria: list[dict], verifications: list[dict]) -> list[str]:
+    """Field-note defect 4: the Phase 5 reviewer launch pre-check names every
+    evidence kind a criterion's policy still lacks, read from the ledger, in
+    the exact command that supplies it. An automated_and_browser criterion
+    with only its checks half is a gap; a fully evidenced registry is none."""
+    gaps: list[str] = []
+    for criterion in criteria:
+        cid = criterion.get("id")
+        required = VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        present = valid_evidence_kinds(criterion, verifications)
+        for kind in sorted(required - present):
+            if kind == "checks":
+                gaps.append(f"{cid}: run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
+            else:
+                gaps.append(f"{cid}: run handsoff_supervisor.py record-evidence {cid} --kind {kind} --description ... --by ACTOR")
+    return gaps
 
 
 def _evidence_errors(criteria: list[dict], verifications: list[dict]) -> list[str]:
@@ -5868,6 +5987,27 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None,
     return None
 
 
+PLAIN_COMMAND_MESSAGE = "test commands may not contain shell expansion or control operators"
+
+
+def assert_plain_command(command: str) -> list[str]:
+    """Refuse every construct that can manufacture a different command after
+    validation; the allowed language is simple argv plus path globs. Shared by
+    verify-live and, since the field-note fixes, by config load, so an operator
+    in [checks].live_commands is refused at configuration time (defect 5)."""
+    if not isinstance(command, str) or not command.strip():
+        raise HandsoffError("test command must be a non-empty string")
+    if re.search(r"[\$`;&|<>(){}\r\n]", command):
+        raise HandsoffError(PLAIN_COMMAND_MESSAGE)
+    try:
+        words = shlex.split(command)
+    except ValueError as exc:
+        raise HandsoffError(f"invalid test command: {exc}") from exc
+    if any(token in {"|", "||", "&&", ";", ">", ">>", "<"} for token in words):
+        raise HandsoffError("test commands may not contain shell control operators")
+    return words
+
+
 def normalized_test_footprint(command: str, root: Path) -> frozenset[str]:
     """Return the repository-relative tests a command can execute.
 
@@ -5876,19 +6016,8 @@ def normalized_test_footprint(command: str, root: Path) -> frozenset[str]:
     Handsoff only needs to distinguish configured focused checks from configured
     regression groups; it is not a general shell parser.
     """
-    if not isinstance(command, str) or not command.strip():
-        raise HandsoffError("test command must be a non-empty string")
     # Commands use a shell so configured test-path globs continue to work.
-    # Refuse every construct that can manufacture a different command after
-    # validation; the allowed language is simple argv plus path globs.
-    if re.search(r"[\$`;&|<>(){}\r\n]", command):
-        raise HandsoffError("test commands may not contain shell expansion or control operators")
-    try:
-        words = shlex.split(command)
-    except ValueError as exc:
-        raise HandsoffError(f"invalid test command: {exc}") from exc
-    if any(token in {"|", "||", "&&", ";", ">", ">>", "<"} for token in words):
-        raise HandsoffError("test commands may not contain shell control operators")
+    words = assert_plain_command(command)
     lowered = [Path(word).name.lower() for word in words]
     footprint: set[str] = set()
     for word in words:

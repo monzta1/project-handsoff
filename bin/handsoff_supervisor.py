@@ -2459,6 +2459,8 @@ def cmd_record_review(args) -> int:
             print("SHIP_FEATURE_BLOCKED: reviewer must differ from implementer")
             return 1
         lib.migrate_review_ledger(status)
+        if getattr(args, "reaffirm", False):
+            return _record_review_reaffirm(root, cfg, status, acceptance, records, problems, reviewer_id, args)
         attempt = lib.current_review_attempt(status)
         if attempt is None:
             try:
@@ -2532,6 +2534,84 @@ def cmd_record_review(args) -> int:
     return 0
 
 
+def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, reviewer_id, args) -> int:
+    """Field-note defect 3 (the safe half): an evidence-only refresh (verify or
+    record-evidence on unchanged criterion specs) revokes the review; the same
+    reviewer re-binds the latest approved attempt to the new acceptance hash
+    without opening an attempt or spending budget. Every review gate still
+    runs, and a changed design hash (a real spec change) is refused."""
+    if status.get("review") is not None:
+        print("SHIP_FEATURE_BLOCKED: review is current; nothing to reaffirm")
+        return 1
+    if lib.current_review_attempt(status) is not None:
+        print("SHIP_FEATURE_BLOCKED: a review attempt is open; close it before reaffirming")
+        return 1
+    closed = [a for a in status.get("review_attempts") or [] if isinstance(a, dict) and a.get("closed_at")]
+    latest = closed[-1] if closed else None
+    if latest is None or latest.get("disposition") != "approved":
+        print("SHIP_FEATURE_BLOCKED: no approved review attempt to reaffirm")
+        return 1
+    if str(latest.get("reviewer") or "").casefold() != reviewer_id.casefold():
+        print(f"SHIP_FEATURE_BLOCKED: reaffirm must come from the reviewer of attempt {latest.get('attempt')} ({latest.get('reviewer')})")
+        return 1
+    current_design = lib.design_hash(acceptance.get("criteria", []))
+    bound_design = latest.get("design_hash")
+    if not bound_design:
+        print("SHIP_FEATURE_BLOCKED: the approved attempt predates design binding; a fresh review is needed")
+        return 1
+    if bound_design != current_design:
+        print("SHIP_FEATURE_BLOCKED: design hash changed since the approved attempt; a real change needs a fresh review")
+        return 1
+    previous_hash = latest.get("acceptance_hash")
+    preflight = dict(status)
+    preflight["phase_number"] = 6
+    preflight["phase"] = lib.PHASES[6]
+    implementer_profile = lib.audited_agent_profile(cfg, "implementer")
+    reviewer_profile = lib.audited_agent_profile(cfg, "reviewer")
+    profiles_distinct = (
+        implementer_profile["effective_adapter"], implementer_profile["model"]
+    ) != (reviewer_profile["effective_adapter"], reviewer_profile["model"])
+    now = datetime.now(timezone.utc).isoformat()
+    preflight["review"] = {
+        "by": reviewer_id, "at": now,
+        "acceptance_hash": lib.acceptance_hash(acceptance["criteria"]),
+        "config_hash": lib.config_hash(cfg),
+        "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
+        "implementer_profile": implementer_profile,
+        "reviewer_profile": reviewer_profile,
+        "tests_executed": latest.get("tests_executed", args.tests_executed),
+        "profiles_distinct": profiles_distinct,
+        "reaffirmed_attempt": latest.get("attempt"),
+        "reaffirmed_from_acceptance_hash": previous_hash,
+        "checklist": {"symptom_reproduced": args.symptom_reproduced,
+                      "symptom_resolved": "yes", "all_criteria_verified": "yes",
+                      "evidence_attached": "yes"},
+        **_adoption_fields(args),
+    }
+    preflight["reviewed_by"] = reviewer_id
+    errors = lib.compute_errors(preflight, acceptance, cfg, verifications=records,
+                                verification_problems=problems, root=root)
+    if errors:
+        print("SHIP_FEATURE_BLOCKED")
+        print("\n".join(f"- {x}" for x in errors))
+        return 1
+    status["review"] = preflight["review"]
+    status["reviewed_by"] = reviewer_id
+    status["reviewer_checklist"] = preflight["review"]["checklist"]
+    latest["acceptance_hash"] = preflight["review"]["acceptance_hash"]
+    latest["design_hash"] = current_design
+    latest["reaffirmed_at"] = now
+    status["updated_at"] = now
+    status["next_action"] = REVIEW_APPROVED_NEXT_ACTION
+    lib.commit(root, cfg, status=status, event_kind="review_reaffirmed",
+               event_message=f"Review attempt {latest.get('attempt')} reaffirmed after an evidence-only refresh",
+               by=reviewer_id, attempt=latest.get("attempt"), attempt_id=latest.get("attempt_id"),
+               acceptance_hash=preflight["review"]["acceptance_hash"], previous_acceptance_hash=previous_hash,
+               design_hash=current_design, reviewer_session_id=getattr(args, "session", None))
+    print("INDEPENDENT_REVIEW_REAFFIRMED")
+    return 0
+
+
 def cmd_session_result_adopt(args) -> int:
     """Replay a persisted protocol result through the canonical record
     command (#92). Three rules keep it honest: the request is not bound to
@@ -2550,10 +2630,16 @@ def cmd_session_result_adopt(args) -> int:
         if not isinstance(result, dict):
             print("SESSION_RESULT_ADOPT_REFUSED: no persisted result")
             return 1
-        if result.get("adopted_at") is not None:
-            print("SESSION_RESULT_ADOPT_REFUSED: result is already adopted")
-            return 1
         kind, payload = result["kind"], deepcopy(result["payload"])
+        readopt = False
+        if result.get("adopted_at") is not None:
+            # Field-note defect 3: an evidence-only refresh revoked the review
+            # this verdict already backs; replay it as a reaffirmation.
+            if kind == "review" and payload.get("decision") == "approved" and status.get("review") is None:
+                readopt = True
+            else:
+                print("SESSION_RESULT_ADOPT_REFUSED: result is already adopted")
+                return 1
         architect = (status.get("design_proposal") or {}).get("architect")
         session_actor = str(session.get("actor") or "").strip()
     import handsoff_broker as broker
@@ -2566,6 +2652,8 @@ def cmd_session_result_adopt(args) -> int:
             request = {**base, "command": "record-review",
                        "symptom_reproduced": payload.get("symptom_reproduced", "not_applicable"),
                        "tests_executed": payload.get("tests_executed", "unknown")}
+            if readopt:
+                request["reaffirm"] = True
         else:
             request = {**base, "command": "record-review-findings", "findings": payload.get("findings") or [],
                        "tests_executed": payload.get("tests_executed", "unknown")}
@@ -2591,8 +2679,11 @@ def cmd_session_result_adopt(args) -> int:
     with lib.project_lock(root):
         status = lib.load_unique_json(lib.status_path(root, cfg))
         adopted = status["agent_sessions"][args.session]["result"]
-        adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
-        adopted["adopted_by"] = actor
+        if readopt:
+            adopted.setdefault("readoptions", []).append({"at": datetime.now(timezone.utc).isoformat(), "by": actor})
+        else:
+            adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
+            adopted["adopted_by"] = actor
         failure = (status.get("agent_failures") or {}).get(args.session)
         if isinstance(failure, dict):
             # The replacement pause is derived from this record's category;
@@ -4062,6 +4153,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="record an item-scoped independent review for a confirmed small-fix lane")
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
     review.add_argument("--tests-executed", choices=("yes", "no", "unknown"), default="unknown")
+    review.add_argument("--reaffirm", action="store_true",
+                        help="re-bind this reviewer's latest approved attempt after an evidence-only refresh; "
+                             "opens no attempt and spends no review budget")
 
     review_start = sub.add_parser("review-attempt-start")
     review_start.add_argument("--by", required=True)

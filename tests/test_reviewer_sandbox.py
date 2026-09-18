@@ -34,6 +34,28 @@ class ReviewerSandboxTests(HandsoffTestCase):
         self.assertEqual(supervisor.cwd, str(self.tmp.resolve()))
         self.assertIn("read-only", supervisor.argv)
 
+    def test_workspace_write_sessions_get_loopback_network_access(self):
+        """Field-note defect 8: tests that bind a loopback listener are common; the
+        workspace-write Codex sandbox (Reviewer scratch, Implementer) allows network
+        access after the rollout budget; read-only sessions do not."""
+        import handsoff_lib as lib
+        which = lambda name: "/usr/local/bin/codex" if name == "codex" else None  # noqa: E731
+        reviewer = runtime.build_launch_spec(self.tmp, "reviewer", "Review it.", which=which)
+        argv = list(reviewer.argv)
+        i = argv.index(lib.CODEX_WORKSPACE_NETWORK_FLAG)
+        self.assertEqual(argv[i - 1], "-c")
+        budget_index = next(k for k, a in enumerate(argv) if a.startswith("features.rollout_budget="))
+        self.assertGreater(i, budget_index)
+        self.assertIn("workspace-write", argv)
+        implementer = lib.codex_argv("/usr/local/bin/codex", "implementer", "default", 80000)
+        self.assertIn(lib.CODEX_WORKSPACE_NETWORK_FLAG, implementer)
+        for role in ("architect", "supervisor"):
+            read_only = lib.codex_argv("/usr/local/bin/codex", role, "default", 40000)
+            self.assertIn("read-only", read_only)
+            self.assertNotIn(lib.CODEX_WORKSPACE_NETWORK_FLAG, read_only)
+        supervisor = runtime.build_launch_spec(self.tmp, "supervisor", "Review it.", which=which)
+        self.assertNotIn(lib.CODEX_WORKSPACE_NETWORK_FLAG, supervisor.argv)
+
     def test_unsupported_finding_is_other_and_tests_default_is_unknown(self):
         result = broker.parse_reviewer_result('{"kind":"implementation","decision":"changes_requested",'
             '"summary":"x","findings":["EVIDENCE: x"],"structural_blocker":false,'

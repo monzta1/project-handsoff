@@ -220,10 +220,14 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         return base
     if command == "record-review":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by"},
-                      {"symptom_reproduced", "session", "tests_executed", "adopted_session", "adopted_by"})
+                      {"symptom_reproduced", "session", "tests_executed", "adopted_session", "adopted_by", "reaffirm"})
         base.extend(["--by", _text(request, "by")])
         if "session" in request:
             base.extend(["--session", _text(request, "session")])
+        if request.get("reaffirm") is True:
+            base.append("--reaffirm")
+        elif "reaffirm" in request:
+            raise lib.HandsoffError("broker reaffirm must be true when present")
         _adoption_args(request, base)
         _extend_tests_executed(base, request)
         if "symptom_reproduced" in request:

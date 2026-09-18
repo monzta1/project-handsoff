@@ -119,6 +119,9 @@ commands = [
   "python3 -m unittest tests.test_run_triage -v",
   "python3 -m unittest tests.test_fixture_hygiene -v",
   "python3 -m unittest tests.test_regress -v",
+  "python3 -m unittest tests.test_review_reaffirm -v",
+  "python3 -m unittest tests.test_launch_precheck -v",
+  "python3 -m unittest tests.test_config_governance -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

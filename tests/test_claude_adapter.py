@@ -34,10 +34,61 @@ class ClaudeAdapterTests(TestCase):
         self.assertEqual(agent._claude_logical_lines('plain protocol text'), ['plain protocol text'])
 
     def test_implementer_allowlist_contains_configured_checks_and_evidence(self):
-        tools = lib.implementer_allowed_tools({'check_commands': ['python3 -m unittest tests.test_claude_adapter'], 'implementer_commands': []})
+        # A runtime drop-in root (this repository has bin/) keeps the script form.
+        tools = lib.implementer_allowed_tools({'check_commands': ['python3 -m unittest tests.test_claude_adapter'], 'implementer_commands': []}, Path('.'))
         self.assertIn('Bash(python3 -m unittest tests.test_claude_adapter)', tools)
         self.assertIn('Bash(python3 bin/handsoff_supervisor.py verify*)', tools)
         self.assertIn('Bash(python3 bin/handsoff_supervisor.py record-symptom-resolved*)', tools)
+        self.assertNotIn('Bash(handsoff supervisor verify*)', tools)
+
+    def test_installed_engine_project_gets_console_forms(self):
+        """Field-note defect 2: an installed-engine project has no bin/, so the
+        drop-in script form matched nothing and record-symptom-resolved was refused."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = lib.implementer_allowed_tools({'check_commands': [], 'implementer_commands': []}, Path(tmp), which=lambda name: '/opt/venv/bin/handsoff')
+            self.assertNotIn('Bash(python3 bin/handsoff_supervisor.py verify*)', tools)
+            self.assertIn('Bash(handsoff supervisor verify*)', tools)
+            self.assertIn('Bash(handsoff supervisor record-symptom-resolved*)', tools)
+            self.assertIn('Bash(/opt/venv/bin/handsoff supervisor verify*)', tools)
+            self.assertIn('Bash(/opt/venv/bin/handsoff supervisor record-symptom-resolved*)', tools)
+            # console not on PATH: only the bare console form
+            tools = lib.implementer_allowed_tools({'check_commands': [], 'implementer_commands': []}, Path(tmp), which=lambda name: None)
+            self.assertEqual([t for t in tools if 'supervisor' in t], ['Bash(handsoff supervisor verify*)', 'Bash(handsoff supervisor record-symptom-resolved*)'])
+            section = lib.implementer_permissions_section(Path(tmp), which=lambda name: '/opt/venv/bin/handsoff')
+            self.assertIn('`handsoff supervisor verify ...`', section)
+            self.assertIn('`/opt/venv/bin/handsoff supervisor record-symptom-resolved ...`', section)
+            self.assertIn('--root is unnecessary', section)
+
+    def test_claude_argv_carries_verbose_next_to_stream_json(self):
+        """Field-note defect 1: the CLI refuses --output-format stream-json under
+        --print without --verbose, so every managed Claude role exited 1 at launch."""
+        argv = lib.claude_argv('/bin/claude', 'implementer', ['Read'], 'claude-opus-5')
+        i = argv.index('--output-format')
+        self.assertEqual(argv[i - 1], '--verbose')
+        self.assertEqual(argv[i + 1], 'stream-json')
+        self.assertEqual(argv[argv.index('--permission-mode') + 1], 'acceptEdits')
+        self.assertEqual(argv[argv.index('--allowedTools') + 1], 'Read')
+        self.assertEqual(argv[-2:], ['--model', 'claude-opus-5'])
+        read_only = lib.claude_argv('/bin/claude', 'reviewer', None)
+        self.assertIn('--verbose', read_only)
+        self.assertEqual(read_only[read_only.index('--permission-mode') + 1], 'default')
+        self.assertNotIn('--model', read_only)
+        # both launch paths go through the helper
+        cfg = lib.load_config(Path('.'))
+        cfg['agents']['implementer'] = 'claude'
+        with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None):
+            spec = agent.build_launch_spec(Path('.'), 'implementer', 'build', which=lambda x: '/bin/claude')
+            fallback = agent.build_profile_launch_spec(Path('.'), 'implementer', 'build', {'adapter': 'claude', 'model': 'default'}, which=lambda x: '/bin/claude')
+        for argv in (spec.argv, fallback.argv):
+            i = argv.index('--output-format')
+            self.assertEqual(argv[i - 1], '--verbose', argv)
+
+    def test_implementer_role_input_names_permitted_forms(self):
+        with mock.patch.object(lib, "resume_scope_section", return_value=""), mock.patch.object(lib, "load_config", return_value=lib.load_config(Path('.'))):
+            text = agent.build_role_input(Path('.'), 'implementer', 'build it')
+        self.assertIn('# Permitted supervisor commands', text)
+        self.assertIn('`python3 bin/handsoff_supervisor.py verify ...`', text)
 
     def test_implementer_extra_commands_are_preserved(self):
         self.assertIn('Bash(custom command)', lib.implementer_allowed_tools({'check_commands': [], 'implementer_commands': ['Bash(custom command)']}))

@@ -1,15 +1,15 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "c85ab5065be83158074f2c968667cbb70f3690c54a7a662854faa694089882ef",
+    "bin/handsoff_agent.py": "6cdc5c645719468e34335c1305f32cd19cc21ce9cd956cec17decdc18a699507",
     "bin/handsoff_analyzer.py": "b6b54777649bb0e6c3227af53a8bc8cacc7dd4b35c6e4b0571eb08a0e6f124da",
-    "bin/handsoff_broker.py": "3277ec484c0806e50dc2305ca636f62fa4246871feb51c92ae2a02bb6d19a69c",
+    "bin/handsoff_broker.py": "739bbd3d6373351430b10af29bbc60ae01286ea164e179f0288dffdcd480111a",
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "e7bdd9607b1ab40c32438857c56029f86fce8f59e6ddc81f5b376d58712109f9",
     "bin/handsoff_fleet.py": "ac8a1c1c3ae88c191dd9366e741d58b30a9911dfc4139b400e8c79b8d6c8ac0a",
-    "bin/handsoff_lib.py": "cbfaa16e72c9f50249edbed9a514b6bca92ca2e744f3132ca61497780d4f6d09",
+    "bin/handsoff_lib.py": "4c5e2a1f04bd27d222053ca8ccfd3d9be79f9efc16ad05df031da43f527e5fe8",
     "bin/handsoff_manifest.py": "bad9cb5ca14f61ac7487ecf4e1a3aff10416ac8ce8d3055efd7d1c6e0e941e4f",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
-    "bin/handsoff_supervisor.py": "38059fbec6c9db8b88d628d1ab15f26de3e877728ed9938f694046acce372f7c",
+    "bin/handsoff_supervisor.py": "3518e72f97048f8b8270c48f25bea244ae09c71cb84d425fc41d2f39943addef",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
     "dashboard/app.js": "9779afa7b12879ee38919f7673fdadc69ef1d2deadddfd518ad79bbb717be584",
@@ -26,7 +26,7 @@
     "prompts/reviewer.md": "fde34742975faaafbaabbe9f1a152b453fd6fc50ad5bf77cf1cd34ce823efe4f",
     "prompts/supervisor.md": "a1a7c986104dfeb6edb2c94d8d0be7541585dbf9b0b820360c331e7aad7e01f4",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
-    "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63",
+    "schemas/status.schema.json": "facc0a68ee436d3325cd7c7146800d7bf6d9e6cda6d67f8b500c8dbcda6b6c74",
     "templates/handsoff.toml": "4476cd3a19158ef6d4c8dbaa1af00eaf422590451cb162887b2413806d817c62"
   },
   "schema": 1,
