@@ -558,8 +558,9 @@ def retire_finished_run(root: Path, cfg: dict) -> Path | None:
         status = load_unique_json(status_path(root, cfg))
     except (HandsoffError, OSError, ValueError):
         return None
+    # Only a recorded completion or closure counts; a run at Phase 8 whose
+    # status is still in_progress has not finished (review finding).
     finished = status.get("status") in {"complete", "closed"} \
-        or int(status.get("phase_number", 0) or 0) >= 8 \
         or isinstance(status.get("run_closed"), dict)
     if not finished:
         return None

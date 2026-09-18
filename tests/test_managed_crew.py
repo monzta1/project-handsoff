@@ -75,7 +75,10 @@ class ManagedCrewTests(HandsoffTestCase):
 
     def test_init_on_an_owned_dashboard_launches_the_architect_once(self):
         self.init("Auto start")
-        server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp, run_token="t" * 32, root_sha256="a" * 64)
+        try:
+            server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp, run_token="t" * 32, root_sha256="a" * 64)
+        except PermissionError:
+            self.skipTest("managed test environment disallows loopback binds")
         try:
             with mock.patch.object(server, "_launch_managed_role") as launch:
                 server.request_first_launch("Fix the widget (#7)")
@@ -234,6 +237,14 @@ class ManagedCrewTests(HandsoffTestCase):
         self.assertEqual(refused.returncode, 1)
         self.assertIn("HANDSOFF_INIT_SKIPPED", refused.stdout)
         self.assertEqual(self.read_status()["feature"], "Second mission")
+        # A run at Phase 8 that has not recorded completion is still in progress.
+        status = self.read_status()
+        status.update(phase_number=8, phase=lib.PHASES[8], status="in_progress")
+        _commit(self.tmp, status)
+        refused = run(["init", "Fourth mission"], cwd=self.tmp)
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertEqual(self.read_status()["feature"], "Second mission")
+        self.assertEqual(len(list((self.tmp / ".handsoff-archive").iterdir())), 1)
 
     # REQ-007 (#117) ------------------------------------------------------
     def test_engine_identity_is_ledgered_and_reported(self):
