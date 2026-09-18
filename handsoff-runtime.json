@@ -4,7 +4,7 @@
     "bin/handsoff_analyzer.py": "b6b54777649bb0e6c3227af53a8bc8cacc7dd4b35c6e4b0571eb08a0e6f124da",
     "bin/handsoff_broker.py": "739bbd3d6373351430b10af29bbc60ae01286ea164e179f0288dffdcd480111a",
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
-    "bin/handsoff_dashboard.py": "a95762d0477d9242b81dfb27b7229aaf671240252388991116f535e6a606a12e",
+    "bin/handsoff_dashboard.py": "acda662cdee938a06b3c40b247e9c7e7498201893188e8d267b7cad34a0c3a9d",
     "bin/handsoff_fleet.py": "ac8a1c1c3ae88c191dd9366e741d58b30a9911dfc4139b400e8c79b8d6c8ac0a",
     "bin/handsoff_lib.py": "43518ee0bcdece587883c8b193344931e929d829b22931e383883d900e5625ce",
     "bin/handsoff_manifest.py": "e9302f973cc6961fe2a70c590eded34e3252d1c5ee797ca924980a45238b93d9",

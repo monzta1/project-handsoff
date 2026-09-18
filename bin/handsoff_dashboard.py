@@ -8,7 +8,6 @@ commands exposed by the supervisor CLI.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import hmac
 import io
@@ -457,17 +456,75 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
             "question_cards": lib.question_cards(status) if questions else []}
 
 
+class _ThreadCaptureStdout:
+    """A stdout proxy that diverts only the registering thread's writes.
+
+    The dashboard is a ThreadingHTTPServer with orchestration and watchdog
+    threads that print on their own schedule, so contextlib.redirect_stdout
+    (which swaps the process-global sys.stdout) would either swallow their
+    lines or, with interleaved enter/exit, leave the server's stdout pointed
+    at a discarded buffer. Every other thread keeps writing to the real
+    stream; a thread with a registered buffer writes there instead."""
+
+    def __init__(self, real):
+        self._real = real
+        self._local = threading.local()
+
+    def capture(self, buffer) -> None:
+        self._local.buffer = buffer
+
+    def release(self) -> None:
+        self._local.buffer = None
+
+    def _target(self):
+        return getattr(self._local, "buffer", None) or self._real
+
+    def write(self, text):
+        return self._target().write(text)
+
+    def writelines(self, lines):
+        return self._target().writelines(lines)
+
+    def flush(self):
+        return self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+_CAPTURE_LOCK = threading.Lock()
+
+
+def _capturing_stdout() -> _ThreadCaptureStdout:
+    """Install the proxy once; later calls reuse it (stack-safe by construction)."""
+    with _CAPTURE_LOCK:
+        current = sys.stdout
+        if isinstance(current, _ThreadCaptureStdout):
+            return current
+        proxy = _ThreadCaptureStdout(current)
+        sys.stdout = proxy
+        return proxy
+
+
 def _run_gate(command_fn, command) -> tuple[int, str | None]:
     """Run a Supervisor command in-process and keep its refusal text. The
     commands explain a refusal on stdout (SHIP_FEATURE_BLOCKED ...); a
     Mission Control button that only said "the gate rejected this" left
-    the Pilot pressing it again with no way to learn why."""
+    the Pilot pressing it again with no way to learn why. Only this
+    thread's output is captured (see _ThreadCaptureStdout)."""
     buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
+    proxy = _capturing_stdout()
+    proxy.capture(buffer)
+    try:
         code = command_fn(command)
-    if code == 0:
-        return 0, None
+    finally:
+        proxy.release()
     text = buffer.getvalue()
+    if code == 0:
+        # A success line (DESIGN_APPROVAL_RECORDED and the like) still
+        # belongs in the server log.
+        proxy.write(text)
+        return 0, None
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     start = next((i for i, line in enumerate(lines) if line.startswith("SHIP_FEATURE_BLOCKED")), None)
     if start is None:

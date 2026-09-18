@@ -432,3 +432,64 @@ class DesignApprovalGateReasonTests(LaunchRoleHttpTests):
         self.assertEqual(len(blockers), 1)
         self.assertIn("placeholder", blockers[0])
         self.assertEqual(lib.design_approval_blockers(status, {"criteria": [{"id": "REQ-001", "requirement": "[#1] real", "tests": ["x"]}], "work_items": []}, cfg), [])
+
+
+class GateCaptureThreadSafetyTests(HandsoffTestCase):
+    """_run_gate must capture only its own thread's output. The dashboard's
+    orchestration and watchdog threads print concurrently with gate calls,
+    so a process-global redirect could swallow the refusal reason or leave
+    sys.stdout pointed at a discarded buffer."""
+
+    def test_concurrent_printing_threads_keep_the_real_stdout_and_the_reason(self):
+        import io
+        import threading
+        import time
+        real = io.StringIO()
+        saved = sys.stdout
+        sys.stdout = real
+        try:
+            stop = threading.Event()
+            noise_lines = []
+
+            def chatter():
+                n = 0
+                while not stop.is_set():
+                    line = f"orchestration tick {n}"
+                    noise_lines.append(line)
+                    print(line)
+                    n += 1
+                    time.sleep(0.001)
+
+            def gate(_command):
+                print("SHIP_FEATURE_BLOCKED: required work items have no criteria: issue-94")
+                time.sleep(0.05)
+                print("- detail line")
+                return 1
+
+            noisy = threading.Thread(target=chatter, daemon=True)
+            noisy.start()
+            results = []
+            gates = [threading.Thread(target=lambda: results.append(dashboard._run_gate(gate, None))) for _ in range(4)]
+            for thread in gates:
+                thread.start()
+            for thread in gates:
+                thread.join(timeout=5)
+            stop.set()
+            noisy.join(timeout=5)
+            # Every gate call saw its own reason, never a tick and never another call's lines.
+            self.assertEqual(results, [(1, "required work items have no criteria: issue-94; detail line")] * 4)
+            output = real.getvalue()
+            self.assertNotIn("SHIP_FEATURE_BLOCKED", output)
+            self.assertNotIn("detail line", output)
+            for line in noise_lines:
+                self.assertIn(line, output)
+            # The proxy stays installed and keeps forwarding, and a later
+            # gate call on the main thread still captures.
+            print("after the gates")
+            self.assertIn("after the gates", real.getvalue())
+            self.assertEqual(dashboard._run_gate(gate, None), (1, "required work items have no criteria: issue-94; detail line"))
+            self.assertEqual(dashboard._run_gate(lambda _c: print("DESIGN_APPROVAL_RECORDED") or 0, None), (0, None))
+            # A success line still reaches the server log.
+            self.assertIn("DESIGN_APPROVAL_RECORDED", real.getvalue())
+        finally:
+            sys.stdout = saved
