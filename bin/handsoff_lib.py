@@ -3662,7 +3662,7 @@ def validate_status_schema(status: dict) -> list[str]:
                 "disposition", "findings",
             }
             if not isinstance(attempt, dict) or not required.issubset(attempt) \
-                    or set(attempt) - required - {"tests_executed"}:
+                    or set(attempt) - required - {"tests_executed", "adopted_by", "adopted_session"}:
                 errors.append(f"{label} has invalid fields")
                 continue
             aid = attempt.get("attempt_id")
@@ -3978,7 +3978,10 @@ def validate_status_schema(status: dict) -> list[str]:
                 except HandsoffError as exc:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
-                allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths", "result_available", "adopted", "result_available", "changed_paths", "scratch_path"}
+                allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
+                                  "result_available", "adopted", "scratch_path", "auto_retry_authorized"}
+                if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
+                    errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
                         or set(failure) - allowed_fields \
                         or failure.get("session_id") != session_id:

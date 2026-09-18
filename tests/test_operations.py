@@ -458,6 +458,9 @@ class TestAutoReconfirmation(HandsoffTestCase):
         self.assertIn("RECOVERY_AUTO_CONFIRMED", first.stdout, first.stdout + first.stderr)
         after = lib.recovery_assessment(self.read_status(), cfg, {}, [], root=self.tmp)
         self.assertNotEqual(after["reason"], "non_recoverable_failure")
+        # The marked failure record must still pass the status schema, or
+        # every later command on the run is refused (field proof finding).
+        self.assertEqual(lib.validate_status_schema(self.read_status()), [])
         second = run(["recover", "--auto", "--by", "watchdog", "--timeout", "1"], cwd=self.tmp)
         self.assertEqual(second.returncode, 1, second.stdout)
         self.assertIn("automatic retry", second.stdout)
