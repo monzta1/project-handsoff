@@ -316,6 +316,7 @@ DEFAULT_CONFIG = {
     "recovery": {
         "enabled": True, "max_attempts": 3, "lease_minutes": 15,
         "worker_loss_grace_minutes": 2, "live_session_silence_minutes": 10,
+        "protocol_silence_minutes": {"architect": 0, "supervisor": 0, "implementer": 0, "reviewer": 0},
         "liveness_seconds": 60, "dashboard_watchdog": True, "poll_seconds": 30,
         "operation_grace_seconds": 120,
     },
@@ -722,6 +723,7 @@ def load_config(root: Path) -> dict:
         for role in AGENT_ROLES
     }
     cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
+    cfg["recovery"]["protocol_silence_minutes"] = dict(DEFAULT_CONFIG["recovery"]["protocol_silence_minutes"])
     cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
     cfg["analysis"] = dict(DEFAULT_CONFIG["analysis"])
     cfg["documentation"] = {key: list(value) for key, value in DEFAULT_CONFIG["documentation"].items()}
@@ -944,6 +946,17 @@ def load_config(root: Path) -> dict:
                 f"handsoff.toml: recovery.{key} must be an integer from {minimum} to {maximum}"
             )
         cfg["recovery"][key] = value
+    protocol_limits = recovery.get("protocol_silence_minutes", cfg["recovery"]["protocol_silence_minutes"])
+    if not isinstance(protocol_limits, dict):
+        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes must be a per-role table")
+    unknown_roles = set(protocol_limits) - set(AGENT_ROLES)
+    if unknown_roles:
+        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes has unknown roles: " + ", ".join(sorted(unknown_roles)))
+    for role_name in AGENT_ROLES:
+        value = protocol_limits.get(role_name, 0)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1440:
+            raise HandsoffError(f"handsoff.toml: recovery.protocol_silence_minutes.{role_name} must be an integer from 0 to 1440")
+        cfg["recovery"]["protocol_silence_minutes"][role_name] = value
     cfg["analysis"] = _validate_analysis_config(analysis)
     if not isinstance(tickets, list):
         raise HandsoffError("handsoff.toml: tickets must be an array of tables")
@@ -5246,7 +5259,20 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
                     float(recovery["worker_loss_grace_minutes"]), "failed session is terminal")
         if state in AGENT_SESSION_LIVE_STATES:
             sid = item.get("session_id")
-            ping = (liveness or {}).get(sid) or item.get("running_at") or item.get("started_at")
+            ping = (liveness or {}).get(sid)
+            protocol_limit = int((recovery.get("protocol_silence_minutes") or {}).get(role, 0) or 0)
+            if protocol_limit > 0 and root is not None:
+                store = _read_agent_output_store(root)
+                output = (store.get("sessions") or {}).get(sid)
+                entries = output.get("entries") if isinstance(output, dict) else []
+                newest = entries[-1].get("at") if entries and isinstance(entries[-1], dict) else None
+                ping = newest or (output.get("updated_at") if isinstance(output, dict) else None)
+                ping = ping or item.get("running_at") or item.get("started_at")
+                minutes = _minutes_since(ping, now)
+                if minutes is not None and minutes >= protocol_limit:
+                    return ("protocol_silent", minutes, float(protocol_limit),
+                            f"no protocol output for {int(minutes)} minutes (limit {protocol_limit})")
+            ping = ping or item.get("running_at") or item.get("started_at")
             return ("worker_silent", _minutes_since(ping, now),
                     float(recovery["live_session_silence_minutes"]), "session liveness expired")
         return None
@@ -5446,16 +5472,17 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         lid = _new_bounded_id("hl", RECOVERY_LEASE_ID_PATTERN, set(), id_factory)
         from datetime import timedelta
         proposed = deepcopy(status)
-        if assessment["state"] == "worker_silent" and assessment.get("lost_session_id"):
+        if assessment["state"] in {"worker_silent", "protocol_silent"} and assessment.get("lost_session_id"):
             sid = assessment["lost_session_id"]
             session = (proposed.get("agent_sessions") or {}).get(sid)
             if isinstance(session, dict) and session.get("state") in AGENT_SESSION_LIVE_STATES:
                 session["state"] = "failed"
                 session["ended_at"] = now.isoformat()
-                session["exit_code"] = -1
+                session["exit_code"] = None if assessment["state"] == "protocol_silent" else -1
+                category = "protocol_silence" if assessment["state"] == "protocol_silent" else "presumed_lost"
                 proposed.setdefault("agent_failures", {})[sid] = {
-                    "session_id": sid, "category": "presumed_lost",
-                    "reason": _FAILURE_REASON_LABELS["presumed_lost"],
+                    "session_id": sid, "category": category,
+                    "reason": assessment["reason"] if category == "protocol_silence" else _FAILURE_REASON_LABELS["presumed_lost"],
                     "tail_sha256": hashlib.sha256(b"").hexdigest(), "at": now.isoformat(),
                 }
         record = {
@@ -5497,7 +5524,12 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         item["state"] = "recovered" if ok else "failed"
         item["reason"] = "managed role completed" if ok else (launch_error or "managed role failed")
         proposed["recovery_lease"] = None
-        commit(root, cfg, status=proposed,
+        extra_events = None
+        if assessment["state"] == "protocol_silent":
+            extra_events = [{"kind": "protocol_silence_enforced", "message": assessment["reason"],
+                             "role": role, "session_id": assessment["lost_session_id"],
+                             "silent_minutes": assessment["silent_minutes"], "threshold": assessment["threshold_minutes"]}]
+        commit(root, cfg, status=proposed, extra_events=extra_events,
                event_kind="recovery_recovered" if ok else "recovery_failed",
                event_message=f"Recovery attempt {item['attempt']} {item['state']}",
                by=actor, recovery_id=rid, role=role, state=item["state"])
@@ -8647,9 +8679,11 @@ FAILURE_CATEGORIES = (
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
     "reviewer_modified_project",
     "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
+    "protocol_silence",
 )
 
 _FAILURE_REASON_LABELS = {
+    "protocol_silence": "session produced no protocol output within the configured limit",
     "cancelled": "run was cancelled",
     "timeout": "runner exceeded its timeout",
     "token_budget_exhaustion": "managed role exhausted its token budget",
@@ -8748,7 +8782,7 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
 RECOVERABLE_FAILURE_CATEGORIES = {
     "auth_failure", "rate_limit", "context_exhaustion", "timeout",
     "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost", "external_timeout",
-    "no_artifact",
+    "no_artifact", "protocol_silence",
 }
 FALLBACK_SKIP_REASONS = {
     "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent", "environment_failure",

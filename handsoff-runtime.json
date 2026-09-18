@@ -6,7 +6,7 @@
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "d9cd8fb7d28262d41e6f50ff3eaf5ae5513f52935ec725c615c493f37fd8bc3e",
     "bin/handsoff_fleet.py": "1af1501ec3fb15cfabfbdcf0a65ace6b8ab80b3e68e8a7ac9615edc9cf5315e8",
-    "bin/handsoff_lib.py": "f99a957464735b771eb0ec64958795e041731029ecdcc5565fdc0e560d480a58",
+    "bin/handsoff_lib.py": "c281ac7ab805848a14bdff8c39ec48ece1d364a80ced1a73ba6910984d51bc4e",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
     "bin/handsoff_supervisor.py": "c7a9b37eca6409d584c566d53362d73071b12991718c07e2d951c27091ad892c",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
@@ -24,7 +24,7 @@
     "prompts/supervisor.md": "ed4eac36f980288d9a4d7fba9215f51b5f46b8deb2ec8227f5554a3449aeee89",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
     "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63",
-    "templates/handsoff.toml": "7e9a56cd1dbad94046eca2de5a383c00267448b64cb399df8fc20e69c9a06455"
+    "templates/handsoff.toml": "b9e648cd5340dcda33f166ad59c7b4e04925a00b26a7805cea5e9fc71c1be5a5"
   },
   "schema": 1,
   "version": "v0.3.18"

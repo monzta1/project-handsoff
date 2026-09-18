@@ -49,6 +49,56 @@ class RecoveryTests(unittest.TestCase):
             "state": state, "exit_code": 1 if terminal else None,
         }
 
+    def _protocol_silence_fixture(self, limit_minutes, silent_for_minutes):
+        # #102: a live implementer with a beacon for a pid that exists (this
+        # test process), whose newest output line is `silent_for_minutes` old.
+        import os
+        now = datetime.now(timezone.utc)
+        stale = (now - timedelta(minutes=silent_for_minutes)).isoformat()
+        fresh = now.isoformat()
+        sid = "hs-" + "7" * 32
+        status = self.read_status()
+        status.update(phase_number=4, phase=lib.PHASES[4], updated_at=fresh, last_heartbeat_at=fresh,
+                      agent_sessions={sid: self.session(sid, "implementer", "running", stale)},
+                      current_agent_sessions={"implementer": sid})
+        self.commit_status(status)
+        toml = self.root / "handsoff.toml"
+        toml.write_text(toml.read_text() + f"\n[recovery.protocol_silence_minutes]\nimplementer = {limit_minutes}\n")
+        lib.append_agent_output(self.root, sid, "stdout", "working quietly\n", 16, now=now - timedelta(minutes=silent_for_minutes))
+        lib.write_live_beacon(self.root, session_id=sid, role="implementer", state="running", pid=os.getpid(), now=now)
+        return sid, status, now
+
+    def test_protocol_silence_past_the_limit_ends_a_live_session(self):
+        sid, status, now = self._protocol_silence_fixture(limit_minutes=15, silent_for_minutes=30)
+        cfg = lib.load_config(self.root)
+        self.assertEqual(cfg["recovery"]["protocol_silence_minutes"]["implementer"], 15)
+        assessment = lib.recovery_assessment(status, cfg, {sid: now.isoformat()}, [], now, root=self.root)
+        self.assertEqual(assessment["state"], "protocol_silent", assessment)
+        self.assertIn("limit 15", assessment["reason"])
+        launched = []
+        lib.recover_run(self.root, actor="watchdog", launcher=lambda role: launched.append(role) or True, now=now)
+        after = self.read_status()
+        self.assertEqual(after["agent_sessions"][sid]["state"], "failed")
+        self.assertEqual(after["agent_failures"][sid]["category"], "protocol_silence")
+        self.assertIn("limit 15", after["agent_failures"][sid]["reason"])
+        kinds = [json.loads(line)["kind"] for line in (self.root / "handsoff-events.jsonl").read_text().splitlines()]
+        self.assertIn("protocol_silence_enforced", kinds)
+        self.assertEqual(launched, ["implementer"])
+
+    def test_protocol_silence_under_the_limit_keeps_the_session(self):
+        sid, status, now = self._protocol_silence_fixture(limit_minutes=60, silent_for_minutes=30)
+        cfg = lib.load_config(self.root)
+        assessment = lib.recovery_assessment(status, cfg, {sid: (now - timedelta(minutes=30)).isoformat()}, [], now, root=self.root)
+        # Liveness is stale but the pid is alive and the policy is not met: #86 keeps it.
+        self.assertEqual(assessment["state"], "active", assessment)
+
+    def test_protocol_silence_default_is_disabled(self):
+        sid, status, now = self._protocol_silence_fixture(limit_minutes=0, silent_for_minutes=600)
+        cfg = lib.load_config(self.root)
+        self.assertEqual(cfg["recovery"]["protocol_silence_minutes"]["implementer"], 0)
+        assessment = lib.recovery_assessment(status, cfg, {sid: now.isoformat()}, [], now, root=self.root)
+        self.assertNotEqual(assessment["state"], "protocol_silent", assessment)
+
     def test_assigned_worker_cannot_be_masked_by_unrelated_activity(self):
         now = datetime.now(timezone.utc)
         stale = (now - timedelta(minutes=30)).isoformat()
