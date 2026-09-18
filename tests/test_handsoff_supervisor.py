@@ -7513,6 +7513,26 @@ class TestAmendmentLane(HandsoffTestCase):
         self.assertEqual(len(self.read_status()["amendments"]), 2)
         self.assertEqual(self._kinds().count("amendment_approved"), 2)
 
+    def test_a_criterion_revised_twice_in_one_amendment_can_still_be_reviewed_and_approved(self):
+        """A revision that touches the criterion the open amendment already
+        changed appends a second operation record for the same id. The
+        review and approval gates recompute the hash against the registry,
+        which can only match the LAST record; comparing every record made
+        any revised criterion unreviewable ("no longer matches the reviewed
+        amendment") even though nothing had drifted."""
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-003", requirement="[#102] first wording")]))
+        self._ok(self._revise([self._update("REQ-003", requirement="[#102] second wording, same criterion")]))
+        record = self.read_status()["amendment"]
+        self.assertEqual([op["id"] for op in record["operations"]], ["REQ-003", "REQ-003"])
+        reviewed = self._review()
+        self.assertEqual(reviewed.returncode, 0, reviewed.stdout)
+        self.assertIn("AMENDMENT_REVIEW_APPROVED", reviewed.stdout)
+        approved = self._approve()
+        self.assertEqual(approved.returncode, 0, approved.stdout)
+        self.assertEqual(self.read_status()["amendment"], None)
+        self.assertEqual(self._criteria()["REQ-003"]["requirement"], "[#102] second wording, same criterion")
+
     # -- i42-dashboard -------------------------------------------------------
 
     def test_snapshot_and_banner_name_the_pending_amendment_decision(self):

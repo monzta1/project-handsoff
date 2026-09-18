@@ -7303,7 +7303,18 @@ def recompute_amendment_hash(amendment: dict, criteria: list[dict]) -> tuple[str
     reproduce `amendment_hash`. Returns (hash or None, problems)."""
     by_id = {c.get("id"): c for c in criteria}
     problems = []
+    # The operations are the cumulative HISTORY of the delta: a revision
+    # that touches a criterion the open transaction already changed appends
+    # a second record for the same id. The registry can only match the LAST
+    # record per id, so that is the one checked; the full history still
+    # feeds amendment_hash below, so a drifted delta is still refused.
+    # (Before this, any revised criterion could never pass review: the
+    # first record's resulting hash was compared against a registry that
+    # had legitimately moved on to the second's.)
+    latest: dict = {}
     for record in amendment.get("operations") or []:
+        latest[record.get("id")] = record
+    for record in latest.values():
         cid = record.get("id")
         current = by_id.get(cid)
         if record.get("op") == "remove":
