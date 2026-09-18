@@ -732,12 +732,29 @@ def cmd_deployment_gate(args) -> int:
         # THE MOMENT of approval. If the registry changes afterward (a
         # criterion reopened, added, or removed), the Phase 8 gate
         # recomputes this hash and refuses the now-stale approval.
+        auto_from = None
+        design_digest = lib.design_hash(acceptance.get("criteria", []))
+        if getattr(args, "auto", False):
+            # #102: --auto re-applies only what a person already approved
+            # for this exact design hash (what was decided), while the
+            # current review is fresh against the current evidence. A
+            # drift-and-re-review cycle revokes the approval without
+            # changing what was approved; a changed criterion does.
+            prior = next((event for event in reversed(lib.read_events(root, cfg))
+                          if event.get("kind") == "deployment_approved"
+                          and event.get("design_hash") == design_digest), None)
+            review = status.get("review") if isinstance(status.get("review"), dict) else None
+            if prior is None or review is None or review.get("acceptance_hash") != acceptance_digest:
+                print("DEPLOYMENT_BLOCKED\n- no prior approval for this design hash")
+                return 1
+            auto_from = {"by": prior.get("by"), "at": prior.get("at")}
         proposed = dict(status)
         proposed["deployment_approved"] = {
             "at": datetime.now(timezone.utc).isoformat(),
             "by": args.by,
             "acceptance_hash": acceptance_digest,
             "config_hash": config_digest,
+            **({"auto_confirmed_from": auto_from} if auto_from else {}),
         }
         proposed["status"] = "ready_to_deploy"
         proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -750,9 +767,17 @@ def cmd_deployment_gate(args) -> int:
             print("DEPLOYMENT_BLOCKED")
             print("\n".join(f"- {error}" for error in proposed_errors))
             return 1
+        if auto_from:
+            lib.commit(root, cfg, status=proposed,
+                      event_kind="deployment_approval_auto_confirmed",
+                      event_message="Deployment approval re-applied for an unchanged acceptance hash",
+                      by=args.by, acceptance_hash=acceptance_digest, design_hash=design_digest,
+                      prior_by=auto_from["by"], prior_at=auto_from["at"])
+            print("DEPLOYMENT_APPROVAL_AUTO_CONFIRMED")
+            return 0
         lib.commit(root, cfg, status=proposed,
                   event_kind="deployment_approved", event_message="Explicit deployment approval recorded",
-                  by=args.by)
+                  by=args.by, acceptance_hash=acceptance_digest, design_hash=design_digest)
     print("DEPLOYMENT_APPROVED")
     return 0
 
@@ -1732,6 +1757,11 @@ def cmd_design_approve(args) -> int:
     print("DESIGN_APPROVAL_RECORDED")
     _print_unverifiable_test_warnings(acceptance, cfg)
     return 0
+
+
+# #102: failure categories the engine itself classified as environmental,
+# for which one automatic retry is offered before the Pilot is asked.
+AUTO_RETRY_CATEGORIES = {"runtime_environment", "token_budget_exhaustion"}
 
 
 def _adoption_error(status: dict, args) -> str | None:
@@ -3273,6 +3303,38 @@ def cmd_recover(args) -> int:
         spec = handsoff_agent.build_launch_spec(root, role, task)
         return handsoff_agent.execute_with_recovery(spec, timeout=args.timeout)
 
+    if getattr(args, "auto", False):
+        # #102: one automatic retry after an engine-classified failure. The
+        # authorization is ledgered and marked on the failure record, which
+        # is what recovery_assessment consults; a second --auto for the
+        # same session is refused so a broken environment cannot loop.
+        with lib.project_lock(root):
+            status = lib.load_unique_json(lib.status_path(root, cfg))
+            events = lib.read_events(root, cfg)
+            assessment = lib.recovery_assessment(status, cfg, lib.read_session_liveness(root), events, root=root)
+            used = {e.get("session_id") for e in events if e.get("kind") == "recovery_auto_confirmed"}
+            current_ids = [v for v in (status.get("current_agent_sessions") or {}).values() if isinstance(v, str)]
+            already = next((cid for cid in current_ids if cid in used), None)
+            if already and (assessment.get("lost_session_id") in (None, already)):
+                print(f"SHIP_FEATURE_BLOCKED: automatic retry already used for {already}")
+                return 1
+            sid = assessment.get("lost_session_id")
+            failure = (status.get("agent_failures") or {}).get(sid) if sid else None
+            if assessment.get("reason") != "non_recoverable_failure" or not isinstance(failure, dict):
+                print("SHIP_FEATURE_BLOCKED: --auto applies only to a run paused on an engine-classified failure")
+                return 1
+            if failure.get("category") not in AUTO_RETRY_CATEGORIES:
+                print(f"SHIP_FEATURE_BLOCKED: automatic retry is not offered for {failure.get('category')}")
+                return 1
+            if any(e.get("kind") == "recovery_auto_confirmed" and e.get("session_id") == sid for e in events):
+                print(f"SHIP_FEATURE_BLOCKED: automatic retry already used for {sid}")
+                return 1
+            proposed = deepcopy(status)
+            proposed["agent_failures"][sid]["auto_retry_authorized"] = True
+            lib.commit(root, cfg, status=proposed, event_kind="recovery_auto_confirmed",
+                       event_message="One automatic retry authorized after an engine-classified failure",
+                       by=args.by, session_id=sid, category=failure.get("category"))
+        print(f"RECOVERY_AUTO_CONFIRMED: {sid}")
     result = lib.recover_run(root, actor=args.by, launcher=launcher)
     label = {
         "skipped": "RECOVERY_SKIPPED", "recovered": "RECOVERY_RECOVERED",
@@ -3986,6 +4048,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     recover = sub.add_parser("recover")
     recover.add_argument("--by", required=True)
+    recover.add_argument("--auto", action="store_true",
+                         help="#102: authorize exactly one automatic retry after an engine-classified failure")
     recover.add_argument("--dry-run", action="store_true")
     recover.add_argument("--timeout", type=int, default=3600)
 
@@ -4173,6 +4237,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     gate = sub.add_parser("deployment-gate")
     gate.add_argument("--approve", action="store_true")
+    gate.add_argument("--auto", action="store_true",
+                      help="#102: with --approve, re-apply a prior approval recorded for this exact acceptance hash")
     gate.add_argument("--revoke", action="store_true")
     gate.add_argument("--by", default=None)
     gate.add_argument("--reason", default=None)

@@ -379,3 +379,85 @@ class TestPromptsAndLateTelemetry(HandsoffTestCase):
         self.assertNotIn(older["session_id"], {sid for sid, s in data["sessions"].items() if s.get("operations")})
         self.assertEqual(data["sessions"].get(older["session_id"], {}).get("late_telemetry", 0), 1)
         self.assertNotIn(newer["session_id"], data["sessions"])
+
+
+class TestAutoReconfirmation(HandsoffTestCase):
+    """#102: --auto re-applies what a person already decided for an
+    identical acceptance hash, and authorizes exactly one engine retry."""
+
+    def _write_status(self, status):
+        cfg = lib.load_config(self.tmp)
+        with lib.project_lock(self.tmp):
+            lib.atomic_write_json(lib.status_path(self.tmp, cfg), status)
+            lib.append_event(self.tmp, cfg, "test_setup", "test harness adjusted status directly")
+
+    def _approved_at_seven(self):
+        from tests.test_handsoff_supervisor import run
+        self.init("Auto reconfirmation")
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-1")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        gate = run(["deployment-gate", "--approve", "--by", "pilot"], cwd=self.tmp)
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        return run
+
+    def test_auto_reapplies_a_prior_approval_after_drift_and_re_review(self):
+        run = self._approved_at_seven()
+        (self.tmp / "product.txt").write_text("changed after approval\n")
+        verified = run(["verify", "--criterion", "REQ-001", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.assertEqual(self.read_status()["phase_number"], 5)
+        self.assertIsNone(self.read_status()["deployment_approved"])
+        review = run(["record-review", "--by", "reviewer-2", "--symptom-reproduced", "yes", "--tests-executed", "yes"], cwd=self.tmp)
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
+        self.assertEqual(run(["advance", "6"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "7"], cwd=self.tmp).returncode, 0)
+        auto = run(["deployment-gate", "--approve", "--auto", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(auto.returncode, 0, auto.stdout + auto.stderr)
+        self.assertIn("DEPLOYMENT_APPROVAL_AUTO_CONFIRMED", auto.stdout)
+        status = self.read_status()
+        self.assertEqual(status["deployment_approved"]["auto_confirmed_from"]["by"], "pilot")
+        kinds = [json.loads(line)["kind"] for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+        self.assertIn("deployment_approval_auto_confirmed", kinds)
+
+    def test_auto_refuses_a_changed_acceptance_hash(self):
+        run = self._approved_at_seven()
+        changed = run(["criterion-update", "REQ-001", "--requirement", "A different requirement", "--revoke-approval"], cwd=self.tmp)
+        self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-2")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        auto = run(["deployment-gate", "--approve", "--auto", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(auto.returncode, 1, auto.stdout)
+        self.assertIn("no prior approval for this design hash", auto.stdout)
+        self.assertIsNone(self.read_status()["deployment_approved"])
+
+    def test_auto_retry_is_authorized_exactly_once(self):
+        from tests.test_handsoff_supervisor import run
+        self.init("Auto retry")
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        status = self.read_status()
+        sid = "hs-" + "4" * 32
+        now = datetime.now(timezone.utc).isoformat()
+        status["phase_number"] = 4; status["phase"] = lib.PHASES[4]
+        status["agent_sessions"] = {sid: {"session_id": sid, "role": "implementer", "actor": "codex-implementer",
+            "adapter": "codex", "requested_model": "default", "reported_model": None, "resolution_source": "configured",
+            "started_at": now, "running_at": now, "ended_at": now, "state": "failed", "exit_code": 1, "phase_number": 4}}
+        status["current_agent_sessions"] = {"implementer": sid}
+        status["agent_failures"] = {sid: {"session_id": sid, "category": "token_budget_exhaustion",
+            "reason": "managed role exhausted its token budget", "at": now,
+            "tail_sha256": "0" * 64}}
+        self._write_status(status)
+        cfg = lib.load_config(self.tmp)
+        before = lib.recovery_assessment(self.read_status(), cfg, {}, [], root=self.tmp)
+        self.assertEqual(before["reason"], "non_recoverable_failure")
+        first = run(["recover", "--auto", "--by", "watchdog", "--dry-run"], cwd=self.tmp)
+        # --dry-run only reports; the authorization path runs without it.
+        first = run(["recover", "--auto", "--by", "watchdog", "--timeout", "1"], cwd=self.tmp)
+        self.assertIn("RECOVERY_AUTO_CONFIRMED", first.stdout, first.stdout + first.stderr)
+        after = lib.recovery_assessment(self.read_status(), cfg, {}, [], root=self.tmp)
+        self.assertNotEqual(after["reason"], "non_recoverable_failure")
+        second = run(["recover", "--auto", "--by", "watchdog", "--timeout", "1"], cwd=self.tmp)
+        self.assertEqual(second.returncode, 1, second.stdout)
+        self.assertIn("automatic retry", second.stdout)

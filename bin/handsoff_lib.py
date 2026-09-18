@@ -5318,6 +5318,7 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         if isinstance(candidate, dict) and candidate.get("state") in {
                 "failed", "timed_out", "failed_to_start", "cancelled"} \
                 and isinstance(failure, dict) and not failure.get("adopted") \
+                and not failure.get("auto_retry_authorized") \
                 and failure.get("category") not in RECOVERABLE_FAILURE_CATEGORIES:
             result.update(reason="non_recoverable_failure", assigned_role=current_role,
                           lost_session_id=candidate_id)
