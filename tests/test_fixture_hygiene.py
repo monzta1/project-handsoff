@@ -44,15 +44,19 @@ class RuntimeManifestTests(unittest.TestCase):
         # manifest ships an engine that fails its own integrity check (main
         # at 5834701 did exactly that). Regenerate with
         # `python3 bin/handsoff_manifest.py --root . --version vX.Y.Z`.
-        import hashlib, json
+        import json
+        import handsoff_manifest as manifest_module
         manifest = json.loads((ROOT / "handsoff-runtime.json").read_text(encoding="utf-8"))
-        stale = []
-        for relative, expected in sorted(manifest["files"].items()):
-            path = ROOT / relative
-            actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-            if actual != expected:
-                stale.append(relative)
+        # The file set must match the builder's RUNTIME_FILES exactly, so a
+        # manifest that predates a newly added runtime file is stale too.
+        expected = manifest_module.payload(ROOT, manifest["version"])["files"]
+        self.assertEqual(sorted(manifest["files"]), sorted(expected),
+                         "regenerate handsoff-runtime.json; the file set differs from RUNTIME_FILES")
+        stale = sorted(relative for relative in expected if manifest["files"].get(relative) != expected[relative])
         self.assertEqual(stale, [], "regenerate handsoff-runtime.json; stale entries: " + ", ".join(stale))
+        # Every runtime file the manifest names exists; the builder raises otherwise.
+        for relative in expected:
+            self.assertTrue((ROOT / relative).is_file(), relative)
 
 
 if __name__ == "__main__":
