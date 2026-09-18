@@ -83,7 +83,9 @@ def summarize(root: Path) -> dict:
         "design_reviews": design_reviews, "impl_reviews": impl_reviews,
         "checks": f"{executed} / {reused}", "live": live, "gates": gates,
         "interventions": ", ".join(f"{k} x{v}" for k, v in sorted(interventions.items())) or "none",
-        "engine": (status.get("engine") or {}).get("version") or "not ledgered",
+        "engine": " / ".join(sorted({str(e.get("engine", {}).get("version")) for e in events
+                                    if isinstance(e.get("engine"), dict) and e["engine"].get("version")}))
+                  or (status.get("engine") or {}).get("version") or "not ledgered",
     }
 
 

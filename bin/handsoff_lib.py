@@ -536,6 +536,55 @@ def runtime_identity(root: Path) -> dict:
     return identity
 
 
+def ledger_engine_identity(root: Path) -> dict | None:
+    """#117: the three identity fields an event carries so an archive can
+    say which engine ran it; None when the identity cannot be read (the
+    event is still written, the field is just absent)."""
+    try:
+        identity = runtime_identity(Path(root))
+    except (HandsoffError, OSError, ValueError):
+        return None
+    return {"version": identity.get("version"), "source": identity.get("source"),
+            "manifest_sha256": identity.get("manifest_sha256")}
+
+
+def retire_finished_run(root: Path, cfg: dict) -> Path | None:
+    """#118: move a complete or closed run's ledgers into
+    .handsoff-archive/<UTC date>-<slug>/ so the next mission can start;
+    None (and nothing moved) when the run is still in progress or the
+    status cannot be read."""
+    root = Path(root)
+    try:
+        status = load_unique_json(status_path(root, cfg))
+    except (HandsoffError, OSError, ValueError):
+        return None
+    finished = status.get("status") in {"complete", "closed"} \
+        or int(status.get("phase_number", 0) or 0) >= 8 \
+        or isinstance(status.get("run_closed"), dict)
+    if not finished:
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "-", str(status.get("feature") or "run").lower()).strip("-")[:48] or "run"
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
+    target = root / ".handsoff-archive" / f"{stamp}-{slug}"
+    target.mkdir(parents=True, exist_ok=False)
+    moved = [status_path(root, cfg), acceptance_path(root, cfg), event_log_path(root, cfg),
+             verification_log_path(root, cfg), event_head_path(root), root / ".handsoff-digests"]
+    for path in moved:
+        if path.exists():
+            path.rename(target / path.name)
+    return target
+
+
+def engine_history(events: list[dict]) -> list[dict]:
+    """Distinct engine identities in ledger order (#117)."""
+    seen = []
+    for event in events or []:
+        engine = event.get("engine") if isinstance(event, dict) else None
+        if isinstance(engine, dict) and engine not in seen:
+            seen.append(engine)
+    return seen
+
+
 def validate_runtime_integrity(root: Path) -> dict:
     """Refuse stale drop-ins, incompatible pins, or a corrupted installed engine."""
     root = Path(root).resolve()
@@ -2308,6 +2357,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             extra_events=extra_events or None,
             event_kind="agent_session_launching",
             event_message=f"Managed {role} agent session is launching",
+            engine=ledger_engine_identity(root),
             session_id=session_id, role=role, actor=actor, adapter=adapter,
             requested_model=requested_model, reported_model=None,
             resolution_source=resolution_source, state="launching",
@@ -5037,6 +5087,37 @@ def assigned_role(status: dict) -> str | None:
         return "supervisor"
     return {3: "supervisor", 4: "implementer", 5: "reviewer", 6: "implementer",
             7: "supervisor", 8: "supervisor"}.get(phase)
+
+
+# #121: what an orchestration launch tells each role. The Supervisor gets
+# the run's next_action (it is the one who acts on it); the sandboxed
+# roles get their own instruction and never a Supervisor-facing command.
+ORCHESTRATION_TASKS = {
+    "architect": ("Act as the Architect for this mission. Your sandbox is read-only and that is expected: "
+                  "record acceptance criteria with a HANDSOFF_BROKER_REQUEST criteria transaction and end with your "
+                  "HANDSOFF_DESIGN_PROPOSAL; the host records both. Do not run supervisor commands and do not ask "
+                  "permission for the assigned scope."),
+    "implementer": ("Act as the Implementer against the approved design and the supplied managed design context. "
+                    "Implement, run the linked checks with verify, record the resolved symptom, and stop; do not "
+                    "repeat evidenced work or run a full regression suite."),
+    "reviewer": ("Act as the independent Reviewer. Your sandbox is read-only and that is expected: read the diff and "
+                 "the acceptance registry, run the linked checks, and end with exactly one HANDSOFF_REVIEW_RESULT "
+                 "line; the host records it. Do not run supervisor commands. structural_blocker is true only when "
+                 "the design itself cannot satisfy a criterion; a blocked recording is never a structural blocker."),
+}
+
+
+def orchestration_task(role: str, status: dict, *, objective: str | None = None) -> str:
+    if role == "supervisor":
+        next_action = str(status.get("next_action") or "Continue the current workflow step.")
+        return (f"Continue the managed Handsoff workflow as supervisor. Execute this current next action: "
+                f"{next_action} Use the required broker protocol; use the supplied managed design context instead "
+                "of rediscovering the repository; do not stop at narration, repeat evidenced work, or run a full "
+                "regression suite.")
+    text = ORCHESTRATION_TASKS.get(role, f"Continue the managed Handsoff workflow as {role}.")
+    if objective:
+        text = f"Mission objective: {objective}\n\n{text}"
+    return text
 
 
 def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:

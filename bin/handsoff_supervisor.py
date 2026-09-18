@@ -230,8 +230,11 @@ def cmd_init(args) -> int:
                      lib.event_head_path(root))
         existing = [path.name for path in artifacts if path.exists()]
         if existing:
-            print(f"HANDSOFF_INIT_SKIPPED: existing Handsoff artifacts at {root}: {', '.join(existing)}")
-            return 1
+            retired = lib.retire_finished_run(root, cfg)
+            if retired is None:
+                print(f"HANDSOFF_INIT_SKIPPED: existing Handsoff artifacts at {root}: {', '.join(existing)}")
+                return 1
+            print(f"HANDSOFF_RETIRED: {retired}")
         acceptance = {
             "feature": args.feature,
             "criteria": [{
@@ -271,7 +274,7 @@ def cmd_init(args) -> int:
         )
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="initialized", event_message=f"Handsoff initialized for '{args.feature}'",
-                  project_root=str(root))
+                  project_root=str(root), engine=lib.ledger_engine_identity(root))
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
     return 0
 
@@ -301,6 +304,7 @@ def cmd_status(args) -> int:
         "engine": lib.runtime_identity(root),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
         "gate_progress": lib.gate_progress(status, acceptance),
+        "engine_history": lib.engine_history(lib.read_events(root, cfg)),
         "work_item_completion": lib.work_item_completion_lines(
             lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)),
         "status": status.get("status"), "next_action": status.get("next_action"),

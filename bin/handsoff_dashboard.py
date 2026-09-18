@@ -947,11 +947,31 @@ class DashboardServer(ThreadingHTTPServer):
             except Exception as exc:
                 print(f"HANDSOFF_ORCHESTRATION_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
 
+    def request_first_launch(self, objective: str) -> None:
+        """#119: remember the mission objective so the orchestration thread
+        launches the managed Architect once after init."""
+        with self._stop_lock:
+            self._first_launch_objective = str(objective)[:512]
+
+    def _take_first_launch(self) -> str | None:
+        with self._stop_lock:
+            objective = getattr(self, "_first_launch_objective", None)
+            self._first_launch_objective = None
+        return objective
+
     def _orchestrate_once(self):
         """Advance approved design state, then optionally hand off one role."""
         cfg = lib.load_config(self.project_root)
         with lib.project_lock(self.project_root):
             status = lib.load_unique_json(lib.status_path(self.project_root, cfg))
+        objective = self._take_first_launch()
+        if objective is not None:
+            profile = lib.resolved_agent_profiles(cfg).get("architect") or {}
+            if profile.get("adapter") != lib.HOST_AGENT_ADAPTER and lib.assigned_role(status) == "architect" \
+                    and not any(isinstance(item, dict) and item.get("state") in lib.AGENT_SESSION_LIVE_STATES
+                                for item in (status.get("agent_sessions") or {}).values()):
+                self._launch_managed_role("architect", lib.orchestration_task("architect", status, objective=objective))
+                return
         if supervisor.advance_approved_design(self.project_root):
             return
         if not cfg.get("auto_handoff", True):
@@ -959,12 +979,7 @@ class DashboardServer(ThreadingHTTPServer):
         role = lib.managed_handoff_role(status, cfg)
         if role is None:
             return
-        next_action = str(status.get("next_action") or "Continue the current workflow step.")
-        task = (f"Continue the managed Handsoff workflow as {role}. Execute this current next action: "
-                f"{next_action} Use the role's required structured protocol and Handsoff commands; "
-                "use the supplied managed design context instead of rediscovering the repository; "
-                "do not stop at narration, repeat evidenced work, or run a full regression suite.")
-        self._launch_managed_role(role, task)
+        self._launch_managed_role(role, lib.orchestration_task(role, status))
 
     def _watchdog_loop(self):
         cfg = lib.load_config(self.project_root)
@@ -1235,6 +1250,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json_response(HTTPStatus.CONFLICT,
                                         {"ok": False, "error": "Mission initialization was rejected"})
                     return
+                # #119: on an owned dashboard with a managed Architect, the
+                # crew starts itself; the orchestration thread launches it
+                # exactly once (the pending task is consumed on pickup).
+                if self.server.owned_by_run:
+                    self.server.request_first_launch(requested["feature"])
                 self._json_response(HTTPStatus.OK, {"ok": True})
                 return
             if path == "/api/operator-action":
