@@ -5,19 +5,19 @@
     "bin/handsoff_broker.py": "8df6d01600b9e2375539513543e7a963ab4a83bbf6db0602541e82813640417f",
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "d9cd8fb7d28262d41e6f50ff3eaf5ae5513f52935ec725c615c493f37fd8bc3e",
-    "bin/handsoff_fleet.py": "e5f165607bf13b32dbbc87dc9902c56a2412e501497892786029ccc1b7bdaab6",
+    "bin/handsoff_fleet.py": "1af1501ec3fb15cfabfbdcf0a65ace6b8ab80b3e68e8a7ac9615edc9cf5315e8",
     "bin/handsoff_lib.py": "f99a957464735b771eb0ec64958795e041731029ecdcc5565fdc0e560d480a58",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
     "bin/handsoff_supervisor.py": "532af26a00e0119869bf34fd272117e8f241eba7acc10cae2ad7aa4aea7039a4",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
-    "dashboard/app.js": "791b91710cbdc5ff0497a85b37240efe43db2fbb149328c2b205a34851c4ec92",
-    "dashboard/index.html": "6ac9faf13abbc5fb957777bd88db6cdc084748edff2332a2514d0a5b633d9073",
+    "dashboard/app.js": "da68f65e48651e43aa8073f849d134593f4834364d59b4b828a7983875789434",
+    "dashboard/index.html": "078d1648506d6731234c2f973b7118d957a25ce9b4bac166016a391bfb48e9d7",
     "dashboard/lib/dashboard-logic.js": "692ce2aa8b016c51387a21f9f0cead161099a879ed594d78bc37e6a954327859",
-    "dashboard/styles.css": "34438ecdf8e6d011d260fd1f29c9d189e6f1b3b267088ea92fcecac504be0e5c",
-    "fleet/app.js": "6d8182f1dfcf79002831f99ee5f4ac35920381f4a890b2fa7dbfaab45d1323c2",
-    "fleet/index.html": "c4382739a1b48fd4fdb3aa6f9439ac171e265cf200da549090380bd668ac2d99",
-    "fleet/styles.css": "eb75553935ec0c4154f90511be929333265ffe0b576d11945d889102bb1f595d",
+    "dashboard/styles.css": "e95411e7e533195721b8eccfca0ee2f7ef762a3d1c82c9572075d497d24b04a0",
+    "fleet/app.js": "ef5a179930452bbe0b2c40c6eb749fcbfc05ba7c6cd9b6051d6acfac0800ac02",
+    "fleet/index.html": "fb4d1bede0c8c60fab1a26dd46f7795e5fb4fdbedd6a67f725d62a83724c27aa",
+    "fleet/styles.css": "ee2d65da6fb25e607b0699b7208428541723f095d32e2a485b74a9e1345bc169",
     "prompts/architect.md": "e108ca1a921acc8ec2233a6348bb7a5fb795be407c62692c7333af62e6bcde60",
     "prompts/implementer.md": "464fcab2b39fbe7cf7a0dbd143302e08e0584fd8c63bbe2158c72bdd7e2b140f",
     "prompts/reviewer.md": "3b0c4eecafc81778f58c992c091909bddb0d732fcc1004609d0e063c93ef8b91",
@@ -27,5 +27,5 @@
     "templates/handsoff.toml": "7e9a56cd1dbad94046eca2de5a383c00267448b64cb399df8fc20e69c9a06455"
   },
   "schema": 1,
-  "version": "v0.3.17"
+  "version": "v0.3.18"
 }

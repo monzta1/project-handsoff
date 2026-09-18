@@ -171,7 +171,7 @@ def project_view(entry: dict) -> dict:
         "root": str(root), "name": root.name, "registered_at": entry["registered_at"], "initialized": True,
         "feature": snap.get("project", {}).get("feature"), "phase": status.get("phase"),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"), "state": state,
-        "role": role, "adapter": session.get("adapter") if session else None,
+        "next_action": status.get("next_action"), "role": role, "adapter": session.get("adapter") if session else None,
         "model": (session.get("reported_model") or session.get("requested_model")) if session else None,
         "last_activity": (snap.get("live") or {}).get("last_activity_at") or status.get("updated_at"),
         "decisions": decisions, "failure": snap.get("recovery"), "owner": owner,

@@ -1,8 +1,54 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Handsoff // Fleet Mission Control</title><link rel="stylesheet" href="/styles.css"></head>
-<body><main>
-  <header><div><p>HANDSOFF · E.V.E.</p><h1>Fleet Mission Control</h1></div><div id="link">TACTICAL LINK: CONNECTING</div></header>
-  <section id="decisions" class="panel hidden"><div class="head"><div><p>PILOT AUTHORIZATION</p><h2>Fleet decisions waiting</h2></div><strong id="decision-count">0</strong></div><div id="decision-list"></div></section>
-  <section class="summary" id="summary"></section>
-  <section class="panel"><div class="head"><div><p>REGISTERED PROJECTS</p><h2>Mission fleet</h2></div><span id="synced">ACQUIRING</span></div><div id="projects" class="projects"></div></section>
-</main><dialog id="confirm"><form method="dialog"><p>HIGH-IMPACT OPERATION</p><h2 id="confirm-title"></h2><pre id="confirm-context"></pre><label id="reason-wrap">REASON<input id="reason" maxlength="512"></label><div><button value="cancel">CANCEL</button><button id="confirm-go" value="default">CONFIRM EXACT OPERATION</button></div></form></dialog><div id="toast" class="toast hidden"></div><script src="/app.js" defer></script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Handsoff // Fleet Mission Control</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Handsoff Fleet Mission Control">
+        <span class="brand-mark">E<span>//</span>V</span>
+        <span class="brand-copy"><strong>HANDSOFF</strong><small>FLEET MISSION CONTROL</small></span>
+      </a>
+      <div class="topbar-mission">
+        <p class="eyebrow">SUPERDASH</p>
+        <h1>Every registered mission, one screen</h1>
+      </div>
+      <div class="topbar-meta">
+        <span class="connection"><i></i><span id="link">LINK: CONNECTING</span></span>
+        <span id="synced" class="last-sync">ACQUIRING</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="decisions" class="panel decisions-panel hidden" aria-live="polite">
+        <div class="section-head"><div><p class="panel-label">PILOT DECISIONS</p><h2>Waiting on you</h2></div><strong id="decision-count" class="count-badge">0</strong></div>
+        <div id="decision-list" class="decision-list"></div>
+      </section>
+
+      <section class="summary" id="summary" aria-label="Fleet state counts"></section>
+
+      <section class="panel fleet-panel">
+        <div class="section-head"><div><p class="panel-label">REGISTERED PROJECTS</p><h2>Mission fleet</h2></div><span id="fleet-count" class="section-meta">0 PROJECTS</span></div>
+        <div id="projects" class="projects"></div>
+      </section>
+    </main>
+  </div>
+  <dialog id="confirm" class="confirm-dialog">
+    <form method="dialog">
+      <p class="panel-label">HIGH-IMPACT OPERATION</p>
+      <h2 id="confirm-title"></h2>
+      <pre id="confirm-context"></pre>
+      <label id="reason-wrap">REASON<input id="reason" maxlength="512"></label>
+      <div class="confirm-actions"><button value="cancel" class="secondary">CANCEL</button><button id="confirm-go" value="default" class="danger">CONFIRM EXACT OPERATION</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
