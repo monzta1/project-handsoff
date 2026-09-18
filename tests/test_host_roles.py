@@ -75,8 +75,13 @@ class HostRoleTests(HandsoffTestCase):
         self.assertEqual(lib.read_events(self.tmp, lib.load_config(self.tmp))[-1]["kind"],
                          "design_proposal_recorded")
         self.assertFalse(any("design_proposal" in error for error in lib.validate_status_schema(status)))
-        review = run(["record-design-review", "--approve", "--by", "codex-reviewer",
-                      "--architect", "host-architect", "--summary", "ok"], cwd=self.tmp)
+        # #112: a hand-recorded verdict must come from a different host
+        # session than the proposal; pin one so the test does not depend on
+        # whether the harness itself runs inside Claude Code or Codex.
+        import os
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "host-session-reviewer", "CODEX_COMPANION_SESSION_ID": ""}):
+            review = run(["record-design-review", "--approve", "--by", "codex-reviewer",
+                          "--architect", "host-architect", "--summary", "ok"], cwd=self.tmp)
         self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
         self.assertEqual(self.read_status()["design_review"]["proposal_hash"], expected_hash)
 

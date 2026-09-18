@@ -27,7 +27,7 @@ class MissionControlOpsTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        shutil.copy(BIN.parent / ".handsoff-version", self.tmp / ".handsoff-version")
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
 
     def inventory(self):
         return dashboard.build_snapshot(self.tmp)["operations"]["inventory"]
@@ -224,7 +224,7 @@ class LaunchRoleHttpTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        shutil.copy(BIN.parent / ".handsoff-version", self.tmp / ".handsoff-version")
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
 
     def inventory(self):
         return dashboard.build_snapshot(self.tmp)["operations"]["inventory"]

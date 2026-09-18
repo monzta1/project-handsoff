@@ -942,7 +942,7 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text((ROOT / ".handsoff-version").read_text())
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
         (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
             "schema": 1,
             "files": {
@@ -1067,7 +1067,7 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text((ROOT / ".handsoff-version").read_text())
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
         (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
             "schema": 1,
             "files": {
@@ -8186,7 +8186,7 @@ class TestDesignReviewPacket(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text((ROOT / ".handsoff-version").read_text())
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
         (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
             "schema": 1,
             "files": {

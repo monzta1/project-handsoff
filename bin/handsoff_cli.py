@@ -82,8 +82,11 @@ def change_pin(root: Path, target: str, *, dry_run: bool, action: str) -> dict:
     except OSError as exc:
         raise lib.HandsoffError(f"project version pin is missing: {pin_path}") from exc
     compatible = lib.version_satisfies(identity["version"], target)
+    prompt_overrides = lib.prompt_override_diagnosis(root)
+    run_triage = lib.run_triage(root, lib.load_config(root))
     plan = {"action": action, "root": str(root), "from": current, "to": target,
-            "installed": identity["version"], "compatible": compatible, "dry_run": dry_run}
+            "installed": identity["version"], "compatible": compatible, "dry_run": dry_run,
+            "prompt_overrides": prompt_overrides, "run_triage": run_triage}
     if not compatible:
         normalized = target.removeprefix("==").removeprefix("v")
         plan["required_install"] = (
@@ -99,6 +102,10 @@ def change_pin(root: Path, target: str, *, dry_run: bool, action: str) -> dict:
         return plan
     if dry_run:
         return plan
+    stale = next((item for item in prompt_overrides
+                  if item["state"] == "declared_stale_protocol"), None)
+    if stale:
+        raise lib.HandsoffError(f"cannot activate upgrade: {stale['path']} is missing {stale['expected_prefix']}")
     history = _load_history(root)
     history.append({"from": current, "to": target, "action": action,
                     "at": datetime.now(timezone.utc).isoformat()})
@@ -301,6 +308,32 @@ def _documentation_diagnosis(root: Path, identity: dict, cfg: dict | None = None
                 continue
             if "v" + match.group(1) != installed and match.group(1) != installed.lstrip("v"):
                 diagnostics.append(target)
+        contradiction_patterns = [
+            (re.compile(r"\b(?:no|without|does not have|has no) handsoff\.toml\b", re.I),
+             "project has no handsoff.toml", "handsoff.toml" if (root / "handsoff.toml").is_file() else None),
+        ]
+        if (root / "handsoff.toml").is_file():
+            for pattern, claim, resolved in contradiction_patterns:
+                match = pattern.search(text)
+                if match:
+                    target = {"path": str(path), "code": "config-claim-contradiction",
+                              "detail": f"{match.group(0)}; resolved: {resolved}"}
+                    line_number = text.count("\n", 0, match.start())
+                    (suppressed if line_number in intentional else diagnostics).append(target)
+        profiles = lib.resolved_agent_profiles(cfg or lib.load_config(root))
+        roles = "|".join(map(re.escape, lib.SELECTABLE_AGENT_ROLES))
+        adapters = r"codex|claude(?:\s+code)?|host"
+        assignment = re.compile(rf"(?i)(?P<role>{roles})\s*(?:=|is|:)\s*(?P<adapter>{adapters})|(?P<adapter2>{adapters})\s+as\s+(?:the\s+)?(?P<role2>{roles})")
+        for match in assignment.finditer(text):
+            role = (match.group("role") or match.group("role2")).lower()
+            adapter = (match.group("adapter") or match.group("adapter2")).lower()
+            adapter = "claude" if adapter.startswith("claude") else adapter
+            resolved = profiles[role]["adapter"]
+            if adapter != resolved:
+                target = {"path": str(path), "code": "config-claim-contradiction",
+                          "detail": f"{match.group(0)}; resolved: {resolved}"}
+                line_number = text.count("\n", 0, match.start())
+                (suppressed if line_number in intentional else diagnostics).append(target)
         command_match = old_command.search(text)
         if command_match or "version-specific-venv" in text:
             target = {"path": str(path), "code": "obsolete-command-path",
@@ -320,9 +353,18 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
     cfg = lib.load_config(root)
     runtime_paths, legacy_runtime_paths = _runtime_path_diagnosis(root, identity)
     documentation = _documentation_diagnosis(root, identity, cfg)
+    prompt_overrides = lib.prompt_override_diagnosis(root)
+    run_triage = lib.run_triage(root, cfg)
     permissions = lib.implementer_allowed_tools(cfg, root)
     warnings = [f"check command cannot be expressed: {command!r}" for command in cfg["check_commands"] if not command.strip() or "\n" in command or "\r" in command]
-    return {"ok": True, "root": str(root), "engine": identity,
+    for item in prompt_overrides:
+        if item["state"] == "declared_stale_protocol":
+            warnings.append(f"override-protocol-stale: {item['path']} missing {item['expected_prefix']}")
+        elif item["state"] == "undeclared":
+            warnings.append(f"override-undeclared: {item['path']}")
+        elif item["state"] == "declared_hash_mismatch":
+            warnings.append(f"override-hash-mismatch: {item['path']}")
+    return {"ok": not any(item["state"] == "declared_stale_protocol" for item in prompt_overrides), "root": str(root), "engine": identity,
             "config": str(root / "handsoff.toml"),
             "adapters": lib.adapter_availability(cfg),
             "preflight": None if skip_preflight else lib.adapter_preflight(cfg, root),
@@ -331,6 +373,7 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
             "legacy_runtime_paths": legacy_runtime_paths,
             "runtime_paths": runtime_paths,
             "documentation": documentation,
+            "prompt_overrides": prompt_overrides, "run_triage": run_triage,
             "implementer_permissions": permissions,
             "warnings": warnings,
             "migration_required": identity["source"] == "project-drop-in",

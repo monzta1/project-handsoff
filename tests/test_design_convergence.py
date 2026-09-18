@@ -1,10 +1,10 @@
 """Focused REQ-001 coverage for bounded design-review convergence context."""
 from __future__ import annotations
 
-import shutil
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, ROOT, run
 
+import shutil
 import sys
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -16,7 +16,7 @@ class TestDesignConvergence(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        shutil.copy(ROOT / ".handsoff-version", self.tmp / ".handsoff-version")
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
         config = self.tmp / "handsoff.toml"
         config.write_text(config.read_text().replace('architect = "auto"', 'architect = "host"'))
 

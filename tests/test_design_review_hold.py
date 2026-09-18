@@ -19,7 +19,7 @@ class TestDesignReviewHold(HandsoffTestCase):
 
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text((ROOT / ".handsoff-version").read_text())
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
 
     def _exhaust(self):
         self.init("Design review hold")

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import uuid
 from copy import deepcopy
@@ -148,6 +149,8 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
         status["phase"] = lib.PHASES[rollback_to]
         status["status"] = "in_progress"
         status["progress"] = min(status.get("progress", 0), 40 if rollback_to == 4 else 50)
+        # #110: a rolled-back run must not keep telling the Pilot to deploy.
+        status["next_action"] = lib.NEXT_ACTION_DEFAULTS[rollback_to]
     if invalidate_design:
         for key in ("design_approved", "design_review", "design_proposal"):
             if status.get(key) is not None:
@@ -1507,6 +1510,18 @@ def cmd_verify(args) -> int:
                     binding={t: bindings[t] for t in own_tests}, executed=executed,
                     reused_from=reused_from, feature_hash=run_hash,
                     repository_digest=record_digest, config_digest=config_digest)
+                if record_digest:
+                    digest_dir = root / ".handsoff-digests"
+                    digest_dir.mkdir(parents=True, exist_ok=True)
+                    snapshot = digest_dir / f"{record_digest}.json"
+                    if executed or not snapshot.exists():
+                        lib.atomic_write_json(snapshot, {
+                            "digest": record_digest,
+                            "entries": lib.repository_digest_entries(root, cfg),
+                        })
+                    snapshots = sorted(digest_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    for old in snapshots[16:]:
+                        old.unlink()
                 status["verification_head"] = record["hash"]
                 if record["run_id"] not in criterion["evidence"]:
                     criterion["evidence"].append(record["run_id"])
@@ -1779,8 +1794,15 @@ def cmd_record_design_review(args) -> int:
                 return 1
             launch_id = getattr(args, "session", None)
             launch_session = (status.get("agent_sessions") or {}).get(launch_id)
-            if launch_session and provenance.get("host_session_id") and \
-                    launch_session.get("host_session_id") == provenance.get("host_session_id"):
+            # #112: a managed reviewer (codex or claude, named by --session) is
+            # a separate process, provider and actor even when the host
+            # Supervisor launched it from the Architect's terminal. Only a
+            # host-recorded verdict (no --session) shares a host session in
+            # any meaningful sense: the recording process must not be the
+            # Claude Code or Codex session that wrote the proposal.
+            recording_host = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_COMPANION_SESSION_ID")
+            if launch_session is None and provenance.get("host_session_id") \
+                    and recording_host == provenance.get("host_session_id"):
                 print("SHIP_FEATURE_BLOCKED: design reviewer must use an independent host session")
                 return 1
         criteria = acceptance.get("criteria", [])

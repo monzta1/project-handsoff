@@ -143,6 +143,49 @@ class EvidenceDriftTests(HandsoffTestCase):
         self.assertEqual(after["current"], ["REQ-001"])
         self.assertEqual(after["stale"], [])
 
+    def test_non_git_gitignore_ignores_runtime_log(self):
+        (self.tmp / ".gitignore").write_text("*.log\n")
+        (self.tmp / "run.log").write_text("start\n")
+        self.verify()
+        (self.tmp / "run.log").write_text("start\nchanged\n")
+        cfg = lib.load_config(self.tmp)
+        drift = lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                   lib.load_verifications(self.tmp, cfg)[0])
+        self.assertIn("REQ-001", drift["current"])
+        (self.tmp / ".gitignore").write_text("")
+        drift = lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                   lib.load_verifications(self.tmp, cfg)[0])
+        self.assertEqual(drift["stale"], ["REQ-001"])
+
+    def test_digest_ignore_excludes_paths_but_not_source(self):
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text() + '\n[digest]\nignore = ["build/**", "*.tmp"]\n')
+        self.verify()
+        (self.tmp / "build").mkdir()
+        (self.tmp / "build" / "out.txt").write_text("generated")
+        (self.tmp / "a.tmp").write_text("temporary")
+        cfg = lib.load_config(self.tmp)
+        self.assertIn("REQ-001", lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                                     lib.load_verifications(self.tmp, cfg)[0])["current"])
+        (self.tmp / "product.txt").write_text("source")
+        self.assertEqual(lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                            lib.load_verifications(self.tmp, cfg)[0])["stale"], ["REQ-001"])
+
+    def test_changed_paths_are_reported_and_legacy_has_note(self):
+        self.prepared_phase_six()
+        (self.tmp / "product.txt").write_text("source")
+        (self.tmp / "extra.txt").write_text("extra")
+        cfg = lib.load_config(self.tmp)
+        drift = lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                   lib.load_verifications(self.tmp, cfg)[0])
+        self.assertEqual(drift["changed_paths"], ["extra.txt", "product.txt"])
+        blocked = run(["advance", "7", "70", "--implemented-by", "test-implementer"], self.tmp)
+        self.assertIn("changed paths: extra.txt, product.txt", blocked.stdout + blocked.stderr)
+        legacy = lib.append_verification(self.tmp, cfg, kind="checks", ok=True, by="legacy",
+                                         criteria=[self.read_acceptance()["criteria"][0]])
+        legacy_drift = lib.evidence_drift(self.tmp, cfg, self.read_acceptance(), [legacy])
+        self.assertEqual(legacy_drift["changed_paths_note"], "snapshot not recorded")
+
 
 if __name__ == "__main__":
     unittest.main()

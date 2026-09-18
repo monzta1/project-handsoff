@@ -140,6 +140,25 @@ class PostApprovalCliTests(HandsoffTestCase):
         self.assertEqual(shown.returncode, 0, shown.stdout[-600:] + shown.stderr[-300:])
         self.assertEqual(json.loads(shown.stdout)["evidence_drift"]["stale"], [])
 
+    def test_rollback_after_drift_rewrites_next_action(self):
+        # #110: a Phase 7 run knocked back to Phase 5 by fresh evidence must
+        # read the Phase 5 default, not the deployment text it carried.
+        self.init("Rollback rewrites next_action")
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-1")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        gate = run(["deployment-gate", "--approve", "--by", "pilot"], cwd=self.tmp)
+        self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+        self.assertEqual(self.read_status()["phase_number"], 7)
+        (self.tmp / "product.txt").write_text("changed after approval\n")
+        verified = run(["verify", "--criterion", "REQ-001", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        status = self.read_status()
+        self.assertEqual(status["phase_number"], 5)
+        self.assertIsNone(status["deployment_approved"])
+        self.assertEqual(status["next_action"], lib.NEXT_ACTION_DEFAULTS[5])
+
     def test_changing_check_commands_after_evidence_is_drift(self):
         # The counterpart: configuration that changes what a check proves
         # does invalidate evidence, through the verification config hash.

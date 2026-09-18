@@ -71,7 +71,11 @@ def _effective_token_budget(configured: int, role: str, context: dict | None) ->
             and int(context.get("review_attempts", 0) or 0) > 0:
         packet_bytes = int(context.get("packet_stdin_bytes", 0) or 0) or len(str(context.get("packet_stdin", "")).encode())
         if not packet_bytes:
-            return min(configured, FOLLOWUP_DESIGN_TOKEN_BUDGET)
+            # #114: a host Architect's proposal carries no managed packet, but
+            # build_launch_spec has already derived a budget from the full
+            # role input; the 16k constant is only for callers that give
+            # neither.
+            return min(configured, int(context.get("followup_design_token_budget") or FOLLOWUP_DESIGN_TOKEN_BUDGET))
         default = max(40_000, packet_bytes // 3 + 30_000)
         return min(configured, context.get("followup_design_token_budget", default))
     return configured
@@ -1085,6 +1089,17 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 f"agent output stream failed: {type(reader_errors[0]).__name__}", session_id,
             ) from reader_errors[0]
     if process.returncode:
+        # #114: on a budget error Codex can route the final message to
+        # stderr. A complete protocol line there is still the result, so
+        # scan the tail once before classifying the failure.
+        if spec.role in {"reviewer", "architect"} and not reviewer_results and not architect_results:
+            for line in stderr_tail[0].splitlines():
+                if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX):
+                    _parse_reviewer_line(line, reviewer_results, protocol_errors)
+                    persist_new(reviewer_results, "review")
+                elif spec.role == "architect" and line.startswith(DESIGN_RESULT_PREFIX):
+                    _parse_architect_line(line, architect_results, protocol_errors)
+                    persist_new(architect_results, "design")
         if beacon is not None and beacon.operation_terminated:
             operation = lib.current_operation(root, session_id) or {}
             failure = {"category": "external_timeout",

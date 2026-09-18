@@ -42,8 +42,9 @@ class DesignBindingTests(HandsoffTestCase):
         return self.read_status()
 
     def approve_review(self):
-        result = run(["record-design-review", "--approve", "--by", "reviewer-1",
-                      "--architect", "architect-1", "--summary", "independent"], self.tmp)
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "host-session-reviewer", "CODEX_COMPANION_SESSION_ID": ""}, clear=True):
+            result = run(["record-design-review", "--approve", "--by", "reviewer-1",
+                          "--architect", "architect-1", "--summary", "independent"], self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         result = run(["design-approve", "--by", "pilot", "--architect", "architect-1",
                       "--summary", "approved"], self.tmp)
@@ -82,8 +83,9 @@ class DesignBindingTests(HandsoffTestCase):
 
     def test_packet_reports_proposal_changed(self):
         self.propose()
-        run(["record-design-review", "--approve", "--by", "reviewer-1", "--architect", "architect-1",
-             "--summary", "first"], self.tmp)
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "host-session-reviewer", "CODEX_COMPANION_SESSION_ID": ""}, clear=True):
+            run(["record-design-review", "--approve", "--by", "reviewer-1", "--architect", "architect-1",
+                 "--summary", "first"], self.tmp)
         self.proposal["summary"] = "Revised proposal"
         self.propose()
         status = self.read_status()
@@ -106,6 +108,51 @@ class DesignBindingTests(HandsoffTestCase):
                           "--architect", "architect-1", "--summary", "no"], self.tmp)
         self.assertEqual(same_actor.returncode, 1)
         self.assertIn("reviewer must differ", same_actor.stdout)
+
+    def _live_reviewer(self, adapter, actor="reviewer-managed"):
+        # A reviewer session launched from the Architect's host session.
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "", "CODEX_COMPANION_SESSION_ID": "host-session-1"}, clear=True):
+            session = lib.create_agent_session(self.tmp, role="reviewer", actor=actor, adapter=adapter,
+                                               requested_model="default", resolution_source="configured")
+        status = self.read_status()
+        self.assertEqual(status["agent_sessions"][session["session_id"]]["host_session_id"], "host-session-1")
+        return session["session_id"]
+
+    def test_managed_reviewer_from_the_architect_host_session_is_accepted(self):
+        # #112: the host Supervisor launches Codex from the same terminal the
+        # proposal came from; the reviewer is still an independent process.
+        self.propose("architect-1")
+        session_id = self._live_reviewer("codex")
+        result = run(["record-design-review", "--approve", "--by", "reviewer-managed", "--session", session_id,
+                      "--architect", "architect-1", "--summary", "independent process"], self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.read_status()["design_review"]["decision"], "approved")
+
+    def test_host_recorded_review_from_the_architect_host_session_is_refused(self):
+        # A verdict recorded by hand (no --session) from the very session that
+        # wrote the proposal is a self-review, whatever --by claims.
+        self.propose("architect-1")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "", "CODEX_COMPANION_SESSION_ID": "host-session-1"}, clear=True):
+            result = run(["record-design-review", "--approve", "--by", "reviewer-host",
+                          "--architect", "architect-1", "--summary", "same terminal"], self.tmp)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("independent host session", result.stdout)
+        self.assertIsNone(self.read_status().get("design_review"))
+
+    def test_host_recorded_review_from_another_host_session_is_accepted(self):
+        self.propose("architect-1")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "host-session-2", "CODEX_COMPANION_SESSION_ID": ""}, clear=True):
+            result = run(["record-design-review", "--approve", "--by", "reviewer-host",
+                          "--architect", "architect-1", "--summary", "other terminal"], self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_same_actor_managed_reviewer_is_still_refused(self):
+        self.propose("architect-1")
+        session_id = self._live_reviewer("codex", actor="architect-1")
+        result = run(["record-design-review", "--approve", "--by", "architect-1", "--session", session_id,
+                      "--architect", "architect-1", "--summary", "self review"], self.tmp)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("reviewer must differ", result.stdout)
 
 
 if __name__ == "__main__":

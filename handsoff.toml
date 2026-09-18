@@ -103,16 +103,17 @@ commands = [
   "python3 -m unittest tests.test_operations -v",
   "node --test tests/dashboard/operation_telemetry.test.js",
   "python3 -m unittest tests.test_evidence_drift -v",
-  "python3 -m unittest tests.test_reviewer_sandbox -v",
   "python3 -m unittest tests.test_design_review_hold -v",
   "python3 -m unittest tests.test_host_roles -v",
-  "python3 -m unittest tests.test_work_items -v",
   "python3 -m unittest tests.test_packaging -v",
   "python3 -m unittest tests.test_handsoff_supervisor.TestSmallFixLane -v",
   "node --test tests/dashboard/work_item_lanes.test.js",
   "python3 -m unittest tests.test_handsoff_supervisor.TestBacklogPlanner -v",
   "node --test tests/dashboard/tranche_planner.test.js",
   "python3 -m unittest tests.test_handsoff_supervisor.TestRecoveryNoManagedSession -v",
+  "python3 -m unittest tests.test_prompt_overrides -v",
+  "python3 -m unittest tests.test_run_triage -v",
+  "python3 -m unittest tests.test_fixture_hygiene -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

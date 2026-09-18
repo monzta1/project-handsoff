@@ -160,6 +160,34 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertFalse(diagnosis["documentation"]["stale"])
         self.assertEqual(diagnosis["documentation"]["diagnostics"], [])
 
+    def test_doctor_flags_instruction_files_that_contradict_the_config(self):
+        # #106: a SKILL.md claiming no toml and a different reviewer provider
+        # than the resolved [agents] table is a contradiction, with the claim
+        # and the resolved value named.
+        root = self.base / "contradicting-docs"
+        cli.init_project(root, None)
+        # init leaves [agents] unset, so the reviewer resolves to the
+        # recommended default, codex.
+        self.assertEqual(lib.resolved_agent_profiles(lib.load_config(root))["reviewer"]["adapter"], "codex")
+        (root / "SKILL.md").write_text(
+            "This project has no handsoff.toml.\nThe reviewer is claude here.\n", encoding="utf-8")
+        diagnostics = [d for d in cli.doctor(root)["documentation"]["diagnostics"]
+                       if d["code"] == "config-claim-contradiction"]
+        self.assertEqual(len(diagnostics), 2, diagnostics)
+        details = " | ".join(d["detail"] for d in diagnostics)
+        self.assertIn("no handsoff.toml; resolved: handsoff.toml", details)
+        self.assertIn("reviewer is claude; resolved: codex", details)
+        self.assertTrue(all(d["path"].endswith("SKILL.md") for d in diagnostics))
+
+    def test_doctor_accepts_instruction_files_that_agree_with_the_config(self):
+        root = self.base / "agreeing-docs"
+        cli.init_project(root, None)
+        (root / "SKILL.md").write_text(
+            "This project uses handsoff.toml at the root.\nThe reviewer is codex.\n", encoding="utf-8")
+        diagnostics = [d for d in cli.doctor(root)["documentation"]["diagnostics"]
+                       if d["code"] == "config-claim-contradiction"]
+        self.assertEqual(diagnostics, [])
+
     def test_documentation_files_limit_scan(self):
         root = self.base / "configured-files"
         cli.init_project(root, None)

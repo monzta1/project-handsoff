@@ -1,14 +1,14 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "87570210509d57ec41a11b9eb08ed159102782b9b6b125b3ee124ee6e54f2000",
+    "bin/handsoff_agent.py": "087157cd039579978e5ba55ee05f6f768826949008eb60c8653445d2364b351d",
     "bin/handsoff_analyzer.py": "420f4aa811549ee2b60f9c0f980402dd1ee32ebe71b358104f69522720606567",
     "bin/handsoff_broker.py": "8df6d01600b9e2375539513543e7a963ab4a83bbf6db0602541e82813640417f",
-    "bin/handsoff_cli.py": "056429437b0336b51233bf1cdcb7f47dd02d48212eafee3325b5e755b61b0a2a",
+    "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "d9cd8fb7d28262d41e6f50ff3eaf5ae5513f52935ec725c615c493f37fd8bc3e",
     "bin/handsoff_fleet.py": "e5f165607bf13b32dbbc87dc9902c56a2412e501497892786029ccc1b7bdaab6",
-    "bin/handsoff_lib.py": "3a481854449cd074034cd5a5bd180f6c37f0a0f64d513d41fc3f0f1603038ae1",
+    "bin/handsoff_lib.py": "f99a957464735b771eb0ec64958795e041731029ecdcc5565fdc0e560d480a58",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
-    "bin/handsoff_supervisor.py": "440d953f89c31a9a646ad43fcae6d2eea8483c49790e03b0fdc10c4bb13bfc84",
+    "bin/handsoff_supervisor.py": "532af26a00e0119869bf34fd272117e8f241eba7acc10cae2ad7aa4aea7039a4",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
     "dashboard/app.js": "791b91710cbdc5ff0497a85b37240efe43db2fbb149328c2b205a34851c4ec92",
@@ -24,7 +24,7 @@
     "prompts/supervisor.md": "ed4eac36f980288d9a4d7fba9215f51b5f46b8deb2ec8227f5554a3449aeee89",
     "schemas/acceptance.schema.json": "43a63468a3c43b1d8f2b7876ab1a770781f73888449e893e704e1cf1be195457",
     "schemas/status.schema.json": "71c05296a61f6c7aada2f539dc99f2be998a73e3572c8db11f402237dee6ef63",
-    "templates/handsoff.toml": "c348cd10cfcb0a77acb87f94ab45b7283f83a14e60ef1b146481c16275fdbe31"
+    "templates/handsoff.toml": "7e9a56cd1dbad94046eca2de5a383c00267448b64cb399df8fc20e69c9a06455"
   },
   "schema": 1,
   "version": "v0.3.17"
