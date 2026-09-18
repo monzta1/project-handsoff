@@ -4037,7 +4037,7 @@ def validate_status_schema(status: dict) -> list[str]:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
                 allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
-                                  "result_available", "adopted", "scratch_path", "auto_retry_authorized"}
+                                  "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged"}
                 if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
                     errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
@@ -4371,6 +4371,17 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     regression = active_regression_request(status)
     escalation = status.get("escalation") or {}
     recovery_hold = escalation.get("kind") in {"recovery_exhausted", "recovery_paused"}
+    # #123: a replacement paused on a non-recoverable failure has no
+    # escalation record, yet the Pilot must be able to clear it here.
+    replacement_pause = None
+    if not recovery_hold and not closed and not complete:
+        try:
+            assessment = recovery_assessment(status, cfg, {}, [], root=root)
+        except (HandsoffError, OSError, ValueError):
+            assessment = {}
+        if assessment.get("reason") == "non_recoverable_failure":
+            replacement_pause = (status.get("agent_failures") or {}).get(assessment.get("lost_session_id")) or {}
+            recovery_hold = True
     automated = [c.get("id") for c in acceptance.get("criteria", [])
                  if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
     try:
@@ -4384,13 +4395,16 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
         launch_reason = "run is not in progress"
     elif closed:
         launch_reason = "run is closed"
-    elif launch_role not in {"implementer", "reviewer"}:
-        launch_reason = "current phase does not assign implementer or reviewer"
+    elif launch_role not in SELECTABLE_AGENT_ROLES:
+        launch_reason = "current phase assigns no managed role"
     else:
         launch_profile = resolved_agent_profiles(cfg).get(launch_role)
+        current_session = current_agent_sessions(status).get(launch_role)
         if not launch_profile or launch_profile.get("adapter") == HOST_AGENT_ADAPTER:
             launch_reason = f"{launch_role} is host-driven"
-        elif current_agent_sessions(status).get(launch_role):
+        elif current_session and current_session.get("state") in AGENT_SESSION_LIVE_STATES:
+            # #123: only a live session blocks a launch; a failed one is
+            # exactly what a relaunch replaces.
             launch_reason = f"a live {launch_role} session already exists"
         elif phase == 2 and launch_role == "reviewer" and not status.get("design_proposal"):
             launch_reason = "reviewer launch requires a design proposal"
@@ -4399,7 +4413,8 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     if deployment_pending: actionable |= {"deployment_approve", "deployment_hold"}
     if deployment_revoke: actionable.add("deployment_revoke")
     if phase == 2 and budget.get("exhausted"): actionable |= {"design_review_authorize", "design_review_escalate"}
-    if recovery_hold: actionable |= {"recovery_acknowledge", "recover"}
+    if recovery_hold: actionable.add("recovery_acknowledge")
+    if recovery_hold and not replacement_pause: actionable.add("recover")
     if escalation.get("kind") == "review_cap_exhausted": actionable.add("review_cap_override")
     if regression and regression.get("state") in {"awaiting_approval", "accepted"}: actionable |= {"regression_accept", "regression_decline", "regression_cancel"}
     if not closed and not complete:
@@ -4465,6 +4480,9 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
         if kind == "launch_role":
             entry["launchable_roles"] = [launch_role] if availability == "actionable" else []
             entry["role"] = launch_role
+        if kind == "recovery_acknowledge" and replacement_pause:
+            entry["consequence"] = (f"Clears the replacement pause after a {replacement_pause.get('category')} failure "
+                                    f"({replacement_pause.get('reason')}); relaunch the role afterwards")
         result.append(entry)
     return result
 
@@ -4978,6 +4996,15 @@ def _minutes_since(timestamp: str | None, now: datetime) -> float | None:
     return (now - last).total_seconds() / 60
 
 
+def implementation_evidence_complete(status: dict) -> bool:
+    """#122: every automated criterion passing and the original symptom
+    resolved, read from the run's own coverage bookkeeping."""
+    coverage = status.get("requirement_coverage") if isinstance(status.get("requirement_coverage"), dict) else {}
+    symptom = bool(coverage.get("original_symptom_resolved") or status.get("original_symptom_evidence_id"))
+    counts = {key: int(coverage.get(key, 0) or 0) for key in ("passing", "failing", "not_tested", "blocked")}
+    return symptom and counts["passing"] > 0 and counts["failing"] + counts["not_tested"] + counts["blocked"] == 0
+
+
 def assigned_role(status: dict) -> str | None:
     if status.get("status") == "complete":
         return None
@@ -5004,6 +5031,10 @@ def assigned_role(status: dict) -> str | None:
         # Supervisor advances to Phase 6. The watchdog must not recover
         # that deliberately completed reviewer during this interval.
         return "supervisor"
+    if phase == 4 and implementation_evidence_complete(status):
+        # #122: the Implementer's assignment ends with the last piece of
+        # evidence; the Supervisor advances to Phase 5.
+        return "supervisor"
     return {3: "supervisor", 4: "implementer", 5: "reviewer", 6: "implementer",
             7: "supervisor", 8: "supervisor"}.get(phase)
 
@@ -5026,9 +5057,20 @@ def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
         return None
     if isinstance(status.get("human_pause"), dict) or isinstance(status.get("background_wait"), dict):
         return None
-    if any(isinstance(item, dict) and item.get("state") == "pending"
+    if any(isinstance(item, dict) and item.get("answer") is None and item.get("state", "pending") == "pending"
            for item in status.get("pending_questions") or []):
         return None
+    # #120: a question answered but not yet delivered relaunches the role
+    # that asked it, unless that role already has a live session.
+    undelivered = [item for item in status.get("pending_questions") or []
+                   if isinstance(item, dict) and item.get("answer") is not None and not item.get("delivered_at")]
+    if undelivered:
+        asker = undelivered[-1].get("role")
+        live = any(isinstance(item, dict) and item.get("state") in AGENT_SESSION_LIVE_STATES
+                   and item.get("role") == asker for item in (status.get("agent_sessions") or {}).values())
+        if asker in SELECTABLE_AGENT_ROLES and not live \
+                and not (cfg is not None and cfg.get("agents", {}).get(asker) == HOST_AGENT_ADAPTER):
+            return asker
     if any(isinstance(item, dict) and item.get("state") in {"awaiting_approval", "accepted", "launched"}
            for item in status.get("regression_requests") or []):
         return None
@@ -5037,6 +5079,9 @@ def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
         return None
     target = assigned_role(status)
     if target is None:
+        return None
+    if target == "reviewer" and isinstance(status.get("review"), dict):
+        # #125: a recorded review is never re-run by orchestration.
         return None
     if cfg is not None:
         if cfg.get("agents", {}).get(target) == HOST_AGENT_ADAPTER:
@@ -5388,6 +5433,7 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         if isinstance(candidate, dict) and candidate.get("state") in {
                 "failed", "timed_out", "failed_to_start", "cancelled"} \
                 and isinstance(failure, dict) and not failure.get("adopted") \
+                and not failure.get("acknowledged") \
                 and not failure.get("auto_retry_authorized") \
                 and failure.get("category") not in RECOVERABLE_FAILURE_CATEGORIES:
             result.update(reason="non_recoverable_failure", assigned_role=current_role,

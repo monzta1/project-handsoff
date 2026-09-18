@@ -421,12 +421,20 @@ def cmd_advance(args) -> int:
             proposed["status"] = "awaiting_approval"
         elif args.phase == 8:
             proposed["status"] = "complete"
-        if args.implemented_by:
-            proposed["implemented_by"] = args.implemented_by
+        implemented_by = args.implemented_by
+        if not implemented_by and args.phase == 5 and not proposed.get("implemented_by"):
+            # #122: the completed managed Implementer is the implementer.
+            done = [item for item in (proposed.get("agent_sessions") or {}).values()
+                    if isinstance(item, dict) and item.get("role") == "implementer"
+                    and item.get("state") == "completed" and item.get("actor")]
+            if done:
+                implemented_by = max(done, key=lambda item: item.get("ended_at") or "")["actor"]
+        if implemented_by:
+            proposed["implemented_by"] = implemented_by
             active = proposed.get("active_work_item")
             delivery = proposed.get("work_item_delivery") or {}
             if active in delivery:
-                delivery[active]["implemented_by"] = args.implemented_by
+                delivery[active]["implemented_by"] = implemented_by
         if args.authorization_hold:
             if args.phase != 2 or proposed.get("status") != "blocked":
                 print("SHIP_FEATURE_INVALID: --authorization-hold requires Phase 2 with --status blocked")
@@ -1766,6 +1774,9 @@ def cmd_design_approve(args) -> int:
     return 0
 
 
+#: #125: what record-review leaves for the Supervisor.
+REVIEW_APPROVED_NEXT_ACTION = "Supervisor advances to Phase 6: checks and documentation (advance 6)."
+
 # #102: failure categories the engine itself classified as environmental,
 # for which one automatic retry is offered before the Pilot is asked.
 AUTO_RETRY_CATEGORIES = {"runtime_environment", "token_budget_exhaustion"}
@@ -2499,6 +2510,9 @@ def cmd_record_review(args) -> int:
         attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
         attempt["tests_executed"] = args.tests_executed
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        # #125: the review is done; the next move is the Supervisor's, and
+        # a managed Supervisor reads this text as its task.
+        status["next_action"] = REVIEW_APPROVED_NEXT_ACTION
         lib.commit(root, cfg, status=status, extra_events=[{
                       "kind": "review_attempt_closed",
                       "message": f"Review attempt {attempt['attempt']} approved",
@@ -3372,10 +3386,21 @@ def cmd_recovery_acknowledge(args) -> int:
     with lib.project_lock(root):
         status, acceptance, records, problems = _load_all(root, cfg)
         escalation = status.get("escalation")
+        paused_failure = None
         if not isinstance(escalation, dict) or escalation.get("kind") not in {
                 "recovery_exhausted", "recovery_paused"}:
-            print("SHIP_FEATURE_BLOCKED: no recovery escalation is awaiting acknowledgement")
-            return 1
+            # #123: a replacement pause on a non-recoverable failure has no
+            # escalation record; acknowledging marks that failure so the
+            # assessment stops reporting it and a relaunch is possible.
+            assessment = lib.recovery_assessment(status, cfg, lib.read_session_liveness(root),
+                                                 lib.read_events(root, cfg), root=root)
+            paused_failure = (status.get("agent_failures") or {}).get(assessment.get("lost_session_id")) \
+                if assessment.get("reason") == "non_recoverable_failure" else None
+            if not isinstance(paused_failure, dict):
+                print("SHIP_FEATURE_BLOCKED: no recovery escalation is awaiting acknowledgement")
+                return 1
+            paused_failure["acknowledged"] = True
+            escalation = {"source": None}
         status["escalation"] = None
         status["status"] = "in_progress"
         status["next_action"] = lib.NEXT_ACTION_DEFAULTS.get(
@@ -3386,6 +3411,8 @@ def cmd_recovery_acknowledge(args) -> int:
         acknowledged_session_id = None
         if isinstance(source, dict):
             acknowledged_session_id = source.get("to_session_id") or source.get("from_session_id")
+        if isinstance(paused_failure, dict):
+            acknowledged_session_id = paused_failure.get("session_id")
         lib.commit(root, cfg, status=status, event_kind="recovery_acknowledged",
                    event_message=args.reason.strip(), by=actor,
                    session_id=acknowledged_session_id,
