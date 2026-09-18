@@ -39,6 +39,7 @@ ASSETS = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/lib/dashboard-logic.js": ("lib/dashboard-logic.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+    "/logo.png": ("logo.png", "image/png"),
 }
 MAX_SETTINGS_BODY = 16 * 1024
 # #48: sixteen answers of up to 1024 characters each, plus envelope.

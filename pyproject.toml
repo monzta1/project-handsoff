@@ -27,7 +27,7 @@ py-modules = [
 
 [tool.setuptools.data-files]
 "share/handsoff" = ["handsoff-runtime.json"]
-"share/handsoff/dashboard" = ["dashboard/app.js", "dashboard/index.html", "dashboard/regression.html", "dashboard/regression.js", "dashboard/styles.css"]
+"share/handsoff/dashboard" = ["dashboard/app.js", "dashboard/index.html", "dashboard/logo.png", "dashboard/regression.html", "dashboard/regression.js", "dashboard/styles.css"]
 "share/handsoff/dashboard/lib" = ["dashboard/lib/dashboard-logic.js"]
 "share/handsoff/fleet" = ["fleet/app.js", "fleet/index.html", "fleet/styles.css"]
 "share/handsoff/prompts" = ["prompts/architect.md", "prompts/implementer.md", "prompts/reviewer.md", "prompts/supervisor.md"]

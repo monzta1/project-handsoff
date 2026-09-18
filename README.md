@@ -1,3 +1,5 @@
+<p align="center"><img src="dashboard/logo.png" alt="Handsoff" width="120"></p>
+
 # Project Handsoff
 
 Project Handsoff is a portable, domain-neutral delivery gate for a four-role workflow:

@@ -23,6 +23,7 @@ RUNTIME_FILES = (
     "dashboard/app.js",
     "dashboard/index.html",
     "dashboard/lib/dashboard-logic.js",
+    "dashboard/logo.png",
     "dashboard/regression.html",
     "dashboard/regression.js",
     "dashboard/styles.css",
