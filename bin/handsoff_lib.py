@@ -6207,6 +6207,79 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
                                                "progress": overall_item_progress(status, acceptance, cfg)}}
 
 
+def work_item_checkpoints(status: dict, acceptance: dict, events: list[dict] | None = None,
+                          verifications: list[dict] | None = None, cfg: dict | None = None) -> dict:
+    """#104: durable per-item checkpoints derived from the ledger only,
+    never stored, so they cannot drift from the run they describe.
+
+    designed: a design approval is recorded. implemented: implemented_by is
+    on the item's delivery record, or every tagged criterion carries
+    evidence. verified: every tagged criterion is passing. reviewed: an
+    approved review recorded after the newest verification for the item.
+    complete: all four."""
+    cfg = cfg or DEFAULT_CONFIG
+    registry, _ = effective_work_items(acceptance, cfg)
+    criteria = acceptance.get("criteria", [])
+    delivery = status.get("work_item_delivery") if isinstance(status.get("work_item_delivery"), dict) else {}
+    designed = isinstance(status.get("design_approved"), dict)
+    review = status.get("review") if isinstance(status.get("review"), dict) else None
+    review_at = review.get("at") if review else None
+    result = {}
+    for item in registry:
+        own = [c for c in criteria if criterion_work_item_id(c) == item["id"]
+               or (criterion_work_item_id(c) is None and len(registry) == 1)]
+        record = delivery.get(item["id"]) if isinstance(delivery, dict) else None
+        implemented = bool(isinstance(record, dict) and record.get("implemented_by")) \
+            or (bool(own) and all(c.get("evidence") for c in own))
+        verified = bool(own) and all(c.get("state") == "passing" for c in own)
+        newest_evidence = None
+        for record_v in verifications or []:
+            if any(cid in (record_v.get("criteria") or []) for cid in (c.get("id") for c in own)):
+                newest_evidence = max(newest_evidence or "", record_v.get("at") or "")
+        reviewed = bool(review_at) and verified and (newest_evidence is None or review_at >= newest_evidence)
+        result[item["id"]] = {
+            "designed": designed, "implemented": implemented, "verified": verified, "reviewed": reviewed,
+            "complete": designed and implemented and verified and reviewed,
+            "criteria": [c.get("id") for c in own],
+            "passing": [c.get("id") for c in own if c.get("state") == "passing"],
+        }
+    return result
+
+
+def work_item_completion_lines(checkpoints: dict) -> list[str]:
+    """One human line per item: 'issue-102 implemented, verified' or
+    'issue-104 not started'."""
+    lines = []
+    for item_id, point in checkpoints.items():
+        if point["complete"]:
+            lines.append(f"{item_id} complete")
+            continue
+        stages = [name for name in ("designed", "implemented", "verified", "reviewed") if point[name]]
+        lines.append(f"{item_id} {', '.join(stages)}" if stages else f"{item_id} not started")
+    return lines
+
+
+def resume_scope_section(root: Path) -> str:
+    """#104: the completed and remaining scope for a relaunched implementer
+    or reviewer, so the resumed attempt continues with what is unfinished."""
+    cfg = load_config(root)
+    status = load_unique_json(status_path(root, cfg))
+    acceptance = load_unique_json(acceptance_path(root, cfg))
+    try:
+        verifications, _ = load_verifications(root, cfg)
+    except HandsoffError:
+        verifications = []
+    points = work_item_checkpoints(status, acceptance, None, verifications, cfg)
+    if not points:
+        return ""
+    done = [f"- {item_id} (criteria passing: {', '.join(p['passing']) or 'none'})" for item_id, p in points.items() if p["complete"] or p["verified"]]
+    remaining = [f"- {item_id}: {', '.join(c for c in p['criteria'] if c not in p['passing']) or 'no open criteria'}"
+                 for item_id, p in points.items() if not (p["complete"] or p["verified"])]
+    return ("# Completed scope\n\nDo not repeat this work; its evidence is on the ledger.\n\n"
+            + ("\n".join(done) or "- none yet")
+            + "\n\n# Remaining scope\n\n" + ("\n".join(remaining) or "- nothing remains"))
+
+
 # --------------------------------------------------------------------------
 # #44: atomic acceptance-criteria transactions. One validator serves
 # criterion-add/update/remove and criteria-apply; the planner applies a

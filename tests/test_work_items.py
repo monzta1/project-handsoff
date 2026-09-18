@@ -171,6 +171,52 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertTrue(any("issue-70 has no implemented_by" in e for e in errors), errors)
         self.assertFalse(any("issue-90 has no implemented_by" in e for e in errors), errors)
 
+    def test_checkpoints_and_resume_scope_after_a_mid_run_failure(self):
+        # #104: two items; the first is verified, the run fails before the
+        # second. Checkpoints come from the ledger, the relaunch packet
+        # lists the finished scope as completed and the rest as remaining,
+        # and status prints one line per item.
+        initialized = run(["init", "Two items", "--item", "#70", "--item", "#90"], cwd=self.tmp)
+        self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
+        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        self.assertEqual(run(["criterion-update", "REQ-001", "--requirement", "[#70] First item",
+                              "--test", "true"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["criterion-add", "REQ-002", "--type", "supporting", "--verification", "automated",
+                              "--test", "true", "--requirement", "[#90] Second item"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(approve_design_review(self.tmp).returncode, 0)
+        approved = run(["design-approve", "--by", "pilot", "--architect", "test-architect", "--summary", "ok"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+        self.assertEqual(run(["advance", "3"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["advance", "4"], cwd=self.tmp).returncode, 0)
+        verified = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        # The run "fails" here: nothing else is recorded for issue-90.
+        cfg = lib.load_config(self.tmp)
+        status, acceptance = self.read_status(), self.read_acceptance()
+        verifications, _ = lib.load_verifications(self.tmp, cfg)
+        points = lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)
+        self.assertTrue(points["issue-70"]["designed"] and points["issue-70"]["verified"])
+        self.assertFalse(points["issue-70"]["reviewed"])
+        self.assertTrue(points["issue-90"]["designed"])
+        self.assertFalse(points["issue-90"]["implemented"] or points["issue-90"]["verified"])
+        shown = json.loads(run(["status"], cwd=self.tmp).stdout)
+        self.assertIn("issue-70 designed, implemented, verified", shown["work_item_completion"])
+        self.assertIn("issue-90 designed", shown["work_item_completion"])
+        import shutil
+        import handsoff_agent as runtime
+        shutil.copytree(Path(__file__).resolve().parents[1] / "prompts", self.tmp / "prompts")
+        packet = runtime.build_role_input(self.tmp, "implementer", "Resume the run.")
+        completed = packet.split("# Completed scope", 1)[1].split("# Remaining scope", 1)[0]
+        remaining = packet.split("# Remaining scope", 1)[1]
+        self.assertIn("issue-70", completed)
+        self.assertIn("REQ-001", completed)
+        self.assertIn("issue-90", remaining)
+        self.assertIn("REQ-002", remaining)
+        self.assertNotIn("issue-90", completed)
+
     def test_scope_frozen_after_deployment_approval(self):
         # REQ-006: deployment approval freezes scope-changing syncs.
         initialized = run(["init", "Feature without issue refs", "--item", "#70"], cwd=self.tmp)

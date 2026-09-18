@@ -301,6 +301,8 @@ def cmd_status(args) -> int:
         "engine": lib.runtime_identity(root),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
         "gate_progress": lib.gate_progress(status, acceptance),
+        "work_item_completion": lib.work_item_completion_lines(
+            lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)),
         "status": status.get("status"), "next_action": status.get("next_action"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
         "review_attempts": [{k: item.get(k) for k in ("attempt", "attempt_id", "trigger", "disposition", "reviewer")}
