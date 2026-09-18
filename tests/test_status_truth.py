@@ -111,7 +111,7 @@ class StatusTruthTests(unittest.TestCase):
     def test_live_reviewer_selection_rebuilds_from_session(self):
         sid = "hs-" + "2" * 32
         self.status["agent_sessions"][sid] = {"session_id": sid, "role": "reviewer", "actor": "pilot",
-            "adapter": "codex", "state": "running", "started_at": "2026-01-01T00:30:00+00:00"}
+            "adapter": "codex", "state": "running", "phase_number": 2, "started_at": "2026-01-01T00:30:00+00:00"}
         view = lib.design_reviewer_selection_view(deepcopy(lib.DEFAULT_CONFIG), self.status, {})
         self.assertEqual(view["current"]["session_id"], sid)
         self.assertEqual(view["current"]["attempt"], 1)
@@ -125,19 +125,39 @@ class StatusTruthTests(unittest.TestCase):
         for n in (2, 3):
             sid = "hs-" + str(n) * 32
             self.status["agent_sessions"][sid] = {"session_id": sid, "role": "reviewer", "state": "running",
-                "started_at": f"2026-01-01T00:{n}:00+00:00"}
+                "phase_number": 2, "started_at": f"2026-01-01T00:{n}:00+00:00"}
         view = lib.design_reviewer_selection_view(deepcopy(lib.DEFAULT_CONFIG), self.status, {})
         self.assertTrue(any("unexpected_live_sessions" in item for item in view["consistency_errors"]))
 
     def test_selection_metadata_naming_another_reviewer_is_a_consistency_error(self):
         sid = "hs-" + "2" * 32
         self.status["agent_sessions"][sid] = {"session_id": sid, "role": "reviewer", "actor": "codex-reviewer",
-            "adapter": "codex", "state": "running", "started_at": "2026-01-01T00:30:00+00:00"}
+            "adapter": "codex", "state": "running", "phase_number": 2, "started_at": "2026-01-01T00:30:00+00:00"}
         self.status["design_reviewer_selection"] = {"current": {"actor": "old-reviewer", "session_id": "hs-" + "9" * 32}}
         view = lib.design_reviewer_selection_view(deepcopy(lib.DEFAULT_CONFIG), self.status, {})
         self.assertEqual(view["current"]["session_id"], sid)
         self.assertTrue(any("old-reviewer" in item and "codex-reviewer" in item for item in view["consistency_errors"]),
                         view["consistency_errors"])
+
+    def test_phase_five_reviewer_is_not_a_design_selection_fault(self):
+        # #113: the implementation reviewer never has selection metadata.
+        sid = "hs-" + "5" * 32
+        self.status["phase_number"] = 5
+        self.status["design_review"] = {"decision": "approved", "reviewer_profile": {
+            "tier": "primary", "adapter": "codex", "model": "default", "reason": "first review"}}
+        self.status["agent_sessions"][sid] = {"session_id": sid, "role": "reviewer", "actor": "codex-reviewer",
+            "adapter": "codex", "state": "running", "phase_number": 5, "started_at": "2026-01-01T00:40:00+00:00"}
+        view = lib.design_reviewer_selection_view(deepcopy(lib.DEFAULT_CONFIG), self.status, {})
+        self.assertEqual(view["consistency_errors"], [])
+        self.assertEqual(view["current"]["adapter"], "codex")
+        self.assertNotIn("session_id", view["current"])
+
+    def test_phase_two_reviewer_without_metadata_still_faults(self):
+        sid = "hs-" + "6" * 32
+        self.status["agent_sessions"][sid] = {"session_id": sid, "role": "reviewer", "actor": "codex-reviewer",
+            "adapter": "codex", "state": "running", "phase_number": 2, "started_at": "2026-01-01T00:40:00+00:00"}
+        view = lib.design_reviewer_selection_view(deepcopy(lib.DEFAULT_CONFIG), self.status, {})
+        self.assertTrue(any("no selection metadata" in item for item in view["consistency_errors"]), view)
 
     def test_agent_output_states_with_an_output_record(self):
         # Regression: entries were read before assignment whenever a record

@@ -6,7 +6,7 @@
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "d9cd8fb7d28262d41e6f50ff3eaf5ae5513f52935ec725c615c493f37fd8bc3e",
     "bin/handsoff_fleet.py": "e5f165607bf13b32dbbc87dc9902c56a2412e501497892786029ccc1b7bdaab6",
-    "bin/handsoff_lib.py": "7872e59b529935fa3b46b5c234294020d68cc3bd337c73b74b4f8c4e60defc2f",
+    "bin/handsoff_lib.py": "f99a957464735b771eb0ec64958795e041731029ecdcc5565fdc0e560d480a58",
     "bin/handsoff_manifest.py": "cc963c0a700cf842877ae81e4c2080c68edbd9e031df7aff7c06c2112ad033c3",
     "bin/handsoff_supervisor.py": "532af26a00e0119869bf34fd272117e8f241eba7acc10cae2ad7aa4aea7039a4",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",

@@ -4650,10 +4650,14 @@ def design_reviewer_selection_view(cfg: dict, status: dict, acceptance: dict, *,
         profile = review["reviewer_profile"]
         current = {field: profile.get(field) for field in DESIGN_REVIEWER_PROFILE_FIELDS}
     sessions = status.get("agent_sessions") if isinstance(status, dict) else {}
+    # #113: only a Phase 2 launch is a design reviewer. A Phase 5
+    # implementation reviewer never carries selection metadata and must
+    # not be read as a consistency fault here.
     live_reviewers = sorted(
         (session for session in (sessions or {}).values()
          if isinstance(session, dict) and session.get("role") == "reviewer"
-         and session.get("state") in AGENT_SESSION_LIVE_STATES),
+         and session.get("state") in AGENT_SESSION_LIVE_STATES
+         and int(session.get("phase_number") or 0) == 2),
         key=lambda item: item.get("started_at") or "",
     )
     consistency_errors = []
