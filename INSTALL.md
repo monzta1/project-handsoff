@@ -14,7 +14,7 @@ and expose `handsoff` at `$HOME/.local/bin/handsoff`:
 python3 -m venv "$HOME/.local/share/handsoff/venv"
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade pip
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.28/project_handsoff-0.3.28-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.29/project_handsoff-0.3.29-py3-none-any.whl"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$HOME/.local/share/handsoff/venv/bin/handsoff" "$HOME/.local/bin/handsoff"
 ```
@@ -28,7 +28,7 @@ handsoff doctor /absolute/path/to/project
 ```
 
 `init` defaults to a compatible patch pin such as `0.3.*`. That lets a project use
-security and bug-fix releases within the same minor line. Pass `--pin v0.3.28` only
+security and bug-fix releases within the same minor line. Pass `--pin v0.3.29` only
 when the project must remain on one exact engine build.
 
 ## Clean patch upgrade
@@ -38,7 +38,7 @@ version-named environment and do not change scripts, aliases, or LaunchAgents:
 
 ```bash
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade --force-reinstall \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.28/project_handsoff-0.3.28-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.29/project_handsoff-0.3.29-py3-none-any.whl"
 handsoff version --json
 handsoff doctor /absolute/path/to/project
 ```
@@ -57,11 +57,11 @@ Keep an exact pin only when the project must stay on one exact engine build
 (strict reproducibility). Then, and only then, record each patch explicitly:
 
 ```bash
-handsoff upgrade /absolute/path/to/project --to v0.3.28 --dry-run
-handsoff upgrade /absolute/path/to/project --to v0.3.28
+handsoff upgrade /absolute/path/to/project --to v0.3.29 --dry-run
+handsoff upgrade /absolute/path/to/project --to v0.3.29
 ```
 
-Replace `v0.3.28` with the release being installed. Instruction files that a
+Replace `v0.3.29` with the release being installed. Instruction files that a
 project keeps for its agents (`AGENTS.md`, a `SKILL.md`, restart prompts) should
 name the compatible line, `0.3.*`, rather than an exact release: the
 documentation audit flags an exact release reference that no longer matches the
