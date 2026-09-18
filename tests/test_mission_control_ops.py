@@ -319,3 +319,36 @@ class LaunchActorAttributionTests(HandsoffTestCase):
             dashboard.DashboardServer._launch_managed_role(server, "reviewer", "resume")
             dashboard.DashboardServer._launch_managed_role(server, "reviewer", "pilot task", "Mission Control Pilot")
         self.assertEqual([c.kwargs.get("actor") for c in run_it.call_args_list], [None, "Mission Control Pilot"])
+
+
+class DeploymentApprovalHttpTests(LaunchRoleHttpTests):
+    """The deployment approval buttons must reach the real gate, not a
+    mocked one: v0.3.17 to v0.3.19 crashed on a Namespace missing the
+    --revoke flag (field proof finding, #108)."""
+
+    def _ready_for_deployment(self):
+        self.init("Approve from Mission Control")
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-1")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+
+    def test_legacy_endpoint_records_a_real_approval(self):
+        self._ready_for_deployment()
+        server = self._serve()
+        try:
+            status, payload = self._post(server, "/api/deployment-approval", {})
+        finally:
+            server.shutdown(); server.server_close()
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(self.read_status()["deployment_approved"]["by"], "Mission Control Pilot")
+
+    def test_operator_action_records_a_real_approval(self):
+        self._ready_for_deployment()
+        action = next(a for a in dashboard.build_snapshot(self.tmp)["operator_actions"] if a["kind"] == "deployment_approve")
+        server = self._serve()
+        try:
+            status, payload = self._post(server, "/api/operator-action", {"action_id": action["action_id"], "reason": None})
+        finally:
+            server.shutdown(); server.server_close()
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(self.read_status()["deployment_approved"]["by"], "Mission Control Pilot")

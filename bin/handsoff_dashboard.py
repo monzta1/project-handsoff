@@ -1278,7 +1278,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         root=root_arg, by=pilot, reason=reason))
                 elif kind == "deployment_approve":
                     code = supervisor.cmd_deployment_gate(argparse.Namespace(
-                        root=root_arg, approve=True, by=pilot))
+                        root=root_arg, approve=True, revoke=False, auto=False, by=pilot, reason=None))
                 elif kind in {"deployment_hold", "pause"}:
                     code = supervisor.cmd_human_pause_start(argparse.Namespace(
                         root=root_arg, by=pilot, note=reason or "Pilot held the mission in Mission Control"))
@@ -1531,7 +1531,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                     return
                 command = argparse.Namespace(
-                    root=str(self.server.project_root), approve=True, by="Mission Control Pilot",
+                    root=str(self.server.project_root), approve=True, revoke=False, auto=False,
+                    by="Mission Control Pilot", reason=None,
                 )
                 if supervisor.cmd_deployment_gate(command) != 0:
                     self._json_response(

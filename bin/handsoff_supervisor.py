@@ -678,7 +678,7 @@ def cmd_deployment_gate(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
-        if args.revoke:
+        if getattr(args, "revoke", False):
             phase = int(status.get("phase_number", 0) or 0)
             if not isinstance(status.get("deployment_approved"), dict):
                 print("DEPLOYMENT_REVOKE_BLOCKED\n- deployment approval has not been recorded")
