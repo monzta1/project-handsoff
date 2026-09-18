@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.30/project_handsoff-0.3.30-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.31/project_handsoff-0.3.31-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -399,7 +399,7 @@ Three defects observed on three thin projects right after the v0.3.22 to v0.3.25
 2. **An engine upgrade read as source drift on every completed run.** Cause: `upgrade --to` rewrites `.handsoff-version`, and the pin was the one `.handsoff*` file the repository digest deliberately kept. Fix: the pin is excluded from the digest like `handsoff.toml` (#93); the engine identity stays auditable through `engine_history` and the engine recorded on every `initialized` and `agent_session_launching` event. The documentation audit still flags an exact release reference in an instruction file, and editing that file is a product-tree change, so INSTALL.md now tells thin projects to name the compatible line `0.3.*` in `AGENTS.md`, `SKILL.md` and restart prompts, or to list those files under `[digest] ignore` (below).
 3. **Three patch releases in nine minutes, two of them logo-only, each costing a pin bump per project.** Cause: the upgrade runbook showed the exact-pin bump as the routine path even though `init` defaults to `0.3.*`. Fix: INSTALL.md documents the compatible line as the default (an exact-pinned project is moved to `0.3.*` once), keeps the exact bump as the strict-reproducibility exception, `docs/FIELD-PROOF.md` follows, and the release procedure and cadence rule are written down below: a release is cut when behaviour, prompts, schemas or the runtime manifest change; a cosmetic-only change to the dashboard rides with the next such release.
 
-### v0.3.30 field note: a revised criterion could never pass amendment review (#140, 2026-09-18)
+### v0.3.31 field note: a revised criterion could never pass amendment review (#140, 2026-09-18)
 
 `amendment-revise` records the cumulative delta as a history, so revising a criterion the open amendment already changed appends a second operation record for the same id. `recompute_amendment_hash` then compared EVERY record's resulting hash with the registry and refused the review with "no longer matches the reviewed amendment" although nothing had drifted. It now checks the last record per id; the full history still feeds `amendment_hash`, so a delta that drifted after review is still refused. Found on the first real revise against the same criterion (ToneCommand, HeadRush lane); the existing test revised twice and only asserted that approval fails for want of a review.
 
