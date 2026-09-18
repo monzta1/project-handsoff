@@ -63,6 +63,9 @@ RULE_TITLES = {
 # Framework rules diagnose the Handsoff engine itself. Pilot notes are
 # intentionally product-owned: they describe the active project's work.
 # Unknown future rules fail closed as ambiguous and are report-only.
+# Pilot notes are the operator's own words; they belong in the local
+# analysis report, never on a tracker, so R7 is report-only by rule.
+REPORT_ONLY_RULES = frozenset({"R7"})
 RULE_OWNERS = {
     "R1": "framework", "R2": "framework", "R3": "framework",
     "R4": "framework", "R5": "framework", "R6": "framework",
@@ -178,6 +181,7 @@ def run_facts(record: dict) -> dict:
     feature = record.get("feature")
     facts = {
         "repo": record.get("repo") if isinstance(record.get("repo"), str) else None,
+        "root": record.get("root") if isinstance(record.get("root"), str) else None,
         "feature": feature[:FEATURE_TITLE_CHARS] if isinstance(feature, str) else None,
         "run_kind": classify_archive(record, ""),
         "started_at": normalize_timestamp(record.get("started_at")),
@@ -745,15 +749,30 @@ def scan(root: Path, cfg: dict, *, archive_directory: Path | str | None = None, 
     facts_by_run = {item["run_id"]: run_facts(item["record"]) for item in loaded["readable"]}
     findings = evaluate_rules(facts_by_run, cfg)
     excluded = [f for f in findings if f["excluded"]]
-    drafts = [draft_issue(f) for f in findings if not f["excluded"] and f["run_ids"]]
+    report_only = [f for f in findings if not f["excluded"] and f["rule"] in REPORT_ONLY_RULES]
+    drafts = [draft_issue(f) for f in findings
+              if not f["excluded"] and f["rule"] not in REPORT_ONLY_RULES and f["run_ids"]]
     ambiguous = [d for d in drafts if d["owner"] == "ambiguous"]
-    filable_drafts = [d for d in drafts if d["owner"] != "ambiguous"]
+    # A product-owned finding is filed on the active project's repository,
+    # so it must come from this project's runs only: the archive holds
+    # every project's runs, and another project's finding filed from here
+    # would land on the wrong tracker.
+    this_root = str(root.resolve())
+    foreign = [d for d in drafts if d["owner"] == "product"
+               and any((facts_by_run.get(run) or {}).get("root") != this_root for run in d["run_ids"])]
+    filable_drafts = [d for d in drafts if d["owner"] != "ambiguous" and d not in foreign]
 
     filing = {"mode": None, "note": None, "cap": analysis["max_tickets_per_scan"]}
     filed, suppressed, not_filed = [], [], []
     to_file = list(filable_drafts)
+    not_filed.extend({"rule": f["rule"], "title": f["title"], "run_ids": f["run_ids"],
+                      "reason": "report_only_rule", "owner": RULE_OWNERS.get(f["rule"], "ambiguous")}
+                     for f in report_only)
     not_filed.extend({"rule": d["rule"], "title": d["title"], "run_ids": d["run_ids"],
                       "reason": "ambiguous_owner", "owner": d["owner"]} for d in ambiguous)
+    not_filed.extend({"rule": d["rule"], "title": d["title"], "run_ids": d["run_ids"],
+                      "reason": "foreign_root", "owner": d["owner"],
+                      "destination": "active_product_repository"} for d in foreign)
     if dry_run:
         filing["mode"] = "dry_run"
         filing["note"] = "dry run: nothing was filed and no GitHub client was consulted"

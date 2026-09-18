@@ -1,7 +1,7 @@
 {
   "files": {
     "bin/handsoff_agent.py": "c85ab5065be83158074f2c968667cbb70f3690c54a7a662854faa694089882ef",
-    "bin/handsoff_analyzer.py": "420f4aa811549ee2b60f9c0f980402dd1ee32ebe71b358104f69522720606567",
+    "bin/handsoff_analyzer.py": "b6b54777649bb0e6c3227af53a8bc8cacc7dd4b35c6e4b0571eb08a0e6f124da",
     "bin/handsoff_broker.py": "3277ec484c0806e50dc2305ca636f62fa4246871feb51c92ae2a02bb6d19a69c",
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "e7bdd9607b1ab40c32438857c56029f86fce8f59e6ddc81f5b376d58712109f9",

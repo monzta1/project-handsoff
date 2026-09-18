@@ -13129,23 +13129,51 @@ class TestArchiveAnalyzer(HandsoffTestCase):
             self.tmp, self._cfg(max_tickets_per_scan=50),
             client={"product": product, "framework": framework}, now=self.T0,
         )
-        self.assertTrue(all(item["owner"] == "product" for item in report["filed"]
-                            if item["rule"] == "R7"))
-        self.assertTrue(all(item["owner"] == "framework" for item in report["filed"]
-                            if item["rule"] != "R7"))
+        # Pilot notes never reach any tracker; every filed finding is a
+        # framework finding on the framework repo.
+        self.assertFalse(any(item["rule"] == "R7" for item in report["filed"]))
+        self.assertTrue(all(item["owner"] == "framework" for item in report["filed"]))
+        self.assertEqual([n["reason"] for n in report["not_filed"] if n["rule"] == "R7"],
+                         ["report_only_rule", "report_only_rule"])
         r3 = next(item for item in report["suppressed"] if item["rule"] == "R3")
         self.assertEqual((r3["issue"], r3["destination"]), (92, "monzta1/project-handsoff"))
-        self.assertTrue(any(call[0] == "create_issue" for call in product.calls))
+        self.assertFalse(any(call[0] == "create_issue" for call in product.calls))
         self.assertTrue(any(call[0] == "create_issue" for call in framework.calls))
 
-        with mock.patch.dict(self.analyzer.RULE_OWNERS, {"R7": "ambiguous"}):
+        # A product-owned finding files on the active project's repository
+        # only when its runs belong to this root; the archive holds every
+        # project's runs, and the r3 archive's root is /tmp/echo, not ours.
+        with mock.patch.dict(self.analyzer.RULE_OWNERS, {"R3": "product"}):
+            foreign = self.analyzer.scan(
+                self.tmp, self._cfg(max_tickets_per_scan=50),
+                client={"product": self.FakeGhClient(), "framework": self.FakeGhClient()}, now=self.T0,
+            )
+        self.assertFalse(any(item["rule"] == "R3" for item in foreign["filed"]))
+        held = next(n for n in foreign["not_filed"] if n["rule"] == "R3")
+        self.assertEqual((held["reason"], held["owner"], held["destination"]),
+                         ("foreign_root", "product", "active_product_repository"))
+
+        archive = json.loads((self.archive_dir / "r3.json").read_text())
+        archive["root"] = str(self.tmp.resolve())
+        (self.archive_dir / "r3.json").write_text(json.dumps(archive))
+        own_product = self.FakeGhClient()
+        with mock.patch.dict(self.analyzer.RULE_OWNERS, {"R3": "product"}):
+            own = self.analyzer.scan(
+                self.tmp, self._cfg(max_tickets_per_scan=50),
+                client={"product": own_product, "framework": self.FakeGhClient()}, now=self.T0,
+            )
+        filed_r3 = next(item for item in own["filed"] if item["rule"] == "R3")
+        self.assertEqual((filed_r3["owner"], filed_r3["destination"]), ("product", "active_product_repository"))
+        self.assertTrue(any(call[0] == "create_issue" for call in own_product.calls))
+
+        with mock.patch.dict(self.analyzer.RULE_OWNERS, {"R3": "ambiguous"}):
             ambiguous = self.analyzer.scan(
                 self.tmp, self._cfg(max_tickets_per_scan=50),
                 client={"product": self.FakeGhClient(), "framework": self.FakeGhClient()}, now=self.T0,
             )
-        self.assertFalse(any(item["rule"] == "R7" for item in ambiguous["filed"]))
+        self.assertFalse(any(item["rule"] == "R3" for item in ambiguous["filed"]))
         self.assertTrue(all(item["reason"] == "ambiguous_owner"
-                            for item in ambiguous["not_filed"] if item["rule"] == "R7"))
+                            for item in ambiguous["not_filed"] if item["rule"] == "R3"))
 
     # -- rules -------------------------------------------------------------
 
@@ -13242,9 +13270,9 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         client = self.FakeGhClient()
         report = self.analyzer.scan(self.tmp, self._cfg(max_tickets_per_scan=50), client=client, now=self.T0)
         filed_rules = [call[1] for call in client.calls if call[0] == "create_issue"]
-        self.assertEqual(len(filed_rules), 8)
+        self.assertEqual(len(filed_rules), 6)
         self.assertFalse(any("R8" in title or "R9" in title for title in filed_rules))
-        self.assertEqual({f["rule"] for f in report["filed"]}, {"R1", "R2", "R3", "R4", "R5", "R6", "R7"})
+        self.assertEqual({f["rule"] for f in report["filed"]}, {"R1", "R2", "R3", "R4", "R5", "R6"})
         self.assertEqual([f["rule"] for f in report["excluded"]], ["R8", "R9"])
         self.assertNotIn("R8", {d["rule"] for d in report["drafts"]})
         with self.assertRaises(self.lib.HandsoffError):
@@ -13270,11 +13298,15 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         self.assertIn("design_review_budget_exhausted: 2", r1["body"])
         self.assertEqual(r1["labels"], ["from-archive-analysis", "needs-triage"])
         self.assertIn("6.7 percent", drafts["R4"]["body"])
-        notes = [d for d in report["drafts"] if d["rule"] == "R7"]
-        self.assertEqual([d["title"] for d in notes], [f"Pilot note: {self.NOTE_A}", f"Pilot note: {self.NOTE_B}"])
-        self.assertIn(self.NOTE_B, notes[1]["body"])
+        # Pilot notes are the operator's own words: they are findings in the
+        # report, never drafts, and no draft body carries their text.
+        self.assertEqual([d for d in report["drafts"] if d["rule"] == "R7"], [])
+        notes = [f for f in report["findings"] if f["rule"] == "R7"]
+        self.assertEqual([f["title"] for f in notes], [f"Pilot note: {self.NOTE_A}", f"Pilot note: {self.NOTE_B}"])
         self.assertTrue(notes[0]["marker"].startswith("R7:") and notes[0]["marker"] != notes[1]["marker"])
-        self.assertIn(f"<!-- handsoff-analysis rule:{notes[0]['marker']} -->", notes[0]["body"])
+        self.assertFalse(any(self.NOTE_A in d["body"] or self.NOTE_B in d["body"] for d in report["drafts"]))
+        self.assertEqual([(n["rule"], n["reason"]) for n in report["not_filed"] if n["rule"] == "R7"],
+                         [("R7", "report_only_rule"), ("R7", "report_only_rule")])
 
     def test_drafts_and_report_never_carry_anything_outside_the_allowlist(self):
         self._seed()
@@ -13288,7 +13320,7 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         for draft in report["drafts"]:
             self.assertNotIn(self.SECRET, draft["body"] + draft["title"])
         allowed = {
-            "repo", "feature", "run_kind", "started_at", "archived_at", "outcome", "event_count",
+            "repo", "root", "feature", "run_kind", "started_at", "archived_at", "outcome", "event_count",
             "design_phase_hours", "design_review_attempts", "design_review_budget_exhausted",
             "design_review_attempt_authorized", "criteria_mutations_after_approval", "recovery_escalated",
             "agent_sessions", "question_raised", "pilot_notes", "checks_run_events", "checks_run_measured", "checks_launched",
@@ -13317,18 +13349,19 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         report = self.analyzer.scan(self.tmp, self._cfg(), client=client, now=self.T0)
         self.assertEqual(client.calls[:2], [("available",), ("list_issues",)])
         created = [call for call in client.calls if call[0] == "create_issue"]
-        self.assertEqual(len(created), 5)
-        self.assertEqual([f["rule"] for f in report["filed"]], ["R7", "R7", "R3", "R1", "R5"])
+        self.assertEqual(len(created), 4)
+        self.assertEqual([f["rule"] for f in report["filed"]], ["R3", "R1", "R5", "R4"])
         self.assertTrue(all(call[3] == ["from-archive-analysis", "needs-triage"] for call in created))
         self.assertTrue(all(f["url"].startswith("https://example.invalid/issues/") for f in report["filed"]))
         self.assertEqual([(s["rule"], s["reason"], s["issue"]) for s in report["suppressed"]],
                          [("R6", "marker", 11), ("R2", "title", 12)])
-        self.assertEqual([n["rule"] for n in report["not_filed"]], ["R4"])
+        self.assertEqual([(n["rule"], n["reason"]) for n in report["not_filed"]],
+                         [("R7", "report_only_rule"), ("R7", "report_only_rule")])
         self.assertEqual(report["filing"]["mode"], "gh")
         event_fields = self.analyzer.scan_event_fields(report)
         self.assertEqual({k: event_fields[k] for k in ("findings", "filed", "suppressed", "excluded",
                                                         "skipped_fixtures", "unreadable")},
-                         {"findings": 10, "filed": 5, "suppressed": 2, "excluded": 2,
+                         {"findings": 10, "filed": 4, "suppressed": 2, "excluded": 2,
                           "skipped_fixtures": 2, "unreadable": 1})
 
     def test_dedupe_title_overlap_threshold(self):
@@ -13359,11 +13392,13 @@ class TestArchiveAnalyzer(HandsoffTestCase):
         report = self.analyzer.scan(self.tmp, self._cfg(), client=client, dry_run=True, now=self.T0)
         self.assertEqual((report["filed"], client.calls, report["filing"]["mode"]), ([], [], "dry_run"))
         self.assertIn("nothing was filed", report["filing"]["note"])
-        self.assertEqual(len(report["drafts"]), 8)
+        # Six drafts: R1 to R6. The two Pilot notes (R7) are report-only.
+        self.assertEqual(len(report["drafts"]), 6)
         client = self.FakeGhClient(available=False)
         report = self.analyzer.scan(self.tmp, self._cfg(), client=client, now=self.T0)
+        # Only the framework destination is consulted: no product drafts exist.
         self.assertEqual((report["filed"], client.calls, report["filing"]["mode"]),
-                         ([], [("available",), ("available",)], "gh_missing"))
+                         ([], [("available",)], "gh_missing"))
         self.assertIn("gh executable not found", report["filing"]["note"])
         report = self.analyzer.scan(self.tmp, self._cfg(filing="report_only"), client=self.FakeGhClient(), now=self.T0)
         self.assertEqual(report["filing"]["mode"], "report_only")
