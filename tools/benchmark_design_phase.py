@@ -113,21 +113,46 @@ model = "stub-default"
 argv = sys.argv[1:]
 if "--model" in argv and argv.index("--model") + 1 < len(argv):
     model = argv[argv.index("--model") + 1]
+protocol = None
 if role == "reviewer":
     if attempt <= 1:
         lines = ["FINDING: " + d + " seeded structural defect is present in the proposed design" for d in defects]
         text = "\\n".join(lines + ["DESIGN_CHANGES_REQUESTED"])
+        protocol = "HANDSOFF_REVIEW_RESULT: " + json.dumps({{
+            "kind": "design", "decision": "changes_requested",
+            "summary": "stub attempt " + str(attempt) + ": seeded defects present",
+            "findings": [l[len("FINDING: "):] for l in lines], "structural_blocker": False,
+            "symptom_reproduced": "not_applicable",
+        }})
     else:
         text = "Every prior finding is resolved in the revised design.\\nDESIGN_APPROVED"
-else:
+        protocol = "HANDSOFF_REVIEW_RESULT: " + json.dumps({{
+            "kind": "design", "decision": "approved",
+            "summary": "stub attempt " + str(attempt) + ": every prior finding resolved",
+            "findings": [], "structural_blocker": False, "symptom_reproduced": "not_applicable",
+        }})
+elif role == "architect":
     lines = ["# Design proposal (stub attempt " + str(attempt) + ")",
              "Approach, data flow, and failure modes are described here."]
     lines += ["RESOLVED " + f + ": addressed in this revision" for f in findings]
     text = "\\n".join(lines)
+    protocol = "HANDSOFF_DESIGN_PROPOSAL: " + json.dumps({{
+        "summary": "stub design proposal, attempt " + str(attempt),
+        "approach": ["describe the approach, data flow and failure modes"],
+        "tradeoffs": [], "decisions": (["RESOLVED " + f + ": addressed in this revision" for f in findings] or ["stub decision"])[:8],
+        "constraints": [], "verification": ["targeted check"],
+    }})
+else:
+    text = "stub " + role + " output"
 usage = {{
     "input_tokens": math.ceil(len(prompt.encode("utf-8")) / 4),
     "output_tokens": math.ceil(len(text.encode("utf-8")) / 4),
 }}
+# The host parses protocol lines from raw stdout, so the structured result
+# goes out as its own line ahead of the runner's JSON (which the benchmark
+# parses for text and usage; non-JSON lines are skipped there).
+if protocol:
+    print(protocol)
 if os.path.basename(sys.argv[0]) == "codex":
     print(json.dumps({{"type": "thread.started", "thread_id": "stub-thread"}}))
     print(json.dumps({{"type": "item.completed", "item": {{"type": "agent_message", "text": text}}}}))
@@ -374,6 +399,32 @@ def copy_fixture_repo(repo: Path, revision: str, destination: Path) -> str:
     return head
 
 
+class _FdCapture:
+    def __init__(self):
+        self.file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+
+    def read(self) -> str:
+        self.file.seek(0)
+        text = self.file.read()
+        self.file.close()
+        return text
+
+
+@contextlib.contextmanager
+def _capture_fd_stdout():
+    """Divert OS-level fd 1 (child processes included) into a temp file."""
+    capture = _FdCapture()
+    sys.stdout.flush()
+    saved = os.dup(1)
+    try:
+        os.dup2(capture.file.fileno(), 1)
+        yield capture
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+
+
 def supervisor(root: Path, args: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(SUPERVISOR), "--root", str(root), *args],
                           capture_output=True, text=True, timeout=timeout, check=False)
@@ -502,13 +553,16 @@ class ArmRun:
             clock = time.monotonic()
             launch_error = None
             try:
-                with contextlib.redirect_stdout(buffer):
+                with contextlib.redirect_stdout(buffer), _capture_fd_stdout() as fd_capture:
                     agent.execute_launch(spec, timeout=options.session_timeout)
             except agent.AgentLaunchError as exc:
                 launch_error = exc
             record["seconds"] = round(time.monotonic() - clock, 3)
             record["ended_at"] = now_iso()
-            stdout = buffer.getvalue()
+            # The host bridge runs Supervisor commands as subprocesses on the
+            # real fd 1; their lines belong to the transcript, never to the
+            # summary JSON this harness prints last.
+            stdout = buffer.getvalue() + fd_capture.read()
             record["stdout_bytes"] = len(stdout.encode("utf-8"))
             record["stdout_sha256"] = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
             transcript = self.transcripts / f"repeat-{self.repeat}-{role}-attempt-{attempt}.txt"
@@ -553,6 +607,24 @@ class ArmRun:
         if not (self.root / "prompts" / "architect.md").is_file() or not (self.root / "prompts" / "reviewer.md").is_file():
             raise BenchmarkError(f"fixture revision has no prompts/architect.md and prompts/reviewer.md: {self.root}")
         (self.root / "handsoff.toml").write_text(render_arm_toml(options.fixture, self.arm, self.settings), encoding="utf-8")
+        pin = self.root / lib.VERSION_PIN_FILE
+        if not pin.is_file():
+            # #111: a managed launch refuses a project without an engine
+            # version pin; the arm copy is throwaway, so pin it to the
+            # engine running this harness.
+            manifest = json.loads(lib.engine_resource_path("handsoff-runtime.json").read_text(encoding="utf-8"))
+            version = str(manifest.get("version") or "").strip()
+            major_minor = ".".join(version.lstrip("v").split(".")[:2])
+            pin.write_text(f"{major_minor}.*\n" if major_minor else f"{version}\n", encoding="utf-8")
+        overrides = self.root / lib.OVERRIDES_FILE
+        if not overrides.is_file():
+            # The fixture's own prompts are project overrides; a managed
+            # launch only honours them when hash-declared.
+            declared = {
+                f"prompts/{role}.md": hashlib.sha256((self.root / "prompts" / f"{role}.md").read_bytes()).hexdigest()
+                for role in lib.SELECTABLE_AGENT_ROLES if (self.root / "prompts" / f"{role}.md").is_file()
+            }
+            overrides.write_text(json.dumps({"schema": 1, "files": declared}, indent=2) + "\n", encoding="utf-8")
         transaction = options.out_dir / self.arm / f"criteria-repeat-{self.repeat}.json"
         transaction.parent.mkdir(parents=True, exist_ok=True)
         transaction.write_text(json.dumps(options.fixture["criteria_transaction"], indent=2), encoding="utf-8")
@@ -614,13 +686,20 @@ class ArmRun:
                                          "defects_found": found, "recorded": False})
                     log(f"{self.arm}: reviewer attempt {attempt} returned no decision token; stopping")
                     break
-                args = ["record-design-review", "--by", reviewer["actor"], "--architect", architect_actor,
-                        "--summary", f"Benchmark {self.arm} attempt {attempt}: {decision}",
-                        "--approve" if decision == "approved" else "--request-changes"]
-                for finding in findings:
-                    args += ["--finding", finding]
-                self.run_supervisor(args)
                 recorded = self.status().get("design_review") or {}
+                if recorded.get("decision") == decision and recorded.get("by") == reviewer["actor"] \
+                        and recorded.get("attempt") == len(self.reviews) + 1:
+                    # The host bridge already recorded the Reviewer's
+                    # HANDSOFF_REVIEW_RESULT for this attempt (#87).
+                    log(f"{self.arm}: attempt {attempt} recorded by the host bridge")
+                else:
+                    args = ["record-design-review", "--by", reviewer["actor"], "--architect", architect_actor,
+                            "--summary", f"Benchmark {self.arm} attempt {attempt}: {decision}",
+                            "--approve" if decision == "approved" else "--request-changes"]
+                    for finding in findings:
+                        args += ["--finding", finding]
+                    self.run_supervisor(args)
+                    recorded = self.status().get("design_review") or {}
                 last_findings = list(recorded.get("findings") or [])
                 self.reviews.append({
                     "attempt": attempt, "decision": decision, "findings": findings, "defects_found": found,

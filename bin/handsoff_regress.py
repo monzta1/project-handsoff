@@ -38,6 +38,65 @@ UNITTEST_LINE = re.compile(r"^(?P<test>test\w*) \((?P<where>[\w.]+)\)(?: \[[^\]]
 # line> ... result" on the next.
 UNITTEST_HEAD = re.compile(r"^(?P<test>test\w*) \((?P<where>[\w.]+)\)(?: \[[^\]]*\])?$")
 UNITTEST_TAIL = re.compile(r"^.* \.\.\. (?P<result>ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)$")
+# A test that leaks child output to the terminal prints "name (where) ... "
+# followed by the leaked text; unittest then writes the result token on a
+# line of its own. Only an exact result line closes such a test, so a
+# leaked line that merely ends in "ok" is never mistaken for a verdict.
+UNITTEST_OPEN = re.compile(r"^(?P<test>test\w*) \((?P<where>[\w.]+)\)(?: \[[^\]]*\])? \.\.\. (?P<rest>.*)$")
+UNITTEST_LATE = re.compile(r"^(?P<result>ok|FAIL|ERROR|skipped(?: .*)?|expected failure|unexpected success)$")
+RESULT_KINDS = {"ok": "passed", "expected failure": "passed", "FAIL": "failed", "unexpected success": "failed",
+                "ERROR": "errors"}
+
+
+def _case_name(where: str, test: str) -> str:
+    """Python 3.12 prints `test_a (pkg.Class.test_a)`, 3.11 `test_a (pkg.Class)`."""
+    return where if where.endswith(f".{test}") or where == test else f"{where}.{test}"
+
+
+def parse_line(text: str, pending_name: str | None) -> tuple[dict | None, str | None]:
+    """Classify one runner line. Returns (event, pending_name): the event is
+    {"name", "result"} for a finished unittest case (result is the raw
+    unittest token) or {"name", "node": "ok"|"not ok"|"skip"} for a node
+    test, else None. `pending_name` carries a unittest case whose result is
+    still to come (docstring second line, or leaked child output)."""
+    match = UNITTEST_LINE.match(text)
+    if match:
+        return {"name": _case_name(match.group("where"), match.group("test")), "result": match.group("result")}, None
+    node = NODE_LINE.match(text)
+    if node:
+        kind = "skip" if node.group("directive") == "SKIP" else ("not ok" if node.group("not") else "ok")
+        return {"name": node.group("name"), "node": kind}, pending_name
+    head = UNITTEST_HEAD.match(text)
+    if head:
+        return None, _case_name(head.group("where"), head.group("test"))
+    opened = UNITTEST_OPEN.match(text)
+    if opened:
+        name = _case_name(opened.group("where"), opened.group("test"))
+        late = UNITTEST_LATE.match(opened.group("rest"))
+        if late:
+            return {"name": name, "result": late.group("result")}, None
+        return None, name
+    if pending_name:
+        tail = UNITTEST_TAIL.match(text) or UNITTEST_LATE.match(text)
+        if tail:
+            return {"name": pending_name, "result": tail.group("result")}, None
+    return None, pending_name
+
+
+def count_event(entry: dict, event: dict) -> None:
+    """Fold one parse_line event into a command entry."""
+    entry["done"] += 1
+    if "node" in event:
+        kind = {"ok": "passed", "not ok": "failed", "skip": "skipped"}[event["node"]]
+    else:
+        kind = RESULT_KINDS.get(event["result"], "skipped")
+    entry[kind] += 1
+    if kind == "failed":
+        entry["failures"].append({"name": event["name"], "kind": "FAIL"})
+    elif kind == "errors":
+        entry["failures"].append({"name": event["name"], "kind": "ERROR"})
+    entry["failures"] = entry["failures"][-MAX_RECENT:]
+    entry["current"] = event["name"]
 NODE_LINE = re.compile(r"^(?P<not>not )?ok (?P<num>\d+) - (?P<name>.*?)(?: # (?P<directive>SKIP|TODO).*)?$")
 MAX_RECENT = 64
 
@@ -103,43 +162,10 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int) -> int:
         pending_name = None
         for line in process.stdout:
             log.write(line)
-            text = line.rstrip("\n")
-            match = UNITTEST_LINE.match(text)
-            node = NODE_LINE.match(text) if match is None else None
-            head = UNITTEST_HEAD.match(text) if match is None and node is None else None
-            if head:
-                pending_name = f"{head.group('where')}.{head.group('test')}"
+            event, pending_name = parse_line(line.rstrip("\n"), pending_name)
+            if event is None:
                 continue
-            tail = UNITTEST_TAIL.match(text) if match is None and node is None and pending_name else None
-            if match or tail:
-                result = (match or tail).group("result")
-                name = f"{match.group('where')}.{match.group('test')}" if match else pending_name
-                pending_name = None
-                entry["done"] += 1
-                if result == "ok" or result == "expected failure":
-                    entry["passed"] += 1
-                elif result == "FAIL" or result == "unexpected success":
-                    entry["failed"] += 1
-                    entry["failures"].append({"name": name, "kind": "FAIL"})
-                elif result == "ERROR":
-                    entry["errors"] += 1
-                    entry["failures"].append({"name": name, "kind": "ERROR"})
-                else:
-                    entry["skipped"] += 1
-                entry["current"] = name
-            elif node:
-                entry["done"] += 1
-                if node.group("directive") == "SKIP":
-                    entry["skipped"] += 1
-                elif node.group("not"):
-                    entry["failed"] += 1
-                    entry["failures"].append({"name": node.group("name"), "kind": "FAIL"})
-                else:
-                    entry["passed"] += 1
-                entry["current"] = node.group("name")
-            else:
-                continue
-            entry["failures"] = entry["failures"][-MAX_RECENT:]
+            count_event(entry, event)
             state["totals"] = _totals(state)
             _write(root, state)
             if time.monotonic() > deadline:

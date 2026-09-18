@@ -424,7 +424,7 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
 .output-state-connected_no_output { color: var(--muted); }
 .output-state-active_output, .output-state-completed { color: var(--sky); }
 .output-state-stale_heartbeat { color: var(--amber); }
-.output-state-transport_disconnected { color: var(--red); }
+.output-state-transport_disconnected, .output-state-failed { color: var(--red); }
 .operation-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .operation-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .operation-meta { margin: 6px 0 8px; color: var(--muted); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }

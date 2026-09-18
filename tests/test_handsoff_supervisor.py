@@ -119,15 +119,14 @@ _MODULE_ARCHIVE_DIR = None
 # so every fixture command would otherwise look like a self-review on a
 # developer machine and pass on CI. Inherited ids are dropped; a test that
 # patches its own values keeps them.
-_INHERITED_HOST_SESSION = {key: os.environ.get(key) for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_COMPANION_SESSION_ID")}
+_INHERITED_HOST_SESSION = {key: os.environ.pop(key, None) for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_COMPANION_SESSION_ID")}
 
 
 def _harness_env():
-    env = dict(os.environ)
-    for key, inherited in _INHERITED_HOST_SESSION.items():
-        if inherited and env.get(key) == inherited:
-            env.pop(key, None)
-    return env
+    # The inherited ids were removed from os.environ at import, so in-process
+    # library calls and subprocesses both see a clean host; a test that sets
+    # its own value keeps it.
+    return dict(os.environ)
 
 
 def run(args, cwd):
@@ -268,15 +267,18 @@ class TestEveMissionControl(HandsoffTestCase):
 
     def test_static_interface_uses_tactical_vocabulary(self):
         html = (ROOT / "dashboard" / "index.html").read_text()
+        # The bridge layout: mission identity, clock, briefing, objectives,
+        # crew, flight log, diagnostics, and the Pilot's decision console.
         for phrase in (
-            "E.V.E. MISSION CONTROL",
-            "ACTIVE MISSION OBJECTIVE",
-            "MISSION TRAJECTORY",
-            "MISSION OBJECTIVES",
+            "MISSION CONTROL",
+            "MISSION CLOCK",
+            "E.V.E. BRIEFING",
+            "OBJECTIVES",
+            "CREW",
             "FLIGHT LOG",
-            "INCOMING TRANSMISSIONS",
-            "SYSTEM DIAGNOSTICS",
-            "Welcome back, Pilot",
+            "DIAGNOSTICS",
+            "PILOT DECISIONS",
+            "Awaiting your command, Pilot",
         ):
             self.assertIn(phrase, html)
 
@@ -352,7 +354,7 @@ class TestEveMissionControl(HandsoffTestCase):
 
         html = (ROOT / "dashboard" / "index.html").read_text()
         script = (ROOT / "dashboard" / "app.js").read_text()
-        self.assertIn("PILOT AUTHORIZATION REQUIRED", html)
+        self.assertIn("AUTHORIZATION REQUIRED", html)
         self.assertIn('id="design-approve"', html)
         self.assertIn('id="deployment-approve"', html)
         self.assertIn('fetch("/api/design-approval"', script)
@@ -669,8 +671,10 @@ class TestEveMissionControl(HandsoffTestCase):
         self.assertIn("snapshot.runtime?.current_sessions", script)
         self.assertIn("provider, model, and session not recorded", logic_script)
         self.assertIn("exact model not exposed", logic_script)
-        self.assertIn("width: min(900px", styles)
-        self.assertIn("minmax(280px", styles)
+        # The settings dialog is bounded to the viewport and the per-role
+        # profile rows are a two-column grid.
+        self.assertIn(".settings-dialog { width: min(760px, calc(100vw - 32px))", styles)
+        self.assertIn(".agent-profile { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)", styles)
 
         self.assertEqual(lib.load_config(self.tmp)["models"], {
             "architect": "default", "supervisor": "default",
@@ -1620,8 +1624,11 @@ class TestDesignEvidenceCache(HandsoffTestCase):
         # to the legacy prompt + task form.
         self._write_evidence_config([])
         prompt = (self.tmp / "prompts" / "architect.md").read_text().rstrip()
-        self.assertEqual(self.runtime.build_role_input(self.tmp, "architect", "Design it"),
-                         f"{prompt}\n\n# Assigned task\n\nDesign it")
+        text = self.runtime.build_role_input(self.tmp, "architect", "Design it")
+        # #121: the Architect's input opens with the read-only sandbox note,
+        # then the legacy prompt + task form, byte for byte.
+        self.assertTrue(text.startswith("# Sandbox\n\n"), text[:80])
+        self.assertTrue(text.endswith(f"{prompt}\n\n# Assigned task\n\nDesign it"))
 
     def test_event_log_carries_hashes_only(self):
         cfg = self._write_evidence_config([self.ENTRY])
@@ -1825,7 +1832,13 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
                     self.tmp, role, "-m remains task data; $(touch never-runs)",
                     which=lambda name: f"/usr/local/bin/{name}",
                 )
-                self.assertEqual(spec.cwd, str(self.tmp.resolve()))
+                if adapter == "codex" and role == "reviewer":
+                    # A Codex Reviewer runs from a scratch boundary outside
+                    # the project so its sandbox never writes the tree.
+                    self.assertNotEqual(spec.cwd, str(self.tmp.resolve()))
+                    self.assertNotIn(str(self.tmp.resolve()), spec.cwd)
+                else:
+                    self.assertEqual(spec.cwd, str(self.tmp.resolve()))
                 self.assertEqual(spec.argv[0], f"/usr/local/bin/{adapter}")
                 self.assertIn("--model", spec.argv)
                 self.assertEqual(spec.argv[spec.argv.index("--model") + 1], model)
@@ -1839,11 +1852,16 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
                     self.assertEqual(spec.argv[-1], "-")
                     self.assertIn("--ephemeral", spec.argv)
                     sandbox = spec.argv[spec.argv.index("--sandbox") + 1]
-                    self.assertEqual(sandbox, "read-only" if role in {"reviewer", "supervisor"} else "workspace-write")
+                    # #121: only the Implementer writes the project; the
+                    # Architect's criteria land through the host broker. The
+                    # Reviewer writes its own scratch boundary, never the tree.
+                    self.assertEqual(sandbox, "workspace-write" if role in {"implementer", "reviewer"} else "read-only")
                 else:
                     self.assertIn("-p", spec.argv)
                     permission = spec.argv[spec.argv.index("--permission-mode") + 1]
-                    self.assertEqual(permission, "plan" if role in {"reviewer", "supervisor"} else "acceptEdits")
+                    # Claude reviewers and supervisors run in the default
+                    # mode (plan mode cannot run tests); writers accept edits.
+                    self.assertEqual(permission, "default" if role in {"reviewer", "supervisor"} else "acceptEdits")
 
                 default_profiles = {item: {"adapter": adapter, "model": "default"}
                                     for item in lib.SELECTABLE_AGENT_ROLES}
@@ -1852,7 +1870,11 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
                     self.tmp, role, "default model", which=lambda name: f"/usr/local/bin/{name}"
                 )
                 self.assertNotIn("--model", default_spec.argv)
-                self.assertNotIn("default", default_spec.argv)
+                # "default" may only appear as the Claude permission mode,
+                # never as a model name.
+                model_like = [arg for index, arg in enumerate(default_spec.argv)
+                              if arg == "default" and default_spec.argv[index - 1] != "--permission-mode"]
+                self.assertEqual(model_like, [])
 
         with self.assertRaisesRegex(lib.HandsoffError, "not available"):
             runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: None)
@@ -1861,7 +1883,10 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
             runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: "/bin/reviewer")
 
         self.init("Managed agent runtime adapter")
-        spec = runtime.LaunchSpec("reviewer", "codex", "default", ("/bin/codex", "exec", "-"),
+        # Process plumbing is role-independent; the Implementer is the role
+        # allowed to exit 0 without a protocol line (#87 refuses a silent
+        # Reviewer, Architect or Supervisor).
+        spec = runtime.LaunchSpec("implementer", "codex", "default", ("/bin/codex", "exec", "-"),
                                   str(self.tmp), "prompt and task")
         calls = []
 
@@ -2130,6 +2155,7 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "running_at": session["running_at"], "ended_at": session["ended_at"],
             "state": "completed", "exit_code": 0,
             "packet_id": None, "design_hash": None, "tier": None, "phase_number": 1,
+            "host_session_id": None,
         })
         self.assertIsNotNone(session["running_at"])
         self.assertIsNotNone(session["ended_at"])
@@ -2272,12 +2298,14 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
         with mock.patch("sys.stdout", new=io.StringIO()):
             self.runtime.execute_launch(
                 self._spec(role="supervisor", model="pinned-model"),
-                popen_factory=mock.Mock(return_value=SupervisorProcess("actual model: forged\n")),
+                popen_factory=mock.Mock(return_value=SupervisorProcess(
+                    "actual model: forged\nHANDSOFF_QUESTION: which model am I?\n")),
                 session_id_factory=lambda: self._sid(2),
             )
             self.runtime.execute_launch(
                 self._spec(role="supervisor", model="default"),
-                popen_factory=mock.Mock(return_value=SupervisorProcess("model=also-forged\n")),
+                popen_factory=mock.Mock(return_value=SupervisorProcess(
+                    "model=also-forged\nHANDSOFF_QUESTION: which model am I?\n")),
                 session_id_factory=lambda: self._sid(3),
             )
         sessions = self.read_status()["agent_sessions"]
@@ -2421,7 +2449,9 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             pid = None
             returncode = 0
             stdin = InputPipe()
-            stdout = io.StringIO(f"runner output {secret}\n")
+            # A Supervisor must end on a broker request or a Pilot question
+            # (#123); the question itself carries nothing sensitive.
+            stdout = io.StringIO(f"runner output {secret}\nHANDSOFF_QUESTION: may I proceed?\n")
             def wait(self, timeout=None):
                 return 0
             def terminate(self):
@@ -2442,7 +2472,8 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
         )
         self.assertNotIn(secret, persisted)
         session = self.read_status()["agent_sessions"][self._sid(7)]
-        self.assertEqual(set(session), self.lib.AGENT_SESSION_FIELDS)
+        self.assertEqual(set(session) | self.lib.AGENT_SESSION_OPTIONAL_FIELDS, self.lib.AGENT_SESSION_FIELDS)
+        self.assertFalse(set(session) - self.lib.AGENT_SESSION_FIELDS)
 
     def test_telemetry_is_optional_non_gating_and_failure_safe(self):
         before = self.read_status()
@@ -3250,8 +3281,9 @@ class TestDuplicateKeyDetection(HandsoffTestCase):
     def test_duplicate_key_in_status_file_is_rejected(self):
         self.init()
         raw = (self.tmp / "handsoff-status.json").read_text()
-        # inject a real duplicate top-level key
-        broken = raw.replace('"progress": 0,', '"progress": 0,\n  "progress": 999,', 1)
+        # inject a real duplicate top-level key (whatever progress a fresh run reads)
+        broken = re.sub(r'"progress": (\d+),', r'"progress": \1,\n  "progress": 999,', raw, count=1)
+        self.assertNotEqual(broken, raw)
         (self.tmp / "handsoff-status.json").write_text(broken)
         r = run(["status"], cwd=self.tmp)
         self.assertEqual(r.returncode, 1)
@@ -3808,7 +3840,8 @@ class TestLiveAndApprovalConfigCombinations(HandsoffTestCase):
         self._disable("require_live_verification", "deployment_requires_explicit_approval")
         self.init()
         self.set_criterion_state("passing", resolved=True)
-        self.advance_to(7, implemented_by="impl", reviewed_by="reviewer")
+        r = self.advance_to(7, implemented_by="impl", reviewed_by="reviewer")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         r = run(["advance", "8", "100"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.read_status()["phase_number"], 8)
@@ -4438,9 +4471,12 @@ class TestSmallFixLane(HandsoffTestCase):
                   "deployment_approved": None, "live_verification_id": None,
                   "work_item_delivery": lib.new_work_item_delivery(acceptance["work_items"], "small-fix")}
         status["work_item_delivery"]["issue-1"].update(confirmed_by="pilot", implemented_by="impl")
-        self.assertEqual(lib.item_progress(status, acceptance, cfg, "issue-1")["percent"], 76)
-        self.assertEqual(lib.item_progress(status, acceptance, cfg, "issue-2")["percent"], 0)
-        self.assertEqual(lib.overall_item_progress(status, acceptance, cfg), 38)
+        # #102 gate weights: issue-1 has its lane confirmed and every own
+        # criterion passing (evidence, 45); issue-2 has cleared nothing past
+        # initialization (5); the run reads the required-item mean.
+        self.assertEqual(lib.item_progress(status, acceptance, cfg, "issue-1")["percent"], 45)
+        self.assertEqual(lib.item_progress(status, acceptance, cfg, "issue-2")["percent"], 5)
+        self.assertEqual(lib.overall_item_progress(status, acceptance, cfg), 25)
 
     def test_small_fix_measurement_refuses_caps_and_governance(self):
         sys.path.insert(0, str(BIN))
@@ -4510,7 +4546,9 @@ class TestSmallFixLane(HandsoffTestCase):
         self.assertEqual(run(["record-review", "--item", "issue-47", "--by", "reviewer"],
                              cwd=self.tmp).returncode, 0)
         status, acceptance = self.read_status(), self.read_acceptance()
-        self.assertEqual(lib.item_progress(status, acceptance, lib.load_config(self.tmp), "issue-47")["percent"], 84)
+        # #102 gate weights: lane confirmed, evidence passing, independently
+        # reviewed; deployment and live are still ahead.
+        self.assertEqual(lib.item_progress(status, acceptance, lib.load_config(self.tmp), "issue-47")["percent"], 65)
         self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
 
 
@@ -5886,7 +5924,7 @@ class TestOutputLiveness(HandsoffTestCase):
         self._output(1, real=True, age=2)
         before = self._status_payload()
         self.assertIsNone(before["stall_warning"])
-        self.assertEqual(before["activity"]["source"], "output")
+        self.assertEqual(before["activity"]["seconds_since_activity"], 2)
         self.lib.transition_agent_session(
             self.tmp, sid, "failed", exit_code=3,
             failure=self.lib.classify_runtime_failure(exit_code=3),
@@ -5901,7 +5939,7 @@ class TestOutputLiveness(HandsoffTestCase):
         after = self._status_payload()
         self.assertIsNotNone(after["stall_warning"])
         self.assertIn("no update in", after["stall_warning"])
-        self.assertNotEqual(after["activity"]["source"], "output")
+        self.assertGreater(after["activity"]["seconds_since_activity"], 600)
         live = self.lib.live_status(self.read_status(), self.cfg, self.tmp)
         self.assertEqual((live["state"], live["exit_code"]), ("failed", 3))
         self.assertNotEqual(live["activity_source"], "output")
@@ -5927,8 +5965,8 @@ class TestOutputLiveness(HandsoffTestCase):
         payload = self._status_payload()
         self.assertIsNone(payload["stall_warning"])
         self.assertIn("background task active", payload["activity_note"])
-        self.assertEqual(payload["activity"]["source"], "heartbeat")
-        self.assertEqual(payload["activity"]["at"], aged["last_heartbeat_at"])
+        self.assertEqual(payload["activity"]["activity_note"], payload["activity_note"])
+        self.assertLess(payload["activity"]["seconds_since_activity"], 600)
 
     def test_malformed_output_file_reads_as_no_signal(self):
         cfg = {"stall_minutes": 10}
@@ -5952,6 +5990,11 @@ class TestOutputLiveness(HandsoffTestCase):
     # --- the writer ----------------------------------------------------------------
 
     def test_note_output_liveness_is_rate_limited_counts_only_and_never_logs(self):
+        # The rate limiter's per-session counters are process-global; an
+        # earlier fixture that used the same session id would otherwise
+        # carry a real monotonic tick into this fake clock.
+        with self.lib._OUTPUT_LIVENESS_LOCK:
+            self.lib._OUTPUT_LIVENESS_COUNTERS.clear()
         status_before = (self.tmp / "handsoff-status.json").read_bytes()
         events_before = (self.tmp / "handsoff-events.jsonl").read_bytes()
         acceptance_before = (self.tmp / "handsoff-acceptance.json").read_bytes()
@@ -6125,9 +6168,9 @@ class TestOutputLiveness(HandsoffTestCase):
         )
         self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
         self.lib.start_agent_output(self.tmp, session["session_id"], "implementer", "codex")
-        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "running_quiet")
+        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "connected_no_output")
         self.lib.append_agent_output(self.tmp, session["session_id"], "stdout", "working", 7)
-        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "running_output")
+        self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "active_output")
         self.lib.note_output_liveness(self.tmp, session["session_id"], "implementer", 100)
         self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"],
                          "transport_disconnected")
@@ -6250,17 +6293,24 @@ class TestOutputLiveness(HandsoffTestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
-        self.assertEqual(payload["activity"], {
-            "source": "output", "at": record["output_at"], "seconds_ago": 20,
-            "stall_warning": None,
-            "activity_note": "Agent active; latest output 20 seconds ago",
-        })
+        self.assertEqual(payload["activity"]["seconds_since_activity"], 20)
+        self.assertIsNone(payload["activity"]["stall_warning"])
+        self.assertEqual(payload["activity"]["activity_note"], "Agent active; latest output 20 seconds ago")
         self.assertEqual(payload["stall_warning"], payload["activity"]["stall_warning"])
         self.assertEqual(payload["activity_note"], payload["activity"]["activity_note"])
         self.assertEqual(payload["live"]["activity_source"], "output")
         self.assertEqual(payload["live"]["session_id"], sid)
         self.assertTrue(snapshot["initialized"], snapshot.get("error"))
-        self.assertEqual(snapshot["activity"], payload["activity"])
+        # The two reads happen a few milliseconds apart, so the assessment's
+        # silent_minutes float drifts; everything else must be identical.
+        snapshot_activity = dict(snapshot["activity"])
+        payload_activity = dict(payload["activity"])
+        snapshot_assessment = dict(snapshot_activity.pop("assessment", None) or {})
+        payload_assessment = dict(payload_activity.pop("assessment", None) or {})
+        self.assertEqual(snapshot_activity, payload_activity)
+        self.assertAlmostEqual(snapshot_assessment.pop("silent_minutes", 0) or 0,
+                               payload_assessment.pop("silent_minutes", 0) or 0, delta=0.05)
+        self.assertEqual(snapshot_assessment, payload_assessment)
         self.assertEqual(snapshot["activity_note"], payload["activity"]["activity_note"])
         self.assertEqual(snapshot["live"]["activity_source"], "output")
         supervisor = snapshot["supervisor"]
@@ -6271,10 +6321,12 @@ class TestOutputLiveness(HandsoffTestCase):
         self.assertFalse(any("no update" in item for item in supervisor["attention"]), supervisor["attention"])
         self.assertEqual(run(["validate"], cwd=self.tmp).returncode, 0)
 
-        # The same run with the record stale reads the existing warning in both places.
+        # The same run with the record stale reads the existing warning in both
+        # places; the warning counts from the freshest signal, the 20 minute
+        # old output, not the 30 minute old workflow timestamps.
         self._output(1, real=True, age=1200)
         stale_payload = self._status_payload()
-        self.assertIn("no update in 30 minutes", stale_payload["stall_warning"])
+        self.assertIn("no update in 20 minutes", stale_payload["stall_warning"])
         self.assertEqual(stale_payload["activity"]["stall_warning"], stale_payload["stall_warning"])
         self.assertIsNone(stale_payload["activity_note"])
         stale_snapshot = self.dashboard.build_snapshot(self.tmp)
@@ -8342,7 +8394,7 @@ class TestDesignReviewPacket(HandsoffTestCase):
         history = status["design_review_history"]
         self.assertEqual(len(history), 1)
         entry = history[0]
-        self.assertEqual(set(entry), set(self.lib.DESIGN_REVIEW_HISTORY_FIELDS))
+        self.assertEqual(set(entry) - {"proposal_hash"}, set(self.lib.DESIGN_REVIEW_HISTORY_FIELDS))
         self.assertEqual(entry["attempt"], 1)
         self.assertEqual(entry["decision"], "changes_requested")
         self.assertEqual(entry["by"], "design-reviewer")
@@ -8661,8 +8713,15 @@ class TestDesignReviewPacket(HandsoffTestCase):
             self.assertNotIn(self.PACKET_HEADING, self.runtime.build_role_input(self.tmp, role, "Work"))
 
         class Process:
+            """#87: a reviewer session must end on one complete verdict."""
             pid = None
             returncode = 0
+            def __init__(self):
+                self.stdout = io.StringIO(
+                    'HANDSOFF_REVIEW_RESULT: {"kind":"design","decision":"changes_requested","summary":"fixture",'
+                    '"findings":["fixture finding"],"structural_blocker":false,"symptom_reproduced":"not_applicable"}\n')
+                self.stderr = io.StringIO("")
+                self.stdin = io.StringIO()
             def communicate(self, *, input, timeout):
                 return None
             def terminate(self):
@@ -8672,15 +8731,17 @@ class TestDesignReviewPacket(HandsoffTestCase):
             def kill(self):
                 return None
 
-        self.assertEqual(self.runtime.execute_launch(
-            spec, actor="codex-reviewer", popen_factory=mock.Mock(return_value=Process()),
-            session_id_factory=lambda: self._sid(1)), 0)
+        with mock.patch.object(self.broker, "dispatch_reviewer_result", return_value=None):
+            self.assertEqual(self.runtime.execute_launch(
+                spec, actor="codex-reviewer", popen_factory=mock.Mock(return_value=Process()),
+                session_id_factory=lambda: self._sid(1)), 0)
         status = self.read_status()
         session = status["agent_sessions"][self._sid(1)]
         self.assertEqual(session["packet_id"], packet["packet_id"])
         self.assertEqual(session["design_hash"], packet["design_hash"])
         self.assertEqual(session["role"], "reviewer")
-        self.assertEqual(set(session), self.lib.AGENT_SESSION_FIELDS)
+        self.assertEqual(set(session) | self.lib.AGENT_SESSION_OPTIONAL_FIELDS, self.lib.AGENT_SESSION_FIELDS)
+        self.assertFalse(set(session) - self.lib.AGENT_SESSION_FIELDS)
         self.assertEqual(self.lib.validate_status_schema(status), [])
         launching = [e for e in self._events() if e["kind"] == "agent_session_launching"][-1]
         self.assertEqual(launching["packet_id"], packet["packet_id"])
@@ -9056,7 +9117,8 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         self.assertEqual(self._launch(spec, 1), 0)
         session = self.read_status()["agent_sessions"][self._sid(1)]
         self.assertEqual(session["tier"], "primary")
-        self.assertEqual(set(session), self.lib.AGENT_SESSION_FIELDS)
+        self.assertEqual(set(session) | self.lib.AGENT_SESSION_OPTIONAL_FIELDS, self.lib.AGENT_SESSION_FIELDS)
+        self.assertFalse(set(session) - self.lib.AGENT_SESSION_FIELDS)
         selected = [e for e in self._events() if e["kind"] == "design_reviewer_selected"]
         self.assertEqual(len(selected), 1)
         self.assertEqual((selected[0]["tier"], selected[0]["reason"], selected[0]["session_id"],
@@ -10683,7 +10745,7 @@ class TestFailureClassification(unittest.TestCase):
         # and a digest -- nothing else.
         self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
         self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
-        self.assertEqual(len(lib.FAILURE_CATEGORIES), 13)
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 20)
         closed_set_reasons = {
             "cancelled": "run was cancelled",
             "timeout": "runner exceeded its timeout",
@@ -10698,8 +10760,16 @@ class TestFailureClassification(unittest.TestCase):
             "unknown": "failure signal matched no known category",
             "still_running": "no failure signal reported yet",
             "presumed_lost": "host watchdog found no liveness signal past the threshold",
+            "reviewer_modified_project": "managed Reviewer modified the project tree",
+            "network": lib._FAILURE_REASON_LABELS["network"],
+            "target_service": lib._FAILURE_REASON_LABELS["target_service"],
+            "external_timeout": "external operation exceeded its declared timeout",
+            "dispatch_failed": lib._FAILURE_REASON_LABELS["dispatch_failed"],
+            "no_artifact": lib._FAILURE_REASON_LABELS["no_artifact"],
+            "protocol_silence": "session produced no protocol output within the configured limit",
         }
         self.assertEqual(set(lib.FAILURE_CATEGORIES), set(closed_set_reasons))
+        self.assertEqual(set(lib._FAILURE_REASON_LABELS), set(lib.FAILURE_CATEGORIES))
         self.assertEqual(result["reason"], closed_set_reasons[result["category"]])
         self.assertRegex(result["tail_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(result["tail_sha256"], __import__("hashlib").sha256(secret.encode()).hexdigest())
@@ -11702,9 +11772,12 @@ class TestBenchmarkHarness(HandsoffTestCase):
                     self.assertEqual(session["command"][-2:], ["--json", "-"])
             names = [c["command"][3] for c in repeat["commands"]]
             self.assertEqual(names[:3], ["init", "criteria-apply", "advance"])
-            self.assertEqual(names.count("record-design-review"), 2)
+            # Reviews land through the host bridge (HANDSOFF_REVIEW_RESULT,
+            # #87), so the harness never records them itself.
+            self.assertEqual(names.count("record-design-review"), 0)
             self.assertEqual(names.count("design-review-authorize"), 0)
             self.assertEqual([r["decision"] for r in repeat["reviews"]], ["changes_requested", "approved"])
+            self.assertEqual([r["design_review_attempt"] for r in repeat["reviews"]], [1, 2])
         baseline_names = [c["command"][3] for c in baseline["repeats"][0]["commands"]]
         tranche_names = [c["command"][3] for c in tranche["repeats"][0]["commands"]]
         self.assertNotIn("design-review-packet", baseline_names)
@@ -11737,7 +11810,10 @@ class TestBenchmarkHarness(HandsoffTestCase):
         self.assertEqual(run["authorized_attempt"], 2)
         names = [c["command"][3] for c in run["commands"]]
         self.assertEqual(names.count("design-review-authorize"), 1)
-        self.assertLess(names.index("design-review-authorize"), len(names) - 1)
+        # The authorized attempt was reviewed and recorded (by the host
+        # bridge from the Reviewer's HANDSOFF_REVIEW_RESULT, #87).
+        self.assertEqual([r["design_review_attempt"] for r in run["reviews"]], [1, 2])
+        self.assertTrue(all(r["recorded"] for r in run["reviews"]))
         summary = json.loads((out_dir / "summary.json").read_text())
         self.assertEqual(summary["arms"]["baseline"]["authorized_attempts"], [2])
         self.assertNotIn("tranche", summary["arms"])
@@ -11779,8 +11855,6 @@ class TestBenchmarkHarness(HandsoffTestCase):
         self.assertEqual(self.harness.defects_found("nothing relevant", defects), [])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class TestRoleQuestions(HandsoffTestCase):
@@ -13598,3 +13672,7 @@ class TestArchiveAnalyzer(HandsoffTestCase):
             self.assertEqual(summary["filed"], [])
         finally:
             shutil.rmtree(other, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

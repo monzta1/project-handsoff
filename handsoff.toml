@@ -118,6 +118,7 @@ commands = [
   "python3 -m unittest tests.test_prompt_overrides -v",
   "python3 -m unittest tests.test_run_triage -v",
   "python3 -m unittest tests.test_fixture_hygiene -v",
+  "python3 -m unittest tests.test_regress -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

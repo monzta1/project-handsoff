@@ -1056,6 +1056,7 @@ function renderAgentOutput(output) {
     active_output: "OUTPUT ACTIVE",
     stale_heartbeat: "STALE HEARTBEAT",
     transport_disconnected: "TRANSPORT DISCONNECTED",
+    failed: "PROCESS FAILED",
     completed: "SESSION COMPLETE",
   };
   // Legacy payload names remain documented for clients that still inspect the

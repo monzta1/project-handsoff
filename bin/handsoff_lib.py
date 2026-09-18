@@ -1945,7 +1945,11 @@ def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dic
         if progress_acceptance is None and acceptance_path(root, cfg).is_file():
             progress_acceptance = load_unique_json(acceptance_path(root, cfg))
         if isinstance(progress_acceptance, dict):
-            status["progress"] = overall_item_progress(status, progress_acceptance, cfg)
+            # The derived value only ever raises progress here: an operator
+            # value written by advance (#100) is never fought by bookkeeping,
+            # and rollbacks set their own lower value explicitly.
+            derived = overall_item_progress(status, progress_acceptance, cfg)
+            status["progress"] = max(int(status.get("progress", 0) or 0), derived)
     if status is not None and preserve_progress and "progress" in event_extra:
         status["progress"] = event_extra["progress"]
     write_ahead(root, status=status, acceptance=acceptance)
@@ -6296,7 +6300,39 @@ def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> di
     live = not cfg.get("require_live_verification", True) or bool(status.get("live_verification_id"))
     gates = {"lane": lane_gate, "implemented": implemented, "reviewed": reviewed,
              "deployed": deployed, "live": live}
-    value = min(100, max(0, int(math.floor(criteria_points + 8 * sum(gates.values()) + 0.5))))
+    # #102: gate weights, not phase weights. An approved design reads 25,
+    # partial evidence climbs from 25 to 45 with the passing fraction, and
+    # each later gate lands on its own step, so a run never reads 8 percent
+    # with its design fully approved.
+    # A small-fix item has no design review; its lane confirmation is the
+    # equivalent step.
+    design_reviewed = (lane_gate if delivery.get("lane") == "small-fix"
+                       else not _design_review_errors(status, acceptance, cfg))
+    fraction = passing / len(own) if own else 0.0
+    symptom = bool((status.get("requirement_coverage") or {}).get("original_symptom_resolved")
+                   or status.get("original_symptom_evidence_id"))
+    phase = int(status.get("phase_number", 0) or 0)
+    value = 5
+    if design_reviewed:
+        value = 15
+    if lane_gate:
+        value = 25 + int(math.floor(20 * fraction + 0.5))
+    if own and passing == len(own) and lane_gate:
+        value = 45
+        if symptom:
+            value = 50
+        if reviewed:
+            value = 65
+        # A gate the project switched off clears with the phase that would
+        # have asked for it, never ahead of the run (the 95 percent step is
+        # reserved for a work item that is actually done).
+        if reviewed and deployed and phase >= 7:
+            value = 80
+        if reviewed and deployed and live and phase >= 8:
+            value = 95
+    if status.get("status") == "complete" or phase >= 8 and reviewed and deployed and live:
+        value = 100
+    value = min(100, max(0, value))
     return {"percent": value, "passing": passing, "total": len(own), "gates": gates,
             "lane": delivery.get("lane", "full"), "facts": delivery.get("facts"),
             "escalation_reason": delivery.get("escalation_reason")}
@@ -7803,7 +7839,13 @@ def agent_output_view(status: dict, root: Path, *, now: datetime | None = None) 
                    if isinstance(entry, dict) and set(entry) == {"cursor", "at", "stream", "text"}]
     state = "transport_disconnected"
     if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
-        state = "completed" if session.get("state") == "completed" else "transport_disconnected"
+        # A session that ended badly is "failed", never "transport
+        # disconnected": the transport did its job, the process did not.
+        state = "completed" if session.get("state") == "completed" else "failed"
+    elif _output_bytes_missed(root, session_id, record):
+        # The child produced more bytes than the recorder persisted: the
+        # output transport dropped, not the process.
+        state = "transport_disconnected"
     elif beacon_age is not None and beacon_age > LIVE_BEACON_FRESH_SECONDS:
         state = "stale_heartbeat"
     elif isinstance(record, dict) and entries:
@@ -7827,6 +7869,20 @@ def agent_output_view(status: dict, root: Path, *, now: datetime | None = None) 
         "dropped_entries": int(record.get("dropped_entries", 0)),
         "entries": entries, "updated_at": record.get("updated_at"),
     }
+
+
+def _output_bytes_missed(root: Path, session_id: str | None, record) -> bool:
+    """True when the liveness record counted more output bytes for the
+    session than the portable output store persisted."""
+    if not isinstance(record, dict):
+        return False
+    liveness = read_output_liveness(root)
+    if not isinstance(liveness, dict) or liveness.get("session_id") != session_id:
+        return False
+    try:
+        return int(liveness.get("bytes", 0) or 0) > int(record.get("source_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        return False
 
 
 def read_output_liveness(root: Path) -> dict | None:
@@ -9013,6 +9069,8 @@ _FAILURE_REASON_LABELS = {
     "external_timeout": "external operation exceeded its declared timeout",
     "dispatch_failed": "host dispatch failed",
     "no_artifact": "process exited 0 without a protocol result",
+    "network": "network connection to a dependency failed",
+    "target_service": "target service reported a failure",
 }
 
 # Order matters: tier 3 checks these in sequence and the first match wins,
