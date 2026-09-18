@@ -149,6 +149,28 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
         self.assertIn("issue-90", [item["id"] for item in self.read_acceptance()["work_items"]])
 
+    def test_mid_run_item_gets_a_delivery_record_and_phase_8_wants_implemented_by(self):
+        # #116: an item added after init can record its implementer, and a
+        # required item without one refuses completion.
+        initialized = run(["init", "Feature", "--item", "#70"], cwd=self.tmp)
+        self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        # Tag both items so neither is unscoped (unscoped has its own gate).
+        self.assertEqual(run(["criterion-update", "REQ-001", "--requirement", "[#70] [#90] Primary work"], cwd=self.tmp).returncode, 0)
+        synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        self.assertIn("issue-90", self.read_status()["work_item_delivery"])
+        updated = run(["work-item-update", "issue-90", "--by", "supervisor", "--implemented-by", "codex-implementer"], cwd=self.tmp)
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        self.assertEqual(self.read_status()["work_item_delivery"]["issue-90"]["implemented_by"], "codex-implementer")
+        # The completion audit names an item that still has no implementer.
+        cfg = lib.load_config(self.tmp)
+        status = self.read_status()
+        status.update(phase_number=8, phase=lib.PHASES[8])
+        acceptance = self.read_acceptance()
+        errors = lib.compute_errors(status, acceptance, cfg, verifications=[], root=self.tmp)
+        self.assertTrue(any("issue-70 has no implemented_by" in e for e in errors), errors)
+        self.assertFalse(any("issue-90 has no implemented_by" in e for e in errors), errors)
+
     def test_scope_frozen_after_deployment_approval(self):
         # REQ-006: deployment approval freezes scope-changing syncs.
         initialized = run(["init", "Feature without issue refs", "--item", "#70"], cwd=self.tmp)

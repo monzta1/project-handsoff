@@ -4842,6 +4842,15 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                 errors.append(f"work items gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
             else:
                 errors.append(f"work items gate: required work item {item['id']} is {item['status']}; a run cannot complete while it is unfinished")
+        # #116: every required item names who implemented it, or the
+        # completion audit is silently weaker for items added mid-run.
+        delivery = status.get("work_item_delivery")
+        if isinstance(delivery, dict):
+            for item in derive_work_items(status, acceptance, cfg)["items"]:
+                record = delivery.get(item["id"])
+                if item.get("required") and item.get("status") != "unscoped" \
+                        and (not isinstance(record, dict) or not record.get("implemented_by")):
+                    errors.append(f"work items gate: work item {item['id']} has no implemented_by; run handsoff_supervisor.py work-item-update {item['id']} --by ACTOR --implemented-by ACTOR")
 
     if phase >= 6:
         implemented_by = status.get("implemented_by")

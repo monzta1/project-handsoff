@@ -941,6 +941,11 @@ def cmd_work_items_sync(args) -> int:
             status["work_item_delivery"] = lib.new_work_item_delivery(persisted, "full")
             for record in status["work_item_delivery"].values():
                 record["implemented_by"] = status.get("implemented_by")
+        else:
+            # #116: an item added mid-run gets the same delivery record
+            # init --item creates, so work-item-update accepts it.
+            for item_id, record in lib.new_work_item_delivery(persisted, "full").items():
+                status["work_item_delivery"].setdefault(item_id, record)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         errors = lib.validate_acceptance_schema(acceptance) + lib.validate_status_schema(status)
         if errors:
