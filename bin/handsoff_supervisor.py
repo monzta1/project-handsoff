@@ -300,6 +300,9 @@ def cmd_status(args) -> int:
         "root": str(root), "feature": status.get("feature"), "phase": status.get("phase"),
         "engine": lib.runtime_identity(root),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
+        "gate_progress": lib.gate_progress(status, acceptance),
+        "work_item_completion": lib.work_item_completion_lines(
+            lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)),
         "status": status.get("status"), "next_action": status.get("next_action"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
         "review_attempts": [{k: item.get(k) for k in ("attempt", "attempt_id", "trigger", "disposition", "reviewer")}
@@ -392,9 +395,14 @@ def cmd_advance(args) -> int:
             print(f"phase transition blocked: current={current}, requested={args.phase} (one step at a time)")
             return 1
         current_progress = status.get("progress", 0)
-        progress = current_progress if args.progress is None else args.progress
-        if args.progress is not None and args.progress < current_progress:
-            progress = current_progress
+        if args.progress is None:
+            # #102: no explicit value means "what the gates say", never
+            # lower than what the operator already recorded (#100).
+            progress = max(current_progress, lib.gate_progress(status, acceptance)["percent"])
+        else:
+            progress = args.progress
+            if args.progress < current_progress:
+                progress = current_progress
 
         # Build the PROPOSED status and validate THAT, before writing
         # anything. This is the fix for the original bug: validating the
@@ -726,12 +734,29 @@ def cmd_deployment_gate(args) -> int:
         # THE MOMENT of approval. If the registry changes afterward (a
         # criterion reopened, added, or removed), the Phase 8 gate
         # recomputes this hash and refuses the now-stale approval.
+        auto_from = None
+        design_digest = lib.design_hash(acceptance.get("criteria", []))
+        if getattr(args, "auto", False):
+            # #102: --auto re-applies only what a person already approved
+            # for this exact design hash (what was decided), while the
+            # current review is fresh against the current evidence. A
+            # drift-and-re-review cycle revokes the approval without
+            # changing what was approved; a changed criterion does.
+            prior = next((event for event in reversed(lib.read_events(root, cfg))
+                          if event.get("kind") == "deployment_approved"
+                          and event.get("design_hash") == design_digest), None)
+            review = status.get("review") if isinstance(status.get("review"), dict) else None
+            if prior is None or review is None or review.get("acceptance_hash") != acceptance_digest:
+                print("DEPLOYMENT_BLOCKED\n- no prior approval for this design hash")
+                return 1
+            auto_from = {"by": prior.get("by"), "at": prior.get("at")}
         proposed = dict(status)
         proposed["deployment_approved"] = {
             "at": datetime.now(timezone.utc).isoformat(),
             "by": args.by,
             "acceptance_hash": acceptance_digest,
             "config_hash": config_digest,
+            **({"auto_confirmed_from": auto_from} if auto_from else {}),
         }
         proposed["status"] = "ready_to_deploy"
         proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -744,9 +769,17 @@ def cmd_deployment_gate(args) -> int:
             print("DEPLOYMENT_BLOCKED")
             print("\n".join(f"- {error}" for error in proposed_errors))
             return 1
+        if auto_from:
+            lib.commit(root, cfg, status=proposed,
+                      event_kind="deployment_approval_auto_confirmed",
+                      event_message="Deployment approval re-applied for an unchanged acceptance hash",
+                      by=args.by, acceptance_hash=acceptance_digest, design_hash=design_digest,
+                      prior_by=auto_from["by"], prior_at=auto_from["at"])
+            print("DEPLOYMENT_APPROVAL_AUTO_CONFIRMED")
+            return 0
         lib.commit(root, cfg, status=proposed,
                   event_kind="deployment_approved", event_message="Explicit deployment approval recorded",
-                  by=args.by)
+                  by=args.by, acceptance_hash=acceptance_digest, design_hash=design_digest)
     print("DEPLOYMENT_APPROVED")
     return 0
 
@@ -910,6 +943,11 @@ def cmd_work_items_sync(args) -> int:
             status["work_item_delivery"] = lib.new_work_item_delivery(persisted, "full")
             for record in status["work_item_delivery"].values():
                 record["implemented_by"] = status.get("implemented_by")
+        else:
+            # #116: an item added mid-run gets the same delivery record
+            # init --item creates, so work-item-update accepts it.
+            for item_id, record in lib.new_work_item_delivery(persisted, "full").items():
+                status["work_item_delivery"].setdefault(item_id, record)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         errors = lib.validate_acceptance_schema(acceptance) + lib.validate_status_schema(status)
         if errors:
@@ -1728,6 +1766,37 @@ def cmd_design_approve(args) -> int:
     return 0
 
 
+# #102: failure categories the engine itself classified as environmental,
+# for which one automatic retry is offered before the Pilot is asked.
+AUTO_RETRY_CATEGORIES = {"runtime_environment", "token_budget_exhaustion"}
+
+
+def _adoption_error(status: dict, args) -> str | None:
+    """#115: --adopted-session and --adopted-by come together and name a
+    terminal managed session whose persisted result is being adopted; the
+    record's --by must be that session's actor so the verdict is
+    attributed to the reviewer, not to whoever pressed adopt."""
+    session_id = getattr(args, "adopted_session", None)
+    adopter = getattr(args, "adopted_by", None)
+    if session_id is None and adopter is None:
+        return None
+    if not session_id or not adopter or not str(adopter).strip():
+        return "--adopted-session and --adopted-by must be given together"
+    session = (status.get("agent_sessions") or {}).get(session_id)
+    if not isinstance(session, dict) or not isinstance(session.get("result"), dict):
+        return "--adopted-session must name a managed session with a persisted result"
+    if str(session.get("actor") or "").casefold() != args.by.strip().casefold():
+        return "--by must match the adopted session's actor"
+    return None
+
+
+def _adoption_fields(args) -> dict:
+    session_id = getattr(args, "adopted_session", None)
+    if not session_id:
+        return {}
+    return {"adopted_by": str(args.adopted_by).strip(), "adopted_session": session_id}
+
+
 def _reviewer_session_error(status: dict, session_id: str | None, reviewer: str) -> str | None:
     """Bind a host-recorded verdict to the exact current live Reviewer."""
     if session_id is None:
@@ -1783,7 +1852,8 @@ def cmd_record_design_review(args) -> int:
         if status.get("phase_number") != 2:
             print("SHIP_FEATURE_BLOCKED: independent design review can only be recorded in Phase 2")
             return 1
-        session_error = _reviewer_session_error(status, getattr(args, "session", None), args.by)
+        session_error = _reviewer_session_error(status, getattr(args, "session", None), args.by) \
+            or _adoption_error(status, args)
         if session_error:
             print(f"SHIP_FEATURE_BLOCKED: {session_error}")
             return 1
@@ -1792,7 +1862,7 @@ def cmd_record_design_review(args) -> int:
             if args.by.strip().casefold() == str(provenance.get("actor") or "").casefold():
                 print("SHIP_FEATURE_BLOCKED: design reviewer must differ from the proposal architect actor")
                 return 1
-            launch_id = getattr(args, "session", None)
+            launch_id = getattr(args, "session", None) or getattr(args, "adopted_session", None)
             launch_session = (status.get("agent_sessions") or {}).get(launch_id)
             # #112: a managed reviewer (codex or claude, named by --session) is
             # a separate process, provider and actor even when the host
@@ -1863,6 +1933,7 @@ def cmd_record_design_review(args) -> int:
             "reviewer_profile": reviewer_profile,
             "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
             "proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
+            **_adoption_fields(args),
         }
         lib.append_design_review_history(
             status, lib.design_review_history_entry(status["design_review"], criteria,
@@ -2200,7 +2271,8 @@ def cmd_record_review_findings(args) -> int:
         if status.get("phase_number", 0) < 4:
             print("SHIP_FEATURE_BLOCKED: review findings require Phase 4 or later")
             return 1
-        session_error = _reviewer_session_error(status, getattr(args, "session", None), reviewer)
+        session_error = _reviewer_session_error(status, getattr(args, "session", None), reviewer) \
+            or _adoption_error(status, args)
         if session_error:
             print(f"SHIP_FEATURE_BLOCKED: {session_error}")
             return 1
@@ -2222,6 +2294,7 @@ def cmd_record_review_findings(args) -> int:
         attempt["findings"] = findings
         attempt["tests_executed"] = args.tests_executed
         attempt["disposition"] = "changes_requested"
+        attempt.update(_adoption_fields(args))
         attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
         if attempt["attempt"] >= lib.effective_review_cap(proposed, cfg):
             lib._review_cap_escalation(proposed, cfg)
@@ -2361,7 +2434,8 @@ def cmd_record_review(args) -> int:
         if status.get("phase_number", 0) < 5:
             print("SHIP_FEATURE_BLOCKED: independent review can only be recorded in Phase 5 or later")
             return 1
-        session_error = _reviewer_session_error(status, getattr(args, "session", None), reviewer_id)
+        session_error = _reviewer_session_error(status, getattr(args, "session", None), reviewer_id) \
+            or _adoption_error(status, args)
         if session_error:
             print(f"SHIP_FEATURE_BLOCKED: {session_error}")
             return 1
@@ -2408,6 +2482,7 @@ def cmd_record_review(args) -> int:
             "checklist": {"symptom_reproduced": args.symptom_reproduced,
                           "symptom_resolved": "yes", "all_criteria_verified": "yes",
                           "evidence_attached": "yes"},
+            **_adoption_fields(args),
         }
         preflight["reviewed_by"] = reviewer_id
         errors = lib.compute_errors(preflight, acceptance, cfg, verifications=records,
@@ -2462,8 +2537,12 @@ def cmd_session_result_adopt(args) -> int:
             return 1
         kind, payload = result["kind"], deepcopy(result["payload"])
         architect = (status.get("design_proposal") or {}).get("architect")
+        session_actor = str(session.get("actor") or "").strip()
     import handsoff_broker as broker
-    base = {"actor": "supervisor", "project_root": str(root), "action": "workflow", "by": actor}
+    # #115: the verdict belongs to the reviewer session that produced it;
+    # the adopter is recorded alongside, never in its place.
+    base = {"actor": "supervisor", "project_root": str(root), "action": "workflow",
+            "by": session_actor or actor, "adopted_session": args.session, "adopted_by": actor}
     if kind == "review":
         if payload.get("decision") == "approved":
             request = {**base, "command": "record-review",
@@ -3231,6 +3310,38 @@ def cmd_recover(args) -> int:
         spec = handsoff_agent.build_launch_spec(root, role, task)
         return handsoff_agent.execute_with_recovery(spec, timeout=args.timeout)
 
+    if getattr(args, "auto", False):
+        # #102: one automatic retry after an engine-classified failure. The
+        # authorization is ledgered and marked on the failure record, which
+        # is what recovery_assessment consults; a second --auto for the
+        # same session is refused so a broken environment cannot loop.
+        with lib.project_lock(root):
+            status = lib.load_unique_json(lib.status_path(root, cfg))
+            events = lib.read_events(root, cfg)
+            assessment = lib.recovery_assessment(status, cfg, lib.read_session_liveness(root), events, root=root)
+            used = {e.get("session_id") for e in events if e.get("kind") == "recovery_auto_confirmed"}
+            current_ids = [v for v in (status.get("current_agent_sessions") or {}).values() if isinstance(v, str)]
+            already = next((cid for cid in current_ids if cid in used), None)
+            if already and (assessment.get("lost_session_id") in (None, already)):
+                print(f"SHIP_FEATURE_BLOCKED: automatic retry already used for {already}")
+                return 1
+            sid = assessment.get("lost_session_id")
+            failure = (status.get("agent_failures") or {}).get(sid) if sid else None
+            if assessment.get("reason") != "non_recoverable_failure" or not isinstance(failure, dict):
+                print("SHIP_FEATURE_BLOCKED: --auto applies only to a run paused on an engine-classified failure")
+                return 1
+            if failure.get("category") not in AUTO_RETRY_CATEGORIES:
+                print(f"SHIP_FEATURE_BLOCKED: automatic retry is not offered for {failure.get('category')}")
+                return 1
+            if any(e.get("kind") == "recovery_auto_confirmed" and e.get("session_id") == sid for e in events):
+                print(f"SHIP_FEATURE_BLOCKED: automatic retry already used for {sid}")
+                return 1
+            proposed = deepcopy(status)
+            proposed["agent_failures"][sid]["auto_retry_authorized"] = True
+            lib.commit(root, cfg, status=proposed, event_kind="recovery_auto_confirmed",
+                       event_message="One automatic retry authorized after an engine-classified failure",
+                       by=args.by, session_id=sid, category=failure.get("category"))
+        print(f"RECOVERY_AUTO_CONFIRMED: {sid}")
     result = lib.recover_run(root, actor=args.by, launcher=launcher)
     label = {
         "skipped": "RECOVERY_SKIPPED", "recovered": "RECOVERY_RECOVERED",
@@ -3860,6 +3971,10 @@ def build_parser() -> argparse.ArgumentParser:
     design_review.add_argument("--summary", required=True, help="review findings or approval rationale")
     design_review.add_argument("--session", default=None,
                                help="host-only exact managed Reviewer session binding")
+    design_review.add_argument("--adopted-session", default=None,
+                        help="#115: the terminal managed session whose persisted result this record adopts")
+    design_review.add_argument("--adopted-by", default=None,
+                        help="#115: the Pilot or Supervisor who adopted the persisted result")
     design_review_decision = design_review.add_mutually_exclusive_group(required=True)
     design_review_decision.add_argument("--approve", action="store_true")
     design_review_decision.add_argument("--request-changes", action="store_true")
@@ -3908,6 +4023,10 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--by", required=True)
     review.add_argument("--session", default=None,
                         help="host-only exact managed Reviewer session binding")
+    review.add_argument("--adopted-session", default=None,
+                        help="#115: the terminal managed session whose persisted result this record adopts")
+    review.add_argument("--adopted-by", default=None,
+                        help="#115: the Pilot or Supervisor who adopted the persisted result")
     review.add_argument("--item", default=None,
                         help="record an item-scoped independent review for a confirmed small-fix lane")
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
@@ -3923,6 +4042,10 @@ def build_parser() -> argparse.ArgumentParser:
     review_findings.add_argument("--by", required=True)
     review_findings.add_argument("--session", default=None,
                                  help="host-only exact managed Reviewer session binding")
+    review_findings.add_argument("--adopted-session", default=None,
+                        help="#115: the terminal managed session whose persisted result this record adopts")
+    review_findings.add_argument("--adopted-by", default=None,
+                        help="#115: the Pilot or Supervisor who adopted the persisted result")
     review_findings.add_argument("--finding", action="append", required=True)
     review_findings.add_argument("--tests-executed", choices=("yes", "no", "unknown"), default="unknown")
 
@@ -3932,6 +4055,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     recover = sub.add_parser("recover")
     recover.add_argument("--by", required=True)
+    recover.add_argument("--auto", action="store_true",
+                         help="#102: authorize exactly one automatic retry after an engine-classified failure")
     recover.add_argument("--dry-run", action="store_true")
     recover.add_argument("--timeout", type=int, default=3600)
 
@@ -4119,6 +4244,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     gate = sub.add_parser("deployment-gate")
     gate.add_argument("--approve", action="store_true")
+    gate.add_argument("--auto", action="store_true",
+                      help="#102: with --approve, re-apply a prior approval recorded for this exact acceptance hash")
     gate.add_argument("--revoke", action="store_true")
     gate.add_argument("--by", default=None)
     gate.add_argument("--reason", default=None)

@@ -20,6 +20,35 @@ function relative(value) {
   return `${Math.round(seconds / 86400)} d ago`;
 }
 
+function lcdText(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const s = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+// LCD elapsed counters tick locally from each project's ledger anchors and
+// freeze when the run is complete.
+function renderClocks() {
+  const now = Date.now();
+  document.querySelectorAll("[data-started-at]").forEach((element) => {
+    const started = new Date(element.dataset.startedAt).getTime();
+    const ended = element.dataset.endedAt ? new Date(element.dataset.endedAt).getTime() : now;
+    if (Number.isFinite(started)) element.querySelector(".lcd-live").textContent = lcdText((ended - started) / 1000);
+  });
+  const fleetClock = $("fleet-clock");
+  if (fleetClock && fleet) {
+    const active = fleet.projects.filter((project) => project.started_at && !project.ended_at);
+    const oldest = active.length ? Math.min(...active.map((project) => new Date(project.started_at).getTime())) : null;
+    fleetClock.querySelector(".lcd-live").textContent = oldest ? lcdText((now - oldest) / 1000) : "00:00:00";
+    fleetClock.dataset.frozen = oldest ? "false" : "true";
+  }
+}
+
+function lcd(project) {
+  if (!project.started_at) return "";
+  return `<span class="lcd lcd-small" data-started-at="${esc(project.started_at)}" ${project.ended_at ? `data-ended-at="${esc(project.ended_at)}" data-frozen="true"` : 'data-frozen="false"'}><span class="lcd-ghost" aria-hidden="true">88:88:88</span><span class="lcd-live">00:00:00</span></span>`;
+}
+
 function phaseRail(project) {
   const current = Number(project.phase_number) || 0;
   return `<div class="mini-rail" aria-label="Phase ${esc(current)} of 8">${Array.from({ length: 8 }, (_, index) => {
@@ -42,6 +71,7 @@ function projectCard(project) {
   return `<article class="project" data-state="${esc(state)}">
     <div class="project-head">
       <span class="badge">${esc(STATE_LABELS[state] || state.toUpperCase())}</span>
+      ${lcd(project)}
       <span class="progress">${esc(project.progress ?? 0)}%</span>
     </div>
     <h3>${esc(title)}</h3>
@@ -75,7 +105,9 @@ function render(data) {
   $("projects").innerHTML = projects.length ? projects.map(projectCard).join("")
     : '<p class="empty">No project is registered. Register one with <code>handsoff fleet register /path/to/project</code>.</p>';
   document.querySelectorAll("[data-op]").forEach((button) => button.addEventListener("click", () => openConfirm(button.dataset.op, button.dataset.root)));
+  renderClocks();
 }
+window.setInterval(renderClocks, 1000);
 
 function openConfirm(op, root) {
   const project = fleet.projects.find((item) => item.root === root);

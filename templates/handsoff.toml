@@ -51,6 +51,17 @@ liveness_seconds = 60
 dashboard_watchdog = true
 poll_seconds = 30
 
+# Explicit per-role fail-fast policy (#102): a live session that has produced
+# no output line for this many minutes is ended with a ledgered reason and
+# replaced through the normal recovery path. 0 disables the policy for that
+# role. This is distinct from live_session_silence_minutes, which only
+# presumes a session lost when its process is gone.
+[recovery.protocol_silence_minutes]
+architect = 0
+supervisor = 0
+implementer = 0
+reviewer = 0
+
 [checks]
 commands = []
 live_commands = []

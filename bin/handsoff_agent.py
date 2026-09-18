@@ -195,6 +195,15 @@ def build_role_input(root: Path, role: str, task: str) -> str:
         evidence = lib.design_evidence_prompt_section(root, cfg)
         if evidence:
             text = f"{text}\n\n{evidence}"
+    # #104: an implementer or reviewer relaunch continues with the
+    # unfinished scope only.
+    if role in {"implementer", "reviewer"}:
+        try:
+            scope = lib.resume_scope_section(root)
+        except lib.HandsoffError:
+            scope = ""
+        if scope:
+            text = f"{text}\n\n{scope}"
     # #46: answers the Pilot recorded for this role's earlier questions are
     # handed over exactly once, on the next launch, and the hand-over is
     # audited (questions_prompt_section marks them delivered).

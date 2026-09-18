@@ -316,6 +316,7 @@ DEFAULT_CONFIG = {
     "recovery": {
         "enabled": True, "max_attempts": 3, "lease_minutes": 15,
         "worker_loss_grace_minutes": 2, "live_session_silence_minutes": 10,
+        "protocol_silence_minutes": {"architect": 0, "supervisor": 0, "implementer": 0, "reviewer": 0},
         "liveness_seconds": 60, "dashboard_watchdog": True, "poll_seconds": 30,
         "operation_grace_seconds": 120,
     },
@@ -722,6 +723,7 @@ def load_config(root: Path) -> dict:
         for role in AGENT_ROLES
     }
     cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
+    cfg["recovery"]["protocol_silence_minutes"] = dict(DEFAULT_CONFIG["recovery"]["protocol_silence_minutes"])
     cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
     cfg["analysis"] = dict(DEFAULT_CONFIG["analysis"])
     cfg["documentation"] = {key: list(value) for key, value in DEFAULT_CONFIG["documentation"].items()}
@@ -944,6 +946,17 @@ def load_config(root: Path) -> dict:
                 f"handsoff.toml: recovery.{key} must be an integer from {minimum} to {maximum}"
             )
         cfg["recovery"][key] = value
+    protocol_limits = recovery.get("protocol_silence_minutes", cfg["recovery"]["protocol_silence_minutes"])
+    if not isinstance(protocol_limits, dict):
+        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes must be a per-role table")
+    unknown_roles = set(protocol_limits) - set(AGENT_ROLES)
+    if unknown_roles:
+        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes has unknown roles: " + ", ".join(sorted(unknown_roles)))
+    for role_name in AGENT_ROLES:
+        value = protocol_limits.get(role_name, 0)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1440:
+            raise HandsoffError(f"handsoff.toml: recovery.protocol_silence_minutes.{role_name} must be an integer from 0 to 1440")
+        cfg["recovery"]["protocol_silence_minutes"][role_name] = value
     cfg["analysis"] = _validate_analysis_config(analysis)
     if not isinstance(tickets, list):
         raise HandsoffError("handsoff.toml: tickets must be an array of tables")
@@ -4395,6 +4408,37 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     return result
 
 
+GATE_PROGRESS_WEIGHTS = (
+    ("initialized", 5), ("design_reviewed", 15), ("design_approved", 25), ("evidence", 45),
+    ("symptom", 50), ("review", 65), ("deployment", 80), ("live", 95), ("complete", 100),
+)
+
+
+def gate_progress(status: dict, acceptance: dict) -> dict:
+    """#102: progress as gates cleared, not phase index. A run with an
+    approved design used to read 8 percent because progress was
+    phase-weighted; here it reads 25. Gates are cumulative: the percent is
+    the weight of the highest gate cleared, `cleared` lists them in order."""
+    criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
+    automated = [c for c in criteria if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+    review = status.get("design_review") if isinstance(status, dict) else None
+    facts = {
+        "initialized": bool(status),
+        "design_reviewed": isinstance(review, dict) and review.get("decision") == "approved",
+        "design_approved": isinstance(status.get("design_approved"), dict),
+        "evidence": bool(automated) and all(c.get("state") == "passing" for c in automated),
+        "symptom": bool((status.get("requirement_coverage") or {}).get("original_symptom_resolved")
+                        or status.get("original_symptom_evidence_id")),
+        "review": isinstance(status.get("review"), dict) and bool(status.get("reviewed_by")),
+        "deployment": isinstance(status.get("deployment_approved"), dict),
+        "live": bool(status.get("live_verification_id")),
+        "complete": status.get("status") == "complete" or int(status.get("phase_number", 0) or 0) >= 8,
+    }
+    cleared = [name for name, _ in GATE_PROGRESS_WEIGHTS if facts[name]]
+    percent = max((weight for name, weight in GATE_PROGRESS_WEIGHTS if facts[name]), default=0)
+    return {"percent": percent, "cleared": cleared}
+
+
 def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bool:
     """A design decision is current when its hash is the registry's design
     hash, or (#42) while a scoped amendment is open: the decision still
@@ -4798,6 +4842,15 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                 errors.append(f"work items gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
             else:
                 errors.append(f"work items gate: required work item {item['id']} is {item['status']}; a run cannot complete while it is unfinished")
+        # #116: every required item names who implemented it, or the
+        # completion audit is silently weaker for items added mid-run.
+        delivery = status.get("work_item_delivery")
+        if isinstance(delivery, dict):
+            for item in derive_work_items(status, acceptance, cfg)["items"]:
+                record = delivery.get(item["id"])
+                if item.get("required") and item.get("status") != "unscoped" \
+                        and (not isinstance(record, dict) or not record.get("implemented_by")):
+                    errors.append(f"work items gate: work item {item['id']} has no implemented_by; run handsoff_supervisor.py work-item-update {item['id']} --by ACTOR --implemented-by ACTOR")
 
     if phase >= 6:
         implemented_by = status.get("implemented_by")
@@ -5246,7 +5299,20 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
                     float(recovery["worker_loss_grace_minutes"]), "failed session is terminal")
         if state in AGENT_SESSION_LIVE_STATES:
             sid = item.get("session_id")
-            ping = (liveness or {}).get(sid) or item.get("running_at") or item.get("started_at")
+            ping = (liveness or {}).get(sid)
+            protocol_limit = int((recovery.get("protocol_silence_minutes") or {}).get(role, 0) or 0)
+            if protocol_limit > 0 and root is not None:
+                store = _read_agent_output_store(root)
+                output = (store.get("sessions") or {}).get(sid)
+                entries = output.get("entries") if isinstance(output, dict) else []
+                newest = entries[-1].get("at") if entries and isinstance(entries[-1], dict) else None
+                ping = newest or (output.get("updated_at") if isinstance(output, dict) else None)
+                ping = ping or item.get("running_at") or item.get("started_at")
+                minutes = _minutes_since(ping, now)
+                if minutes is not None and minutes >= protocol_limit:
+                    return ("protocol_silent", minutes, float(protocol_limit),
+                            f"no protocol output for {int(minutes)} minutes (limit {protocol_limit})")
+            ping = ping or item.get("running_at") or item.get("started_at")
             return ("worker_silent", _minutes_since(ping, now),
                     float(recovery["live_session_silence_minutes"]), "session liveness expired")
         return None
@@ -5261,6 +5327,7 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         if isinstance(candidate, dict) and candidate.get("state") in {
                 "failed", "timed_out", "failed_to_start", "cancelled"} \
                 and isinstance(failure, dict) and not failure.get("adopted") \
+                and not failure.get("auto_retry_authorized") \
                 and failure.get("category") not in RECOVERABLE_FAILURE_CATEGORIES:
             result.update(reason="non_recoverable_failure", assigned_role=current_role,
                           lost_session_id=candidate_id)
@@ -5446,16 +5513,17 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         lid = _new_bounded_id("hl", RECOVERY_LEASE_ID_PATTERN, set(), id_factory)
         from datetime import timedelta
         proposed = deepcopy(status)
-        if assessment["state"] == "worker_silent" and assessment.get("lost_session_id"):
+        if assessment["state"] in {"worker_silent", "protocol_silent"} and assessment.get("lost_session_id"):
             sid = assessment["lost_session_id"]
             session = (proposed.get("agent_sessions") or {}).get(sid)
             if isinstance(session, dict) and session.get("state") in AGENT_SESSION_LIVE_STATES:
                 session["state"] = "failed"
                 session["ended_at"] = now.isoformat()
-                session["exit_code"] = -1
+                session["exit_code"] = None if assessment["state"] == "protocol_silent" else -1
+                category = "protocol_silence" if assessment["state"] == "protocol_silent" else "presumed_lost"
                 proposed.setdefault("agent_failures", {})[sid] = {
-                    "session_id": sid, "category": "presumed_lost",
-                    "reason": _FAILURE_REASON_LABELS["presumed_lost"],
+                    "session_id": sid, "category": category,
+                    "reason": assessment["reason"] if category == "protocol_silence" else _FAILURE_REASON_LABELS["presumed_lost"],
                     "tail_sha256": hashlib.sha256(b"").hexdigest(), "at": now.isoformat(),
                 }
         record = {
@@ -5497,7 +5565,12 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         item["state"] = "recovered" if ok else "failed"
         item["reason"] = "managed role completed" if ok else (launch_error or "managed role failed")
         proposed["recovery_lease"] = None
-        commit(root, cfg, status=proposed,
+        extra_events = None
+        if assessment["state"] == "protocol_silent":
+            extra_events = [{"kind": "protocol_silence_enforced", "message": assessment["reason"],
+                             "role": role, "session_id": assessment["lost_session_id"],
+                             "silent_minutes": assessment["silent_minutes"], "threshold": assessment["threshold_minutes"]}]
+        commit(root, cfg, status=proposed, extra_events=extra_events,
                event_kind="recovery_recovered" if ok else "recovery_failed",
                event_message=f"Recovery attempt {item['attempt']} {item['state']}",
                by=actor, recovery_id=rid, role=role, state=item["state"])
@@ -6132,6 +6205,79 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
             "items": rendered, "aggregate": {"total": len(rendered), "done": counts["done"],
                                                "counts": counts,
                                                "progress": overall_item_progress(status, acceptance, cfg)}}
+
+
+def work_item_checkpoints(status: dict, acceptance: dict, events: list[dict] | None = None,
+                          verifications: list[dict] | None = None, cfg: dict | None = None) -> dict:
+    """#104: durable per-item checkpoints derived from the ledger only,
+    never stored, so they cannot drift from the run they describe.
+
+    designed: a design approval is recorded. implemented: implemented_by is
+    on the item's delivery record, or every tagged criterion carries
+    evidence. verified: every tagged criterion is passing. reviewed: an
+    approved review recorded after the newest verification for the item.
+    complete: all four."""
+    cfg = cfg or DEFAULT_CONFIG
+    registry, _ = effective_work_items(acceptance, cfg)
+    criteria = acceptance.get("criteria", [])
+    delivery = status.get("work_item_delivery") if isinstance(status.get("work_item_delivery"), dict) else {}
+    designed = isinstance(status.get("design_approved"), dict)
+    review = status.get("review") if isinstance(status.get("review"), dict) else None
+    review_at = review.get("at") if review else None
+    result = {}
+    for item in registry:
+        own = [c for c in criteria if criterion_work_item_id(c) == item["id"]
+               or (criterion_work_item_id(c) is None and len(registry) == 1)]
+        record = delivery.get(item["id"]) if isinstance(delivery, dict) else None
+        implemented = bool(isinstance(record, dict) and record.get("implemented_by")) \
+            or (bool(own) and all(c.get("evidence") for c in own))
+        verified = bool(own) and all(c.get("state") == "passing" for c in own)
+        newest_evidence = None
+        for record_v in verifications or []:
+            if any(cid in (record_v.get("criteria") or []) for cid in (c.get("id") for c in own)):
+                newest_evidence = max(newest_evidence or "", record_v.get("at") or "")
+        reviewed = bool(review_at) and verified and (newest_evidence is None or review_at >= newest_evidence)
+        result[item["id"]] = {
+            "designed": designed, "implemented": implemented, "verified": verified, "reviewed": reviewed,
+            "complete": designed and implemented and verified and reviewed,
+            "criteria": [c.get("id") for c in own],
+            "passing": [c.get("id") for c in own if c.get("state") == "passing"],
+        }
+    return result
+
+
+def work_item_completion_lines(checkpoints: dict) -> list[str]:
+    """One human line per item: 'issue-102 implemented, verified' or
+    'issue-104 not started'."""
+    lines = []
+    for item_id, point in checkpoints.items():
+        if point["complete"]:
+            lines.append(f"{item_id} complete")
+            continue
+        stages = [name for name in ("designed", "implemented", "verified", "reviewed") if point[name]]
+        lines.append(f"{item_id} {', '.join(stages)}" if stages else f"{item_id} not started")
+    return lines
+
+
+def resume_scope_section(root: Path) -> str:
+    """#104: the completed and remaining scope for a relaunched implementer
+    or reviewer, so the resumed attempt continues with what is unfinished."""
+    cfg = load_config(root)
+    status = load_unique_json(status_path(root, cfg))
+    acceptance = load_unique_json(acceptance_path(root, cfg))
+    try:
+        verifications, _ = load_verifications(root, cfg)
+    except HandsoffError:
+        verifications = []
+    points = work_item_checkpoints(status, acceptance, None, verifications, cfg)
+    if not points:
+        return ""
+    done = [f"- {item_id} (criteria passing: {', '.join(p['passing']) or 'none'})" for item_id, p in points.items() if p["complete"] or p["verified"]]
+    remaining = [f"- {item_id}: {', '.join(c for c in p['criteria'] if c not in p['passing']) or 'no open criteria'}"
+                 for item_id, p in points.items() if not (p["complete"] or p["verified"])]
+    return ("# Completed scope\n\nDo not repeat this work; its evidence is on the ledger.\n\n"
+            + ("\n".join(done) or "- none yet")
+            + "\n\n# Remaining scope\n\n" + ("\n".join(remaining) or "- nothing remains"))
 
 
 # --------------------------------------------------------------------------
@@ -8647,9 +8793,11 @@ FAILURE_CATEGORIES = (
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
     "reviewer_modified_project",
     "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
+    "protocol_silence",
 )
 
 _FAILURE_REASON_LABELS = {
+    "protocol_silence": "session produced no protocol output within the configured limit",
     "cancelled": "run was cancelled",
     "timeout": "runner exceeded its timeout",
     "token_budget_exhaustion": "managed role exhausted its token budget",
@@ -8748,7 +8896,7 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
 RECOVERABLE_FAILURE_CATEGORIES = {
     "auth_failure", "rate_limit", "context_exhaustion", "timeout",
     "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost", "external_timeout",
-    "no_artifact",
+    "no_artifact", "protocol_silence",
 }
 FALLBACK_SKIP_REASONS = {
     "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent", "environment_failure",
@@ -9144,6 +9292,11 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
     return {
         "generated_at": now.isoformat(),
         "elapsed_seconds": round(elapsed, 3) if elapsed is not None else None,
+        # Mission clock anchors: the page ticks from started_at itself and
+        # freezes at ended_at once the run is complete.
+        "started_at": start.isoformat() if start else None,
+        "ended_at": end.isoformat() if complete and end else None,
+        "phase_started_at": phase_cursor.isoformat() if phase_cursor else None,
         "phase_seconds": {key: round(value, 3) for key, value in phase_seconds.items()},
         "verification_seconds": round(verification_seconds, 3),
         "pilot_wait_seconds": round(pilot_wait_seconds, 3),

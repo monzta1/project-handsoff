@@ -21,3 +21,21 @@ test("Mission Control surfaces truthful run economics without estimating tokens"
   assert.match(server, /metrics = lib\.build_run_metrics/);
   assert.match(server, /"metrics": metrics/);
 });
+
+test("LCD mission clocks tick from ledger anchors and freeze on completion", () => {
+  const app = read("dashboard/app.js");
+  const html = read("dashboard/index.html");
+  const css = read("dashboard/styles.css");
+  for (const id of ["mission-clock", "phase-clock"]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /lcd-ghost" aria-hidden="true">88:88:88</);
+  assert.match(app, /state\.clocks = \{ startedAt: metrics\.started_at \|\| null, endedAt: metrics\.ended_at \|\| null, phaseStartedAt: metrics\.phase_started_at \|\| null \}/);
+  assert.match(app, /window\.setInterval\(renderClocks, 1000\)/);
+  assert.match(app, /mission\.dataset\.frozen = anchors\.endedAt \? "true" : "false"/);
+  assert.match(css, /\.lcd\[data-frozen="true"\] \.lcd-live/);
+  const lib = read("bin/handsoff_lib.py");
+  for (const key of ['"started_at": start.isoformat()', '"ended_at": end.isoformat() if complete and end else None', '"phase_started_at"']) assert.ok(lib.includes(key), key);
+  const fleet = read("fleet/app.js");
+  assert.match(fleet, /data-started-at/);
+  assert.match(read("fleet/index.html"), /id="fleet-clock"/);
+  assert.match(read("bin/handsoff_fleet.py"), /"started_at": \(snap\.get\("metrics"\) or \{\}\)\.get\("started_at"\)/);
+});

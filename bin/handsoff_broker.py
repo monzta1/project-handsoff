@@ -47,6 +47,16 @@ def _text(request: dict, key: str) -> str:
     return value
 
 
+def _adoption_args(request: dict, base: list[str]) -> None:
+    """#115: an adopted verdict names the session it came from and who
+    adopted it; both or neither."""
+    if "adopted_session" in request or "adopted_by" in request:
+        if "adopted_session" not in request or "adopted_by" not in request:
+            raise lib.HandsoffError("broker adopted_session and adopted_by must be given together")
+        base.extend(["--adopted-session", _text(request, "adopted_session"),
+                     "--adopted-by", _text(request, "adopted_by")])
+
+
 def _extend_tests_executed(base: list[str], request: dict) -> None:
     """#80: a Reviewer reports whether it actually ran the linked tests; the
     broker forwards only the closed set the supervisor accepts, so a
@@ -166,7 +176,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     if command == "record-design-review":
         _exact_fields(request, {
             "actor", "project_root", "action", "command", "by", "architect", "decision", "summary",
-        }, {"findings", "structural_blocker", "session"})
+        }, {"findings", "structural_blocker", "session", "adopted_session", "adopted_by"})
         decision = _text(request, "decision")
         if decision not in {"approve", "request-changes"}:
             raise lib.HandsoffError("broker design-review decision is invalid")
@@ -174,6 +184,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
                      f"--{decision}", "--summary", _text(request, "summary")])
         if "session" in request:
             base.extend(["--session", _text(request, "session")])
+        _adoption_args(request, base)
         if "structural_blocker" in request:
             # #37: a boolean flag only; the supervisor refuses it without
             # request-changes before writing anything.
@@ -209,10 +220,11 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         return base
     if command == "record-review":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by"},
-                      {"symptom_reproduced", "session", "tests_executed"})
+                      {"symptom_reproduced", "session", "tests_executed", "adopted_session", "adopted_by"})
         base.extend(["--by", _text(request, "by")])
         if "session" in request:
             base.extend(["--session", _text(request, "session")])
+        _adoption_args(request, base)
         _extend_tests_executed(base, request)
         if "symptom_reproduced" in request:
             value = _text(request, "symptom_reproduced")
@@ -230,7 +242,8 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         return base
     if command == "record-review-findings":
         _exact_fields(request, {"actor", "project_root", "action", "command", "by", "findings"},
-                      {"session", "tests_executed"})
+                      {"session", "tests_executed", "adopted_session", "adopted_by"})
+        _adoption_args(request, base)
         _extend_tests_executed(base, request)
         findings = request["findings"]
         if not isinstance(findings, list) or not findings or len(findings) > 16 \
