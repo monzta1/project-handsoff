@@ -13,9 +13,12 @@ hand-transcribed results and no replay, and posts the evidence.
 
 ```bash
 python3 -m pip install --upgrade "https://github.com/monzta1/project-handsoff/releases/download/vX.Y.Z/project_handsoff-X.Y.Z-py3-none-any.whl"
-handsoff upgrade /abs/path/to/project --to vX.Y.Z
+handsoff upgrade /abs/path/to/project --to X.Y.*
 handsoff doctor /abs/path/to/project
 ```
+
+A project already on the compatible line `X.Y.*` needs no `upgrade` call at
+all; pass `--to vX.Y.Z` only when the proof must pin one exact build.
 
 `doctor` must report `ok: true`, `prompt_overrides: []` (or only
 `declared_current` entries), no `config-claim-contradiction` diagnostics, and

@@ -171,6 +171,31 @@ class EvidenceDriftTests(HandsoffTestCase):
         self.assertEqual(lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
                                             lib.load_verifications(self.tmp, cfg)[0])["stale"], ["REQ-001"])
 
+    def test_version_pin_rewrite_is_not_drift_but_a_source_edit_still_is(self):
+        """v0.3.25 field-note defect 2: `upgrade --to` rewrites .handsoff-version
+        and every completed run's evidence read as stale. The pin is Handsoff
+        configuration, excluded like handsoff.toml; product source still drifts."""
+        self.verify()
+        pin = self.tmp / lib.VERSION_PIN_FILE
+        before = pin.read_text() if pin.is_file() else None
+        pin.write_text("v9.9.9\n")
+        cfg = lib.load_config(self.tmp)
+        drift = lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                   lib.load_verifications(self.tmp, cfg)[0])
+        self.assertEqual(drift["current"], ["REQ-001"], drift)
+        self.assertEqual(drift["stale"], [])
+        self.assertEqual(drift["changed_paths"], [])
+        pin.write_text("0.3.*\n")
+        self.assertIn("REQ-001", lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                                     lib.load_verifications(self.tmp, cfg)[0])["current"])
+        self.drift()
+        drift = lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
+                                   lib.load_verifications(self.tmp, cfg)[0])
+        self.assertEqual(drift["stale"], ["REQ-001"])
+        self.assertNotIn(lib.VERSION_PIN_FILE, drift["changed_paths"])
+        if before is not None:
+            pin.write_text(before)
+
     def test_changed_paths_are_reported_and_legacy_has_note(self):
         self.prepared_phase_six()
         (self.tmp / "product.txt").write_text("source")

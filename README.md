@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.25/project_handsoff-0.3.25-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.26/project_handsoff-0.3.26-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -390,6 +390,28 @@ Eight defects observed on a real thin project during one run from `init` to Phas
 #### Keeping write-ups out of the repository digest
 
 `[digest] ignore` in `handsoff.toml` lists glob patterns excluded from the repository digest that evidence is bound to (a match applies to the full relative path and to any path component). Run notes, field write-ups and gap lists that live inside the project root belong there, so editing them between `verify` and `advance` does not read as evidence drift. The documentation audit is a separate filter: `[documentation] exclude` keeps a file out of the audit entirely, and a `handsoff-doc: intentional` marker on the line before a deliberate release reference suppresses just that finding. Anything not covered by either is simplest kept outside the project root.
+
+### v0.3.25 field notes: the pre-flight probe, the version pin, and the release cadence (field notes, 2026-09-18)
+
+Three defects observed on three thin projects right after the v0.3.22 to v0.3.25 upgrade, each with its cause and fix:
+
+1. **`doctor` reported a working Codex as `unreachable, exit code 1` inside a real project, and a launch within 24 hours would have refused the adapter on that cached result.** Cause: the probe borrowed `MIN_AGENT_TOKEN_BUDGET` (8,000 tokens at prefill weight 1.0) and ran from the project root, where the reviewer-shaped prompt plus the project's context cost 13,008 tokens; Codex answered `OK` and then exited 1 on the rollout-budget error, and the probe judged by exit code alone. Fix: the probe has its own `PREFLIGHT_TOKEN_BUDGET` (24,000), runs from a throwaway scratch directory with the managed Reviewer's exact launch shape (`--skip-git-repo-check`, scratch sandbox), and records `reachable` with the reason `OK before trailing token-budget exhaustion` when `OK` precedes a budget error, the same acceptance the launcher already applies to a complete protocol line (#114). Any other non-zero exit is still `unreachable` with the bounded, redacted reason. `tests/live_doctor_smoke.py` now asserts the installed engine reports Codex reachable on a fresh thin project and on this repository's own root.
+2. **An engine upgrade read as source drift on every completed run.** Cause: `upgrade --to` rewrites `.handsoff-version`, and the pin was the one `.handsoff*` file the repository digest deliberately kept. Fix: the pin is excluded from the digest like `handsoff.toml` (#93); the engine identity stays auditable through `engine_history` and the engine recorded on every `initialized` and `agent_session_launching` event. The documentation audit still flags an exact release reference in an instruction file, and editing that file is a product-tree change, so INSTALL.md now tells thin projects to name the compatible line `0.3.*` in `AGENTS.md`, `SKILL.md` and restart prompts, or to list those files under `[digest] ignore` (below).
+3. **Three patch releases in nine minutes, two of them logo-only, each costing a pin bump per project.** Cause: the upgrade runbook showed the exact-pin bump as the routine path even though `init` defaults to `0.3.*`. Fix: INSTALL.md documents the compatible line as the default (an exact-pinned project is moved to `0.3.*` once), keeps the exact bump as the strict-reproducibility exception, `docs/FIELD-PROOF.md` follows, and the release procedure and cadence rule are written down below: a release is cut when behaviour, prompts, schemas or the runtime manifest change; a cosmetic-only change to the dashboard rides with the next such release.
+
+### Cutting a release
+
+Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
+
+1. Set `version` in `pyproject.toml` to `X.Y.Z`.
+2. Regenerate the runtime manifest after the last runtime-file edit: `python3 bin/handsoff_manifest.py --version vX.Y.Z` (it rewrites `handsoff-runtime.json`; a wheel built from a stale manifest makes `doctor` refuse every project).
+3. Point the wheel references in `INSTALL.md` and this README at `vX.Y.Z`; the rollback example in `INSTALL.md` keeps its older release under its `handsoff-doc: intentional` marker.
+4. Commit as `Bump to vX.Y.Z` (or fold the bump into the feature commit, as the field-note fixes do), then `git tag -a vX.Y.Z -m "vX.Y.Z: one-line summary"`.
+5. `git push origin main` and `git push origin vX.Y.Z`.
+6. `python3 -m build --wheel` and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
+7. Upgrade the dedicated environment per `INSTALL.md` ("Clean patch upgrade") and confirm with `handsoff version --json` and `handsoff doctor` on a thin project. Projects on `0.3.*` need nothing else.
+
+Cut a release when behaviour, prompts, schemas or the runtime manifest change. A cosmetic-only change (dashboard markup, styles, assets) rides with the next such release; every project on the compatible line picks it up then without a pin bump.
 
 ## Review attempts and the convergence cap
 

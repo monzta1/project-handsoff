@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -219,6 +220,65 @@ class VersionedRuntimeTests(unittest.TestCase):
         result = cli._documentation_diagnosis(ROOT, {"version": CURRENT_VERSION}, lib.load_config(ROOT))
         install = [item for item in result["diagnostics"] if item["path"] == str(ROOT / "INSTALL.md")]
         self.assertNotIn("obsolete-release-reference", [item["code"] for item in install])
+
+    def test_repository_documentation_carries_no_obsolete_release_reference(self):
+        """v0.3.25 field-note defect 3: every root and docs/ file must point at
+        the release this tree declares (the INSTALL.md rollback example is
+        suppressed by its intentional marker)."""
+        result = cli._documentation_diagnosis(ROOT, {"version": CURRENT_VERSION}, lib.load_config(ROOT))
+        obsolete = [(item["path"], item["detail"]) for item in result["diagnostics"]
+                    if item["code"] == "obsolete-release-reference"]
+        self.assertEqual(obsolete, [])
+        self.assertIn(CURRENT_VERSION.lstrip("v"), (ROOT / "pyproject.toml").read_text())
+
+    def test_release_identity_is_one_version_and_live_checked(self):
+        """v0.3.25 field notes, REQ-006: the tree declares one release version in
+        pyproject.toml, handsoff-runtime.json, INSTALL.md and README.md, and the
+        published/installed identity is proved by a configured live check."""
+        version = CURRENT_VERSION.lstrip("v")
+        pyproject = (ROOT / "pyproject.toml").read_text()
+        self.assertRegex(pyproject, rf'(?m)^version = "{re.escape(version)}"$')
+        wheel = f"releases/download/v{version}/project_handsoff-{version}-py3-none-any.whl"
+        for name in ("INSTALL.md", "README.md"):
+            text = (ROOT / name).read_text()
+            self.assertIn(wheel, text, name)
+            unmarked = [line for previous, line in zip([""] + text.splitlines(), text.splitlines())
+                        if "releases/download/v" in line and wheel not in line
+                        and previous.strip() not in {"handsoff-doc: intentional", "<!-- handsoff-doc: intentional -->"}]
+            self.assertEqual(unmarked, [], f"{name} references another release without an intentional marker")
+        live = lib.load_config(ROOT)["live_check_commands"]
+        self.assertIn("python3 tests/live_release_smoke.py", live)
+        self.assertIn("python3 tests/live_doctor_smoke.py", live)
+        smoke = (ROOT / "tests" / "live_release_smoke.py").read_text()
+        for check in ("ls-remote", "merge-base", "releases/tags/", "sha256", "version\", \"--json\"",
+                      "zipfile", "manifest_sha256", "installed.read_bytes() == wheel.read(name)"):
+            self.assertIn(check, smoke)
+        self.assertNotIn('"fetch"', smoke, "the live release check must not mutate the checkout")
+
+    def test_upgrade_docs_show_the_compatible_pin_as_the_default_path(self):
+        """v0.3.25 field-note defects 2 and 3: the runbooks show the compatible
+        line, the exact bump is the exception, and the README documents the
+        field notes, the instruction-file guidance, and the release procedure."""
+        install = (ROOT / "INSTALL.md").read_text()
+        patch = install.split("## Clean patch upgrade", 1)[1].split("## After an upgrade", 1)[0]
+        self.assertIn("--to 0.3.*", patch)
+        self.assertLess(patch.index("--to 0.3.*"), patch.index("--to v"), "compatible pin must come first")
+        self.assertIn("strict reproducibility", patch)
+        self.assertIn("[digest] ignore", patch)
+        for name in ("AGENTS.md", "SKILL.md"):
+            self.assertIn(name, patch)
+        proof = (ROOT / "docs" / "FIELD-PROOF.md").read_text()
+        self.assertIn("--to X.Y.*", proof)
+        self.assertNotIn("handsoff upgrade /abs/path/to/project --to vX.Y.Z", proof)
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("### v0.3.25 field notes", readme)
+        self.assertIn("### Cutting a release", readme)
+        release = readme.split("### Cutting a release", 1)[1].split("\n## ", 1)[0]
+        for step in ("handsoff_manifest.py --version vX.Y.Z", "git tag -a vX.Y.Z", "git push origin main",
+                     "git push origin vX.Y.Z", "python3 -m build --wheel", "gh release create vX.Y.Z"):
+            self.assertIn(step, release)
+        self.assertIn("cosmetic-only change", release)
+        self.assertIn("PREFLIGHT_TOKEN_BUDGET", readme)
 
     def test_doctor_docs_only_returns_one_for_stale_and_zero_for_clean(self):
         root = self.base / "docs-only"

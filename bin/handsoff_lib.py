@@ -34,6 +34,7 @@ import socket
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import threading
 import time
 import urllib.error
@@ -133,6 +134,12 @@ DEFAULT_AGENT_TOKEN_BUDGETS = {
 }
 PREFLIGHT_FILE = ".handsoff-preflight.json"
 MIN_AGENT_TOKEN_BUDGET = 8_000
+#: The pre-flight probe's own rollout ceiling. It used to borrow the 8,000
+#: token floor, and inside a real project the reviewer-shaped prompt alone
+#: cost 13,008 tokens at prefill weight 1.0, so a working Codex reported
+#: `unreachable` (v0.3.25 field-note defect 1). Three times the floor bounds
+#: one "Reply with OK" turn without depending on any project's context.
+PREFLIGHT_TOKEN_BUDGET = 24_000
 MAX_AGENT_TOKEN_BUDGET = 500_000
 TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
 #: #38: cached, hash-bound design evidence. The side file is generated
@@ -1537,30 +1544,60 @@ def adapter_preflight(cfg: dict, root: Path, which=shutil.which, runner=subproce
         return {adapter: {"state": "not_checked", "reason": "HANDSOFF_SKIP_PREFLIGHT=1",
                           "checked_at": None, "executable": None}
                 for adapter in SELECTABLE_AGENT_ADAPTERS}
-    """Probe each configured CLI once with a tiny prompt, recording bounded diagnostic state."""
+    """Probe each configured CLI once with a tiny prompt, recording bounded diagnostic state.
+
+    The probe runs from a throwaway scratch directory, never the project
+    root: a Codex probe run inside a real project read the tree, spent the
+    borrowed 8,000-token floor on that context and answered `OK` followed
+    by a rollout-budget error, which `doctor` reported as unreachable and a
+    launch within 24 hours refused (v0.3.25 field-note defect 1). The Codex
+    argv is the managed Reviewer's exact launch shape (scratch sandbox,
+    `--skip-git-repo-check`) with its own PREFLIGHT_TOKEN_BUDGET, and an
+    `OK` reply before a trailing budget error counts as reachable, the same
+    acceptance the launcher applies to a complete protocol line (#114).
+    """
     result = {}
-    for adapter in SELECTABLE_AGENT_ADAPTERS:
-        executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
-        item = {"state": "not_checked", "reason": "executable missing", "checked_at": datetime.now(timezone.utc).isoformat(), "executable": str(executable) if executable else None}
-        if executable:
-            # Field-note defect 1: probe with the launch argv shape (read-only
-            # role, no model override) so a flag the CLI refuses fails here.
-            if adapter == "codex":
-                argv = codex_argv(str(executable), "reviewer", DEFAULT_AGENT_MODEL, MIN_AGENT_TOKEN_BUDGET)
-            else:
-                argv = claude_argv(str(executable), "reviewer", [], DEFAULT_AGENT_MODEL)
-            try:
-                completed = runner(argv, input="Reply with OK", text=True, capture_output=True, timeout=timeout, cwd=str(root))
-                if completed.returncode == 0:
-                    item.update(state="reachable", reason=None)
+    scratch = Path(tempfile.mkdtemp(prefix="handsoff-preflight-")).resolve()
+    try:
+        for adapter in SELECTABLE_AGENT_ADAPTERS:
+            executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
+            item = {"state": "not_checked", "reason": "executable missing", "checked_at": datetime.now(timezone.utc).isoformat(), "executable": str(executable) if executable else None}
+            if executable:
+                # Field-note defect 1 (v0.3.22): probe with the launch argv
+                # shape (no model override) so a flag the CLI refuses fails here.
+                if adapter == "codex":
+                    argv = codex_argv(str(executable), "reviewer", DEFAULT_AGENT_MODEL, PREFLIGHT_TOKEN_BUDGET, reviewer_sandbox=True)
                 else:
-                    tail = re.sub(r"(?i)(api[_ -]?key|token|password)\s*[:=]\s*\S+", r"\1=[redacted]", (completed.stderr or "")[:200])
-                    item.update(state="unreachable", reason=f"exit code {completed.returncode}: {tail}")
-            except subprocess.TimeoutExpired:
-                item.update(state="unreachable", reason="timeout")
-        result[adapter] = item
+                    argv = claude_argv(str(executable), "reviewer", [], DEFAULT_AGENT_MODEL)
+                try:
+                    completed = runner(argv, input="Reply with OK", text=True, capture_output=True, timeout=timeout, cwd=str(scratch))
+                    item.update(_preflight_outcome(completed))
+                except subprocess.TimeoutExpired:
+                    item.update(state="unreachable", reason="timeout")
+            result[adapter] = item
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     (root / PREFLIGHT_FILE).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
+
+
+PREFLIGHT_OK_BEFORE_BUDGET_REASON = "OK before trailing token-budget exhaustion"
+
+
+def _preflight_outcome(completed) -> dict:
+    """Classify one probe run. A non-zero exit whose stdout carries the `OK`
+    reply and whose tail is a rollout-budget error is the CLI working and
+    the budget meter closing the turn afterwards, so it is reachable; any
+    other non-zero exit keeps the bounded, redacted stderr tail."""
+    if completed.returncode == 0:
+        return {"state": "reachable", "reason": None}
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    failure = classify_runtime_failure(exit_code=completed.returncode, stderr_tail=stderr[-2000:], stdout_tail=stdout[-2000:])
+    if failure["category"] == "token_budget_exhaustion" and re.search(r"\bOK\b", stdout):
+        return {"state": "reachable", "reason": PREFLIGHT_OK_BEFORE_BUDGET_REASON}
+    tail = re.sub(r"(?i)(api[_ -]?key|token|password)\s*[:=]\s*\S+", r"\1=[redacted]", stderr[:200])
+    return {"state": "unreachable", "reason": f"exit code {completed.returncode}: {tail}"}
 
 
 #: Providers surfaced read-only in the Agent Settings UI so a user can see
@@ -8364,17 +8401,22 @@ def _digest_listing(root: Path, cfg: dict) -> list[str]:
 def _digest_excluded(relative: str, state_files: set[str]) -> bool:
     """Runtime bookkeeping never counts as repository content. Beyond the
     enumerated names, every `.handsoff*` path component is Handsoff side
-    state (locks, beacons, output tails, future files), except the version
-    pin, which is project configuration a change to which must show up as
-    drift. Without the structural rule a managed session running after
-    `verify` would write a side file and flag its own evidence stale on a
-    root that is not a git checkout (#77)."""
+    state (locks, beacons, output tails, the version pin, future files).
+    Without the structural rule a managed session running after `verify`
+    would write a side file and flag its own evidence stale on a root that
+    is not a git checkout (#77)."""
     parts = relative.split("/")
     if relative in state_files:
         return True
     if any(part in HANDSOFF_GENERATED_NAMES for part in parts):
         return True
-    if any(part.startswith(".handsoff") and part != VERSION_PIN_FILE for part in parts):
+    # Every `.handsoff*` path component, the version pin included: the pin
+    # is Handsoff configuration, not product source. `upgrade --to` rewrites
+    # it on every engine upgrade, which used to stale the evidence of every
+    # completed run in the project (v0.3.25 field-note defect 2). The engine
+    # identity stays auditable through `engine_history` and the engine
+    # recorded on every initialized and agent_session_launching event.
+    if any(part.startswith(".handsoff") for part in parts):
         return True
     # handsoff.toml is Handsoff's own configuration, not the product under
     # test: a live_commands line or a budget tweak must not read as source
