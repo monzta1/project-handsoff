@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Handsoff // Regression Console</title>
+  <link rel="icon" id="favicon" href="">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Back to Mission Control">
+        <span class="brand-mark">E<span>//</span>V</span>
+        <span class="brand-copy"><strong>HANDSOFF</strong><small>REGRESSION CONSOLE</small></span>
+      </a>
+      <div class="topbar-mission">
+        <p class="eyebrow"><span id="battery-label">NO BATTERY</span><span class="sep">/</span><span id="battery-root">no root</span></p>
+        <h1 id="battery-command">Start one with handsoff_regress.py --root ROOT --group NAME</h1>
+      </div>
+      <div class="topbar-state">
+        <span class="phase-pill" id="battery-state">IDLE</span>
+      </div>
+      <div class="topbar-meta">
+        <span class="lcd lcd-small" id="battery-clock" data-frozen="true"><span class="lcd-ghost" aria-hidden="true">88:88:88</span><span class="lcd-live">00:00:00</span></span>
+        <a class="settings-toggle" href="/">MISSION</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="bridge regression-bridge" aria-label="Battery progress">
+        <article class="panel now-panel">
+          <div class="now-head">
+            <div class="progress-ring" id="progress-ring" aria-label="Battery progress"><i class="orbit" aria-hidden="true"></i><div><strong id="progress-value">0</strong><span>%</span></div></div>
+            <div class="now-copy">
+              <p class="panel-label">TESTS</p>
+              <h2 id="battery-counts">0 / 0</h2>
+              <p id="battery-current" class="now-updated">waiting for the first test</p>
+            </div>
+          </div>
+          <div class="regression-bar" aria-hidden="true"><i id="bar-pass"></i><i id="bar-fail"></i><i id="bar-skip"></i></div>
+          <dl class="now-facts regression-facts">
+            <div><dt>Passed</dt><dd id="count-pass" class="is-good">0</dd></div>
+            <div><dt>Failed</dt><dd id="count-fail" class="is-bad">0</dd></div>
+            <div><dt>Errors</dt><dd id="count-error" class="is-bad">0</dd></div>
+            <div><dt>Skipped</dt><dd id="count-skip">0</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel signals-panel"><div class="radar" aria-hidden="true"></div>
+          <div class="section-head"><div><p class="panel-label">COMMANDS</p><h2>Battery sequence</h2></div><span id="command-count" class="section-meta">0 COMMANDS</span></div>
+          <div id="command-list" class="command-list"></div>
+        </article>
+      </section>
+
+      <section class="panel failures-panel">
+        <div class="section-head"><div><p class="panel-label">FAILURES</p><h2>Tests that did not pass</h2></div><span id="failure-count" class="count-badge">0</span></div>
+        <div id="failure-list" class="failure-list"><p class="attention-clear">Nothing has failed.</p></div>
+      </section>
+    </main>
+  </div>
+  <script src="/regression.js" defer></script>
+</body>
+</html>

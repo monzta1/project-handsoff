@@ -34,6 +34,8 @@ ASSET_ROOT = lib.engine_root() / "dashboard"
 ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/regression": ("regression.html", "text/html; charset=utf-8"),
+    "/regression.js": ("regression.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/lib/dashboard-logic.js": ("lib/dashboard-logic.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
@@ -1134,6 +1136,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if path == "/api/regression":
+            # Live battery progress written by bin/handsoff_regress.py; a
+            # missing file means no battery has run on this root.
+            progress = self.server.project_root / ".handsoff-regression.json"
+            try:
+                payload = json.loads(progress.read_text(encoding="utf-8")) if progress.is_file() else None
+            except (OSError, ValueError):
+                payload = None
+            self._json_response(HTTPStatus.OK, {"regression": payload, "generated_at": datetime.now(timezone.utc).isoformat()})
+            return
         if path == "/api/dashboard":
             payload = json.dumps(build_snapshot(self.server.project_root), separators=(",", ":")).encode("utf-8")
             self._headers(HTTPStatus.OK, "application/json; charset=utf-8", len(payload))
