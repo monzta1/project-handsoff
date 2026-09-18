@@ -65,7 +65,7 @@
         <section class="bridge" aria-label="Mission bridge">
           <article class="panel now-panel">
             <div class="now-head">
-              <div class="progress-ring" id="progress-ring" aria-label="Mission progress"><div><strong id="progress-value">0</strong><span>%</span></div></div>
+              <div class="progress-ring" id="progress-ring" aria-label="Mission progress"><i class="orbit" aria-hidden="true"></i><div><strong id="progress-value">0</strong><span>%</span></div></div>
               <div class="now-copy">
                 <p class="panel-label">CURRENT PHASE</p>
                 <h2 id="phase-name">Orient</h2>
@@ -82,6 +82,7 @@
               <span class="chiclet" data-role="implementer"><i></i>IMPLEMENTER</span>
               <span class="chiclet" data-role="reviewer"><i></i>REVIEWER</span>
             </div>
+            <div class="activity-strip"><span class="panel-label">ACTIVITY · LAST 2 H</span><canvas id="activity-spark" width="480" height="36" aria-label="Events per five minutes over the last two hours"></canvas></div>
             <dl class="now-facts">
               <div><dt>Design cycles</dt><dd id="design-rounds">0 / 3</dd></div>
               <div><dt>Review cycles</dt><dd id="review-rounds">0 / 3</dd></div>
@@ -117,7 +118,7 @@
             <button id="enable-alerts" class="alert-button" type="button">Enable desktop alerts</button>
           </article>
 
-          <article class="panel signals-panel">
+          <article class="panel signals-panel"><div class="radar" aria-hidden="true"></div>
             <div class="section-head"><div><p class="panel-label">SIGNALS</p><h2>Mission integrity</h2></div></div>
             <div class="signal-grid">
               <div class="signal-card"><span>Objectives</span><strong id="acceptance-score">0 / 0</strong><small>criteria confirmed</small></div>

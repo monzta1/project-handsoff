@@ -550,3 +550,25 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
   .now-facts { grid-template-columns: 1fr 1fr 1fr; }
   .legend { display: none; }
 }
+
+/* ---------- bridge instruments ---------- */
+.activity-strip { display: grid; gap: 6px; }
+.activity-strip canvas { width: 100%; height: 36px; display: block; border-bottom: 1px solid var(--line); }
+.signals-panel { overflow: hidden; }
+.radar { position: absolute; right: -90px; top: -90px; width: 260px; height: 260px; border-radius: 50%; pointer-events: none; opacity: .5;
+  background: conic-gradient(from 0deg, rgba(95, 211, 255, 0) 0deg, rgba(95, 211, 255, 0) 300deg, rgba(95, 211, 255, .22) 350deg, rgba(95, 211, 255, .55) 360deg);
+  mask: radial-gradient(circle, black 0 55%, transparent 56%); -webkit-mask: radial-gradient(circle, black 0 55%, transparent 56%);
+  animation: radar-sweep 8s linear infinite; }
+.radar::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: repeating-radial-gradient(circle, transparent 0 22px, rgba(95, 211, 255, .12) 22px 23px); }
+@keyframes radar-sweep { to { transform: rotate(360deg); } }
+.signals-panel > *:not(.radar) { position: relative; }
+.progress-ring .orbit { position: absolute; inset: -7px; border-radius: 50%; animation: orbit 6s linear infinite; }
+.progress-ring .orbit::before { content: ""; position: absolute; top: -2px; left: calc(50% - 2px); width: 4px; height: 4px; border-radius: 50%; background: #fff; box-shadow: 0 0 8px var(--accent), 0 0 14px var(--accent); }
+.progress-ring.is-complete .orbit { display: none; }
+@keyframes orbit { to { transform: rotate(360deg); } }
+body:not(.is-booted) .bridge > .panel, body:not(.is-booted) .workspace .panel { opacity: 0; transform: translateY(8px); }
+.bridge > .panel, .workspace .panel { transition: opacity .5s ease, transform .5s ease; }
+.bridge > .panel:nth-child(2) { transition-delay: .08s; }
+.bridge > .panel:nth-child(3) { transition-delay: .16s; }
+.workspace .panel { transition-delay: .24s; }
+@media (prefers-reduced-motion: reduce) { .radar, .progress-ring .orbit { animation: none !important; } body:not(.is-booted) .bridge > .panel, body:not(.is-booted) .workspace .panel { opacity: 1; transform: none; } }

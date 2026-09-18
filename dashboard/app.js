@@ -1158,6 +1158,32 @@ function renderReviewAttempts(attempts = []) {
     </div>`).join("") : "";
 }
 
+// Real activity, not decoration: events per five-minute bucket over the
+// last two hours, drawn as a HUD sparkline.
+function renderActivitySpark(events) {
+  const canvas = $("activity-spark");
+  if (!canvas || !canvas.getContext) return;
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width; const height = canvas.height;
+  const buckets = new Array(24).fill(0);
+  const now = Date.now();
+  for (const event of events || []) {
+    const age = now - new Date(event.at).getTime();
+    if (!Number.isFinite(age) || age < 0 || age > 2 * 3600 * 1000) continue;
+    buckets[23 - Math.min(23, Math.floor(age / (5 * 60 * 1000)))] += 1;
+  }
+  const peak = Math.max(1, ...buckets);
+  ctx.clearRect(0, 0, width, height);
+  const gap = 3; const bar = (width - gap * 23) / 24;
+  buckets.forEach((count, index) => {
+    const x = index * (bar + gap);
+    const h = Math.max(2, Math.round((count / peak) * (height - 4)));
+    ctx.fillStyle = count ? (index === 23 ? "#d7f6ff" : "rgba(95, 211, 255, .75)") : "rgba(148, 170, 190, .14)";
+    ctx.fillRect(x, height - h, bar, h);
+  });
+  if (buckets[23]) { ctx.shadowColor = "#5fd3ff"; ctx.shadowBlur = 8; ctx.fillStyle = "#d7f6ff"; const x = 23 * (bar + gap); const h = Math.max(2, Math.round((buckets[23] / peak) * (height - 4))); ctx.fillRect(x, height - h, bar, h); ctx.shadowBlur = 0; }
+}
+
 function renderEvents(events, total) {
   $("event-total").textContent = `${total} EVENT${total === 1 ? "" : "S"}`;
   $("event-list").innerHTML = events.length ? events.map((event) => `
@@ -1281,7 +1307,9 @@ function render(snapshot) {
   renderReviewAttempts(snapshot.review?.attempts || []);
   renderRoleChiclets(snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);
+  renderActivitySpark(snapshot.events);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);
+  if (!document.body.classList.contains("is-booted")) window.setTimeout(() => document.body.classList.add("is-booted"), 30);
 }
 
 // --- favicon: a small colored dot standing in for run state at a glance,
