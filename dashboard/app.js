@@ -1093,8 +1093,35 @@ function metricDuration(value) {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
+// #clock: LCD counters tick locally from the ledger anchors, so they move
+// every second between snapshots and freeze once the run is complete.
+function lcdText(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const s = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function renderClocks() {
+  const mission = $("mission-clock"); const phase = $("phase-clock");
+  if (!mission || !phase) return;
+  const anchors = state.clocks || {};
+  const now = Date.now();
+  if (anchors.startedAt) {
+    const end = anchors.endedAt ? new Date(anchors.endedAt).getTime() : now;
+    mission.querySelector(".lcd-live").textContent = lcdText((end - new Date(anchors.startedAt).getTime()) / 1000);
+    mission.dataset.frozen = anchors.endedAt ? "true" : "false";
+  }
+  if (anchors.phaseStartedAt) {
+    const end = anchors.endedAt ? new Date(anchors.endedAt).getTime() : now;
+    phase.querySelector(".lcd-live").textContent = lcdText((end - new Date(anchors.phaseStartedAt).getTime()) / 1000);
+    phase.dataset.frozen = anchors.endedAt ? "true" : "false";
+  }
+}
+
 function renderMetrics(metrics) {
   if (!metrics) return;
+  state.clocks = { startedAt: metrics.started_at || null, endedAt: metrics.ended_at || null, phaseStartedAt: metrics.phase_started_at || null };
+  renderClocks();
   $("metrics-elapsed").textContent = metricDuration(metrics.elapsed_seconds);
   $("metrics-sessions").textContent = String(metrics.managed_sessions || 0);
   $("metrics-failures").textContent = `${metrics.failed_sessions || 0} / ${metrics.replacement_count || 0}`;
@@ -1444,6 +1471,7 @@ window.setInterval(() => {
   if (state.lastGenerated) $("last-sync").textContent = `SYNCED ${relativeTime(state.lastGenerated).toUpperCase()}`;
 }, 1000);
 window.setInterval(renderLiveAge, 1000);
+window.setInterval(renderClocks, 1000);
 window.setInterval(() => {
   if (!state.inputRequired) return;
   state.titleFlip = !state.titleFlip;

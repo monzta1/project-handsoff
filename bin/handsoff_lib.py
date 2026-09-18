@@ -9292,6 +9292,11 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
     return {
         "generated_at": now.isoformat(),
         "elapsed_seconds": round(elapsed, 3) if elapsed is not None else None,
+        # Mission clock anchors: the page ticks from started_at itself and
+        # freezes at ended_at once the run is complete.
+        "started_at": start.isoformat() if start else None,
+        "ended_at": end.isoformat() if complete and end else None,
+        "phase_started_at": phase_cursor.isoformat() if phase_cursor else None,
         "phase_seconds": {key: round(value, 3) for key, value in phase_seconds.items()},
         "verification_seconds": round(verification_seconds, 3),
         "pilot_wait_seconds": round(pilot_wait_seconds, 3),
