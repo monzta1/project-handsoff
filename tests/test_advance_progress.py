@@ -5,7 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
-from test_handsoff_supervisor import HandsoffTestCase, run  # noqa: E402
+from test_handsoff_supervisor import HandsoffTestCase, approve_design_review, run  # noqa: E402
+import json  # noqa: E402
 
 
 class AdvanceProgressTests(HandsoffTestCase):
@@ -40,6 +41,36 @@ class AdvanceProgressTests(HandsoffTestCase):
         result = run(["advance", "4", "20"], cwd=self.tmp)
         self.assertEqual(result.returncode, 1)
         self.assertIn("one step at a time", result.stdout)
+
+    # #102: progress follows cleared gates when no value is given.
+    def test_approved_design_reads_25_not_the_phase_weight(self):
+        self._start()
+        self.assertEqual(run(["advance", "2"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(self.read_status()["progress"], 5)
+        self.assertEqual(approve_design_review(self.tmp).returncode, 0)
+        approved = run(["design-approve", "--by", "pilot", "--architect", "test-architect", "--summary", "ok"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+        self.assertEqual(run(["advance", "3"], cwd=self.tmp).returncode, 0)
+        status = self.read_status()
+        self.assertEqual(status["progress"], 25)
+        shown = json.loads(run(["status"], cwd=self.tmp).stdout)
+        self.assertEqual(shown["gate_progress"]["percent"], 25)
+        self.assertEqual(shown["gate_progress"]["cleared"], ["initialized", "design_reviewed", "design_approved"])
+
+    def test_evidenced_run_reads_at_least_50(self):
+        self.init("Gates")
+        self.set_criterion_state("passing", resolved=True)
+        shown = json.loads(run(["status"], cwd=self.tmp).stdout)
+        self.assertGreaterEqual(shown["gate_progress"]["percent"], 50)
+        self.assertIn("evidence", shown["gate_progress"]["cleared"])
+        self.assertIn("symptom", shown["gate_progress"]["cleared"])
+
+    def test_explicit_progress_is_still_honoured(self):
+        self._start()
+        self.assertEqual(run(["advance", "2", "70"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(self.read_status()["progress"], 70)
+        self.assertEqual(run(["advance", "2"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(self.read_status()["progress"], 70)
 
 
 if __name__ == "__main__":

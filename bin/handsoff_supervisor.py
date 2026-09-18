@@ -300,6 +300,7 @@ def cmd_status(args) -> int:
         "root": str(root), "feature": status.get("feature"), "phase": status.get("phase"),
         "engine": lib.runtime_identity(root),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
+        "gate_progress": lib.gate_progress(status, acceptance),
         "status": status.get("status"), "next_action": status.get("next_action"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
         "review_attempts": [{k: item.get(k) for k in ("attempt", "attempt_id", "trigger", "disposition", "reviewer")}
@@ -392,9 +393,14 @@ def cmd_advance(args) -> int:
             print(f"phase transition blocked: current={current}, requested={args.phase} (one step at a time)")
             return 1
         current_progress = status.get("progress", 0)
-        progress = current_progress if args.progress is None else args.progress
-        if args.progress is not None and args.progress < current_progress:
-            progress = current_progress
+        if args.progress is None:
+            # #102: no explicit value means "what the gates say", never
+            # lower than what the operator already recorded (#100).
+            progress = max(current_progress, lib.gate_progress(status, acceptance)["percent"])
+        else:
+            progress = args.progress
+            if args.progress < current_progress:
+                progress = current_progress
 
         # Build the PROPOSED status and validate THAT, before writing
         # anything. This is the fix for the original bug: validating the

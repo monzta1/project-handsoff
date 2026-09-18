@@ -4408,6 +4408,37 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     return result
 
 
+GATE_PROGRESS_WEIGHTS = (
+    ("initialized", 5), ("design_reviewed", 15), ("design_approved", 25), ("evidence", 45),
+    ("symptom", 50), ("review", 65), ("deployment", 80), ("live", 95), ("complete", 100),
+)
+
+
+def gate_progress(status: dict, acceptance: dict) -> dict:
+    """#102: progress as gates cleared, not phase index. A run with an
+    approved design used to read 8 percent because progress was
+    phase-weighted; here it reads 25. Gates are cumulative: the percent is
+    the weight of the highest gate cleared, `cleared` lists them in order."""
+    criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
+    automated = [c for c in criteria if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+    review = status.get("design_review") if isinstance(status, dict) else None
+    facts = {
+        "initialized": bool(status),
+        "design_reviewed": isinstance(review, dict) and review.get("decision") == "approved",
+        "design_approved": isinstance(status.get("design_approved"), dict),
+        "evidence": bool(automated) and all(c.get("state") == "passing" for c in automated),
+        "symptom": bool((status.get("requirement_coverage") or {}).get("original_symptom_resolved")
+                        or status.get("original_symptom_evidence_id")),
+        "review": isinstance(status.get("review"), dict) and bool(status.get("reviewed_by")),
+        "deployment": isinstance(status.get("deployment_approved"), dict),
+        "live": bool(status.get("live_verification_id")),
+        "complete": status.get("status") == "complete" or int(status.get("phase_number", 0) or 0) >= 8,
+    }
+    cleared = [name for name, _ in GATE_PROGRESS_WEIGHTS if facts[name]]
+    percent = max((weight for name, weight in GATE_PROGRESS_WEIGHTS if facts[name]), default=0)
+    return {"percent": percent, "cleared": cleared}
+
+
 def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bool:
     """A design decision is current when its hash is the registry's design
     hash, or (#42) while a scoped amendment is open: the decision still
