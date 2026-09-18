@@ -11,7 +11,7 @@
     "bin/handsoff_supervisor.py": "892da8f1f5a332503a14170a6004b4dd9a27d40cf07e02bcdfbdb0370dfcfa8c",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
-    "dashboard/app.js": "24d55faf80f0b8afb967a6b9c445032a73d5b1d30206ee4de952bbe7d088aab3",
+    "dashboard/app.js": "771f1c8e2a9b2bc2a5c961c9778eb0833726933c5ddd5eec5ca665de2d1dfbc9",
     "dashboard/index.html": "d108ef2d8d42a34a700535ca68afb33bfbd7052fc9260a671ed9425d608071a0",
     "dashboard/lib/dashboard-logic.js": "692ce2aa8b016c51387a21f9f0cead161099a879ed594d78bc37e6a954327859",
     "dashboard/styles.css": "08c5284769c7fb9f05d5702af92dedad08d783f11e15a3ea8be1a202931eefc9",

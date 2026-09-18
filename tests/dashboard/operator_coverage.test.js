@@ -47,3 +47,10 @@ test("unavailable operations fold into one closed disclosure grouped by reason",
   assert.match(block, /ROUTINE_KINDS = new Set\(\["pause", "resume", "run_close", "run_reopen"\]\)/);
   assert.match(css, /\.operator-inventory-collapsed summary/);
 });
+test("typed reason drafts survive snapshot re-renders", () => {
+  const block = app.slice(app.indexOf("function renderOperations"), app.indexOf("function renderInventory"));
+  assert.match(block, /state\.reasonDrafts/);
+  assert.match(block, /signature === state\.actionSignature/);
+  assert.match(block, /reason\.dataset\.reasonFor = action\.kind/);
+  assert.match(block, /reason\.value = state\.reasonDrafts\[action\.kind\] \|\| ""/);
+});

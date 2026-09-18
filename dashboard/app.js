@@ -450,8 +450,21 @@ function renderOperations(operations = {}, actions = []) {
   const routine = actions.filter((action) => ROUTINE_KINDS.has(action.kind));
   $("operator-actions-count").textContent = `${decisions.length} PENDING`;
   const list = $("operator-actions-list");
-  list.replaceChildren();
   const routineList = $("operator-routine-list");
+  // Snapshots arrive every few seconds; rebuilding the action cards each
+  // time wiped whatever the Pilot was typing into a reason field. Keep the
+  // cards when the bound action ids are unchanged, and carry typed drafts
+  // across a rebuild otherwise.
+  const signature = actions.map((action) => action.action_id).join("|");
+  state.reasonDrafts = state.reasonDrafts || {};
+  document.querySelectorAll("[data-reason-for]").forEach((input) => { if (input.value) state.reasonDrafts[input.dataset.reasonFor] = input.value; });
+  if (signature === state.actionSignature && list.childElementCount + (routineList ? routineList.childElementCount : 0) === actions.length) {
+    renderInventory(inventory, actionKinds, OP_CLASSES);
+    renderConsoleForms(inventory, operations, actions);
+    return;
+  }
+  state.actionSignature = signature;
+  list.replaceChildren();
   if (routineList) routineList.replaceChildren();
   for (const action of actions) {
     const card = document.createElement("article");
@@ -471,6 +484,9 @@ function renderOperations(operations = {}, actions = []) {
       reason.maxLength = 512;
       reason.placeholder = "Reason required";
       reason.setAttribute("aria-label", `Reason for ${action.label}`);
+      reason.dataset.reasonFor = action.kind;
+      reason.value = state.reasonDrafts[action.kind] || "";
+      reason.addEventListener("input", () => { state.reasonDrafts[action.kind] = reason.value; });
       controls.append(reason);
     }
     const button = document.createElement("button");
@@ -482,6 +498,11 @@ function renderOperations(operations = {}, actions = []) {
     if (ROUTINE_KINDS.has(action.kind) && routineList) routineList.append(card);
     else list.append(card);
   }
+  renderInventory(inventory, actionKinds, OP_CLASSES);
+  renderConsoleForms(inventory, operations, actions);
+}
+
+function renderInventory(inventory, actionKinds, OP_CLASSES) {
   // Unavailable operations are folded into one closed disclosure with a
   // single line per reason. A complete run has eighteen of them and every
   // one says "run is complete"; listing each as a card buried the panel.
@@ -502,6 +523,9 @@ function renderOperations(operations = {}, actions = []) {
     const detail = (item) => escapeHtml(item.consequence);
     return `<div class="operator-inventory-group"><h3>${availability.replace("_", " ").toUpperCase()}</h3>${entries.map((item) => `<article class="operator-inventory-item ${cls}"><strong>${escapeHtml(item.label || item.kind)}</strong><p>${detail(item)}</p></article>`).join("")}</div>`;
   }).join("");
+}
+
+function renderConsoleForms(inventory, operations, actions) {
   const launch = inventory.find((item) => item.kind === "launch_role");
   const launchForm = $("launch-role-form");
   const launchSelect = $("launch-role-role");
@@ -528,6 +552,8 @@ function renderOperations(operations = {}, actions = []) {
   const previewRows = Object.entries(engine.previews || {}).map(([name, preview]) => `<span><strong>${escapeHtml(name)}</strong> ${escapeHtml(typeof preview === "string" ? preview : JSON.stringify(preview))}</span>`).join("");
   $("engine-panel").innerHTML = `<p class="engine-summary">${escapeHtml(engine.version)} <span>${escapeHtml(engine.source)} · pin ${escapeHtml(engine.pin)} · ${escapeHtml(engine.compatibility)}</span></p><p class="engine-reason">${escapeHtml(engine.execution_reason)}</p>${commandRows ? `<details class="engine-details"><summary>${Object.keys(engine.commands || {}).length} COMMANDS</summary><div class="engine-commands">${commandRows}</div></details>` : ""}${previewRows ? `<details class="engine-details"><summary>PREVIEWS</summary><div class="engine-previews">${previewRows}</div></details>` : ""}`;
   $("engine-panel").querySelectorAll("[data-copy-command]").forEach((button) => button.onclick = () => navigator.clipboard.writeText(button.dataset.copyCommand));
+  const ROUTINE = new Set(["pause", "resume", "run_close", "run_reopen"]);
+  const decisions = actions.filter((action) => !ROUTINE.has(action.kind));
   const clear = $("decisions-clear");
   if (clear) clear.classList.toggle("hidden", decisions.length > 0 || state.inputRequired);
 }
