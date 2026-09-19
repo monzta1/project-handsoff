@@ -180,9 +180,28 @@ function computeSeries(issues, from, to, commits = [], since = null, releases = 
   };
 }
 
-// #156: one row per project for the All view, sorted by closed desc, then name.
+// #160: registered roots that point at one repository (a lane worktree beside
+// its checkout) become one entry: identity is the lowercased owner/repo, the
+// entry carries every root name, and the data is the first root's (the
+// collector already served them one set of reads, so the lists are equal).
+function groupByRepo(projects) {
+  const groups = new Map();
+  for (const project of projects) {
+    const identity = project.repo ? String(project.repo).toLowerCase() : `root:${project.root}`;
+    const found = groups.get(identity);
+    if (found) {
+      found.roots.push(project.name);
+      if (!found.error && project.error) found.error = project.error;
+    } else {
+      groups.set(identity, { ...project, identity, roots: [project.name] });
+    }
+  }
+  return [...groups.values()].map((group) => ({ ...group, name: group.roots.join(" + ") }));
+}
+
+// #156: one row per repository for the All view, sorted by closed desc, then name.
 function breakdownRows(projects, from, to) {
-  return projects
+  return groupByRepo(projects)
     .filter((project) => project.repo)
     .map((project) => {
       const series = computeSeries(project.issues || [], from, to, project.commits || [], project.commits_since || null, project.releases || []);
@@ -599,7 +618,7 @@ function renderTable(container, series) {
 const state = { data: null, project: "all", preset: "30", from: "", to: "" };
 
 function selectedProjects() {
-  return (state.data?.projects || []).filter((project) => state.project === "all" || project.root === state.project);
+  return groupByRepo(state.data?.projects || []).filter((project) => state.project === "all" || project.identity === state.project);
 }
 
 function selectedIssues() {
@@ -640,7 +659,7 @@ function renderAll() {
   if (state.project === "all") renderBreakdown(breakdown, breakdownRows(state.data.projects || [], range.from, range.to));
   renderTable($("table-wrap"), series);
   $("range-label").textContent = `${formatDay(range.from)} to ${formatDay(range.to)} · ${series.days.length} DAYS`;
-  const stale = (state.data.projects || []).filter((project) => project.error);
+  const stale = groupByRepo(state.data.projects || []).filter((project) => project.error);
   // #158: the GitHub budget beside the refresh time, when the collector has seen the headers.
   const rate = state.data.rate_limit;
   const budget = rate && Number.isInteger(rate.remaining) ? ` · GITHUB BUDGET ${rate.remaining} OF ${rate.limit}` : "";
@@ -676,10 +695,10 @@ function fillProjects(data) {
   all.value = "all";
   all.textContent = "All projects";
   select.appendChild(all);
-  for (const project of data.projects.filter((item) => item.repo)) {
+  for (const project of groupByRepo(data.projects).filter((item) => item.repo)) {
     const option = document.createElement("option");
-    option.value = project.root;
-    option.textContent = `${project.name} (${project.repo})`;
+    option.value = project.identity;
+    option.textContent = project.roots.length > 1 ? `${project.repo} (${project.roots.join(", ")})` : `${project.name} (${project.repo})`;
     select.appendChild(option);
   }
   select.value = state.project;
@@ -704,7 +723,7 @@ async function load() {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     dayKey, startOfDay, endOfDay, addDays, dayRange, normalizeRange, presetRange, median, percentile, daysToClose,
-    computeSeries, commitSeries, releasesInRange, breakdownRows,
+    computeSeries, commitSeries, releasesInRange, breakdownRows, groupByRepo,
     renderAll, renderKpis, renderTable, renderClosedChart, renderOpenedChart, renderBacklogChart, renderTtcChart,
     renderCommitsChart, renderReleasesPanel, renderBreakdown, state, load, bindControls, fillProjects, MAX_BAR, BAR_GAP,
   };

@@ -87,6 +87,14 @@ def main() -> int:
         return fail(f"refreshed_at did not reach started_at within 120 s: {payload and {k: payload.get(k) for k in ('started_at', 'refreshed_at')}}")
     print(f"running collector refreshed at {payload['refreshed_at']} (server started {payload['started_at']})")
 
+    # #160: roots sharing a repository must serve the same issue list.
+    by_repo = {}
+    for project in payload["projects"]:
+        if project.get("repo"):
+            by_repo.setdefault(project["repo"].lower(), set()).add(len(project.get("issues") or []))
+    shared_mismatch = {repo: counts for repo, counts in by_repo.items() if len(counts) > 1}
+    if shared_mismatch:
+        return fail(f"roots sharing a repository serve different issue counts: {shared_mismatch}")
     target = next((p for p in payload["projects"] if p.get("repo") == REPO), None)
     if target is None:
         return fail(f"no project with origin {REPO} among {[p.get('name') for p in payload['projects']]}")

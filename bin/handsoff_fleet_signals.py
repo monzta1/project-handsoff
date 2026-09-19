@@ -91,6 +91,12 @@ def parse_github_remote(url: str) -> str | None:
     return None
 
 
+def repo_identity(repo: str | None) -> str | None:
+    """#160: the grouping key for roots that point at one repository: the
+    owner/repo parse_github_remote yields, lowercased; None stays None."""
+    return repo.lower() if isinstance(repo, str) and repo else None
+
+
 def origin_repo(root: Path) -> str | None:
     try:
         proc = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd=root,
@@ -365,21 +371,73 @@ class SignalCache:
                              f"({type(exc).__name__})\n")
 
 
+DEFAULT_WAKE_SECONDS = 5.0
+
+
+def wake_seconds() -> float:
+    raw = os.environ.get("HANDSOFF_FLEET_WAKE_SECONDS")
+    try:
+        value = float(raw) if raw else DEFAULT_WAKE_SECONDS
+    except ValueError:
+        value = DEFAULT_WAKE_SECONDS
+    return value if value > 0 else DEFAULT_WAKE_SECONDS
+
+
+def registry_signature(path: Path | None) -> tuple:
+    """#157: the change signal for the registry: its (mtime_ns, size), or
+    (None, None) when there is no readable file. Never raises."""
+    if path is None:
+        return (None, None)
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return (None, None)
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 def start_refresh_thread(cache, roots_provider, *, interval: float | None = None,
-                         stop_event: threading.Event | None = None, name: str = "fleet-signals") -> threading.Thread:
+                         stop_event: threading.Event | None = None, name: str = "fleet-signals",
+                         wake_path: Path | None = None, wake: float | None = None) -> threading.Thread:
     """Refresh now, then every `interval` seconds, on a daemon thread. The
     caller's constructor returns before the first refresh completes. Works
-    for any cache with refresh(roots): SignalCache and IssueCache (#153)."""
+    for any cache with refresh(roots): SignalCache and IssueCache (#153).
+
+    #157: with `wake_path` (the Fleet registry) the thread samples the
+    file's (mtime_ns, size) at the end of every pass and every `wake`
+    seconds while waiting; a change starts a pass at once and restarts the
+    interval, so a project registered mid-interval is collected within one
+    wake period of the later of the change landing and the running pass
+    ending."""
     interval = signals_interval() if interval is None else interval
+    wake = wake_seconds() if wake is None else wake
     stop_event = stop_event or threading.Event()
 
     def loop():
+        # The signature is sampled BEFORE each pass: a change that lands while
+        # the pass runs then differs at the end-of-pass check and starts the
+        # next pass at once, instead of being mistaken for the baseline.
+        seen = registry_signature(wake_path)
         while not stop_event.is_set():
             try:
                 cache.refresh(roots_provider())
             except Exception as exc:  # the loop must outlive any one bad cycle
                 sys.stderr.write(f"HANDSOFF_FLEET_WARNING: {name} refresh failed ({type(exc).__name__}: {exc})\n")
-            stop_event.wait(interval)
+            if wake_path is None:
+                stop_event.wait(interval)
+                continue
+            current = registry_signature(wake_path)
+            if current != seen:
+                seen = current
+                continue  # changed during the pass: pass again now
+            waited = 0.0
+            while not stop_event.is_set() and waited < interval:
+                step = min(wake, interval - waited)
+                stop_event.wait(step)
+                waited += step
+                current = registry_signature(wake_path)
+                if current != seen:
+                    seen = current
+                    break  # a registry change: pass now, interval restarts after it
 
     thread = threading.Thread(target=loop, name=name, daemon=True)
     thread.stop_event = stop_event  # type: ignore[attr-defined]
@@ -848,6 +906,8 @@ class IssueCache:
             reader = plain_reader(client) if client is not _ASK and client is not None else (None if client is None else conditional_reader())
         fresh: dict[str, dict] = {}
         rate = None
+        # #160: roots that share a repository share one set of reads this pass.
+        collected: dict[str, dict] = {}
 
         def empty(repo, error):
             return {"repo": repo, "fetched_at": utcnow(), "error": error, "issues": [], "commits": [],
@@ -856,6 +916,7 @@ class IssueCache:
         for root in roots:
             key = str(root)
             repo = repo_of(root)
+            identity = repo_identity(repo)
             old = previous.get(key)
             if repo is None:
                 fresh[key] = empty(None, NO_ORIGIN)
@@ -863,17 +924,23 @@ class IssueCache:
             if reader is None:
                 fresh[key] = empty(repo, GITHUB_NOT_CONFIGURED)
                 continue
+            if identity in collected:
+                fresh[key] = json.loads(json.dumps(collected[identity]))
+                continue
             try:
                 entry = collect_project(old, repo, reader, now=now, window_since=since)
             except GitHubUnavailable as exc:
                 kept = old if old and old.get("repo") == repo else None
-                fresh[key] = {**(kept or empty(repo, None)), "repo": repo, "error": str(exc),
-                              "fetched_at": kept["fetched_at"] if kept else None}
+                entry = {**(kept or empty(repo, None)), "repo": repo, "error": str(exc),
+                         "fetched_at": kept["fetched_at"] if kept else None}
+                fresh[key] = entry
+                collected[identity] = entry
                 continue
             seen = entry.pop("_rate", None)
             if seen is not None:
                 rate = seen
             fresh[key] = entry
+            collected[identity] = entry
         with self._lock:
             self._data = fresh
             self.refreshed_at = utcnow()

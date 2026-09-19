@@ -17,6 +17,10 @@ small_fix_max_changed_lines = 200
 small_fix_max_files = 6
 require_live_verification = true
 deployment_requires_explicit_approval = true
+# #159: false waives the Pilot's design click (design-approve or the Mission
+# Control button) once the independent design review has approved; that
+# review stays mandatory. Default true.
+require_design_approval = true
 
 [agents]
 # Every role here is set explicitly and happens to equal the recommended
@@ -147,6 +151,9 @@ commands = [
   "node --test tests/dashboard/fleet_metrics_series.test.js",
   "python3 -m unittest tests.test_fleet_metrics.ConditionalReaderTests -v",
   "python3 -m unittest tests.test_fleet_metrics.ConditionalCollectorTests -v",
+  "python3 -m unittest tests.test_design_gate_config -v",
+  "python3 -m unittest tests.test_fleet_metrics.RegistryWakeTests -v",
+  "python3 -m unittest tests.test_fleet_metrics.RepoDedupeTests -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

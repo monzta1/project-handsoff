@@ -5,12 +5,12 @@
     "bin/handsoff_broker.py": "5daeed604791a1f226fed0843400c9420233f5433456910b070cbae626c4d2c4",
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "22b54949f2d9890bf49f2dc40d3a68f7fe7d91dc36398219c993bd351a43a572",
-    "bin/handsoff_fleet.py": "7cca63c7246d3dbc1b3123a1489469d93c3702e4bd3cf02a8d151717220414dc",
-    "bin/handsoff_fleet_signals.py": "abff4a0b8440b2e7da6635f21b1ed9d3000d4ad0f422cd74a1603f9b379ed17c",
-    "bin/handsoff_lib.py": "f0d2b2c6b09f6fda92c31a75f5ab061727e019032e8cfe0108bd184803f1dc93",
+    "bin/handsoff_fleet.py": "90906aa7236be35fd754f8655928813b9d0a174045d59273d8ca633043b8cec1",
+    "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
+    "bin/handsoff_lib.py": "5b1221fcdc5bd800b67981ad39b3b66c09b347504d422216266c662345d4894c",
     "bin/handsoff_manifest.py": "b119d1fae1e7c51863732e59aa3c067af051a4254eeb1f6fae13e91704bedb85",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
-    "bin/handsoff_supervisor.py": "7993440fa377faa706fe517f98ca0d3519e927a3033d530257719926e7f79555",
+    "bin/handsoff_supervisor.py": "fb633fa5e463d66dca24ad59d1e53ddfac2e2bcbc6b3760ffc46c15dfef484aa",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
     "dashboard/app.js": "9ef95e14682e28a2679949b65e3e99e2f3703c8e55735cfb61898af76beb894a",
@@ -23,7 +23,7 @@
     "fleet/app.js": "65f5189ad719e30501286046a0b8b43e4a67dcef48ae9be98a86bf3687e8dc97",
     "fleet/index.html": "45f126a3e15ccbcacebdb81f7a53753a37c06adb610439544411a7efbf36999c",
     "fleet/metrics.html": "ab5bec355a4d8c7de7a7af31f0d003043f605119a59e3698bb017e9a77316223",
-    "fleet/metrics.js": "950d39b672a26626805539115ba099f8ace29c6f0280a31479b15df1eaf60bf3",
+    "fleet/metrics.js": "f1aa74cd7dbc472eef5316eb47396417d9355a05931fb1dbbe535813faeb6320",
     "fleet/styles.css": "208bcc364e9bc5362d0c5f089248094dae035e7f4c409bed33b2fc5c45b12288",
     "prompts/architect.md": "d75735807942280aae78d781d83a9ff27ee6d8ce642657a12886484cd36f6711",
     "prompts/implementer.md": "ea5fa7a7578f85bc482682c543b95111dd1deb0e3c96a5004d127f9b07fd6cbd",
@@ -31,8 +31,8 @@
     "prompts/supervisor.md": "a1a7c986104dfeb6edb2c94d8d0be7541585dbf9b0b820360c331e7aad7e01f4",
     "schemas/acceptance.schema.json": "322de8bcab72e6f2089284097775b732fd4c31e3544a240c97194104e7e4d8b7",
     "schemas/status.schema.json": "983d85af75c0ea2bec8667dfdb993d7ec22fe657257b55213bf8bd7729d200a1",
-    "templates/handsoff.toml": "5e60d1e4ade715a4d440f9ba79ee7bec7a286194652f9f4399c65cd13a70a887"
+    "templates/handsoff.toml": "6b98f3137fcedfd14349fbaa8ce7e22f033fb37929b5b6e5b465c80ab2317f99"
   },
   "schema": 1,
-  "version": "v0.3.40"
+  "version": "v0.3.41"
 }

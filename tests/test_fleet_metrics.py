@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -90,6 +91,7 @@ class _Env(unittest.TestCase):
     def repo_dir(self, name, origin="https://github.com/o/r.git"):
         path = self.base / name
         path.mkdir()
+        (path / "handsoff.toml").write_text(f"[project]\nname = '{name}'\n")  # registrable with Fleet
         subprocess.run(["git", "init", "-q"], cwd=path, check=True)
         if origin:
             subprocess.run(["git", "remote", "add", "origin", origin], cwd=path, check=True)
@@ -528,6 +530,141 @@ class ConditionalCollectorTests(_Env):
         project = payload["projects"][0]
         self.assertEqual((project["requests_total"], project["requests_counted"]), (3, 3))
         self.assertEqual(project["updated_since"], "2026-09-12T00:00:00Z")
+
+
+class RegistryWakeTests(_Env):
+    """#157: the refresh threads wake on a registry change."""
+
+    def _registry(self, roots):
+        path = self.base / "registry.json"
+        fleet.save_registry([{"root": str(r), "registered_at": "2026-09-19T00:00:00+00:00"} for r in roots], path)
+        return path
+
+    def _wait(self, predicate, seconds=10.0):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return predicate()
+
+    def test_a_project_registered_while_the_thread_idles_is_collected_within_seconds(self):
+        alpha = self.repo_dir("alpha", "https://github.com/o/alpha.git")
+        registry = self._registry([alpha])
+        cache = signals.IssueCache(self.cache_file)
+        passes = []
+        reader = _Scripted({})
+
+        def refresh(roots):
+            cache.refresh(roots, reader=reader, since=WINDOW, now=NOW)
+            passes.append([Path(r).name for r in roots])   # recorded once the pass has landed
+        stub = type("Stub", (), {"refresh": staticmethod(refresh)})()
+        thread = signals.start_refresh_thread(stub, lambda: [e["root"] for e in fleet.load_registry(registry)],
+                                              interval=3600, wake_path=registry, wake=0.2, name="wake-test")
+        try:
+            self.assertTrue(self._wait(lambda: len(passes) == 1))
+            time.sleep(0.5)
+            self.assertEqual(len(passes), 1)   # idle: no pass without a change
+            beta = self.repo_dir("beta", "https://github.com/o/beta.git")
+            started = time.time()
+            fleet.register_project(beta, registry)
+            self.assertTrue(self._wait(lambda: len(passes) >= 2))
+            self.assertLess(time.time() - started, 10)
+            self.assertIn("beta", passes[-1])
+            self.assertIsNotNone(cache.get(beta))
+            time.sleep(0.6)
+            self.assertEqual(len(passes), 2)   # the interval restarted; no extra pass
+        finally:
+            thread.stop_event.set()
+            thread.join(5)
+
+    def test_a_change_during_a_running_pass_is_seen_at_that_pass_end(self):
+        alpha = self.repo_dir("alpha", "https://github.com/o/alpha.git")
+        registry = self._registry([alpha])
+        gate = threading.Event()
+        passes = []
+
+        def refresh(roots):
+            passes.append([Path(r).name for r in roots])
+            if len(passes) == 1:
+                gate.wait(5)   # the first pass is blocked inside its fetch
+        stub = type("Stub", (), {"refresh": staticmethod(refresh)})()
+        thread = signals.start_refresh_thread(stub, lambda: [e["root"] for e in fleet.load_registry(registry)],
+                                              interval=3600, wake_path=registry, wake=0.2, name="wake-test")
+        try:
+            self.assertTrue(self._wait(lambda: len(passes) == 1))
+            beta = self.repo_dir("beta", "https://github.com/o/beta.git")
+            fleet.register_project(beta, registry)   # lands while pass 1 is blocked
+            time.sleep(0.5)
+            self.assertEqual(len(passes), 1)
+            gate.set()
+            self.assertTrue(self._wait(lambda: len(passes) >= 2, 3))
+            self.assertIn("beta", passes[1])
+        finally:
+            gate.set()
+            thread.stop_event.set()
+            thread.join(5)
+
+    def test_a_missing_registry_never_raises_and_the_signature_is_stable(self):
+        missing = self.base / "nowhere.json"
+        self.assertEqual(signals.registry_signature(missing), (None, None))
+        self.assertEqual(signals.registry_signature(None), (None, None))
+        passes = []
+        stub = type("Stub", (), {"refresh": staticmethod(lambda roots: passes.append(list(roots)))})()
+        thread = signals.start_refresh_thread(stub, lambda: [], interval=3600, wake_path=missing, wake=0.1, name="wake-test")
+        try:
+            self.assertTrue(self._wait(lambda: len(passes) == 1))
+            time.sleep(0.5)
+            self.assertEqual(len(passes), 1)
+        finally:
+            thread.stop_event.set()
+            thread.join(5)
+        with mock.patch.dict(os.environ, {"HANDSOFF_FLEET_WAKE_SECONDS": "2.5"}):
+            self.assertEqual(signals.wake_seconds(), 2.5)
+        with mock.patch.dict(os.environ, {"HANDSOFF_FLEET_WAKE_SECONDS": "no"}):
+            self.assertEqual(signals.wake_seconds(), 5.0)
+
+
+class RepoDedupeTests(_Env):
+    """#160: roots sharing one repository are collected once."""
+
+    def test_two_roots_one_repo_share_one_set_of_reads_and_equal_entries(self):
+        checkout = self.repo_dir("checkout", "https://github.com/o/Repo.git")
+        lane = self.repo_dir("lane", "git@github.com:O/repo.git")
+        cache = signals.IssueCache(self.cache_file)
+        reader = _Scripted({
+            "repos/o/Repo/issues?state=all&per_page=100&page=1": ('W/"i"', [_issue(1, "2026-09-01T00:00:00Z")]),
+            f"repos/o/Repo/commits?since={WINDOW}&per_page=100&page=1": ('W/"c"', [_commit("a" * 40, "2026-09-11T00:00:00Z")]),
+            "repos/o/Repo/releases?per_page=100&page=1": ('W/"r"', [_release("v1", "2026-09-05T00:00:00Z")]),
+        })
+        cache.refresh([checkout, lane], reader=reader, since=WINDOW, now=NOW)
+        self.assertEqual(len(reader.calls), 3)   # one set of reads, not two
+        first, second = cache.get(checkout), cache.get(lane)
+        self.assertEqual(first, second)
+        self.assertEqual(first["repo"], "o/Repo")
+        self.assertEqual((first["requests_total"], first["requests_counted"]), (3, 3))
+        self.assertEqual([i["number"] for i in second["issues"]], [1])
+        registry = self.base / "reg.json"
+        fleet.save_registry([{"root": str(r), "registered_at": "2026-09-19T00:00:00+00:00"} for r in (checkout, lane)], registry)
+        payload = fleet.build_metrics(registry, cache, NOW.isoformat())
+        self.assertEqual([(p["name"], p["repo"], len(p["issues"])) for p in payload["projects"]],
+                         [("checkout", "o/Repo", 1), ("lane", "o/Repo", 1)])
+
+    def test_a_failure_is_shared_too_and_unparsed_origins_never_group(self):
+        checkout = self.repo_dir("checkout", "https://github.com/o/r.git")
+        lane = self.repo_dir("lane", "https://github.com/o/r")
+        bare_a = self.repo_dir("bare-a", origin=None)
+        bare_b = self.repo_dir("bare-b", origin=None)
+        cache = signals.IssueCache(self.cache_file)
+        reader = _Scripted({}, fail="/issues?")
+        cache.refresh([checkout, lane, bare_a, bare_b], reader=reader, since=WINDOW, now=NOW)
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual(cache.get(checkout)["error"], cache.get(lane)["error"])
+        self.assertIn("GitHub HTTP 502", cache.get(lane)["error"])
+        self.assertEqual(cache.get(bare_a)["error"], signals.NO_ORIGIN)
+        self.assertIsNone(cache.get(bare_b)["repo"])
+        self.assertEqual(signals.repo_identity("O/Repo"), "o/repo")
+        self.assertIsNone(signals.repo_identity(None))
 
 
 class MetricsServerTests(_FleetFixture, _Env):

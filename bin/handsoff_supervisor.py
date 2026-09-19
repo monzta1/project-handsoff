@@ -257,7 +257,9 @@ def cmd_init(args) -> int:
             "regression_requests": [],
             "active_work_item": None,
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
-            "requires_design_approval": True, "design_approved": None,
+            # #159: a project may waive the Pilot's design click in handsoff.toml;
+            # the independent design review below is required regardless.
+            "requires_design_approval": bool(cfg.get("require_design_approval", True)), "design_approved": None,
             "requires_design_review": True, "design_review": None,
             "design_review_attempts": 0, "design_review_authorization": None,
             "amendment": None, "amendments": [], "pending_questions": [],
@@ -272,9 +274,15 @@ def cmd_init(args) -> int:
         status["work_item_delivery"] = lib.new_work_item_delivery(
             acceptance["work_items"], getattr(args, "lane", "full"),
         )
+        waived = [] if status["requires_design_approval"] else [{
+            "kind": "design_approval_waived",
+            "message": "Pilot design approval waived by handsoff.toml [workflow] require_design_approval = false; "
+                       "the independent design review remains required",
+            "config_key": "require_design_approval",
+        }]
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="initialized", event_message=f"Handsoff initialized for '{args.feature}'",
-                  project_root=str(root), engine=lib.ledger_engine_identity(root))
+                  extra_events=waived, project_root=str(root), engine=lib.ledger_engine_identity(root))
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
     return 0
 
@@ -1979,7 +1987,9 @@ def cmd_record_design_review(args) -> int:
         if decision == "approved":
             if not lib._design_errors(status, acceptance, cfg):
                 status["status"] = "in_progress"
-                status["next_action"] = "Advance the independently reviewed and human-approved design to Phase 3."
+                status["next_action"] = ("Advance the independently reviewed design to Phase 3 (Pilot design approval waived by config)."
+                                         if not status.get("requires_design_approval")
+                                         else "Advance the independently reviewed and human-approved design to Phase 3.")
             else:
                 status["status"] = "blocked"
                 status["next_action"] = "Get explicit human approval of the independently reviewed design."

@@ -191,10 +191,39 @@ test("the per-project breakdown appears on the All view only and skips projects 
     ["alpha", "o/alpha", "1", "2", "2", "1.2 d", "2", "1"],
     ["beta", "o/beta", "0", "1", "1", "3.0 d", "0", "0"],
   ]);
-  const one = renderFixture({ project: "/p/beta" });
+  const one = renderFixture({ project: "o/beta" });   // #160: the filter value is the repository identity
   assert.equal(one.dom.byId.get("breakdown").classes.has("hidden"), true);
   assert.equal(one.dom.byId.get("kpis").children[0].children[1].textContent, "1");
   assert.match(one.dom.byId.get("source-note").textContent, /1 ISSUES/);
+});
+
+test("#160: roots sharing one repository are one filter entry, one breakdown row and counted once", () => {
+  const { m, dom } = loadPage();
+  const data = fixtureData();
+  const alpha = data.projects[0];
+  // A lane worktree beside its checkout: same repo (different case in the remote), same data.
+  data.projects.push({ ...alpha, root: "/p/alpha-lane-x", name: "alpha-lane-x", repo: "O/Alpha" });
+  m.state.data = data;
+  m.state.project = "all";
+  m.state.preset = "custom";
+  m.state.from = "2026-09-11";
+  m.state.to = "2026-09-14";
+  m.fillProjects(data);
+  const options = dom.byId.get("project").children.map((option) => [option.value, option.textContent]);
+  assert.deepEqual(options, [["all", "All projects"], ["o/alpha", "o/alpha (alpha, alpha-lane-x)"], ["o/beta", "beta (o/beta)"]]);
+  const series = m.renderAll();
+  // Counted once: alpha's 3 issues + beta's 1, not alpha's twice.
+  assert.equal(series.totals.closed, 3);
+  assert.equal(series.totals.commits, 2);
+  assert.equal(series.totals.releases, 1);
+  assert.match(dom.byId.get("source-note").textContent, /^4 ISSUES/);
+  const rows = dom.byId.get("breakdown").find((el) => el.name === "tr").slice(1).map((tr) => tr.children.map((td) => td.textContent));
+  assert.deepEqual(rows.map((row) => row[0]), ["alpha + alpha-lane-x", "beta"]);
+  assert.deepEqual(rows[0].slice(1), ["o/alpha", "1", "2", "2", "1.2 d", "2", "1"]);
+  const grouped = m.groupByRepo(data.projects);
+  // The vm realm's arrays are not reference-equal to ours; compare the JSON.
+  assert.deepEqual(JSON.parse(JSON.stringify(grouped.map((g) => [g.identity, g.roots]))),
+    [["o/alpha", ["alpha", "alpha-lane-x"]], ["o/beta", ["beta"]], ["root:/p/gamma", ["gamma"]]]);
 });
 
 test("a project with a collector error is named in the source note and unknown commit days are blank", () => {

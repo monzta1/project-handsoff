@@ -245,7 +245,8 @@ def build_metrics(path: Path | None = None, issues: "signals_module.IssueCache |
                              "error": None, "issues": [], "commits": [], "releases": [], "commits_since": None})
             continue
         current = signals_module.origin_repo(root) if root.exists() else None
-        if cached.get("repo") and cached["repo"] != current:
+        # #160: identity is case-insensitive, like the collector's grouping.
+        if cached.get("repo") and signals_module.repo_identity(cached["repo"]) != signals_module.repo_identity(current):
             projects.append({"root": str(root), "name": root.name, "repo": current, "fetched_at": None,
                              "error": f"cached issues belong to {cached['repo']}; awaiting refresh",
                              "issues": [], "commits": [], "releases": [], "commits_since": None})
@@ -289,9 +290,13 @@ class FleetServer(ThreadingHTTPServer):
         super().__init__(address, FleetHandler)
         # Only a server that bound its port collects; a failed bind leaves no thread behind.
         roots = lambda: [entry["root"] for entry in load_registry(self.registry)]  # noqa: E731
-        self.signals_thread = signals_module.start_refresh_thread(self.signals, roots, interval=signals_interval)
+        # #157: both threads wake on a registry change, so a project registered
+        # mid-interval is collected within seconds, not at the next pass.
+        wake_path = self.registry or registry_path()
+        self.signals_thread = signals_module.start_refresh_thread(self.signals, roots, interval=signals_interval,
+                                                                  wake_path=wake_path)
         self.issues_thread = signals_module.start_refresh_thread(
-            self.issues, roots, name="fleet-issues",
+            self.issues, roots, name="fleet-issues", wake_path=wake_path,
             interval=signals_module.issues_interval() if issues_interval is None else issues_interval)
 
 

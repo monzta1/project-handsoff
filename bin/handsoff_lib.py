@@ -99,7 +99,7 @@ PHASES = {
 #: "reproduce the original symptom", a self-contradictory status.
 NEXT_ACTION_DEFAULTS = {
     1: "Read the project rules and reproduce the original symptom.",
-    2: "Debate the design until the reviewer answers DESIGN_APPROVED, then get human design-approve.",
+    2: "Debate the design until the reviewer answers DESIGN_APPROVED, then get human design-approve (unless waived by config).",
     3: "Begin implementation against the approved design.",
     4: "Implement the change and run `verify` against each criterion's tests.",
     5: "Get an independent reviewer to run `record-review`.",
@@ -296,6 +296,9 @@ DEFAULT_CONFIG = {
     "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
     "require_live_verification": True,
     "deployment_requires_explicit_approval": True,
+    # #159: false lets a project waive the Pilot's design click; the
+    # independent design review stays mandatory either way.
+    "require_design_approval": True,
     "check_commands": [],
     "digest_ignore": [],
     "implementer_commands": [],
@@ -900,7 +903,8 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, int) or isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be an integer")
         cfg[key] = value
-    for key in ("auto_handoff", "require_live_verification", "deployment_requires_explicit_approval"):
+    for key in ("auto_handoff", "require_live_verification", "deployment_requires_explicit_approval",
+                "require_design_approval"):
         value = workflow.get(key, cfg[key])
         if not isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
@@ -4405,6 +4409,7 @@ GOVERNANCE_CONFIG_KEYS = (
     "max_design_rounds", "max_review_rounds", "stall_minutes",
     "max_autonomous_design_reviews", "small_fix_max_criteria",
     "small_fix_max_changed_lines", "small_fix_max_files",
+    "require_design_approval",
 )
 # Governance keys added after runs were already in flight. A key in this
 # set is hashed only while it holds a non-default value: an absent (or
@@ -4419,6 +4424,7 @@ _LEGACY_OPTIONAL_GOVERNANCE_KEYS = {
     "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
     "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
     "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
+    "require_design_approval": True,  # #159
 }
 
 
