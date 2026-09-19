@@ -11,6 +11,10 @@ Three checks against the deployed engine, in order:
    (the running installed collector refreshed, not a disk-loaded cache),
    and the entry whose repo is monzta1/project-handsoff has an issue count
    equal to gh's is:issue open plus closed totals read in the same minute.
+4. (#158) A second refresh is observed (refreshed_at moves) and on it the
+   project-handsoff entry reports requests_counted 0, or its updated_since
+   moved (something changed on GitHub in between, which is the one honest
+   reason for a counted request); rate_limit.remaining is an integer.
 
 Set HANDSOFF_FLEET_URL to point the smoke at another Fleet port.
 """
@@ -94,6 +98,30 @@ def main() -> int:
         return fail(f"{REPO} serves {served} issues, gh counts {expected_count} open plus closed")
     print(f"{REPO}: {served} issues match gh; {len(target.get('commits') or [])} commits since {target.get('commits_since')}; "
           f"{len(target.get('releases') or [])} releases")
+
+    # #158: watch one more pass land and check it was free.
+    first_refresh = payload["refreshed_at"]
+    first_since = target.get("updated_since")
+    deadline = time.time() + 150
+    while time.time() < deadline:
+        payload = json.loads(get("/api/metrics"))
+        if payload.get("refreshed_at") and payload["refreshed_at"] != first_refresh:
+            break
+        time.sleep(3)
+    else:
+        return fail(f"no second refresh within 150 s after {first_refresh}")
+    target = next((p for p in payload["projects"] if p.get("repo") == REPO), None)
+    if target is None or target.get("error"):
+        return fail(f"{REPO} entry missing or in error on the second pass: {target and target.get('error')}")
+    rate = payload.get("rate_limit") or {}
+    if not isinstance(rate.get("remaining"), int):
+        return fail(f"rate_limit.remaining is not an integer: {rate}")
+    counted = target.get("requests_counted")
+    if counted != 0 and target.get("updated_since") == first_since:
+        return fail(f"second pass counted {counted} requests with nothing changed (updated_since {first_since})")
+    print(f"second pass at {payload['refreshed_at']}: {target.get('requests_total')} requests, {counted} counted"
+          f"{'' if counted == 0 else ' (updated_since moved: ' + str(target.get('updated_since')) + ')'}; "
+          f"GitHub budget {rate['remaining']} of {rate.get('limit')}")
     print("LIVE_FLEET_METRICS_OK")
     return 0
 

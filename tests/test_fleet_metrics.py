@@ -1,9 +1,15 @@
-"""#153 and #156: the issue, commit and release collector behind the Fleet
-Metrics tab, and the routes that serve it.
+"""#153, #156 and #158: the issue, commit and release collector behind the
+Fleet Metrics tab, its conditional and incremental reads, and the routes
+that serve it.
 
 - IssueCollectorTests: REQ-002 and REQ-007, pagination, pull-request skip,
   field shapes, the commit window, failure keeping the whole previous entry,
   the unconfigured case, persistence.
+- ConditionalReaderTests (#158): the gh -i and token readers, 200 / 304 /
+  404 / 500 and malformed output.
+- ConditionalCollectorTests (#158): a scripted reader driving full,
+  no-change and incremental passes, the daily full pass, a v0.3.39 entry,
+  the atomic failure rule, the interval floor.
 - MetricsServerTests: REQ-003, /api/metrics from the cache with started_at
   and refreshed_at, registry and repo identity rules, the /metrics and
   /metrics.js routes under the CSP, /api/fleet unchanged, the second thread.
@@ -17,7 +23,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -212,9 +218,316 @@ class IssueCollectorTests(_Env):
         self.assertIn("HANDSOFF_FLEET_WARNING", err.getvalue())
         self.assertEqual(signals.issues_interval(), 3600.0)
         os.environ.pop("HANDSOFF_FLEET_ISSUES_INTERVAL")
-        self.assertEqual(signals.issues_interval(), 900.0)
+        self.assertEqual(signals.issues_interval(), 60.0)   # #158 default
         os.environ.pop("HANDSOFF_FLEET_ISSUES_FILE")  # the env override wins; without it the file sits beside the registry
         self.assertEqual(signals.issues_path(self.base / "reg" / "projects.json"), (self.base / "reg" / "fleet-issues.json").resolve())
+
+
+def _gh_script(cases: dict) -> str:
+    """A fake gh whose `api -i` answers come from `cases`: path -> (status, etag, body)."""
+    lines = ["#!/bin/sh", "if [ \"$1\" = auth ]; then echo tok; exit 0; fi", "path=\"$3\"", "etag=\"\"",
+             "if [ \"$4\" = -H ]; then etag=\"${5#If-None-Match: }\"; fi", "case \"$path\" in"]
+    for path, (status, etag, body) in cases.items():
+        lines.append(f"  \"{path}\")")
+        if status == 304:
+            lines.append(f"    printf 'HTTP/2.0 304 Not Modified\\r\\nEtag: {etag}\\r\\nX-Ratelimit-Remaining: 4999\\r\\nX-Ratelimit-Limit: 5000\\r\\nX-Ratelimit-Reset: 1790000000\\r\\n\\r\\n'; exit 1;;")
+        elif status == 200:
+            lines.append(f"    printf 'HTTP/2.0 200 OK\\r\\nEtag: {etag}\\r\\nX-Ratelimit-Remaining: 4998\\r\\nX-Ratelimit-Limit: 5000\\r\\nX-Ratelimit-Reset: 1790000000\\r\\n\\r\\n{body}\\n';;")
+        else:
+            lines.append(f"    printf 'HTTP/2.0 {status} Nope\\r\\nX-Ratelimit-Remaining: 4997\\r\\n\\r\\n'; exit 1;;")
+    lines += ["  *) echo garbage; exit 1;;", "esac"]
+    return "\n".join(lines) + "\n"
+
+
+class ConditionalReaderTests(_Env):
+    def _gh(self, cases):
+        bindir = self.base / "bin"
+        bindir.mkdir(exist_ok=True)
+        gh = bindir / "gh"
+        gh.write_text(_gh_script(cases))
+        gh.chmod(0o755)
+        patch = mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"})
+        patch.start()
+        self.addCleanup(patch.stop)
+        return signals.conditional_reader()
+
+    def test_gh_reader_parses_200_304_404_and_rate_headers(self):
+        read = self._gh({"repos/o/r/releases?per_page=100&page=1": (200, 'W/"abc"', '[{"tag_name":"v1"}]'),
+                         "repos/o/r/issues?state=all&since=x&per_page=100&page=1": (304, 'W/"def"', ""),
+                         "repos/o/gone/releases?per_page=100&page=1": (404, "", "")})
+        ok = read("repos/o/r/releases?per_page=100&page=1")
+        self.assertEqual((ok.status, ok.etag, ok.payload), (200, 'W/"abc"', [{"tag_name": "v1"}]))
+        self.assertEqual(ok.rate, {"remaining": 4998, "limit": 5000, "reset_at": "2026-09-21T14:13:20+00:00"})
+        same = read("repos/o/r/issues?state=all&since=x&per_page=100&page=1", 'W/"def"')
+        self.assertEqual((same.status, same.etag, same.payload), (304, 'W/"def"', None))
+        self.assertEqual(same.rate["remaining"], 4999)
+        self.assertEqual(read("repos/o/gone/releases?per_page=100&page=1").status, 404)
+
+    def test_gh_reader_raises_on_server_errors_and_garbage(self):
+        read = self._gh({"repos/o/r/releases?per_page=100&page=1": (500, "", "")})
+        with self.assertRaises(signals.GitHubUnavailable):
+            read("repos/o/r/releases?per_page=100&page=1")
+        with self.assertRaises(signals.GitHubUnavailable):
+            read("repos/o/r/unknown?per_page=100&page=1")
+
+    def test_reader_falls_back_to_the_token_and_then_to_nothing(self):
+        bindir = self.base / "bin"
+        bindir.mkdir(exist_ok=True)
+        (bindir / "gh").write_text("#!/bin/sh\nexit 1\n")
+        (bindir / "gh").chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"}):
+            self.assertIsNone(signals.conditional_reader())
+            with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t0k"}):
+                read = signals.conditional_reader()
+        self.assertIsNotNone(read)
+
+    def test_token_reader_handles_200_304_and_errors(self):
+        import email.message
+        import urllib.error
+
+        class _Response:
+            def __init__(self, body, etag):
+                self.headers = email.message.Message()
+                self.headers["ETag"] = etag
+                self.headers["X-RateLimit-Remaining"] = "4000"
+                self.headers["X-RateLimit-Limit"] = "5000"
+                self.headers["X-RateLimit-Reset"] = "1790000000"
+                self._body = body
+            def read(self): return self._body
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+
+        def opener(request, timeout=0):
+            if request.get_header("If-none-match") == 'W/"same"':
+                headers = email.message.Message()
+                headers["ETag"] = 'W/"same"'
+                headers["X-RateLimit-Remaining"] = "4000"
+                raise urllib.error.HTTPError(request.full_url, 304, "Not Modified", headers, None)
+            if request.full_url.endswith("/boom?per_page=100&page=1"):
+                raise urllib.error.HTTPError(request.full_url, 502, "Bad", email.message.Message(), None)
+            return _Response(b'[{"sha": "a"}]', 'W/"new"')
+        read = signals._token_conditional("t0k")
+        with mock.patch.object(signals.urllib.request, "urlopen", opener):
+            ok = read("repos/o/r/commits?per_page=100&page=1")
+            self.assertEqual((ok.status, ok.etag, ok.payload, ok.rate["remaining"]), (200, 'W/"new"', [{"sha": "a"}], 4000))
+            same = read("repos/o/r/commits?per_page=100&page=1", 'W/"same"')
+            self.assertEqual((same.status, same.etag, same.payload), (304, 'W/"same"', None))
+            with self.assertRaises(signals.GitHubUnavailable):
+                read("repos/o/r/boom?per_page=100&page=1")
+
+
+class _Scripted:
+    """A reader answering by (path, etag): 304 when the etag matches the
+    scripted one, 200 with the body otherwise. `fail` names a substring
+    whose request raises."""
+
+    def __init__(self, answers: dict, fail: str | None = None):
+        self.answers, self.fail, self.calls = answers, fail, []
+
+    def __call__(self, path, etag=None):
+        self.calls.append((path, etag))
+        if self.fail and self.fail in path:
+            raise signals.GitHubUnavailable(f"GitHub HTTP 502 on {path.split('?')[0]}")
+        if path not in self.answers:
+            return signals.Answer(200, None, [], {"remaining": 4990, "limit": 5000, "reset_at": None})
+        scripted_etag, body = self.answers[path]
+        if etag and etag == scripted_etag:
+            return signals.Answer(304, scripted_etag, None, {"remaining": 4990, "limit": 5000, "reset_at": None})
+        return signals.Answer(200, scripted_etag, body, {"remaining": 4989, "limit": 5000, "reset_at": None})
+
+
+NOW = datetime(2026, 9, 19, 14, 0, tzinfo=timezone.utc)
+WINDOW = "2026-03-23T14:00:00Z"
+
+
+class ConditionalCollectorTests(_Env):
+    def setUp(self):
+        super().setUp()
+        self.repo = self.repo_dir("repo")
+        self.cache = signals.IssueCache(self.cache_file)
+        self.full_issues = "repos/o/r/issues?state=all&per_page=100&page=1"
+        self.releases = "repos/o/r/releases?per_page=100&page=1"
+
+    def _issue(self, number, updated, closed=None):
+        row = _issue(number, "2026-09-01T00:00:00Z", closed)
+        row["updated_at"] = updated
+        return row
+
+    def _first_pass(self):
+        reader = _Scripted({
+            self.full_issues: ('W/"i1"', [self._issue(1, "2026-09-10T00:00:00Z"), self._issue(2, "2026-09-12T00:00:00Z", "2026-09-12T00:00:00Z"),
+                                          {**self._issue(3, "2026-09-13T00:00:00Z"), "pull_request": {}}]),
+            f"repos/o/r/commits?since={WINDOW}&per_page=100&page=1": ('W/"c1"', [_commit("a" * 40, "2026-09-11T00:00:00Z"), _commit("b" * 40, "2026-09-12T00:00:00Z")]),
+            self.releases: ('W/"r1"', [_release("v1", "2026-09-05T00:00:00Z")]),
+        })
+        self.cache.refresh([self.repo], reader=reader, since=WINDOW, now=NOW)
+        return reader
+
+    def test_first_pass_is_full_and_sets_the_incremental_state(self):
+        reader = self._first_pass()
+        entry = self.cache.get(self.repo)
+        self.assertEqual([c[1] for c in reader.calls], [None, None, None])  # no ETags on a first pass
+        self.assertEqual([i["number"] for i in entry["issues"]], [2, 1])   # the PR is skipped
+        self.assertEqual(entry["updated_since"], "2026-09-12T00:00:00Z")
+        self.assertEqual(entry["full_pass_at"], NOW.isoformat())
+        self.assertEqual(entry["etags"], {"issues": None, "commits": 'W/"c1"', "releases": 'W/"r1"'})
+        self.assertEqual((entry["requests_total"], entry["requests_counted"]), (3, 3))
+        self.assertEqual(self.cache.last_rate["remaining"], 4989)
+        self.assertEqual(entry["issues"][0]["updated_at"], "2026-09-12T00:00:00Z")
+
+    def test_a_no_change_pass_is_three_304s_and_changes_nothing_else(self):
+        self._first_pass()
+        before = self.cache.get(self.repo)
+        since_issues = "repos/o/r/issues?state=all&since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        since_commits = "repos/o/r/commits?since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        reader = _Scripted({since_issues: ('W/"i2"', [self._issue(2, "2026-09-12T00:00:00Z", "2026-09-12T00:00:00Z")]),
+                            since_commits: ('W/"c2"', [_commit("b" * 40, "2026-09-12T00:00:00Z")]),
+                            self.releases: ('W/"r1"', [_release("v1", "2026-09-05T00:00:00Z")])})
+        # Second pass: the since URLs are new, so no ETag rides along (the window URL's commit ETag
+        # was earned by another URL); issues and commits answer 200 once (the boundary items repeat
+        # harmlessly), releases 304 on the known ETag of the same URL.
+        later = NOW + timedelta(minutes=1)
+        self.cache.refresh([self.repo], reader=reader, since=WINDOW, now=later)
+        middle = self.cache.get(self.repo)
+        self.assertEqual([c[1] for c in reader.calls], [None, None, 'W/"r1"'])
+        self.assertEqual(middle["issues"], before["issues"])
+        self.assertEqual(middle["commits"], before["commits"])
+        self.assertEqual((middle["requests_total"], middle["requests_counted"]), (3, 2))
+        self.assertEqual(middle["etags"], {"issues": 'W/"i2"', "commits": 'W/"c2"', "releases": 'W/"r1"'})
+        # Third pass: nothing changed on GitHub, every ETag matches: three 304s, zero counted.
+        reader.calls.clear()
+        latest = later + timedelta(minutes=1)
+        self.cache.refresh([self.repo], reader=reader, since=WINDOW, now=latest)
+        after = self.cache.get(self.repo)
+        self.assertEqual([c[1] for c in reader.calls], ['W/"i2"', 'W/"c2"', 'W/"r1"'])
+        self.assertEqual((after["requests_total"], after["requests_counted"]), (3, 0))
+        self.assertEqual(after["fetched_at"], latest.isoformat())
+        for key in ("issues", "commits", "releases", "etags", "updated_since", "full_pass_at", "repo", "commits_since"):
+            self.assertEqual(after[key], middle[key], key)
+        self.assertIsNone(after["error"])
+        self.assertEqual(self.cache.last_rate["remaining"], 4990)
+
+    def test_an_incremental_pass_merges_updated_and_new_items(self):
+        self._first_pass()
+        since_issues = "repos/o/r/issues?state=all&since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        since_commits = "repos/o/r/commits?since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        reader = _Scripted({
+            since_issues: ('W/"i3"', [self._issue(1, "2026-09-15T00:00:00Z", "2026-09-15T00:00:00Z"),   # #1 closed since
+                                      self._issue(4, "2026-09-16T00:00:00Z"),                            # new
+                                      {**self._issue(5, "2026-09-16T01:00:00Z"), "pull_request": {}}]),  # PR, skipped
+            since_commits: ('W/"c3"', [_commit("b" * 40, "2026-09-12T00:00:00Z"), _commit("c" * 40, "2026-09-14T00:00:00Z")]),
+            self.releases: ('W/"r2"', [_release("v2", "2026-09-15T00:00:00Z"), _release("v1", "2026-09-05T00:00:00Z")]),
+        })
+        self.cache.refresh([self.repo], reader=reader, since=WINDOW, now=NOW + timedelta(minutes=1))
+        entry = self.cache.get(self.repo)
+        self.assertEqual([(i["number"], i["closed_at"]) for i in entry["issues"]],
+                         [(4, None), (2, "2026-09-12T00:00:00Z"), (1, "2026-09-15T00:00:00Z")])
+        self.assertEqual(entry["updated_since"], "2026-09-16T00:00:00Z")
+        self.assertEqual([c["sha"][0] for c in entry["commits"]], ["c", "b", "a"])
+        self.assertEqual([r["tag_name"] for r in entry["releases"]], ["v2", "v1"])
+        self.assertEqual((entry["requests_total"], entry["requests_counted"]), (3, 3))
+        self.assertEqual(entry["full_pass_at"], NOW.isoformat())  # not a full pass
+
+    def test_commits_older_than_the_window_are_pruned_and_the_boundary_commit_is_kept(self):
+        self._first_pass()
+        newer_window = "2026-09-12T00:00:00Z"   # the window moved past commit a
+        since_commits = "repos/o/r/commits?since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        reader = _Scripted({since_commits: ('W/"c2"', [_commit("b" * 40, "2026-09-12T00:00:00Z")])})
+        self.cache.refresh([self.repo], reader=reader, since=newer_window, now=NOW + timedelta(minutes=1))
+        entry = self.cache.get(self.repo)
+        self.assertEqual([c["sha"][0] for c in entry["commits"]], ["b"])
+        self.assertEqual(entry["commits_since"], newer_window)
+
+    def test_a_stale_full_pass_at_forces_a_full_read_that_drops_deleted_issues(self):
+        self._first_pass()
+        reader = _Scripted({self.full_issues: ('W/"i9"', [self._issue(2, "2026-09-12T00:00:00Z", "2026-09-12T00:00:00Z")])})
+        much_later = NOW + timedelta(hours=25)
+        self.cache.refresh([self.repo], reader=reader, since=WINDOW, now=much_later)
+        entry = self.cache.get(self.repo)
+        self.assertEqual(reader.calls[0], (self.full_issues, None))
+        self.assertEqual([i["number"] for i in entry["issues"]], [2])   # #1 was deleted upstream
+        self.assertEqual(entry["full_pass_at"], much_later.isoformat())
+        with mock.patch.dict(os.environ, {"HANDSOFF_FLEET_FULL_PASS_HOURS": "48"}):
+            reader2 = _Scripted({})
+            self.cache.refresh([self.repo], reader=reader2, since=WINDOW, now=much_later + timedelta(hours=30))
+            self.assertIn("since=", reader2.calls[0][0])   # 30 h < 48 h: still incremental
+
+    def test_a_v0_3_39_entry_loads_and_forces_a_full_pass(self):
+        self.cache_file.write_text(json.dumps({"schema": 1, "projects": {str(self.repo): {
+            "repo": "o/r", "fetched_at": "2026-09-19T13:00:00+00:00", "error": None,
+            "issues": [{"number": 1, "title": "t", "html_url": "u", "created_at": "2026-09-01T00:00:00Z", "closed_at": None}],
+            "commits": [], "releases": [], "commits_since": WINDOW}}}))
+        cache = signals.IssueCache(self.cache_file)
+        loaded = cache.get(self.repo)
+        self.assertEqual(loaded["etags"], {})
+        self.assertIsNone(loaded["full_pass_at"])
+        reader = _Scripted({self.full_issues: ('W/"i1"', [self._issue(1, "2026-09-10T00:00:00Z")])})
+        cache.refresh([self.repo], reader=reader, since=WINDOW, now=NOW)
+        self.assertEqual(reader.calls[0], (self.full_issues, None))
+        self.assertEqual(cache.get(self.repo)["full_pass_at"], NOW.isoformat())
+
+    def test_a_failure_after_a_304_keeps_the_whole_previous_entry_and_forces_a_full_pass(self):
+        self._first_pass()
+        before = self.cache.get(self.repo)
+        since_issues = "repos/o/r/issues?state=all&since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        reader = _Scripted({since_issues: ('W/"i2"', [])}, fail="/commits?")
+        # Prime the issues ETag so the failing pass really starts with a 304 on issues.
+        self.cache.refresh([self.repo], reader=_Scripted({since_issues: ('W/"i2"', [])}), since=WINDOW, now=NOW + timedelta(minutes=1))
+        primed = self.cache.get(self.repo)
+        self.cache.refresh([self.repo], reader=reader, since=WINDOW, now=NOW + timedelta(minutes=2))
+        after = self.cache.get(self.repo)
+        self.assertEqual(reader.calls[0][1], 'W/"i2"')
+        self.assertEqual(after["error"], "GitHub HTTP 502 on repos/o/r/commits")
+        for key in ("issues", "commits", "releases", "etags", "updated_since", "full_pass_at", "fetched_at"):
+            self.assertEqual(after[key], primed[key], key)
+        self.assertEqual(after["issues"], before["issues"])
+        # The error forces a full read next time.
+        recovery = _Scripted({self.full_issues: ('W/"i5"', [])})
+        self.cache.refresh([self.repo], reader=recovery, since=WINDOW, now=NOW + timedelta(minutes=3))
+        self.assertEqual(recovery.calls[0], (self.full_issues, None))
+        self.assertIsNone(self.cache.get(self.repo)["error"])
+
+    def test_an_etag_is_never_sent_with_a_url_it_was_not_earned_by(self):
+        self._first_pass()
+        since_issues = "repos/o/r/issues?state=all&since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        since_commits = "repos/o/r/commits?since=2026-09-12T00:00:00Z&per_page=100&page=1"
+        # Pass 2 advances both boundaries (an issue updated on the 16th, a commit on the 14th).
+        reader = _Scripted({since_issues: ('W/"i2"', [self._issue(4, "2026-09-16T00:00:00Z")]),
+                            since_commits: ('W/"c2"', [_commit("c" * 40, "2026-09-14T00:00:00Z")]),
+                            self.releases: ('W/"r1"', [_release("v1", "2026-09-05T00:00:00Z")])})
+        self.cache.refresh([self.repo], reader=reader, since=WINDOW, now=NOW + timedelta(minutes=1))
+        entry = self.cache.get(self.repo)
+        self.assertEqual(entry["etags"]["issues"], 'W/"i2"')
+        self.assertEqual(entry["etag_urls"]["issues"], since_issues[:-len("&per_page=100&page=1")])
+        # Pass 3 asks new since URLs: the old ETags must NOT ride along, releases' may.
+        reader3 = _Scripted({self.releases: ('W/"r1"', [_release("v1", "2026-09-05T00:00:00Z")])})
+        self.cache.refresh([self.repo], reader=reader3, since=WINDOW, now=NOW + timedelta(minutes=2))
+        self.assertEqual([c for c in reader3.calls], [
+            ("repos/o/r/issues?state=all&since=2026-09-16T00:00:00Z&per_page=100&page=1", None),
+            ("repos/o/r/commits?since=2026-09-14T00:00:00Z&per_page=100&page=1", None),
+            (self.releases, 'W/"r1"'),
+        ])
+
+    def test_the_interval_has_a_floor_and_a_new_default(self):
+        os.environ.pop("HANDSOFF_FLEET_ISSUES_INTERVAL")
+        self.assertEqual(signals.issues_interval(), 60.0)
+        with mock.patch.dict(os.environ, {"HANDSOFF_FLEET_ISSUES_INTERVAL": "5"}):
+            self.assertEqual(signals.issues_interval(), 30.0)
+        with mock.patch.dict(os.environ, {"HANDSOFF_FLEET_ISSUES_INTERVAL": "45"}):
+            self.assertEqual(signals.issues_interval(), 45.0)
+        with mock.patch.dict(os.environ, {"HANDSOFF_FLEET_ISSUES_INTERVAL": "-3"}):
+            self.assertEqual(signals.issues_interval(), 60.0)
+        self.assertEqual(signals.full_pass_hours(), 24.0)
+
+    def test_api_metrics_carries_rate_limit_and_counters(self):
+        self._first_pass()
+        registry = self.base / "reg.json"
+        fleet.save_registry([{"root": str(self.repo), "registered_at": "2026-09-19T00:00:00+00:00"}], registry)
+        payload = fleet.build_metrics(registry, self.cache, NOW.isoformat())
+        self.assertEqual(payload["rate_limit"]["remaining"], 4989)
+        project = payload["projects"][0]
+        self.assertEqual((project["requests_total"], project["requests_counted"]), (3, 3))
+        self.assertEqual(project["updated_since"], "2026-09-12T00:00:00Z")
 
 
 class MetricsServerTests(_FleetFixture, _Env):

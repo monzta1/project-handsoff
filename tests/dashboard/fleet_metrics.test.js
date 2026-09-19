@@ -209,6 +209,19 @@ test("a project with a collector error is named in the source note and unknown c
   assert.deepEqual(body, ["", "", "", "0"]);
 });
 
+test("the source note carries the GitHub budget when the collector reports it, and not otherwise", () => {
+  const withBudget = renderFixture();
+  assert.doesNotMatch(withBudget.dom.byId.get("source-note").textContent, /GITHUB BUDGET/);
+  const { m, dom } = loadPage();
+  m.state.data = { ...fixtureData(), rate_limit: { remaining: 4812, limit: 5000, reset_at: null } };
+  m.state.project = "all";
+  m.state.preset = "custom";
+  m.state.from = "2026-09-11";
+  m.state.to = "2026-09-14";
+  m.renderAll();
+  assert.match(dom.byId.get("source-note").textContent, /GITHUB BUDGET 4812 OF 5000$/);
+});
+
 test("the page markup carries the tab strip, the filter row and the CSP-safe script tag", () => {
   assert.match(html, /<nav class="tabs" aria-label="Fleet pages"><a href="\/">MISSIONS<\/a><a href="\/metrics" aria-current="page">METRICS<\/a><\/nav>/);
   assert.match(html, /data-preset="today"[\s\S]*data-preset="7"[\s\S]*data-preset="30" class="active"[\s\S]*data-preset="90"[\s\S]*data-preset="all"[\s\S]*data-preset="custom"/);

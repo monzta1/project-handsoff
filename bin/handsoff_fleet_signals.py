@@ -34,6 +34,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
@@ -388,9 +389,14 @@ def start_refresh_thread(cache, roots_provider, *, interval: float | None = None
 
 # --- Issues (#153): the Metrics tab's data ----------------------------------
 
-DEFAULT_ISSUES_INTERVAL_SECONDS = 900.0
+# #158: a no-change pass is three 304s, free of rate limit, so a minute is the
+# default and half a minute the floor; a full re-page once a day catches
+# deletions and transfers the incremental read cannot see.
+DEFAULT_ISSUES_INTERVAL_SECONDS = 60.0
+MIN_ISSUES_INTERVAL_SECONDS = 30.0
+DEFAULT_FULL_PASS_HOURS = 24.0
 DEFAULT_COMMITS_DAYS = 180
-ISSUE_FIELDS = ("number", "title", "html_url", "created_at", "closed_at")
+ISSUE_FIELDS = ("number", "title", "html_url", "created_at", "closed_at", "updated_at")
 PAGE_SIZE = 100
 
 
@@ -409,7 +415,18 @@ def issues_interval() -> float:
         value = float(raw) if raw else DEFAULT_ISSUES_INTERVAL_SECONDS
     except ValueError:
         value = DEFAULT_ISSUES_INTERVAL_SECONDS
-    return value if value > 0 else DEFAULT_ISSUES_INTERVAL_SECONDS
+    if value <= 0:
+        value = DEFAULT_ISSUES_INTERVAL_SECONDS
+    return max(value, MIN_ISSUES_INTERVAL_SECONDS)
+
+
+def full_pass_hours() -> float:
+    raw = os.environ.get("HANDSOFF_FLEET_FULL_PASS_HOURS")
+    try:
+        value = float(raw) if raw else DEFAULT_FULL_PASS_HOURS
+    except ValueError:
+        value = DEFAULT_FULL_PASS_HOURS
+    return value if value > 0 else DEFAULT_FULL_PASS_HOURS
 
 
 def commits_days() -> int:
@@ -491,6 +508,275 @@ def fetch_issues(repo: str, client) -> list[dict]:
         page += 1
 
 
+# --- Conditional reads (#158) -------------------------------------------------
+
+class Answer(NamedTuple):
+    """One GitHub answer: HTTP status (200 or 304), the ETag to send next
+    time, the parsed body (None on 304) and the rate-limit headers, when
+    the answer carried them, as {remaining, limit, reset_at}."""
+    status: int
+    etag: str | None
+    payload: object
+    rate: dict | None
+
+
+def _rate_from_headers(headers: dict) -> dict | None:
+    lower = {str(k).lower(): v for k, v in headers.items()}
+    if "x-ratelimit-remaining" not in lower:
+        return None
+    try:
+        reset = int(lower.get("x-ratelimit-reset", "0"))
+        reset_at = datetime.fromtimestamp(reset, tz=timezone.utc).isoformat() if reset else None
+        return {"remaining": int(lower["x-ratelimit-remaining"]), "limit": int(lower.get("x-ratelimit-limit", "0")),
+                "reset_at": reset_at}
+    except ValueError:
+        return None
+
+
+def _parse_gh_include(text: str) -> tuple[int, dict, str]:
+    """The status, headers and body of `gh api -i` output. gh prints the
+    status line, the headers, a blank line, then the body (none on 304)."""
+    head, sep, body = text.partition("\n\n")
+    if not sep:
+        head, sep, body = text.partition("\r\n\r\n")
+    lines = head.replace("\r", "").splitlines()
+    if not lines or not lines[0].upper().startswith("HTTP/"):
+        raise GitHubUnavailable("gh api -i printed no HTTP status line")
+    parts = lines[0].split()
+    try:
+        status = int(parts[1])
+    except (IndexError, ValueError) as exc:
+        raise GitHubUnavailable(f"gh api -i status line unreadable: {lines[0][:60]}") from exc
+    headers = {}
+    for line in lines[1:]:
+        name, colon, value = line.partition(":")
+        if colon:
+            headers[name.strip().lower()] = value.strip()
+    return status, headers, body
+
+
+def _gh_conditional(executable: str):
+    def read(path: str, etag: str | None = None) -> Answer:
+        argv = [executable, "api", "-i", path]
+        if etag:
+            argv += ["-H", f"If-None-Match: {etag}"]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise GitHubUnavailable(f"gh api failed: {type(exc).__name__}") from exc
+        # gh exits 1 on a 304 but still prints the status line and headers.
+        text = proc.stdout if proc.stdout.strip() else proc.stderr
+        status, headers, body = _parse_gh_include(text)
+        rate = _rate_from_headers(headers)
+        if status == 304:
+            return Answer(304, headers.get("etag") or etag, None, rate)
+        if status == 404:
+            return Answer(404, None, None, rate)
+        if status != 200:
+            raise GitHubUnavailable(f"GitHub HTTP {status}")
+        try:
+            return Answer(200, headers.get("etag"), json.loads(body), rate)
+        except ValueError as exc:
+            raise GitHubUnavailable("gh api returned invalid JSON") from exc
+    return read
+
+
+def _token_conditional(token: str):
+    def read(path: str, etag: str | None = None) -> Answer:
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "handsoff-fleet"}
+        if etag:
+            headers["If-None-Match"] = etag
+        request = urllib.request.Request(f"{GITHUB_API}/{path}", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                response_headers = dict(response.headers.items())
+                return Answer(200, response_headers.get("ETag") or response_headers.get("Etag"),
+                              json.loads(response.read().decode("utf-8")), _rate_from_headers(response_headers))
+        except urllib.error.HTTPError as exc:
+            rate = _rate_from_headers(dict(exc.headers.items())) if exc.headers else None
+            if exc.code == 304:
+                return Answer(304, (exc.headers.get("ETag") if exc.headers else None) or etag, None, rate)
+            if exc.code == 404:
+                return Answer(404, None, None, rate)
+            raise GitHubUnavailable(f"GitHub HTTP {exc.code}") from exc
+        except (OSError, ValueError) as exc:
+            raise GitHubUnavailable(f"GitHub unreachable: {type(exc).__name__}") from exc
+    return read
+
+
+def conditional_reader():
+    """read(path, etag) -> Answer through gh when it is authenticated, else
+    GITHUB_TOKEN, else None (GitHub is not configured)."""
+    executable = shutil.which("gh")
+    if executable:
+        try:
+            probe = subprocess.run([executable, "auth", "token"], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            probe = None
+        if probe is not None and probe.returncode == 0 and probe.stdout.strip():
+            return _gh_conditional(executable)
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    return _token_conditional(token) if token else None
+
+
+def plain_reader(client):
+    """Wrap a fetch(path) client (no headers) as a reader: every answer is a
+    counted 200 with no ETag, so every pass is a full read. Tests and the
+    signals client use it."""
+    def read(path: str, etag: str | None = None) -> Answer:
+        payload = client(path)
+        return Answer(404 if payload is None else 200, None, payload, None)
+    return read
+
+
+class _Tally:
+    """Requests sent and requests that counted (answered 200) in one pass,
+    plus the last rate-limit headers seen."""
+    def __init__(self):
+        self.total = 0
+        self.counted = 0
+        self.rate = None
+
+    def note(self, answer: Answer) -> Answer:
+        self.total += 1
+        if answer.status == 200:
+            self.counted += 1
+        if answer.rate is not None:
+            self.rate = answer.rate
+        return answer
+
+
+def _etag_for(old: dict | None, name: str, url: str) -> str | None:
+    """The cached ETag for `name`, only when it was earned by this exact URL:
+    a since boundary that advanced makes a new URL, and an ETag from the old
+    one must never be sent with it."""
+    if not old:
+        return None
+    if (old.get("etag_urls") or {}).get(name) != url:
+        return None
+    return (old.get("etags") or {}).get(name)
+
+
+def _read_list(read, tally: _Tally, base: str, etag: str | None, *, what: str) -> tuple[list | None, str | None]:
+    """A paged list endpoint, page 1 conditional. Returns (items, etag);
+    items is None when page 1 answered 304 (nothing changed). Every page
+    after the first is an unconditional 200."""
+    joiner = "&" if "?" in base else "?"
+    first = tally.note(read(f"{base}{joiner}per_page={PAGE_SIZE}&page=1", etag))
+    if first.status == 304:
+        return None, first.etag
+    if first.status == 404:
+        raise GitHubUnavailable(f"GitHub answered 404 for {what}")
+    if not isinstance(first.payload, list):
+        raise GitHubUnavailable(f"GitHub {what} answer was not a list")
+    items = [item for item in first.payload if isinstance(item, dict)]
+    page = 1
+    payload = first.payload
+    while len(payload) >= PAGE_SIZE:
+        page += 1
+        answer = tally.note(read(f"{base}{joiner}per_page={PAGE_SIZE}&page={page}", None))
+        if answer.status != 200 or not isinstance(answer.payload, list):
+            raise GitHubUnavailable(f"GitHub {what} page {page} failed")
+        payload = answer.payload
+        items.extend(item for item in payload if isinstance(item, dict))
+    return items, first.etag
+
+
+def _issue_row(item: dict) -> dict:
+    return {field: item.get(field) for field in ISSUE_FIELDS}
+
+
+def _commit_row(item: dict) -> dict:
+    commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
+    committer = commit.get("committer") if isinstance(commit.get("committer"), dict) else {}
+    message = commit.get("message") if isinstance(commit.get("message"), str) else ""
+    return {"sha": item.get("sha"), "date": committer.get("date"), "message": message.splitlines()[0] if message else ""}
+
+
+def _release_row(item: dict) -> dict | None:
+    if item.get("draft") or not isinstance(item.get("published_at"), str):
+        return None
+    return {"tag_name": item.get("tag_name"), "name": item.get("name"), "html_url": item.get("html_url"),
+            "published_at": item["published_at"]}
+
+
+def _newest(values) -> str | None:
+    dated = [value for value in values if isinstance(value, str) and value]
+    return max(dated) if dated else None
+
+
+def _is_full_pass(old: dict | None, repo: str, now: datetime) -> bool:
+    if not old or old.get("repo") != repo or old.get("error") or not old.get("full_pass_at"):
+        return True
+    try:
+        last = datetime.fromisoformat(old["full_pass_at"])
+    except (TypeError, ValueError):
+        return True
+    return (now - last) > timedelta(hours=full_pass_hours())
+
+
+def collect_project(old: dict | None, repo: str, read, *, now: datetime, window_since: str) -> dict:
+    """One project's pass: issues (full or incremental), commits (bounded
+    window, incremental after the first pass) and releases (one read behind
+    its ETag). Raises GitHubUnavailable on any failed read; the caller keeps
+    the previous entry whole in that case."""
+    tally = _Tally()
+    etags: dict = {}
+    etag_urls: dict = {}
+    full = _is_full_pass(old, repo, now)
+    cached_issues = list((old or {}).get("issues") or []) if not full else []
+    if full:
+        base = f"repos/{repo}/issues?state=all"
+        items, etag = _read_list(read, tally, base, None, what="issues")
+        issues = [_issue_row(item) for item in items if "pull_request" not in item]
+        etags["issues"], etag_urls["issues"] = None, None  # the next pass reads the since URL, which earns its own ETag
+        full_pass_at = now.isoformat()
+    else:
+        since = old.get("updated_since") or _newest(issue.get("updated_at") for issue in cached_issues) or window_since
+        base = f"repos/{repo}/issues?state=all&since={since}"
+        items, etag = _read_list(read, tally, base, _etag_for(old, "issues", base), what="issues")
+        issues = cached_issues
+        if items is not None:
+            by_number = {issue.get("number"): issue for issue in cached_issues}
+            for item in items:
+                if "pull_request" in item:
+                    continue
+                by_number[item.get("number")] = _issue_row(item)
+            issues = list(by_number.values())
+        etags["issues"], etag_urls["issues"] = etag, base
+        full_pass_at = old.get("full_pass_at")
+    issues.sort(key=lambda issue: -(issue.get("number") or 0))
+    updated_since = _newest(issue.get("updated_at") for issue in issues) or window_since
+
+    cached_commits = list((old or {}).get("commits") or []) if old and old.get("repo") == repo else []
+    newest_commit = _newest(commit.get("date") for commit in cached_commits)
+    commit_since = newest_commit or window_since
+    base = f"repos/{repo}/commits?since={commit_since}"
+    items, etag = _read_list(read, tally, base, _etag_for(old, "commits", base), what="commits")
+    commits = cached_commits
+    if items is not None:
+        by_sha = {commit.get("sha"): commit for commit in cached_commits}
+        for item in items:
+            by_sha[item.get("sha")] = _commit_row(item)
+        commits = list(by_sha.values())
+    commits = [commit for commit in commits if not commit.get("date") or commit["date"] >= window_since]
+    commits.sort(key=lambda commit: commit.get("date") or "", reverse=True)
+    etags["commits"], etag_urls["commits"] = etag, base
+
+    base = f"repos/{repo}/releases"
+    items, etag = _read_list(read, tally, base, _etag_for(old, "releases", base), what="releases")
+    releases = list((old or {}).get("releases") or []) if old and old.get("repo") == repo else []
+    if items is not None:
+        releases = [row for row in (_release_row(item) for item in items) if row]
+    etags["releases"], etag_urls["releases"] = etag, base
+
+    return {"repo": repo, "fetched_at": now.isoformat(), "error": None, "issues": issues, "commits": commits,
+            "releases": releases, "commits_since": window_since, "etags": etags, "etag_urls": etag_urls,
+            "updated_since": updated_since,
+            "full_pass_at": full_pass_at, "requests_total": tally.total, "requests_counted": tally.counted,
+            "_rate": tally.rate}
+
+
 class IssueCache:
     """Per registered project: repo, its complete issue list, fetched_at and
     error. Same lifecycle as SignalCache: loaded once, swapped whole under
@@ -502,6 +788,7 @@ class IssueCache:
         self._lock = threading.Lock()
         self._data: dict[str, dict] = {}
         self.refreshed_at: str | None = None
+        self.last_rate: dict | None = None
         self.load()
 
     def load(self) -> None:
@@ -526,7 +813,12 @@ class IssueCache:
                                "issues": [item for item in value["issues"] if isinstance(item, dict)],
                                "commits": [item for item in (value.get("commits") or []) if isinstance(item, dict)],
                                "releases": [item for item in (value.get("releases") or []) if isinstance(item, dict)],
-                               "commits_since": value.get("commits_since")}
+                               "commits_since": value.get("commits_since"),
+                               # #158: absent in a v0.3.39 file; None here forces a full pass.
+                               "etags": value.get("etags") if isinstance(value.get("etags"), dict) else {},
+                               "etag_urls": value.get("etag_urls") if isinstance(value.get("etag_urls"), dict) else {},
+                               "updated_since": value.get("updated_since"), "full_pass_at": value.get("full_pass_at"),
+                               "requests_total": value.get("requests_total"), "requests_counted": value.get("requests_counted")}
         with self._lock:
             self._data = clean
 
@@ -539,25 +831,28 @@ class IssueCache:
         with self._lock:
             return {root: dict(value) for root, value in self._data.items()}
 
-    def refresh(self, roots, *, issues_fetch=None, commits_fetch=None, releases_fetch=None,
-                repo_of=None, client=_ASK, since: str | None = None) -> dict[str, dict]:
-        """Recompute every project's entry and swap them in. The fetchers and
-        `repo_of(root)` are the seams tests inject. The three reads for a
-        project succeed together or its previous entry is kept whole."""
-        issues_fetch = issues_fetch or fetch_issues
-        commits_fetch = commits_fetch or fetch_commits
-        releases_fetch = releases_fetch or fetch_releases
+    def refresh(self, roots, *, reader=_ASK, client=_ASK, repo_of=None, since: str | None = None,
+                now: datetime | None = None) -> dict[str, dict]:
+        """Recompute every project's entry and swap them in. `reader(path,
+        etag) -> Answer` is the seam tests inject (a plain `client(path)` is
+        wrapped for the older tests); `repo_of(root)`, `since` (the commit
+        window start) and `now` likewise. The three reads for a project
+        succeed together or its previous entry is kept whole, with the error,
+        which also forces a full pass next time."""
         repo_of = repo_of or origin_repo
         roots = [Path(root).resolve() for root in roots]
         previous = self.snapshot()
-        since = since or commits_since()
-        if client is _ASK:
-            client = github_client()
+        now = now or datetime.now(timezone.utc)
+        since = since or commits_since(now)
+        if reader is _ASK:
+            reader = plain_reader(client) if client is not _ASK and client is not None else (None if client is None else conditional_reader())
         fresh: dict[str, dict] = {}
+        rate = None
 
         def empty(repo, error):
             return {"repo": repo, "fetched_at": utcnow(), "error": error, "issues": [], "commits": [],
-                    "releases": [], "commits_since": None}
+                    "releases": [], "commits_since": None, "etags": {}, "etag_urls": {}, "updated_since": None, "full_pass_at": None,
+                    "requests_total": 0, "requests_counted": 0}
         for root in roots:
             key = str(root)
             repo = repo_of(root)
@@ -565,26 +860,25 @@ class IssueCache:
             if repo is None:
                 fresh[key] = empty(None, NO_ORIGIN)
                 continue
-            if client is None:
+            if reader is None:
                 fresh[key] = empty(repo, GITHUB_NOT_CONFIGURED)
                 continue
             try:
-                issues = issues_fetch(repo, client)
-                commits = commits_fetch(repo, client, since)
-                releases = releases_fetch(repo, client)
+                entry = collect_project(old, repo, reader, now=now, window_since=since)
             except GitHubUnavailable as exc:
                 kept = old if old and old.get("repo") == repo else None
-                fresh[key] = {"repo": repo, "fetched_at": kept["fetched_at"] if kept else None, "error": str(exc),
-                              "issues": list(kept["issues"]) if kept else [],
-                              "commits": list(kept.get("commits") or []) if kept else [],
-                              "releases": list(kept.get("releases") or []) if kept else [],
-                              "commits_since": kept.get("commits_since") if kept else None}
+                fresh[key] = {**(kept or empty(repo, None)), "repo": repo, "error": str(exc),
+                              "fetched_at": kept["fetched_at"] if kept else None}
                 continue
-            fresh[key] = {"repo": repo, "fetched_at": utcnow(), "error": None, "issues": issues,
-                          "commits": commits, "releases": releases, "commits_since": since}
+            seen = entry.pop("_rate", None)
+            if seen is not None:
+                rate = seen
+            fresh[key] = entry
         with self._lock:
             self._data = fresh
             self.refreshed_at = utcnow()
+            if rate is not None:
+                self.last_rate = rate
         self._persist(fresh)
         return fresh
 

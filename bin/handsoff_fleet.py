@@ -253,9 +253,13 @@ def build_metrics(path: Path | None = None, issues: "signals_module.IssueCache |
         projects.append({"root": str(root), "name": root.name, "repo": cached.get("repo"),
                          "fetched_at": cached.get("fetched_at"), "error": cached.get("error"),
                          "issues": list(cached.get("issues") or []), "commits": list(cached.get("commits") or []),
-                         "releases": list(cached.get("releases") or []), "commits_since": cached.get("commits_since")})
+                         "releases": list(cached.get("releases") or []), "commits_since": cached.get("commits_since"),
+                         "updated_since": cached.get("updated_since"), "full_pass_at": cached.get("full_pass_at"),
+                         "requests_total": cached.get("requests_total"), "requests_counted": cached.get("requests_counted")})
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "started_at": started_at,
-            "refreshed_at": issues.refreshed_at if issues is not None else None, "projects": projects}
+            "refreshed_at": issues.refreshed_at if issues is not None else None,
+            # #158: the last X-RateLimit answer the collector saw, for the page's budget readout.
+            "rate_limit": issues.last_rate if issues is not None else None, "projects": projects}
 
 
 def build_fleet(path: Path | None = None, public_base: str | None = None,

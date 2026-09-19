@@ -641,9 +641,12 @@ function renderAll() {
   renderTable($("table-wrap"), series);
   $("range-label").textContent = `${formatDay(range.from)} to ${formatDay(range.to)} · ${series.days.length} DAYS`;
   const stale = (state.data.projects || []).filter((project) => project.error);
-  $("source-note").textContent = stale.length
+  // #158: the GitHub budget beside the refresh time, when the collector has seen the headers.
+  const rate = state.data.rate_limit;
+  const budget = rate && Number.isInteger(rate.remaining) ? ` · GITHUB BUDGET ${rate.remaining} OF ${rate.limit}` : "";
+  $("source-note").textContent = (stale.length
     ? `${issues.length} ISSUES · ${stale.length} PROJECT${stale.length === 1 ? "" : "S"} WITH ERRORS: ${stale.map((p) => `${p.name} (${p.error})`).join("; ")}`
-    : `${issues.length} ISSUES · REFRESHED ${state.data.refreshed_at ? new Date(state.data.refreshed_at).toLocaleTimeString() : "FROM CACHE"}`;
+    : `${issues.length} ISSUES · REFRESHED ${state.data.refreshed_at ? new Date(state.data.refreshed_at).toLocaleTimeString() : "FROM CACHE"}`) + budget;
   return series;
 }
 
