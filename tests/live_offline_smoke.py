@@ -63,14 +63,34 @@ if not os.path.exists(CHROME) or websocket_client is None:
     print("LIVE_OFFLINE_BLOCKED")
     raise SystemExit(1)
 
-server = chrome = None
+# Every process this smoke starts is registered here and stopped in the
+# finally block, whichever one a local name happens to point at.
+started: list[subprocess.Popen] = []
+
+
+def start(argv: list[str]) -> subprocess.Popen:
+    process = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    started.append(process)
+    return process
+
+
+def stop(process: subprocess.Popen) -> None:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
 with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
     project = Path(tmp) / "project"
     cli("init", str(project), cwd=ROOT)
     cli("supervisor", "init", "Offline smoke", "--item", "#151", cwd=project)
     try:
         port = free_port()
-        server = subprocess.Popen(dashboard_argv(project, port, "--owned-by-run"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server = start(dashboard_argv(project, port, "--owned-by-run"))
         base = f"http://127.0.0.1:{port}"
         for _ in range(40):
             try:
@@ -79,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
             except Exception:
                 time.sleep(.25)
         debug_port = free_port()
-        chrome = subprocess.Popen([CHROME, "--headless=new", f"--remote-debugging-port={debug_port}", f"--user-data-dir={Path(tmp) / 'chrome'}", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        chrome = start([CHROME, "--headless=new", f"--remote-debugging-port={debug_port}", f"--user-data-dir={Path(tmp) / 'chrome'}", "about:blank"])
         for _ in range(40):
             try:
                 targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{debug_port}/json"))
@@ -105,7 +125,7 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
         status = json.loads((project / "handsoff-status.json").read_text())
         cli("supervisor", "run-close", "--by", "pilot", "--reason", "smoke complete", "--expected-updated-at", status["updated_at"], cwd=project)
         port = free_port()
-        server = subprocess.Popen(dashboard_argv(project, port), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        closed_server = start(dashboard_argv(project, port))
         time.sleep(1)
         with websocket_client.connect(target["webSocketDebuggerUrl"]) as ws:
             evaluate(ws, f"location.href='http://127.0.0.1:{port}/'")
@@ -119,8 +139,8 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
         registry = Path(tmp) / "fleet.json"
         registry.write_text(json.dumps({"schema": 1, "projects": [{"root": str(project), "registered_at": "2026-09-19T00:00:00+00:00"}]}))
         port = free_port()
-        fleet_server = subprocess.Popen(fleet_argv(registry, port), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        server = fleet_server
+        stop(closed_server)
+        fleet_server = start(fleet_argv(registry, port))
         base = f"http://127.0.0.1:{port}"
         for _ in range(40):
             try:
@@ -145,10 +165,5 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
             assert evaluate(ws, "document.getAnimations().length") == 0, f"fleet animations still running: {remaining}"
         print("LIVE_OFFLINE_OK")
     finally:
-        for process in (server, chrome):
-            if process and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+        for process in reversed(started):
+            stop(process)
