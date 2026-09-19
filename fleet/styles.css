@@ -44,6 +44,8 @@ body::after { content: ""; position: fixed; inset: 0; pointer-events: none; back
 .shell { position: relative; z-index: 1; }
 button, input { font: inherit; }
 .hidden { display: none !important; }
+body.is-offline *, body.is-offline *::before, body.is-offline *::after { animation: none !important; transition: none !important; }
+.offline-banner { position: fixed; top: 60px; left: 0; right: 0; z-index: 50; padding: 8px 16px; background: var(--red); color: #190807; text-align: center; font: 700 11px/1.2 var(--mono); letter-spacing: .04em; }
 .ambient-grid { position: fixed; inset: 0; pointer-events: none; opacity: .5; background-image: linear-gradient(rgba(95, 211, 255, .06) 1px, transparent 1px), linear-gradient(90deg, rgba(95, 211, 255, .06) 1px, transparent 1px), linear-gradient(rgba(95, 211, 255, .025) 1px, transparent 1px), linear-gradient(90deg, rgba(95, 211, 255, .025) 1px, transparent 1px); background-size: 160px 160px, 160px 160px, 32px 32px, 32px 32px; mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, black 20%, transparent 80%); animation: grid-drift 90s linear infinite; }
 @keyframes grid-drift { to { background-position: 160px 160px, 160px 160px, 32px 32px, 32px 32px; } }
 @media (prefers-reduced-motion: reduce) { .ambient-grid, .connection i, .topbar::after { animation: none !important; } }
@@ -116,6 +118,7 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .project[data-state="stalled"], .project[data-state="failed"], .project[data-state="orphaned"] { border-left-color: var(--red); }
 .project[data-state="complete"] { border-left-color: var(--emerald); }
 .project[data-state="closed"], .project[data-state="complete"] { opacity: .78; }
+.project[data-state="offline"] { opacity: .45; filter: grayscale(.6); }
 .project-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .badge { padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--muted); font: 700 9.5px/1.2 var(--mono); letter-spacing: .08em; }
 .project[data-state="running"] .badge { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }

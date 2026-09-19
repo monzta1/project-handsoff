@@ -3,11 +3,11 @@ let fleet = null;
 let pending = null;
 
 const ENDPOINTS = { release: "/api/release-port", close: "/api/close-run", reopen: "/api/reopen-run" };
-const STATE_ORDER = ["waiting", "failed", "stalled", "running", "quiet", "complete", "closed", "orphaned"];
+const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "quiet", "complete", "closed", "orphaned"];
 const FINISHED_STATES = new Set(["complete", "closed"]);
 const STATE_LABELS = {
   waiting: "WAITING ON PILOT", failed: "FAILED", stalled: "STALLED", running: "RUNNING",
-  quiet: "QUIET", complete: "COMPLETE", closed: "CLOSED", orphaned: "ORPHANED",
+  quiet: "QUIET", offline: "DASHBOARD OFFLINE", complete: "COMPLETE", closed: "CLOSED", orphaned: "ORPHANED",
 };
 
 const esc = (value) => String(value ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");
@@ -200,9 +200,24 @@ async function refresh() {
     const response = await fetch("/api/fleet", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
+    fleetOfflineSince = null;
+    renderOffline();
   } catch (error) {
+    if (!fleetOfflineSince) fleetOfflineSince = new Date();
+    renderOffline();
     toast(`Fleet telemetry interrupted: ${error.message}`);
   }
+}
+
+let fleetOfflineSince = null;
+function renderOffline() {
+  document.body.classList.toggle("is-offline", Boolean(fleetOfflineSince));
+  const banner = $("offline-banner");
+  if (!banner) return;
+  banner.textContent = fleetOfflineSince
+    ? `DASHBOARD OFFLINE since ${fleetOfflineSince.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: the server on this port is not answering`
+    : "";
+  banner.classList.toggle("hidden", !fleetOfflineSince);
 }
 
 refresh();

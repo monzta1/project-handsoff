@@ -164,6 +164,9 @@ def project_view(entry: dict) -> dict:
         state = "closed"
     elif status.get("status") == "complete":
         state = "complete"
+    elif (owner is not None and owner.get("health") != "healthy"
+          and owner.get("reason") == "owned dashboard is not responding"):
+        state = "offline"
     elif (snap.get("input_required", {}).get("required")
           and snap.get("input_required", {}).get("turn") == "pilot"
           and snap.get("input_required", {}).get("preauthorized") is None):
@@ -224,7 +227,7 @@ def build_fleet(path: Path | None = None, public_base: str | None = None) -> dic
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
             "decisions": decisions, "counts": {state: sum(item["state"] == state for item in projects)
-                                                 for state in ("running", "quiet", "waiting", "stalled", "failed", "complete", "closed", "orphaned")}}
+                                                 for state in ("running", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "orphaned")}}
 
 
 class FleetServer(ThreadingHTTPServer):

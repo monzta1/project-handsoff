@@ -2,6 +2,8 @@ const $ = (id) => document.getElementById(id);
 const state = {
   lastGenerated: null,
   failures: 0,
+  offlineSince: null,
+  lastStreamRefresh: 0,
   feature: "Handsoff",
   inputRequired: false,
   inputKind: null,
@@ -1357,6 +1359,7 @@ function render(snapshot) {
   $("empty-state").classList.add("hidden");
   $("active-state").classList.remove("hidden");
   const status = snapshot.status;
+  document.body.classList.toggle("is-closed", status.status === "closed");
   const acceptance = snapshot.acceptance;
   const supervisor = snapshot.supervisor;
   const policy = snapshot.policy;
@@ -1436,7 +1439,7 @@ function render(snapshot) {
   renderCrew(state.crew);
   renderReplacements(state.replacements, snapshot.recovery?.attempts || []);
   renderReviewAttempts(snapshot.review?.attempts || []);
-  renderRoleChiclets(snapshot.actors.active_role);
+  renderRoleChiclets(status.status === "closed" ? null : snapshot.actors.active_role);
   renderEvents(snapshot.events, snapshot.audit.event_count);
   renderActivitySpark(snapshot.events);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);
@@ -1505,8 +1508,12 @@ async function refresh() {
     if (!response.ok) throw new Error(`Dashboard returned ${response.status}`);
     render(await response.json());
     state.failures = 0;
+    state.offlineSince = null;
+    renderOffline();
   } catch (error) {
     state.failures += 1;
+    if (!state.offlineSince) state.offlineSince = new Date();
+    renderOffline();
     if (state.failures === 1) showError(`Tactical telemetry interrupted: ${error.message}`);
   } finally {
     state.refreshInFlight = false;
@@ -1515,6 +1522,24 @@ async function refresh() {
       window.queueMicrotask(refresh);
     }
   }
+}
+
+function renderOffline() {
+  document.body.classList.toggle("is-offline", Boolean(state.offlineSince));
+  // A stepper node cannot be "active" while nobody is serving the run; the
+  // next successful snapshot re-renders the rail from the server.
+  if (state.offlineSince) {
+    document.querySelectorAll("#phase-rail .phase-node.active").forEach((node) => {
+      node.classList.remove("active");
+      node.classList.add("held");
+    });
+  }
+  const banner = $("offline-banner");
+  if (!banner) return;
+  banner.textContent = state.offlineSince
+    ? `DASHBOARD OFFLINE since ${state.offlineSince.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: the server on this port is not answering`
+    : "";
+  banner.classList.toggle("hidden", !state.offlineSince);
 }
 
 function setConnectionStatus(label) {
@@ -1534,7 +1559,13 @@ function connectEventStream() {
   });
   events.addEventListener("invalidate", refresh);
   events.onopen = () => setConnectionStatus("LINK: LIVE");
-  events.onerror = () => setConnectionStatus("LINK: RECONNECTING");
+  events.onerror = () => {
+    setConnectionStatus("LINK: RECONNECTING");
+    if (Date.now() - state.lastStreamRefresh >= 5000) {
+      state.lastStreamRefresh = Date.now();
+      refresh();
+    }
+  };
 }
 
 refresh();

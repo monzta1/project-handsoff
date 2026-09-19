@@ -83,6 +83,8 @@ operation_grace_seconds = 120
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+  "python3 -m unittest tests.test_offline_and_closed -v",
+  "node --test tests/dashboard/offline_and_closed.test.js",
   "node --test tests/dashboard/fleet_sections.test.js",
   "node --test tests/dashboard/fleet_favicon.test.js",
   "python3 -m unittest tests.test_amendment_dispatch -v",
@@ -137,7 +139,7 @@ commands = [
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = ["python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py"]
+live_commands = ["python3 tests/live_offline_smoke.py", "python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py"]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600

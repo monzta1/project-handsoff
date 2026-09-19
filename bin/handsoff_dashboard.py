@@ -291,7 +291,7 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
         return tuple(signature)
 
 
-def _phase_view(current: int, run_complete: bool, current_name: str | None = None) -> list[dict]:
+def _phase_view(current: int, run_complete: bool, current_name: str | None = None, closed: bool = False) -> list[dict]:
     """The current phase renders "active" (the pulsing in-progress bar) only
     while the run is still moving. Once status is complete, phase 8 being
     "current" no longer means "in progress", so it renders solid-complete
@@ -301,7 +301,8 @@ def _phase_view(current: int, run_complete: bool, current_name: str | None = Non
         {
             "number": number,
             "name": current_name if number == current and current_name else name,
-            "state": ("complete" if number < current or (number == current and run_complete)
+            "state": ("closed" if closed and number == current
+                      else "complete" if number < current or (number == current and run_complete)
                       else "active" if number == current else "upcoming"),
         }
         for number, name in lib.PHASES.items()
@@ -783,7 +784,13 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
     blocked = [c for c in criteria if c.get("state") == "blocked"]
     failing = [c for c in criteria if c.get("state") == "failing"]
 
-    if input_request["required"]:
+    if isinstance(status.get("run_closed"), dict):
+        closed = status["run_closed"]
+        tone = "steady"
+        label = "Mission closed"
+        headline = f"Mission closed by {closed.get('by')}: {closed.get('reason')}"
+        summary = status.get("next_action") or "The run is closed."
+    elif input_request["required"]:
         pilot_turn = input_request.get("turn") == "pilot" and not input_request.get("preauthorized")
         tone = "critical" if pilot_turn else "warning"
         label, headline = _decision_headline(input_request)
@@ -950,7 +957,8 @@ def build_snapshot(root: Path) -> dict:
         display_status["status"] = "closed"
         display_status["phase"] = "Run closed"
     verification_view = _verification_view(root, cfg, verifications)
-    display_status["phase"] = _display_phase_name(status, verification_view.get("live"))
+    if not isinstance(status.get("run_closed"), dict):
+        display_status["phase"] = _display_phase_name(status, verification_view.get("live"))
     display_status["stall_warning"] = liveness["stall_warning"]
     display_status["live"] = live
     display_status["activity"] = liveness
@@ -963,7 +971,7 @@ def build_snapshot(root: Path) -> dict:
         "implemented_by": status.get("implemented_by"),
         "reviewed_by": status.get("reviewed_by"),
         "approved_by": (status.get("deployment_approved") or {}).get("by"),
-        "active_role": _active_role(status, input_request),
+        "active_role": None if isinstance(status.get("run_closed"), dict) else _active_role(status, input_request),
     }
     sessions = status.get("agent_sessions") if isinstance(status.get("agent_sessions"), dict) else {}
 
@@ -1042,6 +1050,7 @@ def build_snapshot(root: Path) -> dict:
             int(status.get("phase_number", 1) or 1),
             status.get("status") == "complete",
             display_status["phase"],
+            closed=isinstance(status.get("run_closed"), dict),
         ),
         "acceptance": {
             "criteria": criteria,
