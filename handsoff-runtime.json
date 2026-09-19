@@ -5,9 +5,10 @@
     "bin/handsoff_broker.py": "5daeed604791a1f226fed0843400c9420233f5433456910b070cbae626c4d2c4",
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "22b54949f2d9890bf49f2dc40d3a68f7fe7d91dc36398219c993bd351a43a572",
-    "bin/handsoff_fleet.py": "9a316a92bd65d1f49758e099b2faf9231551cffbcba3d46f1eedf89b50ef5cf7",
+    "bin/handsoff_fleet.py": "41175e3acaa0dc4d87c33f484acab964ab864ae04433435036572f73f2e2cd9b",
+    "bin/handsoff_fleet_signals.py": "933a441cca5f300ffa3c1d03ab69e97754b673624af64973d3e9c7bd49d2f568",
     "bin/handsoff_lib.py": "f0d2b2c6b09f6fda92c31a75f5ab061727e019032e8cfe0108bd184803f1dc93",
-    "bin/handsoff_manifest.py": "e9302f973cc6961fe2a70c590eded34e3252d1c5ee797ca924980a45238b93d9",
+    "bin/handsoff_manifest.py": "078780c73c54974243b4c2e38b68a936439ba091ef49be3c36fe0551a5799287",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
     "bin/handsoff_supervisor.py": "7993440fa377faa706fe517f98ca0d3519e927a3033d530257719926e7f79555",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
@@ -19,9 +20,9 @@
     "dashboard/regression.html": "1cb3e80958281d15e8ac14e49035e9bcab43870041571cd8fd25f7a663370215",
     "dashboard/regression.js": "0603c0eae773d9c4b27757ba4047c7f9c06377de6d2ab7426b71b13aa2d64101",
     "dashboard/styles.css": "76ffb81a8f9798022c51dc566dae253a97ef62fbe21c9d1ba5201fe8dce74239",
-    "fleet/app.js": "68fd405f7f4e83304f997c8d0581df0a2b4a8fde20aa50d7a0f6c9db140af348",
+    "fleet/app.js": "65f5189ad719e30501286046a0b8b43e4a67dcef48ae9be98a86bf3687e8dc97",
     "fleet/index.html": "3dbcab25b0fed0dedb5638033633800d46e7335a94b0d7943b273e1fbc7250e5",
-    "fleet/styles.css": "38bde6282b5eaed80949792c074bba0f64126a208e6b58bbafc3100314a63665",
+    "fleet/styles.css": "3e3902dbd0c9260e2e1c210dd2f528c863b66b9b60356434708fda4364ea67c2",
     "prompts/architect.md": "d75735807942280aae78d781d83a9ff27ee6d8ce642657a12886484cd36f6711",
     "prompts/implementer.md": "ea5fa7a7578f85bc482682c543b95111dd1deb0e3c96a5004d127f9b07fd6cbd",
     "prompts/reviewer.md": "fde34742975faaafbaabbe9f1a152b453fd6fc50ad5bf77cf1cd34ce823efe4f",
@@ -31,5 +32,5 @@
     "templates/handsoff.toml": "5e60d1e4ade715a4d440f9ba79ee7bec7a286194652f9f4399c65cd13a70a887"
   },
   "schema": 1,
-  "version": "v0.3.36"
+  "version": "v0.3.37"
 }

@@ -138,6 +138,14 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .stamp-finished { color: var(--ink); font-weight: 600; }
 .next { margin: 0; padding: 8px 10px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--muted); font-size: 12px; line-height: 1.45; }
 .decisions-flag { margin: 0; color: var(--amber); font: 700 10.5px/1.4 var(--mono); letter-spacing: .04em; }
+/* #152: the GitHub and Beakon signals, one line each, in the meta voice. */
+.signals { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgba(148, 170, 190, .04); }
+.signal { color: var(--muted); font: 600 10.5px/1.4 var(--mono); letter-spacing: .04em; overflow-wrap: anywhere; }
+.signal b { color: var(--accent); font-weight: 700; margin-right: 6px; }
+.signal-beakon b { color: var(--emerald); }
+.signal-pending { color: var(--faint); }
+.signal-error, .signal-error-text { color: var(--amber); font-style: normal; }
+.signal-stale { color: var(--faint); }
 .project-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--faint); font: 600 10px/1.4 var(--mono); letter-spacing: .04em; }
 .root { margin: 0; color: var(--faint); font: 500 10px/1.4 var(--mono); overflow-wrap: anywhere; opacity: .75; }
 .project-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }

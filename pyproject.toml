@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-handsoff"
-version = "0.3.36"
+version = "0.3.37"
 description = "A lean, auditable multi-agent software-delivery control plane"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,7 +21,7 @@ handsoff-fleet = "handsoff_fleet:main"
 package-dir = {"" = "bin"}
 py-modules = [
   "handsoff_agent", "handsoff_analyzer", "handsoff_broker", "handsoff_cli",
-  "handsoff_dashboard", "handsoff_fleet", "handsoff_lib", "handsoff_manifest",
+  "handsoff_dashboard", "handsoff_fleet", "handsoff_fleet_signals", "handsoff_lib", "handsoff_manifest",
   "handsoff_regress", "handsoff_supervisor", "handsoff_tranche", "validate_handsoff_status"
 ]
 

@@ -14,6 +14,7 @@ RUNTIME_FILES = (
     "bin/handsoff_cli.py",
     "bin/handsoff_dashboard.py",
     "bin/handsoff_fleet.py",
+    "bin/handsoff_fleet_signals.py",
     "bin/handsoff_lib.py",
     "bin/handsoff_manifest.py",
     "bin/handsoff_regress.py",

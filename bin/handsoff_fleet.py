@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_dashboard as dashboard  # noqa: E402
+import handsoff_fleet_signals as signals_module  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 
 FLEET_ASSET_ROOT = lib.engine_root() / "fleet"
@@ -129,8 +130,12 @@ def project_logo_url(root: Path) -> str | None:
     return f"/project-logo/{logo_key(root)}" if found else None
 
 
-def project_view(entry: dict) -> dict:
+def project_view(entry: dict, signals: "signals_module.SignalCache | None" = None) -> dict:
     root = Path(entry["root"])
+    # #152: the GitHub and Beakon signals come from the cache the server's
+    # refresh thread fills; this function runs once a second and never
+    # fetches anything itself.
+    cached = signals.get(root) if signals is not None else dict(signals_module.EMPTY)
     owner = _owner_view(root)
     logo_url = project_logo_url(root) if root.exists() else None
     # REQ-006: Fleet may link only to a currently verified run-owned listener.
@@ -157,7 +162,8 @@ def project_view(entry: dict) -> dict:
                 "initialized": False, "state": "orphaned" if not root.exists() else "idle",
                 "error": snap.get("error"), "owner": owner, "binding": binding,
                 "engine_version": _engine_version(root), "decisions": [],
-                "dashboard_url": dashboard_url, "dashboard_note": dashboard_note}
+                "dashboard_url": dashboard_url, "dashboard_note": dashboard_note,
+                "github": cached["github"], "beakon": cached["beakon"]}
     status = snap["status"]
     live = snap.get("live") or {}
     verification_live = (snap.get("verification") or {}).get("live") or {}
@@ -208,6 +214,7 @@ def project_view(entry: dict) -> dict:
         "updated_at": status.get("updated_at"), "run_closed": status.get("run_closed"),
         "sessions": list((snap.get("runtime", {}).get("current_sessions") or {}).values()),
         "dashboard_url": dashboard_url, "dashboard_note": dashboard_note,
+        "github": cached["github"], "beakon": cached["beakon"],
     }
 
 
@@ -223,8 +230,9 @@ def _public_dashboard_url(project: dict, public_base: str | None) -> dict:
     return {**project, "dashboard_url": f"{base.scheme}://{base.hostname}:{port}/"}
 
 
-def build_fleet(path: Path | None = None, public_base: str | None = None) -> dict:
-    projects = [_public_dashboard_url(project_view(entry), public_base) for entry in load_registry(path)]
+def build_fleet(path: Path | None = None, public_base: str | None = None,
+                signals: "signals_module.SignalCache | None" = None) -> dict:
+    projects = [_public_dashboard_url(project_view(entry, signals), public_base) for entry in load_registry(path)]
     decisions = [{"root": item["root"], "project": item["name"], "feature": item.get("feature"), **action}
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
@@ -235,10 +243,17 @@ def build_fleet(path: Path | None = None, public_base: str | None = None) -> dic
 class FleetServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, registry: Path | None = None):
+    def __init__(self, address, registry: Path | None = None, *, signals=None, signals_interval=None):
         self.registry = registry
         self.stopping = False
+        # #152: one signal cache for the server's lifetime, filled by a daemon
+        # thread that starts now and returns control before its first pass.
+        self.signals = signals if signals is not None else signals_module.SignalCache(registry=registry or registry_path())
         super().__init__(address, FleetHandler)
+        # Only a server that bound its port collects; a failed bind leaves no thread behind.
+        self.signals_thread = signals_module.start_refresh_thread(
+            self.signals, lambda: [entry["root"] for entry in load_registry(self.registry)],
+            interval=signals_interval)
 
 
 class FleetHandler(BaseHTTPRequestHandler):
@@ -291,7 +306,8 @@ class FleetHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         path = urlsplit(self.path).path
         if path == "/api/fleet":
-            self._json(HTTPStatus.OK, build_fleet(self.server.registry, public_base=self._public_base()))
+            self._json(HTTPStatus.OK, build_fleet(self.server.registry, public_base=self._public_base(),
+                                                  signals=self.server.signals))
             return
         if path == "/api/events":
             self.send_response(HTTPStatus.OK)
@@ -302,7 +318,7 @@ class FleetHandler(BaseHTTPRequestHandler):
             last = None
             try:
                 while not self.server.stopping:
-                    payload = build_fleet(self.server.registry)
+                    payload = build_fleet(self.server.registry, signals=self.server.signals)
                     signature = hashlib.sha256(json.dumps(payload["projects"], sort_keys=True).encode()).hexdigest()
                     if signature != last:
                         self.wfile.write(f"event: fleet\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n".encode())
@@ -374,7 +390,8 @@ class FleetHandler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise lib.HandsoffError("request must be a JSON object")
             root = str(Path(body.get("root", "")).resolve())
-            project = next((item for item in build_fleet(self.server.registry)["projects"] if item["root"] == root), None)
+            project = next((item for item in build_fleet(self.server.registry, signals=self.server.signals)["projects"]
+                            if item["root"] == root), None)
             if not project:
                 raise lib.HandsoffError("project is not registered")
             if body.get("binding") != project.get("binding"):
@@ -410,6 +427,7 @@ def serve(host="127.0.0.1", port=8765, *, open_browser=True, registry=None):
         pass
     finally:
         server.stopping = True
+        server.signals_thread.stop_event.set()
         server.server_close()
     return 0
 

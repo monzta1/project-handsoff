@@ -136,10 +136,15 @@ commands = [
   "python3 -m unittest tests.test_review_reaffirm -v",
   "python3 -m unittest tests.test_launch_precheck -v",
   "python3 -m unittest tests.test_config_governance -v",
+  "python3 -m unittest tests.test_fleet_signals.FleetSnapshotTests -v",
+  "python3 -m unittest tests.test_fleet_signals.GitHubSignalTests -v",
+  "python3 -m unittest tests.test_fleet_signals.BeakonSignalTests -v",
+  "python3 -m unittest tests.test_fleet_signals.SignalCacheTests -v",
+  "node --test tests/dashboard/fleet_signals.test.js",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = ["python3 tests/live_offline_smoke.py", "python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py"]
+live_commands = ["python3 tests/live_fleet_signals_smoke.py", "python3 tests/live_offline_smoke.py", "python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py"]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600

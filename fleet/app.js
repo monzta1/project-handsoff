@@ -83,6 +83,35 @@ function phaseRail(project) {
   }).join("")}</div>`;
 }
 
+// #152: the GitHub and Beakon signals ride on each card as one strip. The
+// server fills them from a cache on its own clock, so every line says how
+// old it is; a collector error keeps the last good numbers beside its text.
+function githubLine(github) {
+  if (!github) return `<span class="signal signal-pending"><b>GITHUB</b> PENDING</span>`;
+  if (github.open_issues === null || github.open_issues === undefined) {
+    const label = github.error === "GitHub is not configured" ? "NOT CONFIGURED" : `ERROR: ${github.error || "no data"}`;
+    return `<span class="signal signal-error"><b>GITHUB</b> ${esc(label)}</span>`;
+  }
+  const release = github.latest_release
+    ? `${esc(github.latest_release.tag)} ${esc(relative(github.latest_release.published_at))}`
+    : "NO RELEASE";
+  const parts = [`${esc(github.open_issues)} ISSUES`, `${esc(github.open_prs)} PRS`, release, `CACHED ${esc(relative(github.fetched_at))}`];
+  const error = github.error ? ` <em class="signal-error-text">ERROR: ${esc(github.error)}</em>` : "";
+  return `<span class="signal${github.error ? " signal-stale" : ""}"><b>GITHUB</b> ${parts.join(" · ")}${error}</span>`;
+}
+
+function beakonLine(beakon) {
+  if (!beakon) return "";
+  const last = beakon.last
+    ? `LAST ${esc(String(beakon.last.outcome || "unknown").toUpperCase())} ${esc(relative(beakon.last.finished_at))}`
+    : "NO BEAMS YET";
+  return `<span class="signal signal-beakon"><b>BEAKON</b> ${esc(beakon.in_flight)} IN FLIGHT · ${last} · CACHED ${esc(relative(beakon.fetched_at))}</span>`;
+}
+
+function signalsStrip(project) {
+  return `<div class="signals">${githubLine(project.github)}${beakonLine(project.beakon)}</div>`;
+}
+
 function projectCard(project) {
   const state = project.state || "quiet";
   const decisions = project.decisions || [];
@@ -105,6 +134,7 @@ function projectCard(project) {
     <p class="phase">${phase}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
+    ${signalsStrip(project)}
     <div class="project-meta"><span>${crew}</span><span>${ownerLabel}</span><span>ENGINE ${esc(project.engine_version)}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
     <p class="root">${esc(project.root)}</p>
     <div class="project-actions">
