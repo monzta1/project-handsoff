@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.34/project_handsoff-0.3.34-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.35/project_handsoff-0.3.35-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -436,7 +436,7 @@ Also in this release: Fleet cards show `STARTED` and `FINISHED` wall-clock stamp
 
 ### v0.3.34 field note: a dashboard whose server is gone, or whose run is closed, looks that way (#151)
 
-When `/api/dashboard` (or `/api/fleet`) stops answering, the page sets `body.is-offline` within one poll interval: every CSS animation and transition stops, the mission dims, the stepper's active node is held, and a banner reads DASHBOARD OFFLINE since HH:MM: the server on this port is not answering; the first successful fetch clears it. A run with `run_closed` renders closed on the server side: the current phase's state is `closed` (never `active`), `status.phase` reads Run closed, the briefing reads Mission closed by WHO: REASON, no role is active. Fleet reports `offline` (counted, card dimmed, badge DASHBOARD OFFLINE) for a moving run whose owner record names a dashboard that does not answer. `tests/live_offline_smoke.py` proves it through headless Chrome's own DOM against the installed engine (`--tree` serves this checkout instead), and runs first in `live_commands`.
+When `/api/dashboard` (or `/api/fleet`) stops answering, the page sets `body.is-offline` within one poll interval: every CSS animation and transition stops, the mission dims, the stepper's active node is held, and a banner reads DASHBOARD OFFLINE since HH:MM: the server on this port is not answering; the first successful fetch clears it. A run with `run_closed` renders closed on the server side: the current phase's state is `closed` (never `active`), `status.phase` reads Run closed, the briefing reads Mission closed by WHO: REASON, no role is active. Fleet reports `offline` (counted, card dimmed, badge DASHBOARD OFFLINE) for a moving run whose owner record names a dashboard that does not answer. Fleet's own page polls every 5 seconds and refreshes once on a stream error, so a Fleet server dying under an operator is noticed the same way (v0.3.35). `tests/live_offline_smoke.py` proves both pages through headless Chrome's own DOM against the installed engine (`--tree` serves this checkout instead), and runs first in `live_commands`.
 
 ### Cutting a release
 
