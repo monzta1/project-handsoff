@@ -27,3 +27,5 @@ dist/
 *.egg-info/
 .handsoff-digests/
 .handsoff-regression.json
+web/dist/
+web/.dev.vars

@@ -1,0 +1,30 @@
+/* #163: the Metrics page on a phone. Loaded after /styles.css (Fleet's
+   own sheet, copied unchanged); everything here is layout at narrow widths
+   and touch sizing. */
+.shell { width: min(1560px, calc(100% - 24px)); }
+.preset-row button, .filters .secondary { min-height: 44px; min-width: 44px; padding: 10px 12px; }
+.custom-range input, .project-filter select { min-height: 40px; }
+.hit-band { cursor: pointer; }
+@media (max-width: 760px) {
+  .topbar { grid-template-columns: auto minmax(0, 1fr); grid-auto-rows: auto; height: auto; padding: 10px 0; gap: 8px 14px; }
+  .topbar-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topbar-mission h1 { font-size: 15px; }
+  .filters { gap: 8px; }
+  .preset-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .project-filter { width: 100%; }
+  .project-filter select { flex: 1; min-width: 0; }
+  .filters .spacer { display: none; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .charts { grid-template-columns: 1fr; }
+  .charts > :nth-child(odd):last-child { grid-column: auto; }
+  .chart { min-height: 180px; }
+  .panel { padding: 14px 12px; }
+  .scroll-wrap, #breakdown, #table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .metrics-table { min-width: 560px; }
+  .chart-tooltip { max-width: calc(100vw - 32px); }
+}
+@media (max-width: 420px) {
+  .kpis { grid-template-columns: 1fr 1fr; }
+  .summary strong { font-size: 18px; }
+  .preset-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
