@@ -16,11 +16,11 @@ small_fix_max_criteria = 3
 small_fix_max_changed_lines = 200
 small_fix_max_files = 6
 require_live_verification = true
-deployment_requires_explicit_approval = true
+deployment_requires_explicit_approval = false
 # #159: false waives the Pilot's design click (design-approve or the Mission
 # Control button) once the independent design review has approved; that
 # review stays mandatory. Default true.
-require_design_approval = true
+require_design_approval = false
 
 [agents]
 # Every role here is set explicitly and happens to equal the recommended
