@@ -26,18 +26,15 @@ USE_TREE = "--tree" in sys.argv
 
 
 def fleet_argv(registry: Path, port: int) -> list[str]:
-    script = ("import sys; sys.path.insert(0, %r); import handsoff_fleet as fleet; from pathlib import Path; "
-              "server = fleet.FleetServer(('127.0.0.1', %d), Path(%r)); server.serve_forever()")
-    bin_dir = str(ROOT / "bin") if USE_TREE else fleet_bin_dir()
-    return [sys.executable, "-c", script % (bin_dir, port, str(registry))]
-
-
-def fleet_bin_dir() -> str:
-    """The installed engine's module directory (where handsoff_fleet lives)."""
+    """A Fleet server on a private registry: this checkout's module under
+    `--tree`, else the installed engine's module run by its own interpreter
+    (so engine_root resolves to the installation's share directory)."""
+    script = ("import sys; %simport handsoff_fleet as fleet; from pathlib import Path; "
+              "fleet.FleetServer(('127.0.0.1', %d), Path(%r)).serve_forever()")
+    if USE_TREE:
+        return [sys.executable, "-c", script % ("sys.path.insert(0, %r); " % str(ROOT / "bin"), port, str(registry))]
     venv_python = Path(HANDSOFF).resolve().parent / "python"
-    out = subprocess.run([str(venv_python), "-c", "import handsoff_fleet, os; print(os.path.dirname(handsoff_fleet.__file__))"],
-                         capture_output=True, text=True, check=True)
-    return out.stdout.strip()
+    return [str(venv_python), "-c", script % ("", port, str(registry))]
 
 
 def dashboard_argv(project: Path, port: int, *extra: str) -> list[str]:
@@ -135,7 +132,8 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
             evaluate(ws, f"location.href='{base}/'")
             time.sleep(4)
             assert "is-offline" not in (evaluate(ws, "document.body.className") or ""), "fleet read offline while served"
-            assert evaluate(ws, "document.querySelectorAll('.project').length") >= 1  # the closed run sits in the finished section
+            cards = evaluate(ws, "document.querySelectorAll('.project').length")
+            assert cards >= 1, "fleet rendered no card: " + str(evaluate(ws, "JSON.stringify({href: location.href, title: document.title, body: document.body.className, text: document.body.innerText.slice(0, 200)})"))
             fleet_server.send_signal(signal.SIGTERM)
             for _ in range(10):
                 time.sleep(1)
