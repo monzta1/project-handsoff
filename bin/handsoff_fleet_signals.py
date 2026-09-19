@@ -32,7 +32,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -364,10 +364,11 @@ class SignalCache:
                              f"({type(exc).__name__})\n")
 
 
-def start_refresh_thread(cache: SignalCache, roots_provider, *, interval: float | None = None,
-                         stop_event: threading.Event | None = None) -> threading.Thread:
+def start_refresh_thread(cache, roots_provider, *, interval: float | None = None,
+                         stop_event: threading.Event | None = None, name: str = "fleet-signals") -> threading.Thread:
     """Refresh now, then every `interval` seconds, on a daemon thread. The
-    caller's constructor returns before the first refresh completes."""
+    caller's constructor returns before the first refresh completes. Works
+    for any cache with refresh(roots): SignalCache and IssueCache (#153)."""
     interval = signals_interval() if interval is None else interval
     stop_event = stop_event or threading.Event()
 
@@ -376,10 +377,222 @@ def start_refresh_thread(cache: SignalCache, roots_provider, *, interval: float 
             try:
                 cache.refresh(roots_provider())
             except Exception as exc:  # the loop must outlive any one bad cycle
-                sys.stderr.write(f"HANDSOFF_FLEET_WARNING: signals refresh failed ({type(exc).__name__}: {exc})\n")
+                sys.stderr.write(f"HANDSOFF_FLEET_WARNING: {name} refresh failed ({type(exc).__name__}: {exc})\n")
             stop_event.wait(interval)
 
-    thread = threading.Thread(target=loop, name="fleet-signals", daemon=True)
+    thread = threading.Thread(target=loop, name=name, daemon=True)
     thread.stop_event = stop_event  # type: ignore[attr-defined]
     thread.start()
     return thread
+
+
+# --- Issues (#153): the Metrics tab's data ----------------------------------
+
+DEFAULT_ISSUES_INTERVAL_SECONDS = 900.0
+DEFAULT_COMMITS_DAYS = 180
+ISSUE_FIELDS = ("number", "title", "html_url", "created_at", "closed_at")
+PAGE_SIZE = 100
+
+
+def issues_path(registry: Path | None = None) -> Path:
+    """HANDSOFF_FLEET_ISSUES_FILE, else fleet-issues.json beside the registry."""
+    override = os.environ.get("HANDSOFF_FLEET_ISSUES_FILE")
+    if override:
+        return Path(override).expanduser().resolve()
+    base = Path(registry).expanduser().resolve() if registry else Path.home() / ".handsoff" / "projects.json"
+    return base.with_name("fleet-issues.json")
+
+
+def issues_interval() -> float:
+    raw = os.environ.get("HANDSOFF_FLEET_ISSUES_INTERVAL")
+    try:
+        value = float(raw) if raw else DEFAULT_ISSUES_INTERVAL_SECONDS
+    except ValueError:
+        value = DEFAULT_ISSUES_INTERVAL_SECONDS
+    return value if value > 0 else DEFAULT_ISSUES_INTERVAL_SECONDS
+
+
+def commits_days() -> int:
+    raw = os.environ.get("HANDSOFF_FLEET_COMMITS_DAYS")
+    try:
+        value = int(raw) if raw else DEFAULT_COMMITS_DAYS
+    except ValueError:
+        value = DEFAULT_COMMITS_DAYS
+    return value if value > 0 else DEFAULT_COMMITS_DAYS
+
+
+def commits_since(now: datetime | None = None, days: int | None = None) -> str:
+    """#156: the inclusive lower bound of the commit window, ISO seconds Z."""
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(days=commits_days() if days is None else days)
+    return since.astimezone(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _paged(client, base: str) -> list:
+    """Every item of a paged GitHub list endpoint; raises on any failed page."""
+    items: list = []
+    page = 1
+    while True:
+        joiner = "&" if "?" in base else "?"
+        payload = client(f"{base}{joiner}per_page={PAGE_SIZE}&page={page}")
+        if payload is None:
+            raise GitHubUnavailable(f"GitHub answered 404 for {base.split('?')[0]}")
+        if not isinstance(payload, list):
+            raise GitHubUnavailable("GitHub list answer was not a list")
+        items.extend(item for item in payload if isinstance(item, dict))
+        if len(payload) < PAGE_SIZE:
+            return items
+        page += 1
+
+
+def fetch_commits(repo: str, client, since: str) -> list[dict]:
+    """#156: commits on the default branch dated at or after `since`
+    (GitHub's since is inclusive): sha, committer date, first message line."""
+    commits = []
+    for item in _paged(client, f"repos/{repo}/commits?since={since}"):
+        commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
+        committer = commit.get("committer") if isinstance(commit.get("committer"), dict) else {}
+        message = commit.get("message") if isinstance(commit.get("message"), str) else ""
+        commits.append({"sha": item.get("sha"), "date": committer.get("date"),
+                        "message": message.splitlines()[0] if message else ""})
+    return commits
+
+
+def fetch_releases(repo: str, client) -> list[dict]:
+    """#156: every published release: tag, name, link, published_at; drafts
+    and entries without a published_at are skipped."""
+    releases = []
+    for item in _paged(client, f"repos/{repo}/releases"):
+        if item.get("draft") or not isinstance(item.get("published_at"), str):
+            continue
+        releases.append({"tag_name": item.get("tag_name"), "name": item.get("name"),
+                         "html_url": item.get("html_url"), "published_at": item["published_at"]})
+    return releases
+
+
+def fetch_issues(repo: str, client) -> list[dict]:
+    """Every issue of `repo` (pull requests skipped), newest first as GitHub
+    lists them, with just ISSUE_FIELDS. Pages until a short page; a failure
+    on any page raises GitHubUnavailable and nothing partial is returned."""
+    issues: list[dict] = []
+    page = 1
+    while True:
+        payload = client(f"repos/{repo}/issues?state=all&per_page={PAGE_SIZE}&page={page}")
+        if payload is None:
+            raise GitHubUnavailable(f"GitHub repository {repo} was not found")
+        if not isinstance(payload, list):
+            raise GitHubUnavailable("GitHub issues answer was not a list")
+        for item in payload:
+            if not isinstance(item, dict) or "pull_request" in item:
+                continue
+            issues.append({field: item.get(field) for field in ISSUE_FIELDS})
+        if len(payload) < PAGE_SIZE:
+            return issues
+        page += 1
+
+
+class IssueCache:
+    """Per registered project: repo, its complete issue list, fetched_at and
+    error. Same lifecycle as SignalCache: loaded once, swapped whole under
+    the lock, persisted atomically; a project whose read fails keeps its
+    previous list and gets the error beside it."""
+
+    def __init__(self, path: Path | None = None, *, registry: Path | None = None):
+        self.path = path or issues_path(registry)
+        self._lock = threading.Lock()
+        self._data: dict[str, dict] = {}
+        self.refreshed_at: str | None = None
+        self.load()
+
+    def load(self) -> None:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            payload = {"schema": 1, "projects": {}}
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"HANDSOFF_FLEET_WARNING: fleet issues cache {self.path} is unreadable "
+                             f"({type(exc).__name__}); starting empty\n")
+            payload = {"schema": 1, "projects": {}}
+        projects = payload.get("projects") if isinstance(payload, dict) and payload.get("schema") == 1 else None
+        if not isinstance(projects, dict):
+            if payload != {"schema": 1, "projects": {}}:
+                sys.stderr.write(f"HANDSOFF_FLEET_WARNING: fleet issues cache {self.path} is malformed; starting empty\n")
+            projects = {}
+        clean = {}
+        for root, value in projects.items():
+            if isinstance(root, str) and isinstance(value, dict) and isinstance(value.get("issues"), list):
+                clean[root] = {"repo": value.get("repo"), "fetched_at": value.get("fetched_at"),
+                               "error": value.get("error"),
+                               "issues": [item for item in value["issues"] if isinstance(item, dict)],
+                               "commits": [item for item in (value.get("commits") or []) if isinstance(item, dict)],
+                               "releases": [item for item in (value.get("releases") or []) if isinstance(item, dict)],
+                               "commits_since": value.get("commits_since")}
+        with self._lock:
+            self._data = clean
+
+    def get(self, root: Path | str) -> dict | None:
+        with self._lock:
+            found = self._data.get(str(Path(root).resolve()))
+        return dict(found) if found else None
+
+    def snapshot(self) -> dict[str, dict]:
+        with self._lock:
+            return {root: dict(value) for root, value in self._data.items()}
+
+    def refresh(self, roots, *, issues_fetch=None, commits_fetch=None, releases_fetch=None,
+                repo_of=None, client=_ASK, since: str | None = None) -> dict[str, dict]:
+        """Recompute every project's entry and swap them in. The fetchers and
+        `repo_of(root)` are the seams tests inject. The three reads for a
+        project succeed together or its previous entry is kept whole."""
+        issues_fetch = issues_fetch or fetch_issues
+        commits_fetch = commits_fetch or fetch_commits
+        releases_fetch = releases_fetch or fetch_releases
+        repo_of = repo_of or origin_repo
+        roots = [Path(root).resolve() for root in roots]
+        previous = self.snapshot()
+        since = since or commits_since()
+        if client is _ASK:
+            client = github_client()
+        fresh: dict[str, dict] = {}
+
+        def empty(repo, error):
+            return {"repo": repo, "fetched_at": utcnow(), "error": error, "issues": [], "commits": [],
+                    "releases": [], "commits_since": None}
+        for root in roots:
+            key = str(root)
+            repo = repo_of(root)
+            old = previous.get(key)
+            if repo is None:
+                fresh[key] = empty(None, NO_ORIGIN)
+                continue
+            if client is None:
+                fresh[key] = empty(repo, GITHUB_NOT_CONFIGURED)
+                continue
+            try:
+                issues = issues_fetch(repo, client)
+                commits = commits_fetch(repo, client, since)
+                releases = releases_fetch(repo, client)
+            except GitHubUnavailable as exc:
+                kept = old if old and old.get("repo") == repo else None
+                fresh[key] = {"repo": repo, "fetched_at": kept["fetched_at"] if kept else None, "error": str(exc),
+                              "issues": list(kept["issues"]) if kept else [],
+                              "commits": list(kept.get("commits") or []) if kept else [],
+                              "releases": list(kept.get("releases") or []) if kept else [],
+                              "commits_since": kept.get("commits_since") if kept else None}
+                continue
+            fresh[key] = {"repo": repo, "fetched_at": utcnow(), "error": None, "issues": issues,
+                          "commits": commits, "releases": releases, "commits_since": since}
+        with self._lock:
+            self._data = fresh
+            self.refreshed_at = utcnow()
+        self._persist(fresh)
+        return fresh
+
+    def _persist(self, data: dict[str, dict]) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            lib.atomic_write_json(self.path, {"schema": 1, "projects": data})
+        except OSError as exc:
+            sys.stderr.write(f"HANDSOFF_FLEET_WARNING: fleet issues cache {self.path} was not written "
+                             f"({type(exc).__name__})\n")
+

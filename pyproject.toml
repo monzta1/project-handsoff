@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-handsoff"
-version = "0.3.38"
+version = "0.3.39"
 description = "A lean, auditable multi-agent software-delivery control plane"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,7 +29,7 @@ py-modules = [
 "share/handsoff" = ["handsoff-runtime.json"]
 "share/handsoff/dashboard" = ["dashboard/app.js", "dashboard/index.html", "dashboard/logo.png", "dashboard/regression.html", "dashboard/regression.js", "dashboard/styles.css"]
 "share/handsoff/dashboard/lib" = ["dashboard/lib/dashboard-logic.js"]
-"share/handsoff/fleet" = ["fleet/app.js", "fleet/index.html", "fleet/styles.css"]
+"share/handsoff/fleet" = ["fleet/app.js", "fleet/index.html", "fleet/metrics.html", "fleet/metrics.js", "fleet/styles.css"]
 "share/handsoff/prompts" = ["prompts/architect.md", "prompts/implementer.md", "prompts/reviewer.md", "prompts/supervisor.md"]
 "share/handsoff/schemas" = ["schemas/acceptance.schema.json", "schemas/status.schema.json"]
 "share/handsoff/templates" = ["templates/handsoff.toml"]

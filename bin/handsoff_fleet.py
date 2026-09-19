@@ -230,6 +230,34 @@ def _public_dashboard_url(project: dict, public_base: str | None) -> dict:
     return {**project, "dashboard_url": f"{base.scheme}://{base.hostname}:{port}/"}
 
 
+def build_metrics(path: Path | None = None, issues: "signals_module.IssueCache | None" = None,
+                  started_at: str | None = None) -> dict:
+    """#153: the Metrics tab's data, read from the issue cache only. Only
+    currently registered roots appear, and a cached entry whose repo is no
+    longer the project's origin is dropped: issues never follow a root to a
+    different repository."""
+    projects = []
+    for entry in load_registry(path):
+        root = Path(entry["root"])
+        cached = issues.get(root) if issues is not None else None
+        if cached is None:
+            projects.append({"root": str(root), "name": root.name, "repo": None, "fetched_at": None,
+                             "error": None, "issues": [], "commits": [], "releases": [], "commits_since": None})
+            continue
+        current = signals_module.origin_repo(root) if root.exists() else None
+        if cached.get("repo") and cached["repo"] != current:
+            projects.append({"root": str(root), "name": root.name, "repo": current, "fetched_at": None,
+                             "error": f"cached issues belong to {cached['repo']}; awaiting refresh",
+                             "issues": [], "commits": [], "releases": [], "commits_since": None})
+            continue
+        projects.append({"root": str(root), "name": root.name, "repo": cached.get("repo"),
+                         "fetched_at": cached.get("fetched_at"), "error": cached.get("error"),
+                         "issues": list(cached.get("issues") or []), "commits": list(cached.get("commits") or []),
+                         "releases": list(cached.get("releases") or []), "commits_since": cached.get("commits_since")})
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "started_at": started_at,
+            "refreshed_at": issues.refreshed_at if issues is not None else None, "projects": projects}
+
+
 def build_fleet(path: Path | None = None, public_base: str | None = None,
                 signals: "signals_module.SignalCache | None" = None) -> dict:
     projects = [_public_dashboard_url(project_view(entry, signals), public_base) for entry in load_registry(path)]
@@ -243,17 +271,24 @@ def build_fleet(path: Path | None = None, public_base: str | None = None,
 class FleetServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, registry: Path | None = None, *, signals=None, signals_interval=None):
+    def __init__(self, address, registry: Path | None = None, *, signals=None, signals_interval=None,
+                 issues=None, issues_interval=None):
         self.registry = registry
         self.stopping = False
+        self.started_at = datetime.now(timezone.utc).isoformat()
         # #152: one signal cache for the server's lifetime, filled by a daemon
         # thread that starts now and returns control before its first pass.
+        # #153: the issue cache behind the Metrics tab, same shape, its own
+        # slower clock (default 900 s; the lists are larger).
         self.signals = signals if signals is not None else signals_module.SignalCache(registry=registry or registry_path())
+        self.issues = issues if issues is not None else signals_module.IssueCache(registry=registry or registry_path())
         super().__init__(address, FleetHandler)
         # Only a server that bound its port collects; a failed bind leaves no thread behind.
-        self.signals_thread = signals_module.start_refresh_thread(
-            self.signals, lambda: [entry["root"] for entry in load_registry(self.registry)],
-            interval=signals_interval)
+        roots = lambda: [entry["root"] for entry in load_registry(self.registry)]  # noqa: E731
+        self.signals_thread = signals_module.start_refresh_thread(self.signals, roots, interval=signals_interval)
+        self.issues_thread = signals_module.start_refresh_thread(
+            self.issues, roots, name="fleet-issues",
+            interval=signals_module.issues_interval() if issues_interval is None else issues_interval)
 
 
 class FleetHandler(BaseHTTPRequestHandler):
@@ -309,6 +344,9 @@ class FleetHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, build_fleet(self.server.registry, public_base=self._public_base(),
                                                   signals=self.server.signals))
             return
+        if path == "/api/metrics":
+            self._json(HTTPStatus.OK, build_metrics(self.server.registry, self.server.issues, self.server.started_at))
+            return
         if path == "/api/events":
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
@@ -362,7 +400,9 @@ class FleetHandler(BaseHTTPRequestHandler):
             return
         assets = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                  "/styles.css": ("styles.css", "text/css; charset=utf-8")}
+                  "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+                  "/metrics": ("metrics.html", "text/html; charset=utf-8"),
+                  "/metrics.js": ("metrics.js", "text/javascript; charset=utf-8")}
         asset = assets.get(path)
         if asset:
             try:
@@ -428,6 +468,7 @@ def serve(host="127.0.0.1", port=8765, *, open_browser=True, registry=None):
     finally:
         server.stopping = True
         server.signals_thread.stop_event.set()
+        server.issues_thread.stop_event.set()
         server.server_close()
     return 0
 

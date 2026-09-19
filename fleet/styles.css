@@ -189,3 +189,67 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .lcd[data-frozen="true"] .lcd-live { color: var(--emerald); text-shadow: 0 0 6px rgba(70, 224, 161, .9), 0 0 18px rgba(70, 224, 161, .45); }
 .lcd[data-frozen="true"] .lcd-ghost { color: rgba(70, 224, 161, .09); }
 .project-head .lcd { margin-left: auto; margin-right: 10px; }
+
+/* #153: the Metrics tab. Tabs in the topbar, a filter row, KPI tiles reusing
+   the summary grid, and hand-built SVG charts in the panel voice. Series
+   colors live here only, as mark steps of Fleet's cyan and emerald chosen
+   for the dark band (validated with the dataviz palette script against the
+   panel surface #0e141a: L 0.48-0.67, CVD dE 16.4, contrast >= 3:1):
+   --series-1 for closed, backlog and commit marks, --series-2 for the
+   rolling lines, and the de-emphasis gray (--faint) for opened columns. */
+:root { --series-1: #0f95cc; --series-2: #1fae72; }
+.tabs { display: inline-flex; gap: 4px; margin-right: 10px; }
+.tabs a { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 700 10.5px/1 var(--mono); letter-spacing: .08em; text-decoration: none; }
+.tabs a[aria-current="page"] { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.filters .spacer { flex: 1; }
+.preset-row { display: inline-flex; gap: 4px; }
+.preset-row button, .filters .secondary { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font: 700 10.5px/1 var(--mono); letter-spacing: .06em; cursor: pointer; }
+.preset-row button.active { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.custom-range, .project-filter { display: inline-flex; align-items: center; gap: 8px; color: var(--faint); font: 700 10px/1 var(--mono); letter-spacing: .08em; }
+.custom-range input, .project-filter select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-solid); color: var(--ink); font: 500 12px/1.2 var(--sans); color-scheme: dark; }
+.source-note { margin: 10px 0 0; color: var(--faint); font: 600 10px/1.4 var(--mono); letter-spacing: .04em; overflow-wrap: anywhere; }
+.kpis { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.kpis article[data-kpi="closed"] strong { color: var(--accent); }
+.kpis article[data-kpi="open"] strong { color: var(--amber); }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.charts > :nth-child(odd):last-child { grid-column: 1 / -1; }
+@media (max-width: 1100px) { .charts { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.chart-note { margin: 8px 0 0; color: var(--faint); font: 600 10px/1.4 var(--mono); letter-spacing: .04em; }
+.releases-panel .empty { margin: 0; color: var(--faint); font-size: 12px; }
+.scroll-wrap { max-height: 300px; overflow: auto; }
+.releases-table thead th { position: sticky; top: 0; background: var(--panel-solid); }
+.releases-table tbody td:nth-child(3) { text-align: left; }
+.metrics-table a { color: var(--accent); text-decoration: none; }
+.series-commits .column { fill: var(--series-1); }
+.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.gridline { stroke: var(--line); stroke-width: 1; }
+.axis-label { fill: var(--faint); font: 600 10px var(--mono); }
+.value-label { fill: var(--muted); font: 700 11px var(--mono); }
+.column { fill: var(--series-1); }
+.series-opened .column { fill: var(--faint); }
+.series-line { stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.series-line.series-rolling { stroke: var(--series-2); }
+.series-line.series-backlog { stroke: var(--series-1); }
+.end-marker.series-backlog { fill: var(--series-1); stroke: var(--panel-solid); stroke-width: 2; }
+.dot.series-closed { fill: var(--series-1); stroke: var(--panel-solid); stroke-width: 2; }
+.dot-hit { fill: transparent; cursor: crosshair; outline: none; }
+.dot-hit:focus + .dot, .dot-hit:hover + .dot { r: 5; }
+.hit-band { fill: transparent; cursor: crosshair; outline: none; }
+.hit-band:hover, .hit-band:focus { fill: rgba(148, 170, 190, .06); }
+.crosshair { stroke: var(--line-strong); stroke-width: 1; pointer-events: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; padding: 0; list-style: none; color: var(--muted); font: 600 10.5px/1.4 var(--mono); letter-spacing: .04em; }
+.legend li { display: inline-flex; align-items: center; gap: 7px; }
+.legend-key { display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
+.legend-key.key-closed { background: var(--series-1); }
+.legend-key.key-opened { background: var(--faint); }
+.legend-key.key-rolling { height: 2px; border-radius: 1px; background: var(--series-2); }
+.legend-key.key-closed-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--series-1); border: 2px solid var(--panel-solid); }
+.chart-tooltip { position: fixed; z-index: 60; min-width: 140px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel-solid); color: var(--muted); font: 600 11px/1.5 var(--mono); pointer-events: none; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+.chart-tooltip div { display: flex; justify-content: space-between; gap: 12px; }
+.chart-tooltip strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.metrics-table { width: 100%; border-collapse: collapse; font: 500 12px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
+.metrics-table th { padding: 6px 8px; border-bottom: 1px solid var(--line-strong); color: var(--faint); font: 700 10px/1.2 var(--mono); letter-spacing: .08em; text-align: right; }
+.metrics-table th:first-child, .metrics-table td:first-child { text-align: left; }
+.metrics-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); color: var(--muted); text-align: right; }
+

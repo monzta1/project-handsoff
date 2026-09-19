@@ -141,10 +141,14 @@ commands = [
   "python3 -m unittest tests.test_fleet_signals.BeakonSignalTests -v",
   "python3 -m unittest tests.test_fleet_signals.SignalCacheTests -v",
   "node --test tests/dashboard/fleet_signals.test.js",
+  "python3 -m unittest tests.test_fleet_metrics.IssueCollectorTests -v",
+  "python3 -m unittest tests.test_fleet_metrics.MetricsServerTests -v",
+  "node --test tests/dashboard/fleet_metrics.test.js",
+  "node --test tests/dashboard/fleet_metrics_series.test.js",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = ["python3 tests/live_fleet_signals_smoke.py", "python3 tests/live_offline_smoke.py", "python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py"]
+live_commands = ["python3 tests/live_fleet_metrics_smoke.py", "python3 tests/live_fleet_signals_smoke.py", "python3 tests/live_offline_smoke.py", "python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py"]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600

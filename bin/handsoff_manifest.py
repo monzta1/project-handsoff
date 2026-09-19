@@ -30,6 +30,8 @@ RUNTIME_FILES = (
     "dashboard/styles.css",
     "fleet/app.js",
     "fleet/index.html",
+    "fleet/metrics.html",
+    "fleet/metrics.js",
     "fleet/styles.css",
     "prompts/architect.md",
     "prompts/implementer.md",

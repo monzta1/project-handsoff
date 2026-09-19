@@ -5,10 +5,10 @@
     "bin/handsoff_broker.py": "5daeed604791a1f226fed0843400c9420233f5433456910b070cbae626c4d2c4",
     "bin/handsoff_cli.py": "d749a6c5c5f0ef545c87c6df04264ac6ccff1f9e78397eb3aa9fa4629e82ad0d",
     "bin/handsoff_dashboard.py": "22b54949f2d9890bf49f2dc40d3a68f7fe7d91dc36398219c993bd351a43a572",
-    "bin/handsoff_fleet.py": "41175e3acaa0dc4d87c33f484acab964ab864ae04433435036572f73f2e2cd9b",
-    "bin/handsoff_fleet_signals.py": "933a441cca5f300ffa3c1d03ab69e97754b673624af64973d3e9c7bd49d2f568",
+    "bin/handsoff_fleet.py": "7d2ed123db444067ea37f6060d9fb42b29684883db81a0c18f89773f0aefc98d",
+    "bin/handsoff_fleet_signals.py": "384e2ef837e322c4e3a9567bb27564238288acd85f8b8bcf3ea77f3fa0006635",
     "bin/handsoff_lib.py": "f0d2b2c6b09f6fda92c31a75f5ab061727e019032e8cfe0108bd184803f1dc93",
-    "bin/handsoff_manifest.py": "078780c73c54974243b4c2e38b68a936439ba091ef49be3c36fe0551a5799287",
+    "bin/handsoff_manifest.py": "b119d1fae1e7c51863732e59aa3c067af051a4254eeb1f6fae13e91704bedb85",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
     "bin/handsoff_supervisor.py": "7993440fa377faa706fe517f98ca0d3519e927a3033d530257719926e7f79555",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
@@ -21,8 +21,10 @@
     "dashboard/regression.js": "0603c0eae773d9c4b27757ba4047c7f9c06377de6d2ab7426b71b13aa2d64101",
     "dashboard/styles.css": "3b45560bac3303e3933772710559f3cd4e6958ca1c50192a28544c80288863fc",
     "fleet/app.js": "65f5189ad719e30501286046a0b8b43e4a67dcef48ae9be98a86bf3687e8dc97",
-    "fleet/index.html": "3dbcab25b0fed0dedb5638033633800d46e7335a94b0d7943b273e1fbc7250e5",
-    "fleet/styles.css": "3e3902dbd0c9260e2e1c210dd2f528c863b66b9b60356434708fda4364ea67c2",
+    "fleet/index.html": "45f126a3e15ccbcacebdb81f7a53753a37c06adb610439544411a7efbf36999c",
+    "fleet/metrics.html": "ab5bec355a4d8c7de7a7af31f0d003043f605119a59e3698bb017e9a77316223",
+    "fleet/metrics.js": "ec5bbb00d696bc1c8ca8e023a54136a8983beee13966958395c9c210d94d157f",
+    "fleet/styles.css": "208bcc364e9bc5362d0c5f089248094dae035e7f4c409bed33b2fc5c45b12288",
     "prompts/architect.md": "d75735807942280aae78d781d83a9ff27ee6d8ce642657a12886484cd36f6711",
     "prompts/implementer.md": "ea5fa7a7578f85bc482682c543b95111dd1deb0e3c96a5004d127f9b07fd6cbd",
     "prompts/reviewer.md": "fde34742975faaafbaabbe9f1a152b453fd6fc50ad5bf77cf1cd34ce823efe4f",
@@ -32,5 +34,5 @@
     "templates/handsoff.toml": "5e60d1e4ade715a4d440f9ba79ee7bec7a286194652f9f4399c65cd13a70a887"
   },
   "schema": 1,
-  "version": "v0.3.38"
+  "version": "v0.3.39"
 }
