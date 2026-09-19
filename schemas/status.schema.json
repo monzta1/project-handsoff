@@ -1951,6 +1951,23 @@
             "amendment_hash": {
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
+            },
+            "findings": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "adopted_session": {
+              "type": "string",
+              "minLength": 1
+            },
+            "adopted_by": {
+              "type": "string",
+              "minLength": 1
             }
           }
         },

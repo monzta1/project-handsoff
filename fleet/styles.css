@@ -103,6 +103,13 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .summary article[data-state="complete"].has-some strong { color: var(--emerald); }
 
 .projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 10px; }
+.finished-runs { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 10px; }
+.finished-runs.hidden { display: none; }
+.finished-runs > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; padding: 6px 0; }
+.finished-runs > summary::-webkit-details-marker { display: none; }
+.finished-runs > summary::after { content: "SHOW"; color: var(--faint); font: 700 10px/1 var(--mono); letter-spacing: .1em; }
+.finished-runs[open] > summary::after { content: "HIDE"; }
+.finished-runs > .projects { margin-top: 10px; opacity: .85; }
 .project { display: grid; gap: 8px; align-content: start; padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid var(--line-strong); border-radius: 8px; background: rgba(0, 0, 0, .18); }
 .project[data-state="running"] { border-left-color: var(--accent); }
 .project[data-state="waiting"] { border-left-color: var(--amber); }

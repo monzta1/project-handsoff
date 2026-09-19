@@ -83,6 +83,13 @@ operation_grace_seconds = 120
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+  "node --test tests/dashboard/fleet_sections.test.js",
+  "node --test tests/dashboard/fleet_favicon.test.js",
+  "python3 -m unittest tests.test_amendment_dispatch -v",
+  "python3 -m unittest tests.test_gate_banners -v",
+  "node --test tests/dashboard/gate_banners.test.js",
+  "python3 -m unittest tests.test_live_verification_view -v",
+  "node --test tests/dashboard/live_verification.test.js",
   "python3 -m unittest tests.test_session_artifacts -v",
   "python3 -m unittest tests.test_claude_adapter -v",
   "python3 -m unittest tests.test_adapter_preflight -v",

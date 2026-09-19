@@ -61,6 +61,7 @@
       <div id="active-state" class="hidden">
         <section class="phase-rail-wrap" aria-label="Mission flight plan and delivery phases">
           <div class="phase-rail" id="phase-rail"></div>
+          <div id="phase-7-card" class="phase-7-detail hidden" role="status" aria-live="polite"></div>
         </section>
 
         <section id="consistency-fault" class="consistency-fault hidden" role="alert" aria-live="polite"><strong>CONSISTENCY FAULT</strong><span id="consistency-fault-message"></span></section>
@@ -106,7 +107,7 @@
             <section id="input-alert" class="input-alert hidden" role="alert" aria-live="assertive">
               <div class="input-alert-beacon" aria-hidden="true"><span></span></div>
               <div class="input-alert-copy">
-                <span>AUTHORIZATION REQUIRED</span>
+                <span id="input-alert-label">AUTHORIZATION REQUIRED</span>
                 <p id="input-alert-message">Holding position. Awaiting your command, Pilot.</p>
                 <div id="input-alert-cards" class="input-alert-cards hidden"></div>
                 <pre id="regression-details" class="regression-details hidden"></pre>

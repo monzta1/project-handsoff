@@ -53,6 +53,52 @@ _VERIFY_RUNS: dict[str, dict] = {}
 _VERIFY_RUNS_LOCK = threading.Lock()
 
 
+def _live_verification_in_flight(root: Path, cfg: dict) -> dict | None:
+    """#148: the transient record verify-live keeps while it runs, or None.
+    A record older than the checks timeout times its command count is a
+    leftover from a crashed run and is ignored."""
+    path = root / lib.LIVE_INFLIGHT_FILE
+    try:
+        age = max(0.0, time.time() - path.stat().st_mtime)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        total = int(payload.get("total") or 0)
+        done = int(payload.get("done") or 0)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0 or age > int(cfg.get("check_timeout_seconds", 600) or 600) * total:
+        return None
+    current = payload.get("current")
+    return {"done": min(done, total), "total": total,
+            "current": current if isinstance(current, str) else None,
+            "started_at": payload.get("started_at") if isinstance(payload.get("started_at"), str) else None,
+            "by": payload.get("by") if isinstance(payload.get("by"), str) else None}
+
+
+def _live_verification_last_failure(records: list[dict]) -> dict | None:
+    """#148: the failing command of the newest live record, until a later
+    live record passes. Tails are the ledger's redacted, bounded tails."""
+    for record in reversed(records):
+        if record.get("kind") != "live":
+            continue
+        if record.get("ok") is True:
+            return None
+        failed = [item for item in (record.get("results") or [])
+                  if isinstance(item, dict) and item.get("exit_code") not in (0, None)]
+        if not failed:
+            return {"command": None, "exit_code": None, "output_tail": "", "at": record.get("at"),
+                    "run_id": record.get("run_id")}
+        item = failed[0]
+        return {"command": item.get("command"), "exit_code": item.get("exit_code"),
+                "output_tail": str(item.get("output_tail") or "")[-lib.CHECK_OUTPUT_TAIL_CHARS:],
+                "at": record.get("at"), "run_id": record.get("run_id")}
+    return None
+
+
 def _verification_view(root: Path, cfg: dict, records: list[dict]) -> dict:
     """Expose only bounded verification state, never check output."""
     inflight = list(lib.verify_inflight_bindings(root))
@@ -67,8 +113,11 @@ def _verification_view(root: Path, cfg: dict, records: list[dict]) -> dict:
         for criterion in record.get("criteria", []):
             latest.setdefault(criterion, {"ok": record.get("ok"), "at": record.get("at"),
                                           "run_id": record.get("run_id")})
-    live = next(({"ok": r.get("ok"), "at": r.get("at"), "run_id": r.get("run_id")}
-                 for r in reversed(records) if r.get("kind") == "live"), None)
+    newest = next((r for r in reversed(records) if r.get("kind") == "live"), None)
+    live = {"ok": newest.get("ok") if newest else None, "at": newest.get("at") if newest else None,
+            "run_id": newest.get("run_id") if newest else None,
+            "in_flight": _live_verification_in_flight(root, cfg),
+            "last_failure": _live_verification_last_failure(records)}
     return {"in_flight": sorted(set(inflight)), "latest": latest, "live": live}
 
 
@@ -259,9 +308,18 @@ def _phase_view(current: int, run_complete: bool, current_name: str | None = Non
     ]
 
 
-def _display_phase_name(status: dict) -> str:
-    """Never describe an accepted deployment authorization as still awaiting it."""
+def _display_phase_name(status: dict, verification_live: dict | None = None) -> str:
+    """Never describe an accepted deployment authorization as still awaiting
+    it, and (#148) never call a run ready to ship while its live
+    verification is running or after the newest one failed."""
     phase_number = int(status.get("phase_number", 1) or 1)
+    live = verification_live or {}
+    if phase_number == 7 and live.get("in_flight"):
+        flight = live["in_flight"]
+        return f"LIVE VERIFICATION RUNNING · {flight.get('done', 0)}/{flight.get('total', 0)}"
+    if phase_number == 7 and live.get("last_failure"):
+        failure = live["last_failure"]
+        return f"LIVE VERIFICATION FAILED · {failure.get('command')} exit {failure.get('exit_code')}"
     if phase_number == 7 and status.get("deployment_approved"):
         return "Deployment authorized · ready to ship"
     return status.get("phase") or lib.PHASES.get(phase_number, "Unknown phase")
@@ -332,6 +390,81 @@ def _active_role(status: dict, input_request: dict) -> str | None:
     return ACTIVE_ROLE_BY_PHASE.get(phase_number)
 
 
+#: #147: whose turn a paused run waits on, by the kind of pause. The Pilot's
+#: turn is the only one that may interrupt them.
+DECISION_TURNS = {
+    "design_approval": "pilot", "deployment_approval": "pilot", "amendment_approval": "pilot",
+    "regression_approval": "pilot", "design_review_budget": "pilot", "question": "pilot",
+    "escalation": "pilot",
+    "amendment_review": "reviewer",
+    "amendment_revision": "architect",
+    "evidence_drift": "supervisor", "blocked": "supervisor", "decision": "supervisor",
+}
+PREAUTHORIZATION_PATTERN = re.compile(r"pre-?authori[sz]", re.IGNORECASE)
+PREAUTHORIZATION_EXCERPT_CHARS = 160
+
+
+def _decision_turn(kind: str | None) -> str | None:
+    return DECISION_TURNS.get(kind or "", "supervisor") if kind else None
+
+
+def _standing_preauthorization(root: Path | None, cfg: dict) -> dict | None:
+    """#147: the newest pilot_note by a human on this run whose text states
+    a standing pre-authorization; None otherwise. Managed roles (actor
+    names carrying a role name) cannot pre-authorize anything."""
+    if root is None:
+        return None
+    try:
+        events = _read_events(root, cfg)
+    except (OSError, lib.HandsoffError):
+        return None
+    for event in reversed(events):
+        if event.get("kind") != "pilot_note":
+            continue
+        by = str(event.get("by") or "").strip()
+        text = str(event.get("text") or "")
+        lowered = by.casefold()
+        if not by or any(role in lowered for role in lib.SELECTABLE_AGENT_ROLES) or lowered == "supervisor":
+            continue
+        if not PREAUTHORIZATION_PATTERN.search(text):
+            continue
+        return {"by": by, "at": event.get("at"), "excerpt": " ".join(text.split())[:PREAUTHORIZATION_EXCERPT_CHARS]}
+    return None
+
+
+def _amendment_round(root: Path | None, cfg: dict, amendment: dict) -> int:
+    """1 plus the number of revisions recorded for the open amendment."""
+    if root is None:
+        return 1
+    try:
+        events = _read_events(root, cfg)
+    except (OSError, lib.HandsoffError):
+        return 1
+    revisions = sum(1 for e in events if e.get("kind") == "amendment_revised"
+                    and e.get("amendment_id") == amendment.get("amendment_id"))
+    return 1 + revisions
+
+
+def _decision_headline(input_request: dict) -> tuple[str, str]:
+    """#147: the briefing label and headline by whose turn it is."""
+    turn = input_request.get("turn")
+    preauthorized = input_request.get("preauthorized") if turn == "pilot" else None
+    if preauthorized:
+        stamp = str(preauthorized.get("at") or "")[11:16]
+        return ("Pre-authorized by pilot note",
+                f"Pre-authorized by pilot note at {stamp} UTC; the Supervisor records the approval.")
+    if turn == "reviewer":
+        amendment_id = input_request.get("amendment_id")
+        round_number = input_request.get("amendment_round") or 1
+        target = f"amendment {amendment_id} (round {round_number})" if amendment_id else "the change"
+        return ("Under independent review", f"Under independent review: {target}. Nothing waits on you, Pilot.")
+    if turn == "architect":
+        return ("Architect revising", "Architect revising the amendment. Nothing waits on you, Pilot.")
+    if turn == "supervisor":
+        return ("Supervisor working", "The Supervisor is clearing this hold. Nothing waits on you, Pilot.")
+    return ("Pilot approval needed", "Holding position. Awaiting your command, Pilot.")
+
+
 def _input_request(status: dict, cfg: dict, root: Path | None = None,
                    acceptance: dict | None = None,
                    verifications: list[dict] | None = None) -> dict:
@@ -345,7 +478,7 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     if isinstance(status.get("run_closed"), dict):
         return {"required": False, "kind": None, "message": None, "blockers": [], "request_id": None,
                 "amendment_id": None, "amendment_decision": None, "question_id": None,
-                "question_cards": []}
+                "question_cards": [], "turn": None, "preauthorized": None, "amendment_round": None}
     workflow_status = str(status.get("status") or "")
     regression = next((item for item in reversed(status.get("regression_requests") or [])
                        if item.get("state") == "awaiting_approval"), None)
@@ -446,6 +579,11 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     else:
         kind = "decision"
         message = next_action
+    turn = _decision_turn(kind) if required else None
+    # A standing pre-authorization only ever stands in for the Pilot's own
+    # turn; a reviewer's or the Architect's pending step is theirs to take.
+    preauthorized = _standing_preauthorization(root, cfg) if required and turn == "pilot" else None
+    amendment_round = _amendment_round(root, cfg, amendment) if amendment else None
     return {"required": required, "kind": kind if required else None,
             "message": message if required else None,
             "blockers": blockers if required and kind == "design_approval" else [],
@@ -453,7 +591,8 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
             "amendment_id": amendment.get("amendment_id") if amendment else None,
             "amendment_decision": amendment_decision,
             "question_id": questions[0].get("question_id") if questions else None,
-            "question_cards": lib.question_cards(status) if questions else []}
+            "question_cards": lib.question_cards(status) if questions else [],
+            "turn": turn, "preauthorized": preauthorized, "amendment_round": amendment_round}
 
 
 class _ThreadCaptureStdout:
@@ -645,9 +784,9 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
     failing = [c for c in criteria if c.get("state") == "failing"]
 
     if input_request["required"]:
-        tone = "critical"
-        label = "Pilot authorization required"
-        headline = "Holding position. Awaiting your command, Pilot."
+        pilot_turn = input_request.get("turn") == "pilot" and not input_request.get("preauthorized")
+        tone = "critical" if pilot_turn else "warning"
+        label, headline = _decision_headline(input_request)
         summary = input_request["message"]
     elif all_errors:
         tone = "critical"
@@ -810,7 +949,8 @@ def build_snapshot(root: Path) -> dict:
     if isinstance(status.get("run_closed"), dict):
         display_status["status"] = "closed"
         display_status["phase"] = "Run closed"
-    display_status["phase"] = _display_phase_name(status)
+    verification_view = _verification_view(root, cfg, verifications)
+    display_status["phase"] = _display_phase_name(status, verification_view.get("live"))
     display_status["stall_warning"] = liveness["stall_warning"]
     display_status["live"] = live
     display_status["activity"] = liveness
@@ -986,8 +1126,9 @@ def build_snapshot(root: Path) -> dict:
         "input_required": input_request,
         "operator_actions": operator_actions,
         "operations": {"inventory": operations_inventory,
-                        "verification": _verification_view(root, cfg, verifications),
+                        "verification": verification_view,
                         "engine": _engine_view(root)},
+        "verification": verification_view,
         "activity_note": activity,
         "activity": activity_view,
         "live": live,

@@ -156,6 +156,7 @@ DESIGN_EVIDENCE_STATES = ("current", "stale", "failed", "missing")
 #: ledger-bound session record stays the authority on lifecycle; the beacon
 #: only says whether the process that owns that session is still signalling.
 LIVE_BEACON_FILE = ".handsoff-live.json"
+LIVE_INFLIGHT_FILE = ".handsoff-live-inflight.json"
 LIVE_BEACON_KEYS = ("session_id", "role", "state", "pid", "beacon_at", "ended_at", "exit_code")
 LIVE_BEACON_INTERVAL_SECONDS = 5.0
 LIVE_BEACON_FRESH_SECONDS = 15.0
@@ -7130,6 +7131,10 @@ AMENDMENT_FIELDS = {
     "frozen_phase", "frozen_progress", "review", "pilot_approval", "state", "closed_at",
 }
 AMENDMENT_REVIEW_FIELDS = {"by", "at", "decision", "summary", "amendment_hash"}
+#: #146: a request-changes review may carry the reviewer's findings, and a
+#: verdict adopted from a terminal session names that session and adopter.
+AMENDMENT_REVIEW_OPTIONAL_FIELDS = {"findings", "adopted_session", "adopted_by"}
+MAX_AMENDMENT_REVIEW_FINDINGS = 32
 AMENDMENT_PILOT_APPROVAL_FIELDS = {"by", "at", "amendment_hash"}
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -7565,11 +7570,21 @@ def _amendment_record_errors(record: object, label: str, *, must_be_open: bool) 
         errors.append(f"status: '{label}.closed_at' is required once closed")
     review = record.get("review")
     if review is not None:
-        if not isinstance(review, dict) or set(review) != AMENDMENT_REVIEW_FIELDS \
+        if not isinstance(review, dict) or not AMENDMENT_REVIEW_FIELDS <= set(review) \
+                or set(review) - AMENDMENT_REVIEW_FIELDS - AMENDMENT_REVIEW_OPTIONAL_FIELDS \
                 or review.get("decision") not in AMENDMENT_REVIEW_DECISIONS \
                 or not all(isinstance(review.get(k), str) and review[k].strip()
                            for k in ("by", "at", "summary", "amendment_hash")):
             errors.append(f"status: '{label}.review' must be null or {{by, at, decision, summary, amendment_hash}}")
+        else:
+            findings = review.get("findings")
+            if findings is not None and (not isinstance(findings, list) or len(findings) > MAX_AMENDMENT_REVIEW_FINDINGS
+                                         or not all(isinstance(f, str) and f.strip() and len(f) <= 512 for f in findings)):
+                errors.append(f"status: '{label}.review.findings' must be a list of at most "
+                              f"{MAX_AMENDMENT_REVIEW_FINDINGS} non-empty strings of at most 512 characters")
+            for key in ("adopted_session", "adopted_by"):
+                if key in review and (not isinstance(review[key], str) or not review[key].strip()):
+                    errors.append(f"status: '{label}.review.{key}' must be a non-empty string when set")
     pilot = record.get("pilot_approval")
     if pilot is not None:
         if not isinstance(pilot, dict) or set(pilot) != AMENDMENT_PILOT_APPROVAL_FIELDS \
@@ -8368,7 +8383,8 @@ def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None =
 # --------------------------------------------------------------------------
 
 def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
-               timeout: int | None = None, *, allow_regression: bool = False) -> list[dict]:
+               timeout: int | None = None, *, allow_regression: bool = False,
+               on_progress=None) -> list[dict]:
     """Actually execute the given commands (default: [checks].commands), in
     the project root. Each result is real evidence a criterion's evidence
     list can reference, not a sentence someone typed. Timeout comes from
@@ -8388,6 +8404,9 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
                 if captures_group:
                     raise HandsoffError("full regression blocked: create and accept a Mission Control regression request")
     for cmd in selected:
+        index = len(results) + 1
+        if on_progress:
+            on_progress(index, len(selected), cmd, None)
         started = time.time()
         try:
             proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=timeout)
@@ -8411,6 +8430,8 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
             "output_bytes": len(raw),
             "output_tail": output[-CHECK_OUTPUT_TAIL_CHARS:],
         })
+        if on_progress:
+            on_progress(index, len(selected), cmd, results[-1])
     return results
 
 
@@ -8436,6 +8457,7 @@ HANDSOFF_GENERATED_NAMES = frozenset({
     # Agent output is gitignored Handsoff runtime state, not repository evidence.
     ".handsoff-agent-output.json",
     LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE, PREFLIGHT_FILE,
+    LIVE_INFLIGHT_FILE,
     ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,
     "__pycache__", ".git",
 })

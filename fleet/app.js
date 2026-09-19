@@ -4,6 +4,7 @@ let pending = null;
 
 const ENDPOINTS = { release: "/api/release-port", close: "/api/close-run", reopen: "/api/reopen-run" };
 const STATE_ORDER = ["waiting", "failed", "stalled", "running", "quiet", "complete", "closed", "orphaned"];
+const FINISHED_STATES = new Set(["complete", "closed"]);
 const STATE_LABELS = {
   waiting: "WAITING ON PILOT", failed: "FAILED", stalled: "STALLED", running: "RUNNING",
   quiet: "QUIET", complete: "COMPLETE", closed: "CLOSED", orphaned: "ORPHANED",
@@ -123,13 +124,30 @@ function render(data) {
   $("decision-count").textContent = data.decisions.length;
   $("decision-list").innerHTML = data.decisions.map((item) => `<div class="decision"><div><strong>${esc(item.label)}</strong><p>${esc(item.consequence)}</p></div><span>${esc(item.project)}</span></div>`).join("");
   const projects = data.projects.slice().sort((a, b) => STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state));
-  $("fleet-count").textContent = `${projects.length} PROJECT${projects.length === 1 ? "" : "S"}`;
-  $("projects").innerHTML = projects.length ? projects.map(projectCard).join("")
+  // #150: finished runs (complete, closed) sit in their own collapsed
+  // section so the grid shows only what is ongoing.
+  const ongoing = projects.filter((project) => !FINISHED_STATES.has(project.state));
+  const finished = projects.filter((project) => FINISHED_STATES.has(project.state));
+  $("fleet-count").textContent = `${ongoing.length} ONGOING · ${projects.length} REGISTERED`;
+  $("projects").innerHTML = ongoing.length ? ongoing.map(projectCard).join("")
+    : projects.length ? '<p class="empty">No ongoing mission. Every registered run is complete or closed.</p>'
     : '<p class="empty">No project is registered. Register one with <code>handsoff fleet register /path/to/project</code>.</p>';
+  const finishedSection = $("finished-runs");
+  finishedSection.classList.toggle("hidden", finished.length === 0);
+  $("finished-count").textContent = `${finished.length} RUN${finished.length === 1 ? "" : "S"}`;
+  $("finished-projects").innerHTML = finished.map(projectCard).join("");
   document.querySelectorAll("[data-op]").forEach((button) => button.addEventListener("click", () => openConfirm(button.dataset.op, button.dataset.root)));
   renderClocks();
 }
 window.setInterval(renderClocks, 1000);
+(function rememberFinishedDisclosure() {
+  const section = $("finished-runs");
+  if (!section) return;
+  try { section.open = localStorage.getItem("fleet.finished.open") === "1"; } catch (error) { /* per-browser convenience only */ }
+  section.addEventListener("toggle", () => {
+    try { localStorage.setItem("fleet.finished.open", section.open ? "1" : "0"); } catch (error) { /* ignore */ }
+  });
+})();
 
 function openConfirm(op, root) {
   const project = fleet.projects.find((item) => item.root === root);

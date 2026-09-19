@@ -15,6 +15,7 @@ handsoff-design-evidence.json
 .handsoff-tranche-proposal.json
 .handsoff-dashboard-owner.json
 .handsoff-live.json
+.handsoff-live-inflight.json
 .handsoff-output-liveness.json
 .handsoff-preflight.json
 .handsoff-agent-output.json

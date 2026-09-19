@@ -158,13 +158,20 @@ def project_view(entry: dict) -> dict:
                 "dashboard_url": dashboard_url, "dashboard_note": dashboard_note}
     status = snap["status"]
     live = snap.get("live") or {}
+    verification_live = (snap.get("verification") or {}).get("live") or {}
     closed = isinstance(status.get("run_closed"), dict) or status.get("status") == "closed"
     if closed:
         state = "closed"
     elif status.get("status") == "complete":
         state = "complete"
-    elif snap.get("input_required", {}).get("required"):
+    elif (snap.get("input_required", {}).get("required")
+          and snap.get("input_required", {}).get("turn") == "pilot"
+          and snap.get("input_required", {}).get("preauthorized") is None):
         state = "waiting"
+    elif (snap.get("verification") or {}).get("live", {}).get("in_flight"):
+        state = "running"
+    elif (snap.get("verification") or {}).get("live", {}).get("last_failure"):
+        state = "failed"
     elif live.get("state") in {"running", "started"}:
         state = "running"
     elif live.get("state") == "stalled":

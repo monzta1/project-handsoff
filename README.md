@@ -426,6 +426,14 @@ Four defects from ToneCommand's three runs of 2026-09-18, each with cause and fi
 
 Also in this release: Fleet cards show `STARTED` and `FINISHED` wall-clock stamps beside the elapsed clock (#143), and the card's close control reads `CLOSE RUN` (cleanly was implicit).
 
+### v0.3.33 field notes: amendment verdicts by binding, banners by turn, live verification in view (#146, #147, #148, #149, #150)
+
+- **#146** A reviewer session launched for an open amendment dispatches `amendment-review` whatever `kind` the reviewer wrote, with every finding on a request-changes verdict; `session-result-adopt` takes the same path for a persisted verdict. `amendment-review` gained `--finding` (at most 32, 512 characters each; never on an approval) and `--adopted-session`/`--adopted-by`; the review record carries `findings`, `adopted_session` and `adopted_by`.
+- **#147** `input_required` carries `turn` (pilot, reviewer, architect, supervisor), `preauthorized` (the newest human `pilot_note` whose text says pre-authoriz..., only for the Pilot's own turn) and `amendment_round`. The briefing label and headline are derived from them (Under independent review, Architect revising, Pilot approval needed, Pre-authorized by pilot note); the amber demand styling, title flip and browser notification fire only for the Pilot's own turn; Fleet reports `waiting` only then.
+- **#148** `verify-live` keeps `.handsoff-live-inflight.json` (side state, outside the digest) while it runs, through `run_checks(on_progress=...)`. The snapshot's `verification.live` carries `in_flight` and `last_failure`; the Phase 7 display name reads LIVE VERIFICATION RUNNING or LIVE VERIFICATION FAILED instead of ready to ship; Fleet reports `running` or `failed` accordingly; the Phase 7 card lists the failing command with its output tail until a later live run passes.
+- **#149** Fleet has its own inline SVG favicon (a constellation of mission dots in Fleet's accent); run dashboards keep the state-coloured canvas icon.
+- **#150** Fleet lists ongoing runs in the grid and completed or closed runs in a collapsed section below, counted, remembered per browser.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:

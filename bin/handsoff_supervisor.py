@@ -2654,7 +2654,13 @@ def cmd_session_result_adopt(args) -> int:
     # the adopter is recorded alongside, never in its place.
     base = {"actor": "supervisor", "project_root": str(root), "action": "workflow",
             "by": session_actor or actor, "adopted_session": args.session, "adopted_by": actor}
-    if kind == "review":
+    if isinstance(session, dict) and session.get("amendment_id"):
+        # #146: a verdict persisted by a reviewer launched for an amendment
+        # adopts as an amendment review, findings included, whatever kind
+        # the reviewer wrote.
+        amendment_result = {**payload, "kind": payload.get("kind", kind)}
+        request = broker._amendment_review_request(root, cfg, base, status, session, amendment_result)
+    elif kind == "review":
         if payload.get("decision") == "approved":
             request = {**base, "command": "record-review",
                        "symptom_reproduced": payload.get("symptom_reproduced", "not_applicable"),
@@ -2732,36 +2738,60 @@ def cmd_verify_live(args) -> int:
         if status.get("deployment_approved") and status["deployment_approved"].get("config_hash") != config_digest:
             print("SHIP_FEATURE_BLOCKED: workflow policy changed since deployment approval")
             return 1
-    results = lib.run_checks(cfg, root, commands)
-    ok = all(r["exit_code"] == 0 for r in results)
-    with lib.project_lock(root):
-        # Re-read handsoff.toml from disk here, not the `cfg` captured
-        # before run_checks: comparing config_hash(cfg) to itself can
-        # never detect a change, since it is the same in-memory object
-        # both times. Only a fresh load can see an edit that landed
-        # while the (possibly slow) live checks were executing.
-        cfg = lib.load_config(root)
-        status, acceptance, records, verification_problems = _load_all(root, cfg)
-        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
-        if audit_errors:
-            return _print_audit_block(audit_errors)
-        if lib.acceptance_hash(acceptance["criteria"]) != digest:
-            print("SHIP_FEATURE_BLOCKED: acceptance changed during live verification; run it again")
-            return 1
-        if lib.config_hash(cfg) != config_digest:
-            print("SHIP_FEATURE_BLOCKED: workflow policy changed during live verification; run it again")
-            return 1
-        record = lib.append_verification(root, cfg, kind="live", ok=ok, by=args.by,
-                                         criteria=acceptance["criteria"], results=_durable_results(results),
-                                         commands=commands,
-                                         acceptance_digest=digest, config_digest=config_digest)
-        status["verification_head"] = record["hash"]
-        if ok:
-            status["live_verification_id"] = record["run_id"]
-        status["updated_at"] = datetime.now(timezone.utc).isoformat()
-        lib.commit(root, cfg, status=status,
-                  event_kind="live_checks_run", event_message="Ran configured live checks",
-                  ok=ok, run_id=record["run_id"], by=args.by)
+    # #148: a transient in-flight record so Mission Control can show the
+    # live verification while it runs; it is display only, never evidence,
+    # and is removed on every exit from this point on.
+    inflight_path = root / lib.LIVE_INFLIGHT_FILE
+    started_at = datetime.now(timezone.utc).isoformat()
+    progress = {"started_at": started_at, "by": args.by, "total": len(commands), "done": 0,
+                "current": None, "results": []}
+
+    def on_progress(index, total, command, result):
+        if result is None:
+            progress["current"] = command
+        else:
+            progress["current"] = None
+            progress["done"] = index
+            progress["results"].append({"command": command, "exit_code": result["exit_code"]})
+        lib.atomic_write_json(inflight_path, progress)
+
+    try:
+        lib.atomic_write_json(inflight_path, progress)
+        results = lib.run_checks(cfg, root, commands, on_progress=on_progress)
+        ok = all(r["exit_code"] == 0 for r in results)
+        with lib.project_lock(root):
+            # Re-read handsoff.toml from disk here, not the `cfg` captured
+            # before run_checks: comparing config_hash(cfg) to itself can
+            # never detect a change, since it is the same in-memory object
+            # both times. Only a fresh load can see an edit that landed
+            # while the (possibly slow) live checks were executing.
+            cfg = lib.load_config(root)
+            status, acceptance, records, verification_problems = _load_all(root, cfg)
+            audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+            if audit_errors:
+                return _print_audit_block(audit_errors)
+            if lib.acceptance_hash(acceptance["criteria"]) != digest:
+                print("SHIP_FEATURE_BLOCKED: acceptance changed during live verification; run it again")
+                return 1
+            if lib.config_hash(cfg) != config_digest:
+                print("SHIP_FEATURE_BLOCKED: workflow policy changed during live verification; run it again")
+                return 1
+            record = lib.append_verification(root, cfg, kind="live", ok=ok, by=args.by,
+                                             criteria=acceptance["criteria"], results=_durable_results(results),
+                                             commands=commands,
+                                             acceptance_digest=digest, config_digest=config_digest)
+            status["verification_head"] = record["hash"]
+            if ok:
+                status["live_verification_id"] = record["run_id"]
+            status["updated_at"] = datetime.now(timezone.utc).isoformat()
+            lib.commit(root, cfg, status=status,
+                      event_kind="live_checks_run", event_message="Ran configured live checks",
+                      ok=ok, run_id=record["run_id"], by=args.by)
+    finally:
+        try:
+            inflight_path.unlink()
+        except FileNotFoundError:
+            pass
     print(__import__("json").dumps({"ok": ok, "run_id": record["run_id"], "results": results}, indent=2))
     return 0 if ok else 1
 
@@ -3184,6 +3214,13 @@ def cmd_amendment_review(args) -> int:
         print("SHIP_FEATURE_BLOCKED: --summary must be a non-empty string")
         return 1
     reviewer = args.by.strip()
+    findings = [f.strip() for f in (getattr(args, "finding", None) or []) if isinstance(f, str) and f.strip()]
+    if len(findings) > lib.MAX_AMENDMENT_REVIEW_FINDINGS or any(len(f) > 512 for f in findings):
+        print(f"SHIP_FEATURE_BLOCKED: at most {lib.MAX_AMENDMENT_REVIEW_FINDINGS} findings of at most 512 characters")
+        return 1
+    if args.approve and findings:
+        print("SHIP_FEATURE_BLOCKED: an approved amendment review carries no findings")
+        return 1
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     with lib.project_lock(root):
@@ -3191,6 +3228,10 @@ def cmd_amendment_review(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        adoption_problem = _adoption_error(status, args)
+        if adoption_problem:
+            print(f"SHIP_FEATURE_BLOCKED: {adoption_problem}")
+            return 1
         amendment = lib.open_amendment(status)
         if amendment is None:
             print("SHIP_FEATURE_BLOCKED: no amendment is open")
@@ -3213,6 +3254,11 @@ def cmd_amendment_review(args) -> int:
         decision = "approved" if args.approve else "changes_requested"
         amendment["review"] = {"by": reviewer, "at": now, "decision": decision,
                                "summary": args.summary.strip(), "amendment_hash": recomputed}
+        if findings:
+            amendment["review"]["findings"] = findings
+        if getattr(args, "adopted_session", None):
+            amendment["review"]["adopted_session"] = args.adopted_session
+            amendment["review"]["adopted_by"] = args.adopted_by
         if decision == "approved":
             status["next_action"] = (f"Amendment {amendment['amendment_id']} review approved: the Pilot records "
                                      "amendment-approve to resume the frozen phase.")
@@ -3224,7 +3270,9 @@ def cmd_amendment_review(args) -> int:
                   event_message=f"Amendment {amendment['amendment_id']} review {decision.replace('_', ' ')}: "
                                 f"{args.summary.strip()}",
                   by=reviewer, decision=decision, amendment_id=amendment["amendment_id"],
-                  amendment_hash=recomputed)
+                  amendment_hash=recomputed, findings=findings,
+                  adopted_session=getattr(args, "adopted_session", None),
+                  adopted_by=getattr(args, "adopted_by", None))
     print("AMENDMENT_REVIEW_APPROVED" if args.approve else "AMENDMENT_CHANGES_REQUESTED")
     return 0
 
@@ -4305,6 +4353,11 @@ def build_parser() -> argparse.ArgumentParser:
     amendment_review_decision.add_argument("--approve", action="store_true")
     amendment_review_decision.add_argument("--request-changes", action="store_true")
     amendment_review.add_argument("--summary", required=True)
+    amendment_review.add_argument("--finding", action="append", default=[],
+                                  help="a reviewer finding carried on a request-changes review (#146)")
+    amendment_review.add_argument("--adopted-session", default=None,
+                                  help="#146: the terminal reviewer session whose persisted verdict this records")
+    amendment_review.add_argument("--adopted-by", default=None)
 
     amendment_approve = sub.add_parser("amendment-approve", help="Pilot approval of the reviewed amendment: "
                                        "rewrites the design hashes and resumes the frozen phase (#42, human-only)")

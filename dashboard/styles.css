@@ -118,6 +118,9 @@ button, input, select, textarea { font: inherit; }
 .pilot-note-send:disabled { opacity: .6; cursor: default; }
 
 /* ---------- phase rail ---------- */
+.phase-7-detail { margin: 10px 0 0; padding: 10px 12px; border: 1px solid rgba(255, 123, 117, .5); border-radius: 8px; background: var(--red-soft); }
+.phase-7-detail strong { display: block; color: var(--red); font: 700 10.5px/1.4 var(--mono); letter-spacing: .06em; }
+.phase-7-detail pre { margin: 6px 0 0; max-height: 160px; overflow: auto; color: var(--muted); font: 11px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .phase-rail-wrap { margin: 16px 0 14px; overflow-x: auto; scrollbar-width: none; }
 .phase-rail { min-width: 760px; display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
 .phase-node { position: relative; padding: 12px 0 0; color: var(--faint); }

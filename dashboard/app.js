@@ -5,6 +5,7 @@ const state = {
   feature: "Handsoff",
   inputRequired: false,
   inputKind: null,
+  pilotGate: false,
   alertSignature: null,
   titleFlip: false,
   refreshInFlight: false,
@@ -378,14 +379,46 @@ function renderRegression(regression) {
     : "";
 }
 
+function gateLabel(inputRequest) {
+  if (!inputRequest?.required) return "AUTHORIZATION REQUIRED";
+  if (inputRequest.turn === "pilot" && inputRequest.preauthorized) {
+    const at = new Date(inputRequest.preauthorized.at);
+    const stamp = isNaN(at.getTime()) ? "" : ` ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    return `PRE-AUTHORIZED BY PILOT NOTE${stamp}`;
+  }
+  if (inputRequest.turn === "reviewer") {
+    const target = inputRequest.amendment_id ? ` · ${inputRequest.amendment_id} · ROUND ${inputRequest.amendment_round || 1}` : "";
+    return `UNDER INDEPENDENT REVIEW${target}`;
+  }
+  if (inputRequest.turn === "architect") return "ARCHITECT REVISING";
+  if (inputRequest.turn === "supervisor") return "SUPERVISOR WORKING";
+  return "PILOT APPROVAL NEEDED";
+}
+
+function liveVerificationHeadline(verification) {
+  const live = verification?.live || {};
+  if (live.in_flight) {
+    const flight = live.in_flight;
+    return `LIVE VERIFICATION RUNNING · ${flight.done}/${flight.total}${flight.current ? ` · ${flight.current}` : ""}`;
+  }
+  if (live.last_failure) return `LIVE VERIFICATION FAILED · ${live.last_failure.command} exit ${live.last_failure.exit_code}`;
+  return null;
+}
+
 function renderInputAlert(inputRequest, feature, regression) {
   const required = Boolean(inputRequest?.required);
+  // #147: the card is labelled by whose turn it is; only the Pilot's own
+  // turn, without a standing pre-authorization, is styled as a demand.
+  const pilotTurn = required && inputRequest?.turn === "pilot" && !inputRequest?.preauthorized;
+  const label = gateLabel(inputRequest);
   const message = inputRequest?.message || "Pilot authorization is required before the mission can continue.";
   const signature = required ? `${inputRequest.kind}:${message}` : null;
   state.feature = feature;
   state.inputRequired = required;
+  state.pilotGate = pilotTurn;
   state.inputKind = required ? inputRequest?.kind : null;
-  document.body.classList.toggle("input-is-required", required);
+  document.body.classList.toggle("input-is-required", pilotTurn);
+  $("input-alert-label").textContent = label;
   $("input-alert").classList.toggle("hidden", !required);
   $("input-alert-message").textContent = message;
   const approvalButton = $("design-approve");
@@ -437,7 +470,7 @@ function renderInputAlert(inputRequest, feature, regression) {
   }
   updateAlertButton();
 
-  if (required && signature !== state.alertSignature && "Notification" in window && Notification.permission === "granted") {
+  if (pilotTurn && signature !== state.alertSignature && "Notification" in window && Notification.permission === "granted") {
     new Notification("E.V.E. requests Pilot authorization", {
       body: message,
       tag: "handsoff-input-required",
@@ -783,12 +816,27 @@ async function authorizeDeployment() {
   }
 }
 
-function renderPhases(phases) {
+function renderPhases(phases, verification = null) {
+  // #148: the Phase 7 node carries the live verification state; the server
+  // already names the current phase that way in phases[].name, so the rail
+  // only adds the failing command's detail card below it.
   $("phase-rail").innerHTML = phases.map((phase) => `
     <div class="phase-node ${escapeHtml(phase.state)}">
       <strong>0${escapeHtml(phase.number)}</strong>
       <span>${escapeHtml(phase.name)}</span>
     </div>`).join("");
+  const failure = verification?.live?.last_failure;
+  const card = $("phase-7-card");
+  const running = Boolean(verification?.live?.in_flight);
+  card.classList.toggle("hidden", !failure || running);
+  if (failure && !running) {
+    card.replaceChildren();
+    const head = document.createElement("strong");
+    head.textContent = `LIVE VERIFICATION FAILED · ${failure.command} · exit ${failure.exit_code}`;
+    const tail = document.createElement("pre");
+    tail.textContent = failure.output_tail || "(no output captured)";
+    card.append(head, tail);
+  }
 }
 
 function renderCriteria(criteria) {
@@ -1325,8 +1373,9 @@ function render(snapshot) {
   renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);
   renderRegression(snapshot.regression);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
+  const pilotGate = snapshot.input_required?.turn === "pilot" && !snapshot.input_required?.preauthorized;
   setFaviconState(status.status === "complete" ? "complete"
-    : state.inputRequired ? "blocked" : "in_progress");
+    : pilotGate ? "blocked" : "in_progress");
   $("project-name").textContent = snapshot.project.name.toUpperCase();
   const projectLogo = $("project-logo");
   if (snapshot.project.logo_url) {
@@ -1352,11 +1401,15 @@ function render(snapshot) {
   $("design-reviewer-profile").textContent = designReviewerProfileLabel(policy.design_reviewer_selection);
   $("evidence-runs").textContent = snapshot.audit.verification_runs;
 
-  renderPhases(snapshot.phases);
+  renderPhases(snapshot.phases, snapshot.verification);
 
   $("supervisor-panel").className = `briefing ${supervisor.tone}`;
   $("briefing-state").textContent = supervisor.label.toUpperCase();
-  $("supervisor-headline").textContent = supervisor.headline;
+  // #147/#148: the briefing label and headline come from the server (one
+  // wording for CLI and dashboard); a live verification in flight or just
+  // failed outranks every other headline while the run is at Phase 7.
+  const verificationHeadline = status.phase_number === 7 ? liveVerificationHeadline(snapshot.verification) : null;
+  $("supervisor-headline").textContent = verificationHeadline || supervisor.headline;
   $("supervisor-summary").textContent = supervisor.summary;
   $("supervisor-next").textContent = supervisor.next_action;
   $("supervisor-reassurance").textContent = supervisor.reassurance;
@@ -1526,5 +1579,5 @@ window.setInterval(renderClocks, 1000);
 window.setInterval(() => {
   if (!state.inputRequired) return;
   state.titleFlip = !state.titleFlip;
-  document.title = state.titleFlip ? "🔴 PILOT AUTHORIZATION REQUIRED" : `${state.feature} · Handsoff`;
+  document.title = state.pilotGate && state.titleFlip ? "🔴 PILOT AUTHORIZATION REQUIRED" : `${state.feature} · Handsoff`;
 }, 900);
