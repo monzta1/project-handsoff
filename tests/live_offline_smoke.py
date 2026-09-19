@@ -25,6 +25,21 @@ CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 USE_TREE = "--tree" in sys.argv
 
 
+def fleet_argv(registry: Path, port: int) -> list[str]:
+    script = ("import sys; sys.path.insert(0, %r); import handsoff_fleet as fleet; from pathlib import Path; "
+              "server = fleet.FleetServer(('127.0.0.1', %d), Path(%r)); server.serve_forever()")
+    bin_dir = str(ROOT / "bin") if USE_TREE else fleet_bin_dir()
+    return [sys.executable, "-c", script % (bin_dir, port, str(registry))]
+
+
+def fleet_bin_dir() -> str:
+    """The installed engine's module directory (where handsoff_fleet lives)."""
+    venv_python = Path(HANDSOFF).resolve().parent / "python"
+    out = subprocess.run([str(venv_python), "-c", "import handsoff_fleet, os; print(os.path.dirname(handsoff_fleet.__file__))"],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
 def dashboard_argv(project: Path, port: int, *extra: str) -> list[str]:
     if USE_TREE:
         return [sys.executable, str(ROOT / "bin" / "handsoff_dashboard.py"), "--root", str(project), "--port", str(port), "--no-open", *extra]
@@ -102,6 +117,34 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
             assert evaluate(ws, "document.querySelectorAll('.phase-node.active').length") == 0
             assert evaluate(ws, "document.querySelectorAll('.phase-node.closed').length") == 1
             assert "smoke complete" in evaluate(ws, "document.querySelector('#supervisor-headline').textContent")
+        # Fleet's own page: serve a Fleet with a private registry, watch it,
+        # stop it, and expect the same offline rendering within 10 seconds.
+        registry = Path(tmp) / "fleet.json"
+        registry.write_text(json.dumps({"schema": 1, "projects": [{"root": str(project), "registered_at": "2026-09-19T00:00:00+00:00"}]}))
+        port = free_port()
+        fleet_server = subprocess.Popen(fleet_argv(registry, port), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server = fleet_server
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(40):
+            try:
+                urllib.request.urlopen(base + "/api/fleet", timeout=1)
+                break
+            except Exception:
+                time.sleep(.25)
+        with websocket_client.connect(target["webSocketDebuggerUrl"]) as ws:
+            evaluate(ws, f"location.href='{base}/'")
+            time.sleep(4)
+            assert "is-offline" not in (evaluate(ws, "document.body.className") or ""), "fleet read offline while served"
+            assert evaluate(ws, "document.querySelectorAll('.project').length") >= 1  # the closed run sits in the finished section
+            fleet_server.send_signal(signal.SIGTERM)
+            for _ in range(10):
+                time.sleep(1)
+                if "is-offline" in (evaluate(ws, "document.body.className") or ""):
+                    break
+            assert "is-offline" in evaluate(ws, "document.body.className"), "fleet never noticed its dead server"
+            assert "DASHBOARD OFFLINE since" in evaluate(ws, "document.querySelector('#offline-banner').textContent")
+            remaining = evaluate(ws, "JSON.stringify(document.getAnimations().map(a => (a.effect && a.effect.target ? a.effect.target.tagName + '.' + a.effect.target.className : '?') + ':' + (a.animationName || a.transitionProperty || a.constructor.name)))")
+            assert evaluate(ws, "document.getAnimations().length") == 0, f"fleet animations still running: {remaining}"
         print("LIVE_OFFLINE_OK")
     finally:
         for process in (server, chrome):

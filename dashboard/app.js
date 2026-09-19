@@ -1526,6 +1526,9 @@ async function refresh() {
 
 function renderOffline() {
   document.body.classList.toggle("is-offline", Boolean(state.offlineSince));
+  // Cancel what is already running too: the stylesheet rule stops new
+  // animations, but Chrome keeps one alive inside a closed details element.
+  if (state.offlineSince && typeof document.getAnimations === "function") document.getAnimations().forEach((animation) => animation.cancel());
   // A stepper node cannot be "active" while nobody is serving the run; the
   // next successful snapshot re-renders the rail from the server.
   if (state.offlineSince) {

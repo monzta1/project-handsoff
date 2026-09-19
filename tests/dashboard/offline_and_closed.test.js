@@ -35,3 +35,13 @@ test("offline dims the mission, holds the stepper, and the stream error triggers
   assert.match(fleet, /offline: "DASHBOARD OFFLINE"/);
   assert.match(fleetStyle, /\.project\[data-state="offline"\] \{ opacity: \.45/);
 });
+
+test("fleet notices a dead server on its own: a 5 second poll and a rate-limited refresh on stream error", () => {
+  assert.match(fleet, /window\.setInterval\(refresh, 5000\)/);
+  assert.match(fleet, /stream\.onerror = \(\) => \{[\s\S]*?if \(Date\.now\(\) - lastStreamRefresh >= 5000\) \{[\s\S]*?refresh\(\);/);
+  assert.match(fleet, /if \(!fleetOfflineSince\) \{\s*fleetOfflineSince = new Date\(\);/);
+});
+
+test("going offline cancels running animations on both pages, not only new ones", () => {
+  for (const app of [dashboard, fleet]) assert.match(app, /document\.getAnimations\(\)\.forEach\(\(animation\) => animation\.cancel\(\)\)/);
+});

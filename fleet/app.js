@@ -203,15 +203,20 @@ async function refresh() {
     fleetOfflineSince = null;
     renderOffline();
   } catch (error) {
-    if (!fleetOfflineSince) fleetOfflineSince = new Date();
+    if (!fleetOfflineSince) {
+      fleetOfflineSince = new Date();
+      toast(`Fleet telemetry interrupted: ${error.message}`);
+    }
     renderOffline();
-    toast(`Fleet telemetry interrupted: ${error.message}`);
   }
 }
 
 let fleetOfflineSince = null;
 function renderOffline() {
   document.body.classList.toggle("is-offline", Boolean(fleetOfflineSince));
+  // Cancel what is already running too: the stylesheet rule stops new
+  // animations, but Chrome keeps one alive inside a closed details element.
+  if (fleetOfflineSince && typeof document.getAnimations === "function") document.getAnimations().forEach((animation) => animation.cancel());
   const banner = $("offline-banner");
   if (!banner) return;
   banner.textContent = fleetOfflineSince
@@ -221,6 +226,17 @@ function renderOffline() {
 }
 
 refresh();
+// #151: the poll is what notices a dead server; the stream only pushes
+// changes while it is up, so its error also triggers one rate-limited
+// refresh, exactly like the run dashboard.
+let lastStreamRefresh = 0;
+window.setInterval(refresh, 5000);
 const stream = new EventSource("/api/events");
 stream.addEventListener("fleet", (event) => { render(JSON.parse(event.data)); $("link").textContent = "LINK: LIVE"; });
-stream.onerror = () => { $("link").textContent = "LINK: RECONNECTING"; };
+stream.onerror = () => {
+  $("link").textContent = "LINK: RECONNECTING";
+  if (Date.now() - lastStreamRefresh >= 5000) {
+    lastStreamRefresh = Date.now();
+    refresh();
+  }
+};
