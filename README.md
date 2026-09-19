@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.32/project_handsoff-0.3.32-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.33/project_handsoff-0.3.33-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -415,7 +415,7 @@ at `/project-logo`; Fleet shows it on the project's card through an opaque
 file, a wrong type or a file outside the project simply means no logo; branding
 never blocks a run. Both dashboards carry the Handsoff mark in their header.
 
-### v0.3.32 field notes: work-item tombstones, amendment reviewers, the phantom selection fault (#141 #142 #144 #145, 2026-09-18)
+### v0.3.33 field notes: work-item tombstones, amendment reviewers, the phantom selection fault (#141 #142 #144 #145, 2026-09-18)
 
 Four defects from ToneCommand's three runs of 2026-09-18, each with cause and fix:
 
