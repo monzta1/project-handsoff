@@ -110,7 +110,7 @@ function projectCard(project) {
       ${project.owner ? `<button data-op="release" data-root="${esc(project.root)}">RELEASE PORT</button>` : ""}
       ${state === "closed" && project.run_closed
         ? `<button data-op="reopen" data-root="${esc(project.root)}">REOPEN RUN</button>`
-        : `<button class="danger" data-op="close" data-root="${esc(project.root)}">CLEANLY CLOSE RUN</button>`}
+        : `<button class="danger" data-op="close" data-root="${esc(project.root)}">CLOSE RUN</button>`}
     </div>
   </article>`;
 }
@@ -135,7 +135,7 @@ function openConfirm(op, root) {
   const project = fleet.projects.find((item) => item.root === root);
   pending = { op, project };
   const active = (project.sessions || []).filter((session) => ["launching", "running"].includes(session.state));
-  $("confirm-title").textContent = op === "release" ? "Release owned dashboard port" : op === "reopen" ? "Reopen closed run" : "Cleanly close run";
+  $("confirm-title").textContent = op === "release" ? "Release owned dashboard port" : op === "reopen" ? "Reopen closed run" : "Close run";
   $("confirm-context").textContent = [
     `Project: ${project.name}`, `Feature: ${project.feature || "none"}`, `State: ${project.state}`,
     `Owned port: ${project.owner?.port || "none"}`,
