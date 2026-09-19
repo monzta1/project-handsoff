@@ -415,7 +415,7 @@ at `/project-logo`; Fleet shows it on the project's card through an opaque
 file, a wrong type or a file outside the project simply means no logo; branding
 never blocks a run. Both dashboards carry the Handsoff mark in their header.
 
-### v0.3.33 field notes: work-item tombstones, amendment reviewers, the phantom selection fault (#141 #142 #144 #145, 2026-09-18)
+### v0.3.32 field notes: work-item tombstones, amendment reviewers, the phantom selection fault (#141 #142 #144 #145, 2026-09-18)
 
 Four defects from ToneCommand's three runs of 2026-09-18, each with cause and fix:
 
