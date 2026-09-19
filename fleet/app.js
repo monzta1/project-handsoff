@@ -20,6 +20,28 @@ function relative(value) {
   return `${Math.round(seconds / 86400)} d ago`;
 }
 
+// A wall-clock stamp in the viewer's locale: the time alone when it is
+// today, the date as well when it is not. #143: a frozen elapsed clock says
+// how long a run took; it never said when it finished.
+function stamp(value) {
+  if (!value) return "";
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return "";
+  const now = new Date();
+  const sameDay = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return sameDay ? time : `${at.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+function timing(project) {
+  if (!project.started_at) return "";
+  const started = `<span class="stamp" data-started-stamp="${esc(project.started_at)}">STARTED ${esc(stamp(project.started_at))}</span>`;
+  const finished = project.ended_at
+    ? `<span class="stamp stamp-finished" data-ended-stamp="${esc(project.ended_at)}">FINISHED ${esc(stamp(project.ended_at))}</span>`
+    : "";
+  return started + finished;
+}
+
 function lcdText(seconds) {
   const total = Math.max(0, Math.floor(seconds));
   const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const s = total % 60;
@@ -80,7 +102,7 @@ function projectCard(project) {
     <p class="phase">${phase}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
-    <div class="project-meta"><span>${crew}</span><span>${ownerLabel}</span><span>ENGINE ${esc(project.engine_version)}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span></div>
+    <div class="project-meta"><span>${crew}</span><span>${ownerLabel}</span><span>ENGINE ${esc(project.engine_version)}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
     <p class="root">${esc(project.root)}</p>
     <div class="project-actions">
       ${link}

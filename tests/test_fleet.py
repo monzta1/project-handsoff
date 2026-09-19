@@ -157,6 +157,20 @@ class FleetMissionControlTests(_FleetFixture):
         self.assertIn("/api/reopen-run", script)
         self.assertIn("EventSource", script)
 
+    def test_fleet_card_shows_when_a_run_started_and_finished(self):
+        """#143: the frozen elapsed clock said how long; it never said when."""
+        script = (ROOT / "fleet" / "app.js").read_text()
+        self.assertIn("function stamp(value)", script)
+        self.assertIn("STARTED ${esc(stamp(project.started_at))}", script)
+        self.assertIn("FINISHED ${esc(stamp(project.ended_at))}", script)
+        # FINISHED is conditional on ended_at; STARTED on started_at
+        self.assertIn('project.ended_at\n    ? `<span class="stamp stamp-finished"', script)
+        self.assertIn('if (!project.started_at) return "";\n  const started', script)
+        # the date rides along only when the stamp is not today
+        self.assertIn("sameDay ? time :", script)
+        self.assertIn("${timing(project)}", script)
+        self.assertIn(".stamp-finished", (ROOT / "fleet" / "styles.css").read_text())
+
     def owned_dashboard(self, root, host="127.0.0.1", token="fleet-run-token"):
         server = dashboard.DashboardServer(("127.0.0.1", 0), root,
                                            run_token=token,
