@@ -152,7 +152,9 @@ def project_view(entry: dict) -> dict:
         seed = {"root": str(root), "error": snap.get("error"), "owner": owner}
         binding = hashlib.sha256(json.dumps(seed, sort_keys=True).encode()).hexdigest()[:20]
         return {"root": str(root), "name": root.name, "registered_at": entry["registered_at"], "logo_url": logo_url,
-                "initialized": False, "state": "orphaned" if not root.exists() else "quiet",
+                # #154: a registered project with no run is idle, not quiet; idle
+                # is filed with the finished runs, quiet is an ongoing run.
+                "initialized": False, "state": "orphaned" if not root.exists() else "idle",
                 "error": snap.get("error"), "owner": owner, "binding": binding,
                 "engine_version": _engine_version(root), "decisions": [],
                 "dashboard_url": dashboard_url, "dashboard_note": dashboard_note}
@@ -227,7 +229,7 @@ def build_fleet(path: Path | None = None, public_base: str | None = None) -> dic
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
             "decisions": decisions, "counts": {state: sum(item["state"] == state for item in projects)
-                                                 for state in ("running", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "orphaned")}}
+                                                 for state in ("running", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "idle", "orphaned")}}
 
 
 class FleetServer(ThreadingHTTPServer):

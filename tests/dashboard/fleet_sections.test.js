@@ -11,7 +11,8 @@ const css = fs.readFileSync(path.join(root, "fleet/styles.css"), "utf8");
 // #150: ongoing runs are the main grid; completed and closed runs sit in a
 // collapsed section below with a count, remembered per browser.
 test("fleet splits ongoing and finished runs", () => {
-  assert.match(app, /const FINISHED_STATES = new Set\(\["complete", "closed"\]\)/);
+  assert.match(app, /const FINISHED_STATES = new Set\(\["complete", "closed", "idle", "orphaned"\]\)/);
+  assert.match(app, /idle: "NO RUN"/);
   assert.match(app, /const ongoing = projects\.filter\(\(project\) => !FINISHED_STATES\.has\(project\.state\)\)/);
   assert.match(app, /const finished = projects\.filter\(\(project\) => FINISHED_STATES\.has\(project\.state\)\)/);
   assert.match(app, /\$\("projects"\)\.innerHTML = ongoing\.length \? ongoing\.map\(projectCard\)/);
@@ -26,7 +27,7 @@ test("fleet splits ongoing and finished runs", () => {
 
 test("the finished section is a collapsed disclosure with a count, remembered per browser", () => {
   assert.match(html, /<details id="finished-runs" class="finished-runs hidden">/);
-  assert.match(html, /<summary><span class="panel-label">COMPLETED AND CLOSED<\/span><span id="finished-count" class="section-meta">0 RUNS<\/span><\/summary>/);
+  assert.match(html, /<summary><span class="panel-label">COMPLETED, CLOSED AND IDLE<\/span><span id="finished-count" class="section-meta">0 RUNS<\/span><\/summary>/);
   assert.match(html, /<div id="finished-projects" class="projects"><\/div>/);
   assert.match(html, /<p class="panel-label">ONGOING MISSIONS<\/p>/);
   assert.match(app, /localStorage\.getItem\("fleet\.finished\.open"\)/);

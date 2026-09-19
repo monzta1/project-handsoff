@@ -350,3 +350,30 @@ class ProjectLogoTests(_FleetFixture):
             plain_server.shutdown()
             plain_server.server_close()
             thread.join(timeout=2)
+
+
+class IdleProjectTests(_FleetFixture):
+    """#154: a registered project with no run reads idle (filed with the
+    finished runs on the page); quiet stays an initialized run with nothing
+    moving; an orphaned root stays orphaned."""
+
+    def test_no_run_is_idle_and_counted_apart_from_quiet(self):
+        idle_root = self.base / "idle"
+        idle_root.mkdir()
+        for item in ("handsoff.toml", "handsoff-runtime.json"):
+            shutil.copy(ROOT / item, idle_root / item)
+        normalize_fixture_config(idle_root / "handsoff.toml")
+        quiet_root = self.project("quiet")
+        gone = self.base / "gone"
+        gone.mkdir()
+        for item in ("handsoff.toml", "handsoff-runtime.json"):
+            shutil.copy(ROOT / item, gone / item)
+        fleet.register_project(idle_root, self.registry)
+        fleet.register_project(quiet_root, self.registry)
+        fleet.register_project(gone, self.registry)
+        shutil.rmtree(gone)
+        payload = fleet.build_fleet(self.registry)
+        states = {item["name"]: item["state"] for item in payload["projects"]}
+        self.assertEqual(states, {"idle": "idle", "quiet": "quiet", "gone": "orphaned"})
+        self.assertEqual((payload["counts"]["idle"], payload["counts"]["quiet"], payload["counts"]["orphaned"]), (1, 1, 1))
+        self.assertFalse(next(item for item in payload["projects"] if item["name"] == "idle")["initialized"])

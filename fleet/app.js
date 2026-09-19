@@ -3,11 +3,13 @@ let fleet = null;
 let pending = null;
 
 const ENDPOINTS = { release: "/api/release-port", close: "/api/close-run", reopen: "/api/reopen-run" };
-const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "quiet", "complete", "closed", "orphaned"];
-const FINISHED_STATES = new Set(["complete", "closed"]);
+const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "quiet", "complete", "closed", "idle", "orphaned"];
+// #150/#154: only a run that is moving belongs in the grid; finished runs and
+// projects with no run at all sit in the collapsed section.
+const FINISHED_STATES = new Set(["complete", "closed", "idle", "orphaned"]);
 const STATE_LABELS = {
   waiting: "WAITING ON PILOT", failed: "FAILED", stalled: "STALLED", running: "RUNNING",
-  quiet: "QUIET", offline: "DASHBOARD OFFLINE", complete: "COMPLETE", closed: "CLOSED", orphaned: "ORPHANED",
+  quiet: "QUIET", offline: "DASHBOARD OFFLINE", complete: "COMPLETE", closed: "CLOSED", idle: "NO RUN", orphaned: "ORPHANED",
 };
 
 const esc = (value) => String(value ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");
@@ -130,7 +132,7 @@ function render(data) {
   const finished = projects.filter((project) => FINISHED_STATES.has(project.state));
   $("fleet-count").textContent = `${ongoing.length} ONGOING · ${projects.length} REGISTERED`;
   $("projects").innerHTML = ongoing.length ? ongoing.map(projectCard).join("")
-    : projects.length ? '<p class="empty">No ongoing mission. Every registered run is complete or closed.</p>'
+    : projects.length ? '<p class="empty">No ongoing mission. Every registered project is complete, closed or without a run.</p>'
     : '<p class="empty">No project is registered. Register one with <code>handsoff fleet register /path/to/project</code>.</p>';
   const finishedSection = $("finished-runs");
   finishedSection.classList.toggle("hidden", finished.length === 0);
