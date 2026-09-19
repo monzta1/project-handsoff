@@ -206,6 +206,9 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 .role-chiclets { display: flex; flex-wrap: wrap; gap: 6px; }
 .chiclet { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; padding: 7px 10px; border-radius: 6px; background: rgba(255, 255, 255, .02); border: 1px solid var(--line); color: var(--faint); font: 700 10px/1 var(--sans); letter-spacing: .08em; transition: color .25s ease, border-color .25s ease, background .25s ease; }
 .chiclet i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); transition: background .25s ease, box-shadow .25s ease; }
+/* #164: the agent family at the station, a glance not a label. */
+.chiclet .chiclet-word { margin-left: 2px; color: var(--faint); font: 500 9px/1 var(--mono); letter-spacing: 0; text-transform: lowercase; opacity: .85; }
+.chiclet.is-active .chiclet-word { opacity: 1; }
 .chiclet.is-active i { animation: chiclet-pulse 1.6s ease-in-out infinite; }
 .chiclet[data-role="supervisor"].is-active { color: var(--blue); border-color: rgba(143, 192, 255, .45); background: rgba(143, 192, 255, .1); }
 .chiclet[data-role="supervisor"].is-active i { background: var(--blue); box-shadow: 0 0 8px var(--blue); }

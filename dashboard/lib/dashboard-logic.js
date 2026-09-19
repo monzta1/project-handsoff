@@ -3,6 +3,38 @@
 // unmodified in both a <script> tag (as globals) and plain Node via
 // require() -- see the module.exports guard at the bottom.
 
+// #164: one word per role chiclet naming the agent family at that station.
+// The station's recorded actor wins (claude-* or codex-*, exactly, so a
+// finished station keeps its word); the configured adapter is the fallback
+// for a station not yet filled; nothing known reads nothing.
+const ROLE_WORD_PREFIXES = ["claude-", "codex-"];
+
+function roleStation(role, snapshot) {
+  const crew = Array.isArray(snapshot?.crew) ? snapshot.crew : [];
+  let key = role;
+  if (role === "reviewer") {
+    const phase = Number(snapshot?.status?.phase_number);
+    key = phase === 1 || phase === 2 ? "design_reviewer" : "reviewer";
+  }
+  return crew.find((member) => member && member.key === key) || null;
+}
+
+function roleWord(role, snapshot) {
+  const actor = roleStation(role, snapshot)?.actor;
+  if (typeof actor === "string") {
+    const prefix = ROLE_WORD_PREFIXES.find((candidate) => actor.startsWith(candidate));
+    if (prefix) return prefix.slice(0, -1);
+  }
+  const adapter = snapshot?.settings?.crew?.[role]?.adapter;
+  return typeof adapter === "string" && adapter.trim() ? adapter.trim() : null;
+}
+
+function roleTitle(role, snapshot) {
+  const profile = snapshot?.settings?.crew?.[role] || {};
+  const parts = [String(role).toUpperCase(), roleWord(role, snapshot), profile.model, profile.adapter_source];
+  return parts.filter((part) => typeof part === "string" && part.trim()).join(" · ");
+}
+
 function adapterLabel(adapter) {
   if (adapter === "codex") return "Codex";
   if (adapter === "claude") return "Claude Code";
@@ -615,6 +647,9 @@ function pilotNoteText(value) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    roleStation,
+    roleWord,
+    roleTitle,
     PILOT_NOTE_MAX_LENGTH,
     pilotNoteText,
     workItemLaneLabel,

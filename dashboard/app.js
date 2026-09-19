@@ -1238,9 +1238,23 @@ function renderMetrics(metrics) {
     .join("");
 }
 
-function renderRoleChiclets(activeRole) {
+function renderRoleChiclets(activeRole, snapshot) {
   document.querySelectorAll("#role-chiclets .chiclet").forEach((el) => {
     el.classList.toggle("is-active", el.dataset.role === activeRole);
+    // #164: one faint word after the role name says who fills the station.
+    const word = snapshot ? roleWord(el.dataset.role, snapshot) : null;
+    let small = el.querySelector("small.chiclet-word");
+    if (word) {
+      if (!small) {
+        small = document.createElement("small");
+        small.className = "chiclet-word";
+        el.appendChild(small);
+      }
+      small.textContent = word;
+    } else if (small) {
+      small.remove();
+    }
+    el.title = snapshot ? roleTitle(el.dataset.role, snapshot) : String(el.dataset.role || "").toUpperCase();
   });
 }
 
@@ -1448,7 +1462,7 @@ function render(snapshot) {
   renderCrew(state.crew);
   renderReplacements(state.replacements, snapshot.recovery?.attempts || []);
   renderReviewAttempts(snapshot.review?.attempts || []);
-  renderRoleChiclets(status.status === "closed" ? null : snapshot.actors.active_role);
+  renderRoleChiclets(status.status === "closed" ? null : snapshot.actors.active_role, snapshot);
   renderEvents(snapshot.events, snapshot.audit.event_count);
   renderActivitySpark(snapshot.events);
   renderVerifications(snapshot.verifications, snapshot.audit.verification_runs);
