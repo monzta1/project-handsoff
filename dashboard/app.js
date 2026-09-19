@@ -3,6 +3,7 @@ const state = {
   lastGenerated: null,
   failures: 0,
   offlineSince: null,
+  lastRunStatus: null,
   lastStreamRefresh: 0,
   feature: "Handsoff",
   inputRequired: false,
@@ -1359,6 +1360,7 @@ function render(snapshot) {
   $("empty-state").classList.add("hidden");
   $("active-state").classList.remove("hidden");
   const status = snapshot.status;
+  state.lastRunStatus = status.status;
   document.body.classList.toggle("is-closed", status.status === "closed");
   const acceptance = snapshot.acceptance;
   const supervisor = snapshot.supervisor;
@@ -1525,13 +1527,20 @@ async function refresh() {
 }
 
 function renderOffline() {
-  document.body.classList.toggle("is-offline", Boolean(state.offlineSince));
+  // A completed or closed run releases its own dashboard (advance 8 frees
+  // the owned port), so losing the server afterwards is the expected end,
+  // not an outage: the celebration stays and the page is the final
+  // snapshot. Anything else going dark is an outage.
+  const final = Boolean(state.offlineSince) && ["complete", "closed"].includes(state.lastRunStatus);
+  const outage = Boolean(state.offlineSince) && !final;
+  document.body.classList.toggle("is-offline", outage);
+  document.body.classList.toggle("is-final", final);
   // Cancel what is already running too: the stylesheet rule stops new
   // animations, but Chrome keeps one alive inside a closed details element.
-  if (state.offlineSince && typeof document.getAnimations === "function") document.getAnimations().forEach((animation) => animation.cancel());
+  if (outage && typeof document.getAnimations === "function") document.getAnimations().forEach((animation) => animation.cancel());
   // A stepper node cannot be "active" while nobody is serving the run; the
   // next successful snapshot re-renders the rail from the server.
-  if (state.offlineSince) {
+  if (outage) {
     document.querySelectorAll("#phase-rail .phase-node.active").forEach((node) => {
       node.classList.remove("active");
       node.classList.add("held");
@@ -1539,9 +1548,11 @@ function renderOffline() {
   }
   const banner = $("offline-banner");
   if (!banner) return;
-  banner.textContent = state.offlineSince
-    ? `DASHBOARD OFFLINE since ${state.offlineSince.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: the server on this port is not answering`
-    : "";
+  const stamp = state.offlineSince ? state.offlineSince.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  banner.textContent = final
+    ? `MISSION ${state.lastRunStatus === "closed" ? "CLOSED" : "COMPLETE"} · this run's dashboard was released at ${stamp}; this page is the final snapshot`
+    : outage ? `DASHBOARD OFFLINE since ${stamp}: the server on this port is not answering` : "";
+  banner.classList.toggle("is-final", final);
   banner.classList.toggle("hidden", !state.offlineSince);
 }
 

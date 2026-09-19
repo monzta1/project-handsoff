@@ -45,3 +45,11 @@ test("fleet notices a dead server on its own: a 5 second poll and a rate-limited
 test("going offline cancels running animations on both pages, not only new ones", () => {
   for (const app of [dashboard, fleet]) assert.match(app, /document\.getAnimations\(\)\.forEach\(\(animation\) => animation\.cancel\(\)\)/);
 });
+
+test("a finished run whose dashboard was released keeps its celebration: final snapshot, not an outage", () => {
+  assert.match(dashboard, /const final = Boolean\(state\.offlineSince\) && \["complete", "closed"\]\.includes\(state\.lastRunStatus\)/);
+  assert.match(dashboard, /document\.body\.classList\.toggle\("is-final", final\)/);
+  assert.match(dashboard, /this run's dashboard was released at \$\{stamp\}; this page is the final snapshot/);
+  assert.match(dashboard, /if \(outage && typeof document\.getAnimations === "function"\)/);
+  assert.match(dashboardStyle, /\.offline-banner\.is-final \{ background: var\(--emerald-soft\)/);
+});

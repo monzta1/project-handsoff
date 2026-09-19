@@ -134,12 +134,23 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
             assert evaluate(ws, "document.querySelectorAll('.phase-node.active').length") == 0
             assert evaluate(ws, "document.querySelectorAll('.phase-node.closed').length") == 1
             assert "smoke complete" in evaluate(ws, "document.querySelector('#supervisor-headline').textContent")
+            # A finished run whose dashboard goes away is the final snapshot,
+            # never an outage: no dimming, the calm banner, the page kept.
+            stop(closed_server)
+            for _ in range(10):
+                time.sleep(1)
+                if "is-final" in (evaluate(ws, "document.body.className") or ""):
+                    break
+            assert "is-final" in evaluate(ws, "document.body.className"), "a released dashboard of a closed run did not read final"
+            assert "is-offline" not in evaluate(ws, "document.body.className")
+            assert "final snapshot" in evaluate(ws, "document.querySelector('#offline-banner').textContent")
+            assert evaluate(ws, "document.querySelector('#offline-banner').classList.contains('is-final')")
+            assert "smoke complete" in evaluate(ws, "document.querySelector('#supervisor-headline').textContent")
         # Fleet's own page: serve a Fleet with a private registry, watch it,
         # stop it, and expect the same offline rendering within 10 seconds.
         registry = Path(tmp) / "fleet.json"
         registry.write_text(json.dumps({"schema": 1, "projects": [{"root": str(project), "registered_at": "2026-09-19T00:00:00+00:00"}]}))
         port = free_port()
-        stop(closed_server)
         fleet_server = start(fleet_argv(registry, port))
         base = f"http://127.0.0.1:{port}"
         for _ in range(40):
