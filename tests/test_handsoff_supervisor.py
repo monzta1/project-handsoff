@@ -64,6 +64,10 @@ def normalize_fixture_config(path):
     # inherited group would refuse every fixture verify. Both tables are
     # dropped; tests of the gate itself write their own config.
     dropped_sections = {"regression_gate", "regressions"}
+    # The dogfood repo declares its own artwork (`[project] logo`, #144). A
+    # fixture project must not inherit it: the logo tests set up their own
+    # declared and conventional cases and start from "nothing declared".
+    dropped_keys = {("project", "logo")}
     section = None
     normalized = []
     # A replaced key whose value is a multi-line array (the dogfood
@@ -85,6 +89,8 @@ def normalize_fixture_config(path):
         if section in dropped_sections:
             continue
         key_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if key_match and (section, key_match.group(1)) in dropped_keys:
+            continue
         replacement = replacements.get((section, key_match.group(1))) if key_match else None
         if replacement is not None:
             value = line.split("=", 1)[1]
@@ -7532,6 +7538,107 @@ class TestAmendmentLane(HandsoffTestCase):
         self.assertEqual(approved.returncode, 0, approved.stdout)
         self.assertEqual(self.read_status()["amendment"], None)
         self.assertEqual(self._criteria()["REQ-003"]["requirement"], "[#102] second wording, same criterion")
+
+    # -- #142: a managed reviewer FOR the amendment ----------------------------
+
+    @staticmethod
+    def _sid(number):
+        return f"hs-{number:032x}"
+
+    def _reviewer_session(self, sid, amendment_id=None, actor="amendment-reviewer-1"):
+        session = self.lib.create_agent_session(
+            self.tmp, role="reviewer", actor=actor, adapter="codex", requested_model="default",
+            resolution_source="configured", id_factory=lambda: sid, amendment_id=amendment_id)
+        self.lib.transition_agent_session(self.tmp, sid, "running")
+        return session
+
+    def _dispatch(self, sid, decision="approved"):
+        result = {"kind": "implementation", "decision": decision, "summary": "amendment looked at",
+                  "findings": [] if decision == "approved" else ["CODE: x"], "structural_blocker": False,
+                  "symptom_reproduced": "not_applicable", "tests_executed": "no"}
+        return self.broker.dispatch_reviewer_result(self.tmp, sid, result)
+
+    def test_a_managed_reviewer_verdict_during_an_open_amendment_is_the_amendment_review(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-003", requirement="[#102] the second item's outcome, sharpened")]))
+        record = self.read_status()["amendment"]
+        attempts_before = self.read_status().get("review_attempts") or []
+        sid = self._sid(0x142)
+        self._reviewer_session(sid, amendment_id=record["amendment_id"])
+        self.assertEqual(self.read_status()["agent_sessions"][sid]["amendment_id"], record["amendment_id"])
+        self.assertEqual(self._dispatch(sid), 0)
+        after = self.read_status()
+        self.assertEqual(after["amendment"]["review"]["decision"], "approved")
+        self.assertEqual(after["amendment"]["review"]["by"], "amendment-reviewer-1")
+        self.assertEqual(after.get("review_attempts") or [], attempts_before, "no phase attempt was spent")
+        self.assertIsNone(after.get("review"), "no phase review was recorded")
+        self.lib.transition_agent_session(self.tmp, sid, "completed")
+        session = self.read_status()["agent_sessions"][sid]
+        self.assertEqual(session["state"], "completed")
+        self.assertFalse(session.get("failure"), session.get("failure"))
+        self.assertIn("amendment_reviewed", self._kinds())
+        # the Pilot can now approve exactly as after a hand-recorded review
+        self.assertEqual(self._approve().returncode, 0)
+
+    def test_amendment_dispatch_refuses_a_session_launched_without_or_for_another_amendment(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-003", requirement="[#102] sharpened")]))
+        record = self.read_status()["amendment"]
+        # (a) launched without --amendment while one is open: refused, named
+        sid = self._sid(0x1420)
+        self._reviewer_session(sid)
+        with self.assertRaises(self.lib.HandsoffError) as ctx:
+            self._dispatch(sid)
+        self.assertIn("--amendment", str(ctx.exception))
+        self.assertIsNone(self.read_status()["amendment"]["review"])
+        self.lib.transition_agent_session(self.tmp, sid, "failed", exit_code=1,
+                                          failure=self.lib.classify_runtime_failure(exit_code=1))
+        # (b) launched for a different amendment id: refused at launch
+        with self.assertRaises(self.lib.HandsoffError) as ctx:
+            self._reviewer_session(self._sid(0x1421), amendment_id="am-" + "f" * 32)
+        self.assertIn("no open amendment", str(ctx.exception))
+        # (c) launched before the amendment opened: refused at dispatch
+        sid = self._sid(0x1422)
+        self._reviewer_session(sid, amendment_id=record["amendment_id"])
+        status = self.read_status()
+        status["agent_sessions"][sid]["started_at"] = "2000-01-01T00:00:00+00:00"
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(status, indent=2))
+        with self.assertRaises(self.lib.HandsoffError) as ctx:
+            self._dispatch(sid)
+        self.assertIn("before the amendment opened", str(ctx.exception))
+        self.assertIsNone(self.read_status()["amendment"]["review"])
+
+    def test_amendment_dispatch_refuses_a_drifted_or_out_of_scope_amendment(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-003", requirement="[#102] sharpened")]))
+        record = self.read_status()["amendment"]
+        # (d) the registry drifted under the amendment: hash no longer recomputes
+        sid = self._sid(0x1423)
+        self._reviewer_session(sid, amendment_id=record["amendment_id"])
+        acceptance = self.read_acceptance()
+        for c in acceptance["criteria"]:
+            if c["id"] == "REQ-003":
+                c["requirement"] = "[#102] drifted by hand"
+        self.write_acceptance(acceptance)
+        with self.assertRaises(self.lib.HandsoffError) as ctx:
+            self._dispatch(sid)
+        self.assertIn("no longer matches", str(ctx.exception))
+        self.assertIsNone(self.read_status()["amendment"]["review"])
+
+    def test_amendment_dispatch_refuses_an_out_of_scope_amendment(self):
+        self._phase_4_run()
+        self._ok(self._open([self._update("REQ-003", requirement="[#102] sharpened")]))
+        record = self.read_status()["amendment"]
+        sid = self._sid(0x1424)
+        self._reviewer_session(sid, amendment_id=record["amendment_id"])
+        # (e) out of scope: the amendment names a work item no longer in the run
+        status = self.read_status()
+        status["amendment"]["affected_work_items"] = ["issue-999"]
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(status, indent=2))
+        with self.assertRaises(self.lib.HandsoffError) as ctx:
+            self._dispatch(sid)
+        self.assertIn("out of scope", str(ctx.exception))
+        self.assertIsNone(self.read_status()["amendment"]["review"])
 
     # -- i42-dashboard -------------------------------------------------------
 

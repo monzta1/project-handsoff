@@ -388,7 +388,8 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # valid; when present they must be null or a non-empty string. #37 adds
 # `tier` the same way: null unless a Phase-2 reviewer was launched through
 # the tiered selection, otherwise exactly "primary" or "followup".
-AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id"}
+AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id",
+                                 "amendment_id"}
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
@@ -2336,7 +2337,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          requested_model: str, resolution_source: str,
                          id_factory=None, packet_id: str | None = None,
                          design_hash: str | None = None, tier: str | None = None,
-                         tier_reason: str | None = None) -> dict:
+                         tier_reason: str | None = None,
+                         amendment_id: str | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
@@ -2410,7 +2412,20 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         # The convergence gate must run before a not-yet-launched session is
         # inserted into canonical state. A refused fourth attempt may persist
         # its escalation, but never a ghost `launching` worker.
-        if role == "reviewer" and int(proposed.get("phase_number", 0) or 0) >= 4:
+        if amendment_id is not None:
+            # #142: a reviewer launched FOR an open amendment reviews the
+            # amendment, not the phase. It opens no review attempt and
+            # spends no budget; the broker dispatches its verdict as
+            # amendment-review. The id must name the amendment that is open
+            # right now, or the launch is refused before a session exists.
+            if role != "reviewer":
+                raise HandsoffError("--amendment applies to reviewer sessions only")
+            open_record = open_amendment(status)
+            if not open_record or open_record.get("amendment_id") != amendment_id:
+                raise HandsoffError(
+                    f"reviewer launch refused: no open amendment {amendment_id}")
+        if role == "reviewer" and amendment_id is None \
+                and int(proposed.get("phase_number", 0) or 0) >= 4:
             migrate_review_ledger(proposed)
             before_id = (current_review_attempt(proposed) or {}).get("attempt_id")
             try:
@@ -2445,6 +2460,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             "exit_code": None,
             "packet_id": packet_id,
             "design_hash": design_hash,
+            "amendment_id": amendment_id,
             "tier": tier,
             "phase_number": int(status.get("phase_number", 1) or 1),
             "host_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_COMPANION_SESSION_ID"),
@@ -2478,6 +2494,18 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             proposed["reviewer_implementer_bindings"] = bindings
         else:
             proposed.pop("reviewer_implementer_bindings", None)
+        if tier is not None:
+            # #145: the selection is also PERSISTED on status, in this same
+            # commit, so design_reviewer_selection_view has a record to check
+            # the live session against. Before this the view read a key that
+            # nothing wrote and reported "no selection metadata" on every
+            # live design review.
+            proposed["design_reviewer_selection"] = {"current": {
+                "actor": actor, "session_id": session_id, "adapter": adapter,
+                "model": requested_model, "tier": tier, "reason": tier_reason,
+                "attempt": budget["next_attempt"] if budget else None,
+                "selected_at": now,
+            }}
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
@@ -6221,6 +6249,33 @@ def criterion_work_item_id(criterion: dict) -> str | None:
     return f"issue-{tag[1:]}" if tag.startswith("#") else f"ask-{tag}"
 
 
+def removed_work_item_ids(acceptance: dict) -> set[str]:
+    """Ids the Pilot removed with work-item-remove (#141 tombstones)."""
+    out = set()
+    for record in acceptance.get("removed_work_items") or []:
+        if isinstance(record, dict) and isinstance(record.get("id"), str):
+            out.add(record["id"])
+    return out
+
+
+def add_work_item_tombstone(acceptance: dict, item_id: str, by: str, at: str) -> None:
+    records = [r for r in (acceptance.get("removed_work_items") or []) if r.get("id") != item_id]
+    records.append({"id": item_id, "by": by, "at": at})
+    acceptance["removed_work_items"] = records
+
+
+def clear_work_item_tombstones(acceptance: dict, item_ids) -> list[str]:
+    """Delete the tombstones for `item_ids`; returns the ids that had one.
+    Called by every path that re-adds an item on purpose, in the same
+    commit, so a removal and a re-add can never both be on file."""
+    wanted = set(item_ids)
+    before = acceptance.get("removed_work_items") or []
+    cleared = [r["id"] for r in before if r.get("id") in wanted]
+    if cleared:
+        acceptance["removed_work_items"] = [r for r in before if r.get("id") not in wanted]
+    return cleared
+
+
 def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None,
                               explicit_items: list[str] | None = None) -> list[dict]:
     """Derive stable scope from criterion tags, feature issue refs and legacy display metadata."""
@@ -6260,10 +6315,12 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
                     )
             else:
                 add_text(part)
+    tagged: set[str] = set()
     for criterion in acceptance.get("criteria", []):
         item_id = criterion_work_item_id(criterion)
         if not item_id:
             continue
+        tagged.add(item_id)
         if item_id.startswith("issue-"):
             number = int(item_id[6:])
             title = tickets.get(number, {}).get("title") or f"Issue #{number}"
@@ -6271,6 +6328,18 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
         else:
             title = item_id[4:].replace("-", " ").title()
             identities[item_id] = ("ask", None, title)
+    # #141: an item the Pilot removed stays removed. The feature title still
+    # names it, so title derivation would quietly bring it back on the next
+    # transaction; the tombstone says the removal was a decision. A tagged
+    # criterion or an explicit --item is the deliberate way back, and the
+    # caller clears the tombstone in the same commit (clear_work_item_tombstones).
+    explicit_ids = set()
+    for item in explicit_items or []:
+        issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", item)
+        explicit_ids.add(f"issue-{int(issue.group(1))}" if issue else f"ask-{_work_item_slug(item)}")
+    for item_id in removed_work_item_ids(acceptance):
+        if item_id not in tagged and item_id not in explicit_ids:
+            identities.pop(item_id, None)
     items = []
     for item_id, (kind, number, title) in identities.items():
         ticket = tickets.get(number, {}) if number is not None else {}
@@ -7029,6 +7098,10 @@ def apply_criteria_plan(acceptance: dict, plan: dict) -> None:
     if current != plan.get("registry_hash_before"):
         raise HandsoffError("transaction: the acceptance registry changed since the plan was built")
     acceptance["criteria"] = deepcopy(plan["criteria_after"])
+    # #141: a criterion tagged [#N] is the deliberate way to bring a removed
+    # item back, so its tombstone goes in this same write.
+    tagged = {criterion_work_item_id(c) for c in acceptance["criteria"]} - {None}
+    clear_work_item_tombstones(acceptance, tagged)
     if plan.get("work_items_registry_after") is not None:
         acceptance["work_items"] = deepcopy(plan["work_items_registry_after"])
 

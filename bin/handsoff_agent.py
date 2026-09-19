@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import dataclasses
 import hashlib
 import json
 import os
@@ -38,6 +39,8 @@ class LaunchSpec:
     # #37: the reviewer tier the Phase-2 selection chose, and why.
     tier: str | None = None
     tier_reason: str | None = None
+    # #142: the open amendment this reviewer was launched for, if any.
+    amendment_id: str | None = None
     # Host-enforced native rollout ceiling when the selected adapter
     # supports it.  It is configuration, never inferred from output.
     token_budget: int | None = None
@@ -775,7 +778,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             root, role=spec.role, actor=actor, adapter=spec.adapter,
             requested_model=spec.model, resolution_source=spec.resolution_source,
             id_factory=session_id_factory, packet_id=spec.packet_id, design_hash=spec.design_hash,
-            tier=spec.tier, tier_reason=spec.tier_reason,
+            tier=spec.tier, tier_reason=spec.tier_reason, amendment_id=spec.amendment_id,
         )
     else:
         session = lib.claim_precreated_agent_session(
@@ -1470,6 +1473,11 @@ def main() -> int:
                 help="runtime actor identity (default: '<resolved-adapter>-<role>')",
             )
             command.add_argument("--skip-preflight", action="store_true")
+            command.add_argument(
+                "--amendment", default=None,
+                help="review the OPEN amendment with this id (reviewer only): the verdict is "
+                     "recorded as amendment-review and no phase review attempt is spent",
+            )
     args = parser.parse_args()
     try:
         if args.command == "launch" and os.environ.get(MANAGED_ROLE_ENV):
@@ -1477,6 +1485,8 @@ def main() -> int:
                 "managed roles cannot launch nested agents; return a structured request to the host Supervisor"
             )
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False), inspection=args.command == "inspect")
+        if getattr(args, "amendment", None):
+            spec = dataclasses.replace(spec, amendment_id=args.amendment)
         if args.command == "inspect":
             print(json.dumps({
                 "role": spec.role,

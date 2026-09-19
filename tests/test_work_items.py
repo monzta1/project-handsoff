@@ -328,3 +328,93 @@ class WorkItemCliTests(HandsoffTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemovedWorkItemsStayRemoved(HandsoffTestCase):
+    """#141: an item the Pilot removed used to come back from the feature
+    title's issue refs on the next criteria transaction, three times in one
+    run. The removal is now a tombstone honoured by every derivation, and
+    only a deliberate re-add (a tagged criterion, or --item) clears it."""
+
+    def _ids(self):
+        return [item["id"] for item in self.read_acceptance().get("work_items", [])]
+
+    def _tombstones(self):
+        return [r["id"] for r in self.read_acceptance().get("removed_work_items", [])]
+
+    def _tx(self, operations, name="tx.json"):
+        folder = self.tmp / ".handsoff-fixture"
+        folder.mkdir(exist_ok=True)
+        path = folder / name
+        path.write_text(json.dumps({"operations": operations}))
+        return path
+
+    def _setup_run(self):
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
+        started = run(["init", "Close #7 and #5 (with #5's assessment)", "--item", "#7 Seven", "--item", "#5 Five"],
+                      cwd=self.tmp)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual(self._ids(), ["issue-5", "issue-7"])
+        tagged = run(["criterion-update", "REQ-001", "--requirement", "[#7] the outcome", "--test", "true"],
+                     cwd=self.tmp)
+        self.assertEqual(tagged.returncode, 0, tagged.stdout + tagged.stderr)
+        removed = run(["work-item-remove", "issue-5", "--by", "pilot"], cwd=self.tmp)
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertEqual(self._ids(), ["issue-7"])
+        self.assertEqual(self._tombstones(), ["issue-5"])
+
+    def test_removed_item_survives_criteria_apply_amendment_open_revise_and_propose(self):
+        self._setup_run()
+        applied = run(["criteria-apply", "--file", str(self._tx([
+            {"op": "update", "id": "REQ-001", "fields": {"type": "primary_fix", "requirement": "[#7] the outcome",
+                                                          "verification": "automated", "tests": ["true"]}}])),
+                       "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertEqual(self._ids(), ["issue-7"], "criteria-apply must not resurrect issue-5 from the title")
+        self.assertEqual(self._tombstones(), ["issue-5"])
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+        review = approve_design_review(self.tmp)
+        self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
+        self.assertEqual(self._ids(), ["issue-7"], "design review must not resurrect issue-5")
+        approved = run(["design-approve", "--by", "pilot", "--architect", "test-architect",
+                        "--summary", "ok"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+        self.assertEqual(self._ids(), ["issue-7"], "design approval must not resurrect issue-5")
+        advanced = run(["advance", "3", "30"], cwd=self.tmp)
+        self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+        self.assertEqual(run(["advance", "4", "40", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
+        opened = run(["amendment-open", "--file", str(self._tx([
+            {"op": "update", "id": "REQ-001", "fields": {"type": "primary_fix", "requirement": "[#7] the outcome, sharpened",
+                                                          "verification": "automated", "tests": ["true"]}}], "am.json")),
+                      "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(opened.returncode, 0, opened.stdout + opened.stderr)
+        self.assertEqual(self._ids(), ["issue-7"], "amendment-open must not resurrect issue-5")
+        revised = run(["amendment-revise", "--file", str(self._tx([
+            {"op": "update", "id": "REQ-001", "fields": {"type": "primary_fix", "requirement": "[#7] the outcome, sharper still",
+                                                          "verification": "automated", "tests": ["true"]}}], "am2.json")),
+                       "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(revised.returncode, 0, revised.stdout + revised.stderr)
+        self.assertEqual(self._ids(), ["issue-7"], "amendment-revise must not resurrect issue-5")
+        self.assertEqual(self._tombstones(), ["issue-5"])
+
+    def test_a_tagged_criterion_brings_the_item_back_and_clears_the_tombstone(self):
+        self._setup_run()
+        applied = run(["criteria-apply", "--file", str(self._tx([
+            {"op": "add", "criterion": {"id": "REQ-002", "type": "supporting", "requirement": "[#5] the assessment lands",
+                                         "verification": "automated", "tests": ["true"]}}])),
+                       "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertEqual(self._ids(), ["issue-5", "issue-7"])
+        self.assertEqual(self._tombstones(), [], "a deliberate re-add clears the tombstone in the same write")
+
+    def test_sync_item_brings_the_item_back_and_clears_the_tombstone(self):
+        self._setup_run()
+        synced = run(["work-items-sync", "--item", "#5 Five again", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        self.assertEqual(sorted(self._ids()), ["issue-5", "issue-7"])
+        self.assertEqual(self._tombstones(), [])
+        # and a plain sync afterwards keeps it (no tombstone, no removal)
+        again = run(["work-items-sync", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(sorted(self._ids()), ["issue-5", "issue-7"])

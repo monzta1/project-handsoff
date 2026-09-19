@@ -1,9 +1,173 @@
 {
   "type": "object",
-  "required": ["feature", "criteria"],
+  "required": [
+    "feature",
+    "criteria"
+  ],
   "properties": {
-    "feature": {"type": "string"},
-    "criteria": {"type": "array", "items": {"type": "object", "required": ["id", "type", "requirement", "verification", "tests", "evidence", "state"], "properties": {"id": {"type": "string"}, "type": {"enum": ["primary_fix", "supporting"]}, "requirement": {"type": "string"}, "verification": {"enum": ["automated", "manual", "browser", "automated_and_browser"]}, "tests": {"type": "array", "items": {"type": "string"}}, "evidence": {"type": "array", "items": {"type": "string", "pattern": "^vr-[a-f0-9]{32}$"}}, "state": {"enum": ["failing", "passing", "not_tested", "blocked"]}}}},
-    "work_items": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["id", "kind", "number", "title", "url", "required", "github_state", "github_checked_at", "created_at", "updated_at", "notes"], "properties": {"id": {"type": "string", "pattern": "^(issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$"}, "kind": {"enum": ["issue", "ask"]}, "number": {"type": ["integer", "null"]}, "title": {"type": "string", "minLength": 1, "maxLength": 200}, "url": {"type": "string"}, "required": {"type": "boolean"}, "github_state": {"enum": ["open", "closed", null]}, "github_checked_at": {"type": ["string", "null"], "format": "date-time"}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "notes": {"type": "string", "maxLength": 512}}}}
+    "feature": {
+      "type": "string"
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "requirement",
+          "verification",
+          "tests",
+          "evidence",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "primary_fix",
+              "supporting"
+            ]
+          },
+          "requirement": {
+            "type": "string"
+          },
+          "verification": {
+            "enum": [
+              "automated",
+              "manual",
+              "browser",
+              "automated_and_browser"
+            ]
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^vr-[a-f0-9]{32}$"
+            }
+          },
+          "state": {
+            "enum": [
+              "failing",
+              "passing",
+              "not_tested",
+              "blocked"
+            ]
+          }
+        }
+      }
+    },
+    "work_items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "number",
+          "title",
+          "url",
+          "required",
+          "github_state",
+          "github_checked_at",
+          "created_at",
+          "updated_at",
+          "notes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$"
+          },
+          "kind": {
+            "enum": [
+              "issue",
+              "ask"
+            ]
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "url": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "github_state": {
+            "enum": [
+              "open",
+              "closed",
+              null
+            ]
+          },
+          "github_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "removed_work_items": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "by",
+          "at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string",
+            "minLength": 1
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
   }
 }

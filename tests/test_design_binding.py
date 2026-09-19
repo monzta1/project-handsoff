@@ -157,3 +157,62 @@ class DesignBindingTests(HandsoffTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DesignReviewerSelectionIsPersisted(HandsoffTestCase):
+    """#145: design_reviewer_selection_view checked the newest live Phase 2
+    reviewer against status["design_reviewer_selection"], which nothing ever
+    wrote, so Mission Control reported "has no selection metadata" during
+    every design review. The launch now persists the selection it made."""
+
+    def setUp(self):
+        super().setUp()
+        self.lib = lib
+        self.init("Selection is persisted")
+        criterion = run(["criterion-update", "REQ-001", "--requirement",
+                         "[#1] a reviewable outcome"], cwd=self.tmp)
+        self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
+        self.assertEqual(run(["advance", "2", "20"], cwd=self.tmp).returncode, 0)
+
+    def _view(self):
+        cfg = self.lib.load_config(self.tmp)
+        status = self.read_status()
+        acceptance = self.read_acceptance()
+        return self.lib.design_reviewer_selection_view(cfg, status, acceptance, which=lambda name: "/usr/bin/true")
+
+    def _launch(self, sid="hs-" + "a" * 32, actor="codex-reviewer"):
+        return self.lib.create_agent_session(
+            self.tmp, role="reviewer", actor=actor, adapter="codex",
+            requested_model="default", resolution_source="configured",
+            id_factory=lambda: sid, tier="primary", tier_reason="first_review")
+
+    def test_launch_persists_the_selection_and_the_view_has_no_fault(self):
+        self._launch()
+        status = self.read_status()
+        current = status["design_reviewer_selection"]["current"]
+        self.assertEqual(current["session_id"], "hs-" + "a" * 32)
+        self.assertEqual(current["actor"], "codex-reviewer")
+        self.assertEqual(current["adapter"], "codex")
+        self.assertEqual(current["tier"], "primary")
+        self.assertEqual(current["attempt"], 1)
+        self.assertTrue(current["selected_at"])
+        kinds = [json.loads(l)["kind"] for l in (self.tmp / "handsoff-events.jsonl").read_text().splitlines() if l.strip()]
+        self.assertIn("design_reviewer_selected", kinds)
+        self.assertEqual(self._view()["consistency_errors"], [], "live: no phantom fault")
+        self.lib.transition_agent_session(self.tmp, "hs-" + "a" * 32, "running")
+        self.assertEqual(self._view()["consistency_errors"], [], "running: still none")
+        self.lib.transition_agent_session(self.tmp, "hs-" + "a" * 32, "completed")
+        self.assertEqual(self._view()["consistency_errors"], [], "completed: still none")
+
+    def test_a_mismatch_still_reports(self):
+        self._launch()
+        status = self.read_status()
+        status["design_reviewer_selection"]["current"]["session_id"] = "hs-" + "b" * 32
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(status, indent=2))
+        errors = self._view()["consistency_errors"]
+        self.assertTrue(any("selection metadata names" in e for e in errors), errors)
+        status = self.read_status()
+        status["design_reviewer_selection"]["current"].update(session_id="hs-" + "a" * 32, actor="someone-else")
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(status, indent=2))
+        errors = self._view()["consistency_errors"]
+        self.assertTrue(any("selection metadata names someone-else" in e for e in errors), errors)

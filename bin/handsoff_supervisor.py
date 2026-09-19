@@ -901,6 +901,12 @@ def cmd_work_items_sync(args) -> int:
         lib.ensure_no_launched_regression(status)
         before_items, _ = lib.effective_work_items(acceptance, cfg)
         before_scope = lib.work_item_scope_hash(before_items, acceptance.get("criteria", []))
+        # #141: an explicit --item is the deliberate way back for a removed
+        # item; its tombstone goes in this same commit.
+        if args.item:
+            lib.clear_work_item_tombstones(
+                acceptance, {row["id"] for row in lib.derive_work_item_registry(
+                    {"feature": "", "criteria": []}, cfg, explicit_items=args.item)})
         derived = lib.derive_work_item_registry(acceptance, cfg, explicit_items=args.item)
         existing = acceptance.get("work_items")
         if isinstance(existing, list):
@@ -1083,6 +1089,7 @@ def cmd_work_item_remove(args) -> int:
         # honest if the scope definition ever drifts.
         before_scope = lib.work_item_scope_hash(items, acceptance.get("criteria", []))
         acceptance["work_items"] = [candidate for candidate in items if candidate.get("id") != args.item]
+        lib.add_work_item_tombstone(acceptance, args.item, actor, datetime.now(timezone.utc).isoformat())
         delivery = status.get("work_item_delivery")
         if isinstance(delivery, dict):
             delivery.pop(args.item, None)

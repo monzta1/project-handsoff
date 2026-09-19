@@ -415,6 +415,17 @@ at `/project-logo`; Fleet shows it on the project's card through an opaque
 file, a wrong type or a file outside the project simply means no logo; branding
 never blocks a run. Both dashboards carry the Handsoff mark in their header.
 
+### v0.3.32 field notes: work-item tombstones, amendment reviewers, the phantom selection fault (#141 #142 #144 #145, 2026-09-18)
+
+Four defects from ToneCommand's three runs of 2026-09-18, each with cause and fix:
+
+1. **A removed work item came back on every criteria transaction (#141).** Cause: `derive_work_item_registry` seeds items from the feature title's `#N` refs and `work-item-remove` left no trace, so `criteria-apply`, `amendment-open` and `amendment-revise` all re-added it, three times in one run. Fix: the removal is a tombstone (`acceptance.removed_work_items`, `{id, by, at}`) that derivation honours; the two deliberate ways back, `work-items-sync --item` and a criterion tagged `[#N]`, delete the tombstone in the same commit that re-adds the item.
+2. **A managed reviewer's verdict during an open amendment read as a failure (#142).** Cause: the broker only knew `record-review`, which the amendment freeze refuses, so the dispatch failed and the session was marked non-recoverable, with a phase attempt spent. Fix: `handsoff agent launch reviewer --amendment <id>` records the id on the session; the broker dispatches its verdict as `amendment-review` when, and only when, that amendment is open, its hash recomputes clean, the session started after it opened, and its criteria and work items are still in the run; no attempt is opened and no budget spent. A reviewer launched without the flag while an amendment is open is refused with the flag named.
+3. **`test_fleet.ProjectLogoTests` broke when this repository declared its own logo (#144).** Cause: fixture projects copy the repo's `handsoff.toml`, logo line included. Fix: `normalize_fixture_config` drops `[project] logo`.
+4. **Mission Control said "live reviewer session ... has no selection metadata" on every design review (#145).** Cause: `design_reviewer_selection_view` checked a status key nothing wrote. Fix: the Phase 2 launch persists `design_reviewer_selection.current` in the commit that logs `design_reviewer_selected`; a genuine mismatch (another session id or actor) still reports.
+
+Also in this release: Fleet cards show `STARTED` and `FINISHED` wall-clock stamps beside the elapsed clock (#143).
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:

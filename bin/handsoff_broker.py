@@ -557,6 +557,39 @@ def _reviewer_result_request(root: Path, session_id: str, result: dict, actor: s
         if result["structural_blocker"]:
             request["structural_blocker"] = True
         return request
+    # #142: a reviewer launched for an open amendment reviews the amendment.
+    open_record = lib.open_amendment(status)
+    if session.get("amendment_id"):
+        if not open_record:
+            raise lib.HandsoffError("amendment Reviewer result: no amendment is open")
+        if open_record.get("amendment_id") != session["amendment_id"]:
+            raise lib.HandsoffError(
+                f"amendment Reviewer result: session was launched for {session['amendment_id']}, "
+                f"the open amendment is {open_record.get('amendment_id')}")
+        if (session.get("started_at") or "") < (open_record.get("opened_at") or ""):
+            raise lib.HandsoffError("amendment Reviewer result: the session was launched before the amendment opened")
+        acceptance = lib.load_unique_json(lib.acceptance_path(root, cfg))
+        _hash, problems = lib.recompute_amendment_hash(open_record, acceptance.get("criteria", []))
+        if problems:
+            raise lib.HandsoffError("amendment Reviewer result: " + "; ".join(problems))
+        criteria_ids = {c.get("id") for c in acceptance.get("criteria", [])}
+        missing = [cid for cid in (open_record.get("changed_ids") or []) if cid not in criteria_ids]
+        items, _ = lib.effective_work_items(acceptance, cfg)
+        required = {item.get("id") for item in items if item.get("required", True)}
+        out_of_scope = [wid for wid in (open_record.get("affected_work_items") or []) if wid not in required]
+        if missing or out_of_scope:
+            raise lib.HandsoffError(
+                "amendment Reviewer result: the amendment is out of scope "
+                f"(missing criteria {missing}, items no longer in the run {out_of_scope})")
+        request = {**base, "command": "amendment-review",
+                   "decision": "approve" if result["decision"] == "approved" else "request-changes",
+                   "summary": result["summary"]}
+        request.pop("session", None)          # amendment-review binds no phase session
+        return request
+    if open_record:
+        raise lib.HandsoffError(
+            f"an amendment ({open_record.get('amendment_id')}) is open: launch the reviewer with "
+            "--amendment <id> so its verdict is recorded as the amendment review")
     if status.get("phase_number") != 5:
         raise lib.HandsoffError("implementation Reviewer result requires Phase 5")
     if result["decision"] == "approved":
