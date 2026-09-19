@@ -57,5 +57,7 @@ test("the workflow deploys web/dist to handsoff-metrics on the right triggers wi
   assert.match(workflow, /printf '%s' "\$METRICS_GITHUB_TOKEN" \| npx --yes wrangler@3 pages secret put GITHUB_TOKEN --project-name handsoff-metrics/);
   assert.match(workflow, /uses: cloudflare\/wrangler-action@v3\n        with:\n          apiToken: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}\n          accountId: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}\n          workingDirectory: web\n          command: pages deploy dist --project-name handsoff-metrics --branch main/);
   for (const secret of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "METRICS_GITHUB_TOKEN"]) assert.match(workflow, new RegExp(`secrets\\.${secret}`));
+  assert.match(workflow, /printf '%s' "\$METRICS_REPOS" \| npx --yes wrangler@3 pages secret put METRICS_REPOS --project-name handsoff-metrics/);
+  assert.match(workflow, /METRICS_REPOS: \$\{\{ vars\.METRICS_REPOS \}\}/);
   assert.doesNotMatch(workflow, /ghp_|github_pat_/);
 });

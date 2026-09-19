@@ -25,11 +25,13 @@ deploys `web/dist` with `web/functions` beside it.
 | `CLOUDFLARE_ACCOUNT_ID` | the account that owns tonecommand.com |
 | `METRICS_GITHUB_TOKEN` | a read-only GitHub token for the repositories the site shows (fine-grained: Issues read, Contents read, Metadata read on those repositories; private repositories need it, public ones work without) |
 
-### Pages variable (Workers & Pages, handsoff-metrics, Settings, Variables)
+### Repository variable (Settings, Secrets and variables, Actions, Variables)
 
 `METRICS_REPOS`: comma-separated `owner/repo` list, for example
 `monzta1/project-handsoff,monzta1/ToneCommand,monzta1/beakon,monzta1/ircommand`.
-Optional `METRICS_COMMITS_DAYS` (default 180): how far back commits are read.
+The workflow copies it into the Pages project on every deploy (as a Pages
+secret, which the Function reads like any variable). Optional
+`METRICS_COMMITS_DAYS` (default 180) can be set the same way if wanted.
 
 ### Custom domain (Workers & Pages, handsoff-metrics, Custom domains)
 
