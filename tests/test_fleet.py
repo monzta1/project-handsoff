@@ -377,3 +377,98 @@ class IdleProjectTests(_FleetFixture):
         self.assertEqual(states, {"idle": "idle", "quiet": "quiet", "gone": "orphaned"})
         self.assertEqual((payload["counts"]["idle"], payload["counts"]["quiet"], payload["counts"]["orphaned"]), (1, 1, 1))
         self.assertFalse(next(item for item in payload["projects"] if item["name"] == "idle")["initialized"])
+
+
+class EngineBadgeTests(_FleetFixture):
+    """#161: /api/fleet names the engine the Fleet server runs."""
+
+    def test_build_fleet_carries_the_servers_engine(self):
+        snapshot = fleet.build_fleet(self.registry)
+        self.assertEqual(snapshot["engine"]["version"], CURRENT_VERSION)
+        self.assertIn(snapshot["engine"]["source"], {"project-drop-in", "installed-engine"})
+        self.assertEqual(fleet.fleet_engine_identity(), snapshot["engine"])
+
+    def test_an_unreadable_manifest_reads_unknown(self):
+        with mock.patch.object(lib, "engine_root", return_value=self.base / "nowhere"):
+            self.assertEqual(fleet.fleet_engine_identity(), {"version": "unknown", "source": "unknown"})
+
+    def test_the_route_and_the_stream_serve_it(self):
+        server = fleet.FleetServer(("127.0.0.1", 0), self.registry, signals_interval=3600, issues_interval=3600)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05}, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            conn.request("GET", "/api/fleet")
+            payload = json.loads(conn.getresponse().read())
+            conn.close()
+            self.assertEqual(payload["engine"]["version"], CURRENT_VERSION)
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            conn.request("GET", "/api/events")
+            response = conn.getresponse()
+            first = b""
+            while b"\n\n" not in first:
+                first += response.read1(4096) if hasattr(response, "read1") else response.fp.read1(4096)
+            conn.close()
+            self.assertIn(b'"engine":{"version":"' + CURRENT_VERSION.encode() + b'"', first)
+        finally:
+            server.stopping = True
+            server.signals_thread.stop_event.set()
+            server.issues_thread.stop_event.set()
+            server.shutdown()
+            server.server_close()
+
+
+class DashboardOpenTests(unittest.TestCase):
+    """#162: opening a dashboard reuses an existing Chrome tab."""
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="handsoff-open-test-"))
+        self.chrome = self.base / "Google Chrome.app"
+        self.chrome.mkdir()
+        self.bindir = self.base / "bin"
+        self.bindir.mkdir()
+        self.log = self.base / "osascript.log"
+
+    def tearDown(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def fake_osascript(self, answer: str, exit_code: int = 0):
+        script = self.bindir / "osascript"
+        script.write_text("#!/bin/sh\n" f"echo \"$@\" >> '{self.log}'\n" "cat > /dev/null\n"
+                          + (f"echo '{answer}'\n" if answer else "") + f"exit {exit_code}\n")
+        script.chmod(0o755)
+
+    def open(self, **kwargs):
+        calls = []
+        with mock.patch.dict(os.environ, {"PATH": f"{self.bindir}:/usr/bin:/bin"}):
+            result = lib.open_dashboard_url("http://127.0.0.1:8767/", platform="darwin", chrome=self.chrome,
+                                            opener=lambda url: calls.append(url), **kwargs)
+        return result, calls
+
+    def test_found_and_opened_answers_never_reach_the_fallback(self):
+        self.fake_osascript("found")
+        self.assertEqual(self.open(), ("found", []))
+        self.assertIn("http://127.0.0.1:8767/", self.log.read_text())
+        self.fake_osascript("opened")
+        self.assertEqual(self.open(), ("opened", []))
+        self.fake_osascript("opened", exit_code=1)   # Chrome opened the tab, then the script died
+        self.assertEqual(self.open(), ("opened", []))
+
+    def test_a_silent_failure_or_a_missing_osascript_falls_back_exactly_once(self):
+        self.fake_osascript("", exit_code=1)
+        self.assertEqual(self.open(), ("fallback", ["http://127.0.0.1:8767/"]))
+        (self.bindir / "osascript").unlink()
+        calls = []
+        with mock.patch.dict(os.environ, {"PATH": str(self.bindir)}):
+            result = lib.open_dashboard_url("http://127.0.0.1:8767/", platform="darwin", chrome=self.chrome,
+                                            opener=lambda url: calls.append(url))
+        self.assertEqual((result, calls), ("fallback", ["http://127.0.0.1:8767/"]))
+
+    def test_other_platforms_and_no_chrome_use_the_plain_opener_once(self):
+        calls = []
+        lib.open_dashboard_url("http://x/", platform="linux", opener=lambda url: calls.append(url))
+        lib.open_dashboard_url("http://x/", platform="darwin", chrome=self.base / "missing.app", opener=lambda url: calls.append(url))
+        self.assertEqual(calls, ["http://x/", "http://x/"])
+        self.assertIn("lib.open_dashboard_url(url)", (ROOT / "bin" / "handsoff_dashboard.py").read_text())
+        self.assertIn("lib.open_dashboard_url(url)", (ROOT / "bin" / "handsoff_fleet.py").read_text())
+

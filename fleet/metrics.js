@@ -711,6 +711,15 @@ async function load() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
     fillProjects(state.data);
+    // #161: the Metrics page shows the same engine badge; /api/fleet carries it.
+    try {
+      const fleetResponse = await fetch("/api/fleet", { cache: "no-store" });
+      if (fleetResponse.ok) {
+        const engine = (await fleetResponse.json()).engine || {};
+        const badge = $("engine-badge");
+        if (badge) badge.textContent = `ENGINE ${engine.version && engine.version !== "unknown" ? engine.version : "UNKNOWN"}`;
+      }
+    } catch (error) { /* the badge keeps UNKNOWN */ }
     $("synced").textContent = `SYNCED ${new Date(state.data.generated_at).toLocaleTimeString()}`;
     $("link").textContent = "LINK: LIVE";
     renderAll();

@@ -34,6 +34,7 @@ import socket
 import subprocess
 import sys
 import sysconfig
+import webbrowser
 import tempfile
 import threading
 import time
@@ -449,6 +450,56 @@ def fleet_public_origins() -> list[str]:
     raw = os.environ.get("HANDSOFF_PUBLIC_ORIGINS", "")
     entries = [item for item in raw.split(",") if item.strip()]
     return normalize_public_origins(entries, "HANDSOFF_PUBLIC_ORIGINS") if entries else []
+
+
+CHROME_APP = Path("/Applications/Google Chrome.app")
+_OPEN_DASHBOARD_SCRIPT = """
+on run argv
+  set target to item 1 of argv
+  tell application "Google Chrome"
+    repeat with w in windows
+      set i to 0
+      repeat with t in tabs of w
+        set i to i + 1
+        if URL of t starts with target then
+          set active tab index of w to i
+          set index of w to 1
+          activate
+          return "found"
+        end if
+      end repeat
+    end repeat
+    open location target
+    activate
+    return "opened"
+  end tell
+end run
+"""
+
+
+def open_dashboard_url(url: str, *, platform: str | None = None, chrome: Path | None = None,
+                       run=subprocess.run, opener=None) -> str:
+    """#162: open `url` in the operator's browser exactly once. On macOS with
+    Google Chrome installed, one AppleScript activates a tab already on the
+    URL (a previous run on the same port) or opens the location, and says
+    which on its last line: found or opened. webbrowser.open runs only when
+    osascript could not start or answered neither word, which can only
+    happen before any tab was opened; a non-zero exit after `opened` is
+    still `opened`. Returns found, opened or fallback."""
+    platform = platform or sys.platform
+    chrome = CHROME_APP if chrome is None else chrome
+    opener = opener or webbrowser.open
+    if platform == "darwin" and chrome.exists():
+        try:
+            proc = run(["osascript", "-", url], input=_OPEN_DASHBOARD_SCRIPT, capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        if proc is not None:
+            answer = (proc.stdout.strip().splitlines() or [""])[-1].strip().lower()
+            if answer in {"found", "opened"}:
+                return answer
+    opener(url)
+    return "fallback"
 
 
 def engine_root() -> Path:

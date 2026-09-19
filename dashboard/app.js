@@ -1391,6 +1391,13 @@ function render(snapshot) {
   $("feature-name").textContent = snapshot.project.feature;
   $("project-root").textContent = snapshot.root;
   $("engine-version").textContent = `${snapshot.engine?.version || "unknown"} · ${snapshot.engine?.source || "unknown source"}`;
+  // #161: the same engine, where the operator looks first.
+  const badge = $("engine-badge");
+  if (badge) {
+    const version = snapshot.engine?.version;
+    badge.textContent = `ENGINE ${version && version !== "unknown" ? version : "UNKNOWN"}`;
+    badge.title = snapshot.engine?.source ? `Engine this run uses (${snapshot.engine.source})` : "Engine this run uses";
+  }
   $("mission-state").textContent = String(status.status || "unknown").replaceAll("_", " ").toUpperCase();
   const complete = progress >= 100;
   $("progress-value").textContent = Math.round(progress);

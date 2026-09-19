@@ -1885,7 +1885,7 @@ def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: b
         print(f"HANDSOFF_DASHBOARD_OWNER: {owner_path}")
     print("Press Ctrl-C to stop.")
     if open_browser:
-        threading.Timer(0.25, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.25, lambda: lib.open_dashboard_url(url)).start()
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:

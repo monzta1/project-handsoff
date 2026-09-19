@@ -643,3 +643,7 @@ a.settings-toggle { display: inline-flex; align-items: center; text-decoration: 
 @media (max-width: 900px) { .regression-bridge { grid-template-columns: 1fr; } .regression-facts { grid-template-columns: 1fr 1fr; } }
 .console-link { display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted); font: 800 10.5px/1 var(--sans); letter-spacing: .06em; text-decoration: none; }
 .console-link:hover { color: var(--accent); border-color: var(--accent-line); }
+
+/* #161: the engine badge, one style on Mission Control and Fleet. */
+.engine-badge { display: inline-flex; align-items: center; padding: 6px 10px; margin-right: 10px; border: 1px solid var(--accent-line); border-radius: 6px; background: var(--accent-soft); color: var(--accent); font: 700 10.5px/1 var(--mono); letter-spacing: .08em; white-space: nowrap; }
+

@@ -253,3 +253,7 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .metrics-table th:first-child, .metrics-table td:first-child { text-align: left; }
 .metrics-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); color: var(--muted); text-align: right; }
 
+/* #161: the engine badge, one style on Mission Control and Fleet. */
+.engine-badge { display: inline-flex; align-items: center; padding: 6px 10px; margin-right: 10px; border: 1px solid var(--accent-line); border-radius: 6px; background: var(--accent-soft); color: var(--accent); font: 700 10.5px/1 var(--mono); letter-spacing: .08em; white-space: nowrap; }
+.project.engine-drift .engine-meta { color: var(--amber); }
+

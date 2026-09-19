@@ -25,6 +25,21 @@ FLEET_ASSET_ROOT = lib.engine_root() / "fleet"
 MAX_BODY = 8192
 
 
+def fleet_engine_identity() -> dict:
+    """#161: the engine THIS Fleet server runs, read once from the engine's
+    own runtime manifest; unknown when it cannot be read."""
+    root = lib.engine_root()
+    try:
+        version = json.loads((root / lib.RUNTIME_MANIFEST_FILE).read_text(encoding="utf-8")).get("version") or "unknown"
+    except (OSError, ValueError, AttributeError):
+        version = "unknown"
+    source = "project-drop-in" if (root / "bin").is_dir() and (root / "pyproject.toml").is_file() else "installed-engine"
+    return {"version": version, "source": source if version != "unknown" else "unknown"}
+
+
+FLEET_ENGINE = fleet_engine_identity()
+
+
 def registry_path() -> Path:
     override = os.environ.get("HANDSOFF_FLEET_REGISTRY")
     return Path(override).expanduser().resolve() if override else Path.home() / ".handsoff" / "projects.json"
@@ -269,6 +284,7 @@ def build_fleet(path: Path | None = None, public_base: str | None = None,
     decisions = [{"root": item["root"], "project": item["name"], "feature": item.get("feature"), **action}
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
+            "engine": dict(FLEET_ENGINE),  # #161
             "decisions": decisions, "counts": {state: sum(item["state"] == state for item in projects)
                                                  for state in ("running", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "idle", "orphaned")}}
 
@@ -469,7 +485,7 @@ def serve(host="127.0.0.1", port=8765, *, open_browser=True, registry=None):
     url = f"http://127.0.0.1:{server.server_port}/"
     print(f"HANDSOFF_FLEET: {url}")
     if open_browser:
-        threading.Timer(.25, lambda: webbrowser.open(url)).start()
+        threading.Timer(.25, lambda: lib.open_dashboard_url(url)).start()
     try:
         server.serve_forever(.25)
     except KeyboardInterrupt:

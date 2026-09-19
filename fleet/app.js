@@ -112,8 +112,30 @@ function signalsStrip(project) {
   return `<div class="signals">${githubLine(project.github)}${beakonLine(project.beakon)}</div>`;
 }
 
+// #161: the badge names the engine the Fleet server runs; a card whose
+// project engine differs is marked so drift is visible where it matters.
+function fleetEngineVersion() {
+  return fleet?.engine?.version && fleet.engine.version !== "unknown" ? fleet.engine.version : null;
+}
+
+function renderEngineBadge(data) {
+  const badge = $("engine-badge");
+  if (!badge) return;
+  const engine = data?.engine || {};
+  badge.textContent = `ENGINE ${engine.version && engine.version !== "unknown" ? engine.version : "UNKNOWN"}`;
+  badge.title = engine.source && engine.source !== "unknown" ? `Engine the Fleet server runs (${engine.source})` : "Engine the Fleet server runs";
+}
+
+function engineMeta(project) {
+  const own = project.engine_version || "unknown";
+  const fleetVersion = fleetEngineVersion();
+  const drift = fleetVersion && own !== "unknown" && own !== fleetVersion;
+  return { text: `ENGINE ${esc(own)}${drift ? ` (fleet ${esc(fleetVersion)})` : ""}`, drift };
+}
+
 function projectCard(project) {
   const state = project.state || "quiet";
+  const engine = engineMeta(project);
   const decisions = project.decisions || [];
   const title = project.initialized ? (project.feature || "No active mission") : "No active run";
   const phase = project.initialized ? `${esc(project.phase || "Uninitialized")}` : esc(project.error || "Not initialized");
@@ -122,7 +144,7 @@ function projectCard(project) {
     : `<span class="dashboard-note">${esc(project.dashboard_note)}</span>`;
   const ownerLabel = project.owner ? `PORT ${esc(project.owner.port)} · ${esc(project.owner.health)}` : "NO OWNED PORT";
   const crew = project.role ? `${esc(project.role.toUpperCase())} · ${esc(project.adapter || "-")}/${esc(project.model || "-")}` : "NO ACTIVE ROLE";
-  return `<article class="project" data-state="${esc(state)}">
+  return `<article class="project${engine.drift ? " engine-drift" : ""}" data-state="${esc(state)}">
     <div class="project-head">
       <span class="badge">${esc(STATE_LABELS[state] || state.toUpperCase())}</span>
       ${lcd(project)}
@@ -135,7 +157,7 @@ function projectCard(project) {
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
     ${signalsStrip(project)}
-    <div class="project-meta"><span>${crew}</span><span>${ownerLabel}</span><span>ENGINE ${esc(project.engine_version)}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
+    <div class="project-meta"><span>${crew}</span><span>${ownerLabel}</span><span class="engine-meta">${engine.text}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
     <p class="root">${esc(project.root)}</p>
     <div class="project-actions">
       ${link}
@@ -150,6 +172,7 @@ function projectCard(project) {
 
 function render(data) {
   fleet = data;
+  renderEngineBadge(data);
   $("synced").textContent = `SYNCED ${new Date(data.generated_at).toLocaleTimeString()}`;
   $("summary").innerHTML = STATE_ORDER.map((state) => `<article class="${data.counts[state] ? "has-some" : ""}" data-state="${state}"><span>${esc(STATE_LABELS[state] || state.toUpperCase())}</span><strong>${data.counts[state] || 0}</strong></article>`).join("");
   $("decisions").classList.toggle("hidden", !data.decisions.length);
