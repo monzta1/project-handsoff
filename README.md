@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.46/project_handsoff-0.3.46-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.47/project_handsoff-0.3.47-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -483,19 +483,98 @@ Cause: after #161 put the ENGINE badge in the topbar, the older grey eyebrow nex
 
 Cause: on Handsoff's own runs the project artwork is the engine's brand mark, so the topbar showed the same logo twice; and between 1000 and 1240 px the mission column (`minmax(0, 1fr)`) collapsed to nothing, its project logo spilled under the phase pill and `MISSION COMPLETE` was drawn over it. Fix: `project_logo()` skips artwork whose bytes equal `dashboard/logo.png`; `.topbar-mission` clips its overflow and its copy keeps a 120 px floor, while below 1240 px the sync stamp hides and the pilot note input narrows first. Note for maintainers: after editing any runtime file, regenerate the manifest before running the Python suites; the fixtures recognise their engine copy by the manifest hash and otherwise fall back to the pin path with dozens of unrelated failures.
 
+### v0.3.47 field notes: failing first, launch rules, one ticket one run (#165, #167, #166)
+
+Cause: three losses from the 2026-09-19 runs. A green test with no red behind it was accepted as evidence; a reviewer launched at Phase 1 lost a whole Codex verdict to `dispatch_failed`, and a packet with a command line in `tests_executed` lost another to `orchestration_noop`; two sessions ran the same five tickets on two ports until the operator compared browser tabs. Fix: the three behaviours under "Workflow features" above, each behind a `[features]` switch that Mission Control edits. Two things learned while building: the fixtures recognise their engine copy by the runtime manifest hash, so every runtime edit is followed by `python3 bin/handsoff_manifest.py --version vX.Y.Z` before the Python suites run; and `init` now registers the run itself, so every fixture sets `HANDSOFF_FLEET_REGISTRY` (the base test case does) or the operator's own register fills with temp roots.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
 
 1. Set `version` in `pyproject.toml` to `X.Y.Z`.
-2. Regenerate the runtime manifest after the last runtime-file edit: `python3 bin/handsoff_manifest.py --version vX.Y.Z` (it rewrites `handsoff-runtime.json`; a wheel built from a stale manifest makes `doctor` refuse every project).
+2. Regenerate the runtime manifest after the last runtime-file edit: `python3 bin/handsoff_manifest.py --version vX.Y.Z` (it rewrites `handsoff-runtime.json`; a wheel built from a stale manifest makes `doctor` refuse every project). The manifest covers `rules/` too.
 3. Point the wheel references in `INSTALL.md` and this README at `vX.Y.Z`; the rollback example in `INSTALL.md` keeps its older release under its `handsoff-doc: intentional` marker.
 4. Commit as `Bump to vX.Y.Z` (or fold the bump into the feature commit, as the field-note fixes do), then `git tag -a vX.Y.Z -m "vX.Y.Z: one-line summary"`.
 5. `git push origin main` and `git push origin vX.Y.Z`.
-6. `python3 -m build --wheel` and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
+6. `python3 -m pip wheel --no-deps -w dist .` (the checkout's own `build/` folder shadows the `build` module, so `python3 -m build` fails here) and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
 7. Upgrade the dedicated environment per `INSTALL.md` ("Clean patch upgrade") and confirm with `handsoff version --json` and `handsoff doctor` on a thin project. Projects on `0.3.*` need nothing else.
 
 Cut a release when behaviour, prompts, schemas or the runtime manifest change. A cosmetic-only change (dashboard markup, styles, assets) rides with the next such release; every project on the compatible line picks it up then without a pin bump.
+
+## Workflow features
+
+Three behaviours added in v0.3.47 are each a switch under `[features]` in
+`handsoff.toml`, edited from Mission Control's CREW dialog (the WORKFLOW
+FEATURES group, its own SAVE FEATURES button, written through the same
+locked, re-parsed path as the agent matrix, audited as a `features_updated`
+event). A switch at its default keeps every recorded review, design
+approval and deployment approval hash byte for byte; a flipped switch is a
+policy change and revokes them, like any `[workflow]` key.
+
+```toml
+[features]
+failing_first = false   # #165, default off
+launch_rules = true     # #167, default on
+ticket_lock = true      # #166, default on
+```
+
+### Failing first (#165)
+
+A criterion's own commands must be seen to fail on the tree before the
+feature, or the later green run proves nothing. `verify --criterion REQ-n
+--expect-fail --by ACTOR` runs the bound commands now and records a
+`baseline` run: valid (`ok: true`) when every command exited non-zero,
+`baseline_invalid` when any passed. The record is bound to the criterion's
+spec hash and the repository digest like any run; it never changes the
+criterion's state and never satisfies the checks requirement. With the
+switch on, the Phase 6 evidence gate and the 95% progress gate refuse an
+automated criterion that reads passing with no valid baseline behind it
+(`baseline gate: REQ-n passed without a recorded failing run`). A test born
+with the feature in the same commit has no earlier tree to fail on:
+`criterion-add`/`criterion-update ... --baseline not_applicable
+--baseline-reason TEXT` declares that, reason audited, and `--baseline
+none` clears it. Mission Control shows `red <date>` or `no red: <reason>`
+beside the pass on the criterion row.
+
+### Launch rules (#167)
+
+The engine learns from its own run history. `rules/*.json` in the runtime
+manifest hold one rule each: `id`, `cause` (the archived run, event and
+date it came from), `when` and `refuse`. Launch rules (`when.command =
+"launch"`, with `role`, `phase_in`, `amendment`) are evaluated in
+`build_launch_spec` before an adapter is resolved or a session reserved,
+so a refusal costs no attempt and no tokens; the launching event records
+`launch_rules: evaluated` or `disabled`. Packet rules (`when.command =
+"packet"`, `field`, `allowed`, optional `recover_as`) are evaluated in
+`parse_reviewer_result`: a value outside `allowed` is refused naming the
+field and the value seen, and when the rule says `recover_as` the packet
+is kept on the session with that field repaired so
+`session-result-adopt --session ID --by ACTOR` can re-record the verdict
+deliberately. The first two rules are the 2026-09-19 losses: a reviewer
+launched at Phase 1 (no design gate to receive a verdict) and a
+`tests_executed` that was not the bare word. A project may add its own
+under `handsoff-rules/`. `analyze-archives --propose-rules` scans the
+archive for a failure shape (category, role, the event before the launch)
+that repeats across two or more runs and writes a draft under
+`rules/proposed/`; nothing there is evaluated until a human moves it up
+and commits it. `rules/README.md` has the format.
+
+### One ticket, one run (#166)
+
+`init --item "#NN ..."` takes an exclusive lock beside the fleet register
+(`~/.handsoff/projects.lock`), checks every registered run that is not
+closed or complete for `#NN`, and registers the new run with its ticket
+numbers in the same transaction, so two concurrent inits on one ticket end
+with exactly one owner. A refusal names the owner's root, phase, port when
+its dashboard answers, and the age of its last event. `init --adopt` takes
+a ticket over only from an owner that is dead by the Fleet liveness rules
+(no live session with a fresh beacon or verified PID, no owned dashboard
+answering) and records `work_item_adopted` on the new ledger; a live owner
+must be `run-close`d first. `run-close` and Phase 8 completion write the
+released state on the register entry, and the lock also reads each run's
+own status, so a closed or complete run never holds a ticket. Fleet marks
+a ticket two live runs both list with `CLAIMED TWICE` on both cards. The
+register is per user, so runs on another machine are not seen.
 
 ## Review attempts and the convergence cap
 

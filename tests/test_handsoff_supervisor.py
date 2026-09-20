@@ -63,7 +63,9 @@ def normalize_fixture_config(path):
     # checks are `true`, which the footprint gate reads as broad, so an
     # inherited group would refuse every fixture verify. Both tables are
     # dropped; tests of the gate itself write their own config.
-    dropped_sections = {"regression_gate", "regressions"}
+    # #165 #167 #166: fixtures start with no [features] table (defaults) and
+    # tests that need a switch append their own.
+    dropped_sections = {"regression_gate", "regressions", "features"}
     # The dogfood repo declares its own artwork (`[project] logo`, #144). A
     # fixture project must not inherit it: the logo tests set up their own
     # declared and conventional cases and start from "nothing declared".
@@ -173,13 +175,21 @@ class HandsoffTestCase(unittest.TestCase):
         # No fixture may spend a real model call on adapter pre-flight (#91).
         os.environ["HANDSOFF_SKIP_PREFLIGHT"] = "1"
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-test-"))
+        # #166: init registers the run and takes the ticket lock through the
+        # fleet register; a fixture must never touch the operator's own.
+        self._registry_before = os.environ.get("HANDSOFF_FLEET_REGISTRY")
+        os.environ["HANDSOFF_FLEET_REGISTRY"] = str(self.tmp / ".fleet-registry.json")
         for name in ("handsoff.toml", "handsoff-runtime.json"):
             shutil.copy(ROOT / name, self.tmp / name)
         normalize_fixture_config(self.tmp / "handsoff.toml")
-        for directory in ("schemas", "dashboard", "fleet", "templates", "bin"):
+        for directory in ("schemas", "dashboard", "fleet", "templates", "bin", "rules"):
             shutil.copytree(ROOT / directory, self.tmp / directory)
 
     def tearDown(self):
+        if self._registry_before is None:
+            os.environ.pop("HANDSOFF_FLEET_REGISTRY", None)
+        else:
+            os.environ["HANDSOFF_FLEET_REGISTRY"] = self._registry_before
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def init(self, feature="Test feature"):

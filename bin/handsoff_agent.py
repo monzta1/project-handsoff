@@ -258,7 +258,8 @@ def _phase2_design_reviewer_selection(root: Path, cfg: dict, role: str, *, which
     return lib.select_design_reviewer_profile(cfg, status, acceptance, which=which)
 
 
-def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, skip_preflight: bool = False, inspection: bool = False) -> LaunchSpec:
+def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, skip_preflight: bool = False,
+                      inspection: bool = False, amendment: bool = False) -> LaunchSpec:
     root = root.resolve()
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
@@ -266,6 +267,18 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
+    # #167: rules distilled from run history refuse first, before an
+    # adapter is resolved or a session reserved: a refusal costs nothing.
+    status_file = lib.status_path(root, cfg)
+    phase = None
+    if status_file.is_file():
+        try:
+            phase = int(lib.load_unique_json(status_file).get("phase_number") or 0) or None
+        except (ValueError, TypeError):
+            phase = None
+    rule = lib.evaluate_launch_rules(root, cfg, role=role, phase=phase, amendment=amendment)
+    if rule is not None:
+        raise lib.HandsoffError(lib.rule_refusal(rule))
     if role == "reviewer":
         status_file = lib.status_path(root, cfg)
         if status_file.is_file():
@@ -842,6 +855,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
     reviewer_results: list[dict] = []
+    recovered_results: list[dict] = []  # #167: packets refused by a rule, adoptable
     architect_results: list[dict] = []
     architect_requests: list[dict] = []
     protocol_errors: list[str] = []
@@ -921,7 +935,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                             persist_new(supervisor_requests, "supervisor_request")
                         if spec.role == "reviewer":
-                            _parse_reviewer_line(line, reviewer_results, protocol_errors)
+                            _parse_reviewer_line(line, reviewer_results, protocol_errors, recovered_results, root)
                             persist_new(reviewer_results, "review")
                         if spec.role == "architect":
                             _parse_architect_request_line(line, architect_requests, protocol_errors)
@@ -940,7 +954,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
                         persist_new(supervisor_requests, "supervisor_request")
                     if spec.role == "reviewer":
-                        _parse_reviewer_line(pending, reviewer_results, protocol_errors)
+                        _parse_reviewer_line(pending, reviewer_results, protocol_errors, recovered_results, root)
                         persist_new(reviewer_results, "review")
                     if spec.role == "architect":
                         _parse_architect_request_line(pending, architect_requests, protocol_errors)
@@ -1086,7 +1100,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         if spec.role in {"reviewer", "architect"} and not reviewer_results and not architect_results:
             for line in stderr_tail[0].splitlines():
                 if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX):
-                    _parse_reviewer_line(line, reviewer_results, protocol_errors)
+                    _parse_reviewer_line(line, reviewer_results, protocol_errors, recovered_results, root)
                     persist_new(reviewer_results, "review")
                 elif spec.role == "architect" and line.startswith(DESIGN_RESULT_PREFIX):
                     _parse_architect_line(line, architect_results, protocol_errors)
@@ -1125,6 +1139,14 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             )
             raise AgentLaunchError(f"{spec.adapter} exited with status {process.returncode}", session_id)
     if protocol_errors:
+        if recovered_results and not reviewer_results:
+            # #167: keep the refused verdict on the session so
+            # session-result-adopt can re-record it; the session still fails.
+            try:
+                lib.record_session_result(root, session_id, "review", recovered_results[-1]["payload"],
+                                          recovered_from_rule=True, refused_text=recovered_results[-1]["text"])
+            except lib.HandsoffError:
+                pass
         lib.transition_agent_session(
             root, session_id, "failed", exit_code=1,
             # A malformed structured request is a deterministic contract
@@ -1362,15 +1384,23 @@ def _parse_supervisor_line(line: str, requests: list[dict], errors: list[str]) -
         errors.append(str(exc))
 
 
-def _parse_reviewer_line(line: str, results: list[dict], errors: list[str]) -> None:
+def _parse_reviewer_line(line: str, results: list[dict], errors: list[str], recovered: list[dict] | None = None,
+                         root: Path | None = None) -> None:
     if not line.startswith(REVIEW_RESULT_PREFIX):
         for logical in _claude_logical_lines(line):
             if logical != line:
-                _parse_reviewer_line(logical, results, errors)
+                _parse_reviewer_line(logical, results, errors, recovered, root)
         return
     payload = line[len(REVIEW_RESULT_PREFIX):].strip()
     try:
-        results.append(__import__("handsoff_broker").parse_reviewer_result(payload))
+        results.append(__import__("handsoff_broker").parse_reviewer_result(payload, root=root))
+    except lib.PacketRuleViolation as exc:
+        # #167: the packet is refused, the launch fails, and the verdict
+        # stays recoverable: the raw text travels with the repaired copy so
+        # the operator may adopt it deliberately from what was written.
+        errors.append(str(exc))
+        if recovered is not None and isinstance(exc.recovered, dict):
+            recovered.append({"payload": exc.recovered, "text": payload})
     except lib.HandsoffError as exc:
         errors.append(str(exc))
 
@@ -1484,7 +1514,8 @@ def main() -> int:
             raise lib.HandsoffError(
                 "managed roles cannot launch nested agents; return a structured request to the host Supervisor"
             )
-        spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False), inspection=args.command == "inspect")
+        spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False),
+                                 inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)))
         if getattr(args, "amendment", None):
             spec = dataclasses.replace(spec, amendment_id=args.amendment)
         if args.command == "inspect":

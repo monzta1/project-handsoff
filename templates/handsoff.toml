@@ -23,6 +23,14 @@ deployment_requires_explicit_approval = true
 # review stays mandatory. Default true.
 require_design_approval = true
 
+[features]
+# Workflow switches (README "Workflow features"); Mission Control's CREW
+# dialog edits these. A switch at its default keeps recorded approval
+# hashes; a flipped one is a policy change and revokes them.
+failing_first = false   # #165: a criterion's test must be seen to fail before the feature
+launch_rules = true     # #167: rules from run history refuse a bad launch or packet first
+ticket_lock = true      # #166: init refuses a ticket another live run owns
+
 [fallback_policy]
 max_failovers_per_role = 2
 architect = []

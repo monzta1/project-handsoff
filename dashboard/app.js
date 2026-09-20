@@ -223,6 +223,7 @@ function populateAgentSettings() {
     `${adapter === "claude" ? "Claude Code" : "Codex"}: ${availability[adapter]?.available ? "DETECTED" : "NOT DETECTED"}`
   ).join(" · ");
   renderProviderStatus(state.settings.providers || {});
+  renderFeatureSwitches();
   updateSettingsSaveState();
 }
 
@@ -246,9 +247,44 @@ function updateSettingsSaveState() {
     || !Number.isInteger(cap) || cap < 0 || cap > 8;
 }
 
+// #165 #167 #166: the WORKFLOW FEATURES group, rendered from the snapshot
+// and saved on its own button so a switch flip never rides on the matrix.
+function renderFeatureSwitches() {
+  const host = $("feature-switches");
+  const rows = featureSwitchRows(state.settings);
+  host.innerHTML = rows.map((row) => `<label class="feature-switch"><input type="checkbox" name="feature-${escapeHtml(row.name)}" data-feature="${escapeHtml(row.name)}"${row.enabled ? " checked" : ""}><span><strong>${escapeHtml(row.label)}</strong>${row.isDefault ? "" : ' <em class="feature-changed">changed from default</em>'}<small>${escapeHtml(row.description)}</small></span></label>`).join("");
+  $("features-save").disabled = rows.length === 0;
+}
+
+async function saveFeatureSettings() {
+  const rows = featureSwitchRows(state.settings);
+  const payload = featuresPayload(rows, (name) => $("feature-switches").querySelector(`input[data-feature="${name}"]`)?.checked);
+  const button = $("features-save");
+  button.disabled = true;
+  $("features-result").textContent = "Transmitting workflow features…";
+  try {
+    const response = await fetch("/api/settings/features", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Settings returned ${response.status}`);
+    state.settings = { ...state.settings, features: result.features };
+    renderFeatureSwitches();
+    $("features-result").textContent = "Workflow features confirmed. They apply from the next gate and launch.";
+    refresh();
+  } catch (error) {
+    $("features-result").textContent = `Transmission rejected: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function closeSettings() {
   state.settingsDirty = false;
   $("settings-result").textContent = "";
+  $("features-result").textContent = "";
   $("settings-dialog").close();
 }
 
@@ -852,7 +888,7 @@ function renderCriteria(criteria) {
           <span>${escapeHtml(criterion.id)}</span>
           <span>${escapeHtml(String(criterion.type || "").replaceAll("_", " "))}</span>
           <span>${escapeHtml(String(criterion.verification || "").replaceAll("_", " + "))}</span>
-          <span>${(criterion.evidence || []).length} evidence</span>
+          <span>${(criterion.evidence || []).length} evidence</span>${baselineLabel(criterion) ? `<span class="criterion-baseline">${escapeHtml(baselineLabel(criterion))}</span>` : ""}
         </div>
       </div>
       <span class="criterion-state ${escapeHtml(criterion.state)}">${escapeHtml(String(criterion.state || "unknown").replaceAll("_", " "))}</span>
@@ -1619,6 +1655,7 @@ $("settings-toggle").addEventListener("click", openSettings);
 $("settings-close").addEventListener("click", closeSettings);
 $("settings-cancel").addEventListener("click", closeSettings);
 $("settings-form").addEventListener("submit", saveAgentSettings);
+$("features-save").addEventListener("click", saveFeatureSettings);
 $("settings-dialog").addEventListener("cancel", () => {
   state.settingsDirty = false;
   $("settings-result").textContent = "";

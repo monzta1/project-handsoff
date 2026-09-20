@@ -245,6 +245,19 @@ def cmd_init(args) -> int:
         acceptance["work_items"] = lib.derive_work_item_registry(
             acceptance, cfg, now=now, explicit_items=args.item,
         )
+        numbers = {item["number"] for item in acceptance["work_items"]
+                   if item.get("kind") == "issue" and isinstance(item.get("number"), int)}
+        adopted = {"adopted_from": []}
+        if numbers and lib.feature_enabled(cfg, "ticket_lock"):
+            # #166: one ticket, one run. The check and the registration are
+            # one transaction under the register lock; a refusal leaves no
+            # status file behind.
+            import handsoff_fleet as fleet
+            try:
+                adopted = fleet.claim_tickets(root, numbers, adopt=bool(getattr(args, "adopt", False)))
+            except lib.HandsoffError as exc:
+                print(f"SHIP_FEATURE_BLOCKED: {exc}")
+                return 1
         status = {
             "feature": args.feature, "phase_number": 1, "phase": lib.PHASES[1], "progress": 0,
             "status": "in_progress", "updated_at": now, "last_heartbeat_at": None,
@@ -280,10 +293,18 @@ def cmd_init(args) -> int:
                        "the independent design review remains required",
             "config_key": "require_design_approval",
         }]
+        for previous in adopted["adopted_from"]:
+            waived.append({"kind": "work_item_adopted",
+                           "message": f"Adopted #{', #'.join(str(n) for n in previous['numbers'])} from a dead run at {previous['root']}",
+                           "previous_root": previous["root"], "numbers": previous["numbers"],
+                           "previous_phase": previous.get("phase")})
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="initialized", event_message=f"Handsoff initialized for '{args.feature}'",
-                  extra_events=waived, project_root=str(root), engine=lib.ledger_engine_identity(root))
+                  extra_events=waived, project_root=str(root), engine=lib.ledger_engine_identity(root),
+                  ticket_lock="evaluated" if lib.feature_enabled(cfg, "ticket_lock") else "disabled")
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
+    for previous in adopted["adopted_from"]:
+        print(f"WORK_ITEM_ADOPTED: #{', #'.join(str(n) for n in previous['numbers'])} from {previous['root']}")
     return 0
 
 
@@ -577,6 +598,7 @@ def cmd_advance(args) -> int:
         # event stream takes that lock every 0.2 s, so holding it here
         # would keep the server from ever noticing the stop request.
         _release_run_dashboard(root, cfg)
+        _release_tickets(root, "complete")  # #166
     if args.progress is not None and args.progress < progress:
         print(f"NOTE: progress kept at {current_progress} (requested {args.progress} is lower)")
     print("SHIP_FEATURE_ADVANCED")
@@ -641,6 +663,12 @@ def cmd_analyze_archives(args) -> int:
     archive location for this scan only."""
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
+    if getattr(args, "propose_rules", False):
+        # #167: drafts only, under rules/proposed/, never evaluated.
+        result = analyzer.propose_rules(root, cfg, archive_directory=args.archive_dir)
+        print(f"HANDSOFF_RULES_PROPOSED: {len(result['written'])} draft(s) in {result['proposed_dir']}")
+        print(json.dumps(result, indent=2))
+        return 0
     report = analyzer.scan(root, cfg, archive_directory=args.archive_dir, dry_run=args.dry_run)
     print(f"HANDSOFF_ANALYSIS_REPORT: {report['report_path']}")
     print(json.dumps({
@@ -1525,7 +1553,10 @@ def cmd_verify(args) -> int:
                                           [before[c["id"]] for c in criteria if cmd in c.get("tests", [])])
             for cmd in needed
         }
-    use_cache = not getattr(args, "no_cache", False)
+    expect_fail = bool(getattr(args, "expect_fail", False))
+    # #165: a baseline is always executed against THIS tree; a cached
+    # passing record from an earlier binding would be the opposite claim.
+    use_cache = not getattr(args, "no_cache", False) and not expect_fail
     with lib.verify_inflight_lock(root, list(bindings.values())):
         reused: dict[str, dict] = {}
         if use_cache:
@@ -1554,6 +1585,40 @@ def cmd_verify(args) -> int:
                 print("SHIP_FEATURE_BLOCKED: criterion changed while checks were running; run verify again")
                 return 1
             per_criterion = {}
+            if expect_fail:
+                # #165: one baseline record per criterion. Valid (ok) when
+                # every own command failed, invalid when any passed; either
+                # way the criterion's state is untouched, only its evidence
+                # list grows, and the later green run is judged against it.
+                for criterion in criteria:
+                    own_tests = list(criterion.get("tests", []))
+                    own_results = [results_by_command[t] for t in own_tests]
+                    valid = bool(own_results) and all(r["exit_code"] != 0 for r in own_results)
+                    record = lib.append_verification(
+                        root, cfg, kind="baseline", ok=valid, by=args.by,
+                        criteria=[criterion], results=_durable_results(own_results),
+                        commands=own_tests, binding={t: bindings[t] for t in own_tests},
+                        executed=True, feature_hash=run_hash, repository_digest=repo_digest,
+                        config_digest=config_digest,
+                        description="baseline: commands expected to fail before the feature"
+                        if valid else "baseline_invalid: a command passed before the feature")
+                    status["verification_head"] = record["hash"]
+                    if record["run_id"] not in criterion["evidence"]:
+                        criterion["evidence"].append(record["run_id"])
+                    per_criterion[criterion["id"]] = {"run_id": record["run_id"], "ok": valid,
+                                                      "baseline": valid, "baseline_invalid": not valid,
+                                                      "executed": True, "reused_from": None}
+                status["updated_at"] = datetime.now(timezone.utc).isoformat()
+                lib.commit(root, cfg, status=status, acceptance=acceptance,
+                          event_kind="baseline_recorded",
+                          event_message="Ran the criteria's own checks expecting failure (failing-first baseline)",
+                          criteria=per_criterion, launched_count=len(launched),
+                          results=[{"command": r["command"], "exit_code": r["exit_code"],
+                                    "output_sha256": r["output_sha256"]} for r in results])
+                overall_ok = all(v["ok"] for v in per_criterion.values())
+                print(__import__("json").dumps({"ok": overall_ok, "expected": "fail", "criteria": per_criterion,
+                                                "results": results, "launched": launched, "reused": {}}, indent=2))
+                return 0 if overall_ok else 1
             for criterion in criteria:
                 own_tests = list(criterion.get("tests", []))
                 own_results = [results_by_command[t] for t in own_tests]
@@ -2648,6 +2713,21 @@ def cmd_session_result_adopt(args) -> int:
             print("SESSION_RESULT_ADOPT_REFUSED: no persisted result")
             return 1
         kind, payload = result["kind"], deepcopy(result["payload"])
+        if isinstance(result.get("refused_text"), str):
+            # #167: adopt from the packet as the reviewer wrote it, repairing
+            # only the field the rule names; the copy made at refusal time
+            # is never the source.
+            import handsoff_broker as broker
+            try:
+                payload = broker.parse_reviewer_result(result["refused_text"], root=root)
+            except lib.PacketRuleViolation as exc:
+                if not isinstance(exc.recovered, dict):
+                    print(f"SESSION_RESULT_ADOPT_REFUSED: the preserved packet cannot be repaired: {exc}")
+                    return 1
+                payload = exc.recovered
+            except lib.HandsoffError as exc:
+                print(f"SESSION_RESULT_ADOPT_REFUSED: the preserved packet is invalid: {exc}")
+                return 1
         readopt = False
         if result.get("adopted_at") is not None:
             # Field-note defect 3: an evidence-only refresh revoked the review
@@ -2670,7 +2750,7 @@ def cmd_session_result_adopt(args) -> int:
         # the reviewer wrote.
         amendment_result = {**payload, "kind": payload.get("kind", kind)}
         request = broker._amendment_review_request(root, cfg, base, status, session, amendment_result)
-    elif kind == "review":
+    elif kind == "review" and payload.get("kind") != "design":
         if payload.get("decision") == "approved":
             request = {**base, "command": "record-review",
                        "symptom_reproduced": payload.get("symptom_reproduced", "not_applicable"),
@@ -2680,7 +2760,9 @@ def cmd_session_result_adopt(args) -> int:
         else:
             request = {**base, "command": "record-review-findings", "findings": payload.get("findings") or [],
                        "tests_executed": payload.get("tests_executed", "unknown")}
-    elif kind == "design":
+    elif kind == "design" or payload.get("kind") == "design":
+        # The runner persists every reviewer result as kind "review"; the
+        # packet's own kind says whether it judged a design (#167).
         if not architect:
             print("SESSION_RESULT_ADOPT_REFUSED: no architect recorded on the design proposal")
             return 1
@@ -2843,13 +2925,18 @@ def cmd_criterion_update(args) -> int:
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
-        if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state")):
+        if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state", "baseline")):
             print("SHIP_FEATURE_BLOCKED: criterion-update requires at least one change")
             return 1
         fields = {field: getattr(args, field) for field in ("requirement", "verification", "type", "state")
                   if getattr(args, field) is not None}
         if args.test is not None:
             fields["tests"] = args.test
+        if args.baseline is not None:
+            # #165: "none" clears the declaration; not_applicable needs its reason.
+            fields["baseline"] = None if args.baseline == "none" else args.baseline
+            if args.baseline_reason is not None:
+                fields["baseline_reason"] = args.baseline_reason
         problems = lib.validate_criterion_fields(fields)
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
@@ -2864,6 +2951,15 @@ def cmd_criterion_update(args) -> int:
                 spec_changed = True
         if args.test is not None:
             criterion["tests"] = args.test
+            spec_changed = True
+        if args.baseline is not None:
+            # part of the claim: a baseline declaration changes the spec hash
+            if args.baseline == "none":
+                criterion.pop("baseline", None)
+                criterion.pop("baseline_reason", None)
+            else:
+                criterion["baseline"] = args.baseline
+                criterion["baseline_reason"] = args.baseline_reason
             spec_changed = True
         if args.state is not None:
             criterion["state"] = args.state
@@ -2912,17 +3008,20 @@ def cmd_criterion_add(args) -> int:
         if _criterion(acceptance, args.criterion):
             print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} already exists")
             return 1
-        problems = lib.validate_criterion_fields({
+        fields = {
             "id": args.criterion, "type": args.type, "requirement": args.requirement,
             "verification": args.verification, "tests": args.test or [],
-        }, require_all=True)
+        }
+        if args.baseline is not None:
+            fields["baseline"] = args.baseline
+            fields["baseline_reason"] = args.baseline_reason
+        problems = lib.validate_criterion_fields(fields, require_all=True)
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
         before_scope = lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", []))
         acceptance["criteria"].append({
-            "id": args.criterion, "type": args.type, "requirement": args.requirement,
-            "verification": args.verification, "tests": args.test or [],
+            **{k: v for k, v in fields.items() if k != "id"}, "id": args.criterion,
             "evidence": [], "state": "not_tested",
         })
         if args.type == "primary_fix":
@@ -3988,14 +4087,27 @@ def cmd_dashboard(args) -> int:
 
 
 def cmd_run_close(args) -> int:
+    root = lib.resolve_root(args.root)
     result = lib.close_run(
-        lib.resolve_root(args.root), by=args.by, reason=args.reason,
+        root, by=args.by, reason=args.reason,
         expected_updated_at=getattr(args, "expected_updated_at", None),
         cancel_active=bool(getattr(args, "cancel_active", False)),
         release_dashboard=bool(getattr(args, "release_dashboard", True)),
     )
+    _release_tickets(root, "closed")
     print(json.dumps(result, sort_keys=True))
     return 0
+
+
+def _release_tickets(root, state: str) -> None:
+    """#166: a closed or completed run holds no ticket. The register entry
+    says so; the lock also reads the run's own status, so this is the
+    visible half, never the only half."""
+    try:
+        import handsoff_fleet as fleet
+        fleet.note_registry_state(root, None, state)
+    except (lib.HandsoffError, OSError):
+        pass
 
 
 def cmd_run_reopen(args) -> int:
@@ -4013,6 +4125,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init")
+    init.add_argument("--adopt", action="store_true",
+                      help="#166: take over a ticket whose registered owner is dead or closed; a live owner is never adopted")
     init.add_argument("feature")
     init.add_argument("--item", action="append", default=[],
                       help="declare one issue (#31 or #31 Title) or plain ask; repeat for multiple items")
@@ -4043,6 +4157,9 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--by", required=True)
     verify.add_argument("--no-cache", action="store_true",
                         help="launch every needed command even when an eligible record for its binding exists")
+    verify.add_argument("--expect-fail", action="store_true",
+                        help="#165: record a baseline: the criterion's own commands are expected to FAIL on this tree "
+                             "(the feature is not built yet); a command that passes makes the baseline invalid")
 
     adopt = sub.add_parser("session-result-adopt")
     adopt.add_argument("--session", required=True)
@@ -4321,6 +4438,9 @@ def build_parser() -> argparse.ArgumentParser:
     criterion.add_argument("--verification", choices=tuple(lib.VERIFICATION_REQUIREMENTS))
     criterion.add_argument("--test", action="append")
     criterion.add_argument("--state", choices=("failing", "not_tested", "blocked"))
+    criterion.add_argument("--baseline", choices=(lib.BASELINE_NOT_APPLICABLE, "none"),
+                           help="#165: not_applicable declares no failing run can exist for this criterion (with --baseline-reason); none clears it")
+    criterion.add_argument("--baseline-reason")
     criterion.add_argument("--revoke-approval", action="store_true")
 
     criterion_add = sub.add_parser("criterion-add")
@@ -4329,6 +4449,9 @@ def build_parser() -> argparse.ArgumentParser:
     criterion_add.add_argument("--requirement", required=True)
     criterion_add.add_argument("--verification", choices=tuple(lib.VERIFICATION_REQUIREMENTS), required=True)
     criterion_add.add_argument("--test", action="append", required=True)
+    criterion_add.add_argument("--baseline", choices=(lib.BASELINE_NOT_APPLICABLE,),
+                               help="#165: declare that no failing run can exist for this criterion (with --baseline-reason)")
+    criterion_add.add_argument("--baseline-reason")
     criterion_add.add_argument("--revoke-approval", action="store_true")
 
     criterion_remove = sub.add_parser("criterion-remove")
@@ -4396,6 +4519,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = sub.add_parser("analyze-archives", help="scan the completed-run archive for recurring patterns "
                              "and file evidenced improvement tickets (#49); prints the report path")
     analyze.add_argument("--dry-run", action="store_true", help="evaluate and report, file nothing")
+    analyze.add_argument("--propose-rules", action="store_true",
+                         help="#167: write one draft launch rule per failure shape that repeats across runs "
+                              "into rules/proposed/ (never evaluated until a human moves it up and commits it)")
     analyze.add_argument("--archive-dir", default=None, help="archive directory for this scan only "
                          "(default: [analysis].archive_dir, else HANDSOFF_ARCHIVE_DIR, else ~/Documents/Handsoff-Archive)")
 

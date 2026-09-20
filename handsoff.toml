@@ -51,6 +51,14 @@ supervisor = "default"
 implementer = "default"
 reviewer = "default"
 
+[features]
+# Workflow switches (README "Workflow features"); Mission Control's CREW
+# dialog edits these. A switch at its default keeps recorded approval
+# hashes; a flipped one is a policy change and revokes them.
+failing_first = false   # #165: a criterion's test must be seen to fail before the feature
+launch_rules = true     # #167: rules from run history refuse a bad launch or packet first
+ticket_lock = true      # #166: init refuses a ticket another live run owns
+
 [fallback_policy]
 # Ordered replacement profiles used only by the pure fallback planner.
 # "auto" is intentionally not valid here: every fallback is explicit.
@@ -119,6 +127,12 @@ commands = [
   "python3 -m unittest tests.test_managed_crew -v",
   "python3 -m unittest tests.test_remote_access -v",
   "python3 -m unittest tests.test_operations -v",
+  "python3 -m unittest tests.test_failing_first -v",
+  "python3 -m unittest tests.test_launch_rules -v",
+  "python3 -m unittest tests.test_ticket_lock -v",
+  "python3 -m unittest tests.test_feature_settings -v",
+  "node --test tests/dashboard/feature_settings.test.js",
+  "scripts/no-test-docs-note.sh tests/manual-docs-note",
   "node --test tests/dashboard/operation_telemetry.test.js",
   "python3 -m unittest tests.test_evidence_drift -v",
   "python3 -m unittest tests.test_design_review_hold -v",

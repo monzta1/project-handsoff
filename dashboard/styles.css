@@ -655,3 +655,13 @@ a.settings-toggle { display: inline-flex; align-items: center; text-decoration: 
 /* #161: the engine badge, one style on Mission Control and Fleet. */
 .engine-badge { display: inline-flex; align-items: center; padding: 6px 10px; margin-right: 10px; border: 1px solid var(--accent-line); border-radius: 6px; background: var(--accent-soft); color: var(--accent); font: 700 10.5px/1 var(--mono); letter-spacing: .08em; white-space: nowrap; }
 
+
+/* #165 #167 #166: workflow feature switches in the settings dialog */
+.feature-settings { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.feature-switches { display: grid; gap: 8px; margin-top: 10px; }
+.feature-switch { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(0, 0, 0, .18); cursor: pointer; }
+.feature-switch input { margin-top: 2px; accent-color: var(--accent); }
+.feature-switch strong { display: block; font: 700 11px/1.2 var(--mono); letter-spacing: .08em; color: var(--ink); }
+.feature-switch small { display: block; margin-top: 3px; color: var(--muted); font: 500 11.5px/1.35 var(--sans); }
+.feature-changed { font: 600 10px/1 var(--mono); color: var(--amber, #f0b35a); letter-spacing: .06em; font-style: normal; margin-left: 6px; }
+.criterion-baseline { color: var(--red); font: 600 10px/1 var(--mono); letter-spacing: .06em; }

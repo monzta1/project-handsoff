@@ -182,6 +182,8 @@ def _start_verification(root: Path, kind: str, criteria: list[str] | None = None
 def _settings_view(cfg: dict) -> dict:
     effective_profiles = lib.resolved_agent_profiles(cfg)
     return {
+        # #165 #167 #166: the workflow switches, effective values with defaults.
+        "features": lib.features_view(cfg),
         "agents": dict(cfg.get("agents", {})),
         "profiles": lib.agent_profiles(cfg),
         "profile_sources": lib.profile_sources(cfg),
@@ -937,7 +939,16 @@ def build_snapshot(root: Path) -> dict:
     except (lib.HandsoffError, OSError) as exc:
         return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
-    criteria = acceptance.get("criteria", [])
+    criteria = [dict(c) for c in acceptance.get("criteria", [])]
+    for criterion in criteria:
+        # #165: what the failing-first gate sees: the newest valid baseline
+        # (RED before GREEN) or the declaration that none can exist.
+        baseline = lib.criterion_baseline(criterion, verifications)
+        criterion["baseline_view"] = (
+            {"kind": "not_applicable", "reason": criterion.get("baseline_reason") or ""}
+            if criterion.get("baseline") == lib.BASELINE_NOT_APPLICABLE
+            else {"kind": "recorded", "at": baseline.get("at"), "run_id": baseline.get("run_id")}
+            if baseline else {"kind": "none"})
     work_items = lib.derive_work_items(status, acceptance, cfg)
     latest_event = events[-1] if events else None
     coverage = status.get("requirement_coverage", {})
@@ -1444,7 +1455,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/shutdown":
             self._serve_shutdown()
             return
-        if path not in {"/api/settings/agents", "/api/design-approval", "/api/deployment-approval",
+        if path not in {"/api/settings/agents", "/api/settings/features", "/api/design-approval", "/api/deployment-approval",
                         "/api/init", "/api/operator-action", "/api/launch-role", "/api/verify", "/api/verify-live",
                         "/api/lane-confirm", "/api/tranche-approval",
                         "/api/regression-decision", "/api/question-answer", "/api/question-answers",
@@ -1827,6 +1838,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.server.project_root, lib.load_config(self.server.project_root)
                 )).get("deployment_approved")
                 self._json_response(HTTPStatus.OK, {"ok": True, "deployment_approved": approved})
+                return
+            if path == "/api/settings/features":
+                # #165 #167 #166: the switches, through the same lock and
+                # validation as the agent matrix; the change is an audited
+                # event so a flipped switch is visible in the activity feed.
+                saved = lib.update_feature_settings(self.server.project_root, requested)
+                effective_cfg = lib.load_config(self.server.project_root)
+                status_file = lib.status_path(self.server.project_root, effective_cfg)
+                if status_file.is_file():
+                    lib.append_event(self.server.project_root, effective_cfg, "features_updated",
+                                     "Workflow features changed from Mission Control", features=saved["features"])
+                self._json_response(HTTPStatus.OK, {"ok": True, "features": lib.features_view(effective_cfg)})
                 return
             wrapped = set(requested) == {"profiles", "fallbacks", "max_failovers_per_role"}
             if wrapped:

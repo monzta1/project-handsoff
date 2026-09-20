@@ -304,6 +304,11 @@
         <div id="fallback-implementer" class="fallback-role" data-role="implementer"></div>
         <div id="fallback-reviewer" class="fallback-role" data-role="reviewer"></div>
       </section>
+      <section class="feature-settings" aria-labelledby="features-title">
+        <div class="fallback-head"><div><p class="panel-label" id="features-title">WORKFLOW FEATURES</p><small>Switches in <code>handsoff.toml</code> <code>[features]</code>. A flipped switch revokes reviews and approvals granted under the other setting, like any policy change.</small></div><button id="features-save" class="settings-secondary" type="button">SAVE FEATURES</button></div>
+        <div id="feature-switches" class="feature-switches"></div>
+        <p id="features-result" class="settings-result" role="status" aria-live="polite"></p>
+      </section>
       <datalist id="model-suggestions"><option value="default"></option><option value="gpt-5.4"></option><option value="sonnet"></option><option value="opus"></option><option value="haiku"></option></datalist>
       <p id="adapter-availability" class="adapter-availability"></p>
       <p class="availability-scope">Executable detection does not prove authentication, entitlement, network access, or model validity. Those checks occur at launch.</p>

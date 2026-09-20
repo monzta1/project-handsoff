@@ -300,6 +300,9 @@ DEFAULT_CONFIG = {
     # #159: false lets a project waive the Pilot's design click; the
     # independent design review stays mandatory either way.
     "require_design_approval": True,
+    # #165 #167 #166: workflow features, each a switch under [features] that
+    # Mission Control's settings dialog edits. Defaults live in FEATURES.
+    "features": {},
     "check_commands": [],
     "digest_ignore": [],
     "implementer_commands": [],
@@ -834,7 +837,13 @@ REQUIRED_COVERAGE_FIELDS = (
 )
 
 STATUS_VALUES = {"in_progress", "blocked", "ready_to_deploy", "awaiting_approval", "complete"}
-VERIFICATION_KINDS = {"checks", "manual", "browser", "live"}
+#: "baseline" (#165): a criterion's own commands run BEFORE the feature,
+#: recorded as ok=True when every one of them failed (a valid red) and
+#: ok=False when any passed (baseline_invalid). It never satisfies the
+#: checks requirement; it is what the failing-first gate asks for behind
+#: the later green run.
+VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline"}
+BASELINE_NOT_APPLICABLE = "not_applicable"
 VERIFICATION_REQUIREMENTS = {
     "automated": {"checks"},
     "manual": {"manual"},
@@ -960,6 +969,17 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
         cfg[key] = value
+    features = raw.get("features", {})
+    if not isinstance(features, dict):
+        raise HandsoffError("handsoff.toml: [features] must be a table")
+    unknown = sorted(set(features) - set(FEATURES))
+    if unknown:
+        raise HandsoffError("handsoff.toml: unknown [features] key(s): " + ", ".join(unknown)
+                            + "; known: " + ", ".join(FEATURES))
+    for key, value in features.items():
+        if not isinstance(value, bool):
+            raise HandsoffError(f"handsoff.toml: features.{key} must be boolean")
+    cfg["features"] = {name: bool(features.get(name, default)) for name, (default, _text) in FEATURES.items()}
     # #39: a role key absent from the TOML (or still holding the legacy
     # "configure-me" placeholder) takes the recommended crew profile. Any
     # explicit value, "auto" included, is kept as written and only ever
@@ -1755,7 +1775,11 @@ def provider_status() -> dict:
 
 
 def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
-                           assignments: dict[str, str]) -> list[str]:
+                           assignments: dict[str, str], *, booleans: bool = False) -> list[str]:
+    """Rewrite `key = value` lines of one table in place, keeping comments
+    and order, adding the table or missing keys at the end. String values by
+    default; `booleans=True` matches and writes bare true/false (#165 #167
+    #166, the [features] switches)."""
     section_pattern = re.compile(rf"^\s*\[{re.escape(table)}\]\s*(?:#.*)?(?:\r?\n)?$")
     section_starts = [i for i, line in enumerate(lines)
                       if re.match(r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?(?:\r?\n)?$", line)]
@@ -1776,9 +1800,10 @@ def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
         lines.append(f"[{table}]\n")
         end = len(lines)
 
+    value_pattern = r"(?:true|false)" if booleans else r"(?:\"(?:[^\"\\]|\\.)*\"|'[^']*')"
     patterns = {
         role: re.compile(
-            rf"^(\s*{role}\s*=\s*)(?:\"(?:[^\"\\]|\\.)*\"|'[^']*')(\s*(?:#.*)?)(\r?\n)?$"
+            rf"^(\s*{role}\s*=\s*){value_pattern}(\s*(?:#.*)?)(\r?\n)?$"
         ) for role in assignments
     }
     found: set[str] = set()
@@ -1976,6 +2001,180 @@ def update_agent_settings(root: Path, payload: object) -> dict:
         "fallbacks": normalized_fallbacks,
         "max_failovers_per_role": cap,
     }
+
+
+# --------------------------------------------------------------------------
+# #167: launch rules, distilled from run history
+# --------------------------------------------------------------------------
+
+RULE_COMMANDS = ("launch", "packet")
+RULE_WHEN_KEYS = {"command", "role", "phase_in", "amendment", "field"}
+RULES_DIR = "rules"
+PROJECT_RULES_DIR = "handsoff-rules"
+MAX_RULE_BYTES = 16 * 1024
+
+
+class PacketRuleViolation(HandsoffError):
+    """A reviewer packet broke a packet rule. `recovered` is the packet with
+    the offending field set to the rule's recover_as value (or None when
+    the rule names none), so the verdict can be adopted deliberately."""
+
+    def __init__(self, message: str, *, rule_id: str, field: str, value, recovered: dict | None):
+        super().__init__(message)
+        self.rule_id, self.field, self.value, self.recovered = rule_id, field, value, recovered
+
+
+def _validate_rule(rule: object, source: str) -> dict:
+    if not isinstance(rule, dict):
+        raise HandsoffError(f"rule {source}: not an object")
+    for key in ("id", "cause", "when", "refuse"):
+        if key not in rule:
+            raise HandsoffError(f"rule {source}: missing {key}")
+    if not isinstance(rule["id"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", rule["id"]):
+        raise HandsoffError(f"rule {source}: id must be a short lowercase slug")
+    if not isinstance(rule["refuse"], str) or not rule["refuse"].strip() or len(rule["refuse"]) > 512:
+        raise HandsoffError(f"rule {source}: refuse must be 1 to 512 characters")
+    cause = rule["cause"]
+    if not isinstance(cause, dict) or not isinstance(cause.get("event"), str) or not isinstance(cause.get("at"), str):
+        raise HandsoffError(f"rule {source}: cause needs at least event and at")
+    when = rule["when"]
+    if not isinstance(when, dict) or set(when) - RULE_WHEN_KEYS or when.get("command") not in RULE_COMMANDS:
+        raise HandsoffError(f"rule {source}: when.command must be launch or packet and keys limited to "
+                            + ", ".join(sorted(RULE_WHEN_KEYS)))
+    if "role" in when and when["role"] not in AGENT_ROLES:
+        raise HandsoffError(f"rule {source}: when.role must be a managed role")
+    if when["command"] == "launch":
+        phases = when.get("phase_in")
+        if phases is not None and (not isinstance(phases, list) or not phases
+                                   or not all(isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 8 for p in phases)):
+            raise HandsoffError(f"rule {source}: when.phase_in must be a non-empty list of phase numbers")
+        if "amendment" in when and not isinstance(when["amendment"], bool):
+            raise HandsoffError(f"rule {source}: when.amendment must be boolean")
+        if "field" in when:
+            raise HandsoffError(f"rule {source}: when.field belongs to packet rules")
+    else:
+        if not isinstance(when.get("field"), str) or not when["field"].strip():
+            raise HandsoffError(f"rule {source}: a packet rule needs when.field")
+        allowed = rule.get("allowed")
+        if not isinstance(allowed, list) or not allowed or not all(isinstance(a, str) for a in allowed):
+            raise HandsoffError(f"rule {source}: a packet rule needs a non-empty allowed list of strings")
+        if "recover_as" in rule and rule["recover_as"] not in allowed:
+            raise HandsoffError(f"rule {source}: recover_as must be one of allowed")
+        for key in ("phase_in", "amendment"):
+            if key in when:
+                raise HandsoffError(f"rule {source}: when.{key} belongs to launch rules")
+    return rule
+
+
+def load_launch_rules(root: Path | None = None) -> list[dict]:
+    """Every rule the engine ships (rules/*.json in the runtime manifest)
+    plus a project's own handsoff-rules/*.json. Ids are unique across both;
+    rules/proposed/ is never read. A malformed file is an error, never a
+    silently skipped rule."""
+    rules: list[dict] = []
+    seen: set[str] = set()
+    directories = [engine_resource_path(RULES_DIR)]
+    if root is not None:
+        directories.append(Path(root) / PROJECT_RULES_DIR)
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            if path.stat().st_size > MAX_RULE_BYTES:
+                raise HandsoffError(f"rule {path.name}: larger than {MAX_RULE_BYTES} bytes")
+            try:
+                rule = _validate_rule(json.loads(path.read_text(encoding="utf-8")), path.name)
+            except ValueError as exc:
+                raise HandsoffError(f"rule {path.name}: invalid JSON ({exc})") from exc
+            if rule["id"] in seen:
+                raise HandsoffError(f"rule {path.name}: duplicate rule id {rule['id']}")
+            seen.add(rule["id"])
+            rules.append({**rule, "source": str(path)})
+    return rules
+
+
+def rule_refusal(rule: dict) -> str:
+    cause = rule.get("cause", {})
+    return f"{rule['refuse']} (rule {rule['id']}, cause: {cause.get('event')} on {cause.get('root', 'a run')} {cause.get('at')})"
+
+
+def evaluate_launch_rules(root: Path, cfg: dict, *, role: str, phase: int | None, amendment: bool) -> dict | None:
+    """The first launch rule matching this launch, or None. With
+    features.launch_rules off nothing is evaluated."""
+    if not feature_enabled(cfg, "launch_rules"):
+        return None
+    for rule in load_launch_rules(root):
+        when = rule["when"]
+        if when["command"] != "launch":
+            continue
+        if "role" in when and when["role"] != role:
+            continue
+        if "phase_in" in when and (phase is None or phase not in when["phase_in"]):
+            continue
+        if "amendment" in when and when["amendment"] != amendment:
+            continue
+        return rule
+    return None
+
+
+def evaluate_packet_rules(root: Path | None, cfg: dict | None, value: dict, *, role: str = "reviewer") -> None:
+    """Raise PacketRuleViolation for the first packet rule the value breaks.
+    With features.launch_rules off nothing is evaluated (the caller's own
+    validation stays the floor)."""
+    if cfg is not None and not feature_enabled(cfg, "launch_rules"):
+        return
+    for rule in load_launch_rules(root):
+        when = rule["when"]
+        if when["command"] != "packet" or when.get("role", role) != role:
+            continue
+        field = when["field"]
+        if field not in value:
+            continue
+        seen = value[field]
+        if isinstance(seen, str) and seen in rule["allowed"]:
+            continue
+        recovered = None
+        if "recover_as" in rule:
+            recovered = {**value, field: rule["recover_as"]}
+        shown = seen if isinstance(seen, str) else type(seen).__name__
+        raise PacketRuleViolation(
+            f"{rule['refuse']}; got {json.dumps(shown)[:120]} (rule {rule['id']}, cause: "
+            f"{rule['cause'].get('event')} on {rule['cause'].get('root', 'a run')} {rule['cause'].get('at')})",
+            rule_id=rule["id"], field=field, value=seen, recovered=recovered)
+
+
+def update_feature_settings(root: Path, payload: object) -> dict:
+    """Atomically persist the [features] switches (#165 #167 #166). The
+    payload is exactly {name: bool} for every known feature; nothing else
+    is written and the proposed file is re-parsed before it replaces the
+    old one."""
+    if not isinstance(payload, dict) or set(payload) != set(FEATURES):
+        raise HandsoffError("feature settings must contain exactly: " + ", ".join(FEATURES))
+    for name, value in payload.items():
+        if not isinstance(value, bool):
+            raise HandsoffError(f"features.{name} must be a literal boolean")
+    root = root.resolve()
+    path = root / "handsoff.toml"
+    if tomllib is None:
+        raise HandsoffError("feature settings require Python 3.11+ TOML support")
+    with project_lock(root):
+        try:
+            original = path.read_text(encoding="utf-8")
+            parsed = tomllib.loads(original)
+            load_config(root)
+        except (OSError, ValueError) as exc:
+            raise HandsoffError(f"cannot update {path}: {exc}") from exc
+        lines = _patch_toml_role_table(original.splitlines(keepends=True), parsed, "features",
+                                       dict(payload), booleans=True)
+        proposed = "".join(lines)
+        try:
+            proposed_raw = tomllib.loads(proposed)
+        except ValueError as exc:
+            raise HandsoffError(f"refusing invalid proposed handsoff.toml: {exc}") from exc
+        if proposed_raw.get("features") != payload:
+            raise HandsoffError("refusing ambiguous feature settings update")
+        _atomic_write_text(path, proposed)
+    return {"features": dict(payload)}
 
 
 def status_path(root: Path, cfg: dict) -> Path:
@@ -2599,6 +2798,9 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             design_review_attempt=budget["next_attempt"] if budget else None,
             design_review_authorization_reserved=reservation is not None,
             packet_id=packet_id, design_hash=design_hash, tier=tier,
+            # #167: whether the launch rules stood between this launch and
+            # the process; "disabled" is the project's own switch.
+            launch_rules="evaluated" if feature_enabled(cfg, "launch_rules") else "disabled",
         )
         return deepcopy(session)
 
@@ -4284,8 +4486,12 @@ def validate_status_schema(status: dict) -> list[str]:
             result = session.get("result")
             if result is not None:
                 required = {"kind", "payload", "recorded_at", "adopted_at", "adopted_by"}
-                if not isinstance(result, dict) or set(result) - {"readoptions"} != required or result.get("kind") not in {"review", "design", "supervisor_request"} or not isinstance(result.get("payload"), dict) or ((result.get("adopted_at") is None) != (result.get("adopted_by") is None)) \
-                        or ("readoptions" in result and (not isinstance(result["readoptions"], list) or any(not isinstance(r, dict) or set(r) != {"at", "by"} for r in result["readoptions"]))):
+                # #167: a packet a rule refused keeps its raw text and the mark
+                optional = {"readoptions", "refused_text", "recovered_from_rule"}
+                if not isinstance(result, dict) or set(result) - optional != required or result.get("kind") not in {"review", "design", "supervisor_request"} or not isinstance(result.get("payload"), dict) or ((result.get("adopted_at") is None) != (result.get("adopted_by") is None)) \
+                        or ("readoptions" in result and (not isinstance(result["readoptions"], list) or any(not isinstance(r, dict) or set(r) != {"at", "by"} for r in result["readoptions"]))) \
+                        or ("refused_text" in result and (not isinstance(result["refused_text"], str) or len(result["refused_text"]) > 65536)) \
+                        or ("recovered_from_rule" in result and not isinstance(result["recovered_from_rule"], bool)):
                     errors.append(f"{label}.result is invalid")
     if pointers is not None:
         if not isinstance(pointers, dict):
@@ -4455,6 +4661,30 @@ def validate_status_schema(status: dict) -> list[str]:
 # the gates
 # --------------------------------------------------------------------------
 
+#: [features] switches: name -> (default, one line for the settings dialog).
+#: failing_first is off by default because turning it on refuses every
+#: project's next Phase 6 until baselines exist; the other two only refuse
+#: what was already a mistake.
+FEATURES = {
+    "failing_first": (False, "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165)."),
+    "launch_rules": (True, "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167)."),
+    "ticket_lock": (True, "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166)."),
+}
+
+
+def feature_enabled(cfg: dict, name: str) -> bool:
+    if name not in FEATURES:
+        raise HandsoffError(f"unknown workflow feature: {name}")
+    return bool((cfg or {}).get("features", {}).get(name, FEATURES[name][0]))
+
+
+def features_view(cfg: dict) -> dict:
+    """Effective switches with their defaults and descriptions, for the
+    status snapshot and the settings dialog."""
+    return {name: {"enabled": feature_enabled(cfg, name), "default": default, "description": text}
+            for name, (default, text) in FEATURES.items()}
+
+
 GOVERNANCE_CONFIG_KEYS = (
     "deployment_requires_explicit_approval", "require_live_verification",
     "max_design_rounds", "max_review_rounds", "stall_minutes",
@@ -4492,6 +4722,12 @@ def config_hash(cfg: dict) -> str:
             if cfg.get(key, default) == default:
                 continue
         bound[key] = cfg.get(key)
+    # [features] switches bind the same way: a switch at its default keeps
+    # every recorded hash byte for byte; a flipped one revokes what was
+    # granted under the other setting.
+    for name, (default, _text) in FEATURES.items():
+        if feature_enabled(cfg, name) != default:
+            bound["features." + name] = feature_enabled(cfg, name)
     return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
 
 
@@ -4601,6 +4837,44 @@ def _evidence_errors(criteria: list[dict], verifications: list[dict]) -> list[st
         missing = required - valid_evidence_kinds(criterion, verifications)
         if missing:
             errors.append(f"evidence gate: passing criterion {cid} lacks valid {', '.join(sorted(missing))} evidence")
+    return errors
+
+
+def criterion_baseline(criterion: dict, verifications: list[dict]) -> dict | None:
+    """#165: the newest VALID baseline (kind baseline, ok True) bound to this
+    criterion's current spec hash, or None. A baseline recorded against an
+    older wording of the criterion does not count: the claim changed."""
+    cid = criterion.get("id")
+    spec = criterion_spec_hash(criterion)
+    found = None
+    for record in verifications:
+        if (isinstance(record, dict) and record.get("kind") == "baseline" and record.get("ok") is True
+                and cid in record.get("criteria", []) and record.get("criterion_hashes", {}).get(cid) == spec):
+            found = record
+    return found
+
+
+def baseline_errors(criteria: list[dict], verifications: list[dict], cfg: dict) -> list[str]:
+    """#165: with features.failing_first on, every automated criterion that
+    reads passing must have a valid failing run behind it, unless it says
+    baseline = not_applicable with a reason. Off: nothing is asked."""
+    if not feature_enabled(cfg, "failing_first"):
+        return []
+    errors: list[str] = []
+    for criterion in criteria:
+        if criterion.get("state") != "passing":
+            continue
+        if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+            continue
+        cid = criterion.get("id")
+        if criterion.get("baseline") == BASELINE_NOT_APPLICABLE:
+            if not str(criterion.get("baseline_reason") or "").strip():
+                errors.append(f"baseline gate: {cid} says baseline not_applicable without a reason")
+            continue
+        if criterion_baseline(criterion, verifications) is None:
+            errors.append(f"baseline gate: {cid} passed without a recorded failing run; run handsoff_supervisor.py "
+                          f"verify --criterion {cid} --expect-fail --by ACTOR on the tree before the feature, "
+                          f"or mark it --baseline not_applicable --baseline-reason TEXT")
     return errors
 
 
@@ -5174,6 +5448,10 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     phase = int(status.get("phase_number", 0) or 0)
     progress = float(status.get("progress", 0) or 0)
     evidence_errors = _evidence_errors(gate_criteria, verifications or [])
+    if phase >= 6 or progress >= 95:
+        # #165: the failing-first gate rides with the evidence gate, so a
+        # green with no red behind it blocks Phase 6+ and 95%+ alike.
+        evidence_errors.extend(baseline_errors(gate_criteria, verifications or [], cfg))
     if root is not None and phase >= 5:
         drift = evidence_drift(root, cfg, acceptance, records)
         for cid in drift["stale"]:
@@ -5205,6 +5483,8 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         errors.extend(evidence_errors)
     if progress >= 95 and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("progress gate: 95%+ requires verified acceptance and a resolved original symptom")
+        if phase < 6:
+            errors.extend(evidence_errors)  # name the baseline gaps here too (#165)
     if "work_items" in acceptance and progress >= 95:
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
                       if item.get("required") and item.get("status") != "done"]
@@ -6817,7 +7097,10 @@ def resume_scope_section(root: Path) -> str:
 CRITERION_TYPES = ("primary_fix", "supporting")
 CRITERION_SETTABLE_STATES = ("failing", "not_tested", "blocked")
 CRITERION_ADD_FIELDS = ("id", "type", "requirement", "verification", "tests")
-CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "state")
+CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "state",
+                           # #165: a criterion may declare that no failing run can exist
+                           # for it (a test born with the feature), with the reason audited
+                           "baseline", "baseline_reason")
 CRITERIA_TRANSACTION_OPS = ("add", "update", "remove")
 MAX_CRITERIA_TRANSACTION_OPERATIONS = 64
 MAX_CRITERIA_TRANSACTION_BYTES = 256 * 1024
@@ -6873,6 +7156,12 @@ def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> lis
             errors.append("'tests' must be a non-empty list of non-empty strings")
     if "state" in fields and fields["state"] not in CRITERION_SETTABLE_STATES:
         errors.append(f"'state' must be one of {', '.join(CRITERION_SETTABLE_STATES)}")
+    if "baseline" in fields and fields["baseline"] not in (BASELINE_NOT_APPLICABLE, None):
+        errors.append(f"'baseline' may only be {BASELINE_NOT_APPLICABLE} (or absent)")
+    if fields.get("baseline") == BASELINE_NOT_APPLICABLE and not str(fields.get("baseline_reason") or "").strip():
+        errors.append("'baseline_reason' is required with baseline not_applicable")
+    if "baseline_reason" in fields and fields.get("baseline") != BASELINE_NOT_APPLICABLE:
+        errors.append("'baseline_reason' needs baseline not_applicable")
     return errors
 
 
@@ -8639,10 +8928,17 @@ def repository_digest_entries(root: Path, cfg: dict | None = None) -> dict[str, 
             if not _digest_excluded(path, state_files)}
 
 
-def record_session_result(root: Path, session_id: str, kind: str, payload: dict) -> dict:
-    """Persist validated protocol state before broker dispatch can lose it."""
+def record_session_result(root: Path, session_id: str, kind: str, payload: dict, *,
+                          recovered_from_rule: bool = False, refused_text: str | None = None) -> dict:
+    """Persist validated protocol state before broker dispatch can lose it.
+    #167: `recovered_from_rule` marks a packet a rule refused; `refused_text`
+    is that packet exactly as the reviewer wrote it, so session-result-adopt
+    re-parses the preserved text (repairing only the field the rule names)
+    rather than trusting a copy made at refusal time."""
     if kind not in {"review", "design", "supervisor_request"} or not isinstance(payload, dict):
         raise HandsoffError("session result is invalid")
+    if refused_text is not None and (not isinstance(refused_text, str) or len(refused_text) > 65536):
+        raise HandsoffError("session result refused_text is invalid")
     with project_lock(root.resolve()):
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
@@ -8652,13 +8948,19 @@ def record_session_result(root: Path, session_id: str, kind: str, payload: dict)
         result = {"kind": kind, "payload": deepcopy(payload),
                   "recorded_at": datetime.now(timezone.utc).isoformat(),
                   "adopted_at": None, "adopted_by": None}
+        if recovered_from_rule:
+            result["recovered_from_rule"] = True
+        if refused_text is not None:
+            result["refused_text"] = refused_text
         proposed = deepcopy(status)
         proposed["agent_sessions"][session_id]["result"] = result
         errors = validate_status_schema(proposed)
         if errors:
             raise HandsoffError(errors[0])
         commit(root, cfg, status=proposed, event_kind="agent_session_result_recorded",
-               event_message="Managed agent protocol result persisted", session_id=session_id, result_kind=kind)
+               event_message="Managed agent protocol result persisted (recovered from a refused packet)"
+               if recovered_from_rule else "Managed agent protocol result persisted",
+               session_id=session_id, result_kind=kind, recovered_from_rule=recovered_from_rule)
         return deepcopy(result)
 
 

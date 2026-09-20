@@ -1,0 +1,17 @@
+{
+  "id": "reviewer-launch-phase-1",
+  "cause": {
+    "root": "ir-command",
+    "event": "agent_session_failed",
+    "failure_category": "dispatch_failed",
+    "at": "2026-09-19",
+    "note": "A reviewer launched at Phase 1 returned a full design verdict that had nowhere to land: the design gate opens at Phase 2. The session cost a complete Codex review and the ledger said only 'agent replacement paused'."
+  },
+  "when": {
+    "command": "launch",
+    "role": "reviewer",
+    "phase_in": [1],
+    "amendment": false
+  },
+  "refuse": "reviewer launch refused: the run is at Phase 1 and there is no design gate to receive a verdict; advance to Phase 2 first (or launch with --amendment for an open amendment)"
+}

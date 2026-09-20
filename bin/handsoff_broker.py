@@ -486,8 +486,11 @@ def parse_request(text: str) -> dict:
     return value
 
 
-def parse_reviewer_result(text: str) -> dict:
-    """Parse the one bounded result a read-only Reviewer returns to its host."""
+def parse_reviewer_result(text: str, root: Path | None = None) -> dict:
+    """Parse the one bounded result a read-only Reviewer returns to its host.
+    #167: packet rules (rules/*.json) are evaluated first when `root` is
+    given and the project has features.launch_rules on; the built-in checks
+    below stay the floor either way."""
     if len(text.encode("utf-8")) > MAX_REVIEW_RESULT_BYTES:
         raise lib.HandsoffError("Reviewer result is too large")
     try:
@@ -498,6 +501,21 @@ def parse_reviewer_result(text: str) -> dict:
     allowed = required | {"tests_executed"}
     if not isinstance(value, dict) or not required.issubset(value) or set(value) - allowed:
         raise lib.HandsoffError("Reviewer result has invalid fields")
+    if root is not None:
+        cfg = lib.load_config(root)
+        if lib.feature_enabled(cfg, "launch_rules"):
+            # a violation whose rule names recover_as carries the packet
+            # with that field repaired; the rest of this parser must accept
+            # that packet, so validate the recovered copy before raising.
+            try:
+                lib.evaluate_packet_rules(root, cfg, value)
+            except lib.PacketRuleViolation as exc:
+                if isinstance(exc.recovered, dict):
+                    try:
+                        exc.recovered = parse_reviewer_result(json.dumps(exc.recovered))
+                    except lib.HandsoffError:
+                        exc.recovered = None
+                raise
     if value["kind"] not in {"design", "implementation"}:
         raise lib.HandsoffError("Reviewer result kind is invalid")
     if value["decision"] not in {"approved", "changes_requested"}:

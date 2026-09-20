@@ -867,3 +867,81 @@ def scan_event_fields(report: dict) -> dict:
         "unreadable": len(report["runs"]["unreadable"]),
         "report_path": report["report_path"],
     }
+
+
+# --------------------------------------------------------------------------
+# #167: draft rules from repeated failure shapes
+# --------------------------------------------------------------------------
+
+def failure_shapes(archives: list[dict]) -> dict[tuple, list[dict]]:
+    """Group every agent_session_failed event across the archives by its
+    shape: (failure_category, role, kind of the event just before the
+    session's launching event). Each occurrence names its run, root and
+    time so a drafted rule can cite it."""
+    shapes: dict[tuple, list[dict]] = {}
+    for item in archives:
+        record = item["record"]
+        events = record.get("events") if isinstance(record.get("events"), list) else []
+        launch_index = {}
+        for index, event in enumerate(events):
+            if isinstance(event, dict) and event.get("kind") == "agent_session_launching" and event.get("session_id"):
+                launch_index[event["session_id"]] = index
+        for event in events:
+            if not isinstance(event, dict) or event.get("kind") != "agent_session_failed":
+                continue
+            failure = event.get("failure") if isinstance(event.get("failure"), dict) else {}
+            category = failure.get("category") or event.get("failure_category")
+            if not isinstance(category, str):
+                continue
+            role = event.get("role") if isinstance(event.get("role"), str) else "unknown"
+            index = launch_index.get(event.get("session_id"))
+            preceding = events[index - 1].get("kind") if index and isinstance(events[index - 1], dict) else "start"
+            shapes.setdefault((category, role, str(preceding)), []).append({
+                "run_id": item["run_id"], "root": record.get("root") or record.get("repo"),
+                "at": str(event.get("at") or "")[:10], "session_id": event.get("session_id"),
+            })
+    return shapes
+
+
+def propose_rules(root: Path, cfg: dict, *, archive_directory: Path | str | None = None,
+                  rules_dir: Path | None = None) -> dict:
+    """Write one draft rule per failure shape that repeats across two or
+    more runs into rules/proposed/. Nothing under proposed/ is evaluated;
+    a human moves a draft up and commits it. A shape whose when-clause an
+    existing rule already carries is not proposed again."""
+    directory = _effective_archive_dir(cfg, archive_directory)
+    loaded = load_archives(directory)
+    shapes = failure_shapes(loaded["readable"])
+    rules_dir = Path(rules_dir) if rules_dir is not None else lib.engine_resource_path(lib.RULES_DIR)
+    proposed_dir = rules_dir / "proposed"
+    existing = {json.dumps(rule["when"], sort_keys=True) for rule in lib.load_launch_rules(root)}
+    written, skipped = [], []
+    for (category, role, preceding), occurrences in sorted(shapes.items()):
+        runs = {o["run_id"] for o in occurrences}
+        if len(runs) < 2:
+            skipped.append({"shape": [category, role, preceding], "reason": "one run only", "runs": sorted(runs)})
+            continue
+        when = {"command": "launch", "role": role} if role in lib.AGENT_ROLES else {"command": "launch"}
+        if json.dumps(when, sort_keys=True) in existing:
+            skipped.append({"shape": [category, role, preceding], "reason": "an existing rule carries this when-clause", "runs": sorted(runs)})
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", f"{role}-{category}-after-{preceding}".lower()).strip("-")[:64]
+        draft = {
+            "id": slug,
+            "draft": True,
+            "cause": {"root": ", ".join(sorted({str(o["root"]) for o in occurrences})),
+                      "event": "agent_session_failed", "failure_category": category,
+                      "at": max(o["at"] for o in occurrences),
+                      "note": f"{len(occurrences)} occurrence(s) across {len(runs)} run(s): "
+                              + "; ".join(f"{o['run_id']} ({o['at']})" for o in occurrences[:8]),
+                      "occurrences": occurrences},
+            "when": when,
+            "refuse": f"{role} launch refused: this launch shape failed with {category} in {len(runs)} earlier runs "
+                      f"(after {preceding}); read the cause and decide",
+        }
+        proposed_dir.mkdir(parents=True, exist_ok=True)
+        path = proposed_dir / f"{slug}.json"
+        path.write_text(json.dumps(draft, indent=2) + "\n", encoding="utf-8")
+        written.append(str(path))
+    return {"written": written, "skipped": skipped, "archives": len(loaded["readable"]),
+            "proposed_dir": str(proposed_dir)}

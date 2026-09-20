@@ -645,8 +645,50 @@ function pilotNoteText(value) {
   return text;
 }
 
+// #165: the RED beside the PASS on a criterion row. A recorded baseline
+// reads "red <date>", a declared exception reads "no red: <reason>", and a
+// criterion the snapshot knows nothing about (older engine) reads nothing.
+function baselineLabel(criterion) {
+  const view = criterion && criterion.baseline_view;
+  if (!view || typeof view !== "object") return "";
+  if (view.kind === "recorded") {
+    const at = typeof view.at === "string" && view.at ? view.at.slice(0, 10) : "";
+    return at ? `red ${at}` : "red recorded";
+  }
+  if (view.kind === "not_applicable") return `no red: ${view.reason || "no reason"}`;
+  return "";
+}
+
+// #165 #167 #166: the [features] switches. One row per known feature from
+// the snapshot's settings.features, in the engine's own order; a snapshot
+// without the table (an older engine) renders no rows and no save.
+function featureSwitchRows(settings) {
+  const features = settings && settings.features && typeof settings.features === "object" ? settings.features : {};
+  return Object.keys(features).map((name) => {
+    const item = features[name] || {};
+    return {
+      name,
+      label: name.replace(/_/g, " ").toUpperCase(),
+      enabled: item.enabled === true,
+      isDefault: item.enabled === item.default,
+      description: typeof item.description === "string" ? item.description : "",
+    };
+  });
+}
+
+// The exact body POST /api/settings/features accepts: every known feature,
+// a literal boolean each, nothing else.
+function featuresPayload(rows, checked) {
+  const payload = {};
+  for (const row of rows) payload[row.name] = checked(row.name) === true;
+  return payload;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    baselineLabel,
+    featureSwitchRows,
+    featuresPayload,
     roleStation,
     roleWord,
     roleTitle,

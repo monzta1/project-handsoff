@@ -1,0 +1,18 @@
+{
+  "id": "reviewer-packet-tests-executed",
+  "cause": {
+    "root": "ir-command",
+    "event": "agent_session_failed",
+    "failure_category": "orchestration_noop",
+    "at": "2026-09-19",
+    "note": "Two reviewer packets carried a command line in tests_executed instead of the bare word. Each was recorded as orchestration_noop and the verdict was lost; the review had to be run again."
+  },
+  "when": {
+    "command": "packet",
+    "role": "reviewer",
+    "field": "tests_executed"
+  },
+  "allowed": ["yes", "no", "unknown"],
+  "recover_as": "unknown",
+  "refuse": "reviewer packet refused: tests_executed must be the bare string yes, no or unknown"
+}

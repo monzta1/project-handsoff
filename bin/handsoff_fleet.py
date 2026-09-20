@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import fcntl
 import json
 import os
 import sys
@@ -58,12 +59,214 @@ def load_registry(path: Path | None = None) -> list[dict]:
     result = []
     seen = set()
     for item in payload["projects"]:
-        if not isinstance(item, dict) or set(item) != {"root", "registered_at"}:
+        if not isinstance(item, dict) or not {"root", "registered_at"} <= set(item) \
+                or set(item) - {"root", "registered_at", *REGISTRY_LOCK_KEYS}:
             raise lib.HandsoffError("Fleet registry contains an invalid project")
         root = str(Path(item["root"]).expanduser().resolve())
         if root not in seen:
-            result.append({"root": root, "registered_at": item["registered_at"]})
+            entry = {"root": root, "registered_at": item["registered_at"]}
+            # #166: what the ticket lock wrote last (informational; the run's
+            # own status file on disk is what the lock reads).
+            for key in REGISTRY_LOCK_KEYS:
+                if key in item:
+                    entry[key] = item[key]
+            result.append(entry)
             seen.add(root)
+    return result
+
+
+#: #166: optional per-entry fields the ticket lock maintains.
+REGISTRY_LOCK_KEYS = ("work_items", "state", "updated_at")
+#: How long a register claim stands on its own before the run's status
+#: file must exist to back it.
+CLAIM_GRACE_SECONDS = 600
+
+
+def _seconds_since(stamp: str | None) -> float:
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(str(stamp)).astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+class registry_lock:
+    """#166: one exclusive lock beside the register, held from the read
+    through the write, so two inits on one ticket cannot both see it free."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = (path or registry_path()).with_suffix(".lock")
+        self.handle = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = open(self.path, "a+", encoding="utf-8")
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        self.handle.close()
+        return False
+
+
+def _run_state(root: Path) -> dict:
+    """What the run at `root` is right now, from its own files: phase,
+    status, whether it is closed or complete, its work item numbers and
+    last event time. A root with no run reads {'state': 'none'}."""
+    root = Path(root)
+    try:
+        cfg = lib.load_config(root)
+        status_file = lib.status_path(root, cfg)
+        if not status_file.is_file():
+            return {"state": "none", "numbers": set()}
+        status = lib.load_unique_json(status_file)
+        acceptance = lib.load_unique_json(lib.acceptance_path(root, cfg))
+    except (lib.HandsoffError, OSError, ValueError):
+        return {"state": "unreadable", "numbers": set()}
+    closed = isinstance(status.get("run_closed"), dict)
+    complete = status.get("status") == "complete" or int(status.get("phase_number") or 0) >= 8
+    numbers = set()
+    for item in acceptance.get("work_items") or []:
+        if isinstance(item, dict) and item.get("kind") == "issue" and isinstance(item.get("number"), int):
+            numbers.add(item["number"])
+    if not numbers:
+        for item in lib.derive_work_items(status, acceptance, cfg).get("items", []):
+            if item.get("kind") == "issue" and isinstance(item.get("number"), int):
+                numbers.add(item["number"])
+    return {"state": "closed" if closed else "complete" if complete else "open",
+            "numbers": numbers, "phase": status.get("phase_number"),
+            "updated_at": status.get("updated_at"), "feature": status.get("feature"),
+            "status": status, "cfg": cfg}
+
+
+def owner_alive(root: Path, state: dict | None = None) -> bool:
+    """#166: the Fleet liveness rules, for adoption. Alive when a managed
+    session is live with a fresh beacon or a verified PID, or when the
+    run's owned dashboard answers as the owner. Otherwise dead."""
+    root = Path(root)
+    state = state or _run_state(root)
+    status, cfg = state.get("status"), state.get("cfg")
+    if isinstance(status, dict) and cfg is not None:
+        try:
+            view = lib.liveness_view(status, root, cfg)
+            if view.get("process_signal") == "fresh":
+                return True
+        except (lib.HandsoffError, OSError, ValueError):
+            pass
+        for session_id, session in (status.get("agent_sessions") or {}).items():
+            if isinstance(session, dict) and session.get("state") in lib.AGENT_SESSION_LIVE_STATES \
+                    and lib._beacon_process_alive(root, session_id):
+                return True
+    owner = _owner_view(root)
+    return bool(owner and owner.get("health") == "live")
+
+
+def _age_text(stamp: str | None) -> str:
+    try:
+        seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(str(stamp)).astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        return "unknown age"
+    minutes = int(max(seconds, 0) // 60)
+    return f"{minutes} min ago" if minutes < 120 else f"{minutes // 60} h ago"
+
+
+def ticket_owners(numbers: set[int], *, exclude_root: Path | None = None, path: Path | None = None) -> list[dict]:
+    """Every registered run that is not closed or complete and lists one of
+    `numbers`. Caller holds registry_lock when the answer decides a write."""
+    exclude = str(Path(exclude_root).expanduser().resolve()) if exclude_root else None
+    owners = []
+    for entry in load_registry(path):
+        if entry["root"] == exclude or not Path(entry["root"]).is_dir():
+            continue  # a root that is gone holds nothing
+        state = _run_state(Path(entry["root"]))
+        if state["state"] == "none" and entry.get("state") == "open":
+            # The claim was written under the lock and the status file is
+            # still being created (init writes it after claiming). The
+            # register entry IS the claim for a short grace; an init that
+            # died in between leaves nothing that outlives it.
+            if _seconds_since(entry.get("updated_at")) <= CLAIM_GRACE_SECONDS:
+                state = {"state": "open", "numbers": set(entry.get("work_items") or []),
+                         "phase": 1, "updated_at": entry.get("updated_at"), "feature": None}
+        if state["state"] != "open":
+            continue
+        shared = sorted(numbers & state["numbers"])
+        if not shared:
+            continue
+        owner = _owner_view(Path(entry["root"])) or {}
+        owners.append({"root": entry["root"], "numbers": shared, "phase": state.get("phase"),
+                       "port": owner.get("port") if owner.get("health") == "live" else None,
+                       "last_event": state.get("updated_at"), "age": _age_text(state.get("updated_at")),
+                       "alive": owner_alive(Path(entry["root"]), state), "feature": state.get("feature")})
+    return owners
+
+
+def claim_tickets(root: Path, numbers: set[int], *, adopt: bool = False, path: Path | None = None) -> dict:
+    """#166: refuse when a live registered run owns any of `numbers`; with
+    `adopt`, take over only from a dead owner (closed and complete owners
+    never hold a ticket). On success the run is registered in the same
+    locked transaction. Returns {'adopted_from': [...]} for the ledger."""
+    root = Path(root).expanduser().resolve()
+    with registry_lock(path):
+        owners = ticket_owners(numbers, exclude_root=root, path=path)
+        live = [o for o in owners if o["alive"] or not adopt]
+        if owners and not adopt:
+            o = owners[0]
+            port = f", port {o['port']}" if o.get("port") else ""
+            raise lib.HandsoffError(
+                f"ticket lock: #{o['numbers'][0]} is owned by {o['root']} (phase {o['phase']}{port}, "
+                f"last event {o['age']}); run-close it first, or init --adopt if it is dead")
+        if adopt and live:
+            o = live[0]
+            raise lib.HandsoffError(
+                f"ticket lock: #{o['numbers'][0]} is owned by a LIVE run at {o['root']} (phase {o['phase']}, "
+                f"last event {o['age']}); a live owner cannot be adopted, run-close it first")
+        note_registry_state(root, numbers, "open", path=path, locked=True)
+        return {"adopted_from": [{"root": o["root"], "numbers": o["numbers"], "phase": o["phase"]} for o in owners]}
+
+
+def note_registry_state(root: Path, numbers: set[int] | None, state: str, *, path: Path | None = None,
+                        locked: bool = False) -> dict:
+    """Write the run's state and ticket numbers on its register entry
+    (registering it first if needed). `state` is open, closed or complete."""
+    root = Path(root).expanduser().resolve()
+
+    def write():
+        projects = load_registry(path)
+        entry = next((item for item in projects if item["root"] == str(root)), None)
+        if entry is None:
+            if not (root / "handsoff.toml").is_file():
+                raise lib.HandsoffError(f"not a Handsoff project: {root}")
+            entry = {"root": str(root), "registered_at": datetime.now(timezone.utc).isoformat()}
+            projects.append(entry)
+            projects.sort(key=lambda item: item["root"])
+        entry["state"] = state
+        if numbers is not None:
+            entry["work_items"] = sorted(numbers)
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_registry(projects, path)
+        return dict(entry)
+
+    if locked:
+        return write()
+    with registry_lock(path):
+        return write()
+
+
+def claimed_twice(path: Path | None = None) -> dict[str, list[int]]:
+    """#166: root -> ticket numbers that another live open run also lists,
+    for the red mark on both Fleet cards. Possible only through a register
+    written outside the lock (or two machines), so it is shown, never fixed."""
+    states = {entry["root"]: _run_state(Path(entry["root"])) for entry in load_registry(path)}
+    result: dict[str, list[int]] = {}
+    roots = [r for r, st in states.items() if st["state"] == "open" and st["numbers"]]
+    for root in roots:
+        for other in roots:
+            if other == root:
+                continue
+            shared = states[root]["numbers"] & states[other]["numbers"]
+            if shared:
+                result.setdefault(root, [])
+                result[root] = sorted(set(result[root]) | shared)
     return result
 
 
@@ -281,6 +484,13 @@ def build_metrics(path: Path | None = None, issues: "signals_module.IssueCache |
 def build_fleet(path: Path | None = None, public_base: str | None = None,
                 signals: "signals_module.SignalCache | None" = None) -> dict:
     projects = [_public_dashboard_url(project_view(entry, signals), public_base) for entry in load_registry(path)]
+    # #166: a ticket two live open runs both list is shown in red on both cards.
+    try:
+        twice = claimed_twice(path)
+    except lib.HandsoffError:
+        twice = {}
+    for item in projects:
+        item["claimed_twice"] = twice.get(item["root"], [])
     decisions = [{"root": item["root"], "project": item["name"], "feature": item.get("feature"), **action}
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
