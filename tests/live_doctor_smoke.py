@@ -19,6 +19,7 @@ or unrelated PATH copy.
 """
 import json
 import subprocess
+import os
 import tempfile
 from pathlib import Path
 
@@ -51,6 +52,9 @@ def codex_preflight(report: dict, where: str) -> str:
     assert state == "reachable", (where, report["preflight"]["codex"])
     return state
 
+# #166: init registers the run and takes the ticket lock through the fleet
+# register; a smoke must never touch the operator's own.
+os.environ["HANDSOFF_FLEET_REGISTRY"] = os.path.join(tempfile.mkdtemp(prefix="handsoff-live-registry-"), "projects.json")
 with tempfile.TemporaryDirectory(prefix="handsoff-live-doctor-") as tmp:
     project = Path(tmp) / "thin-project"
     subprocess.run([HANDSOFF, "init", str(project)], capture_output=True, text=True, check=True)

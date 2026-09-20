@@ -84,6 +84,9 @@ def stop(process: subprocess.Popen) -> None:
             process.wait(timeout=5)
 
 
+# #166: init registers the run and takes the ticket lock through the fleet
+# register; a smoke must never touch the operator's own.
+os.environ["HANDSOFF_FLEET_REGISTRY"] = os.path.join(tempfile.mkdtemp(prefix="handsoff-live-registry-"), "projects.json")
 with tempfile.TemporaryDirectory(prefix="handsoff-live-offline-") as tmp:
     project = Path(tmp) / "project"
     cli("init", str(project), cwd=ROOT)

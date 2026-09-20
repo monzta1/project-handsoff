@@ -39,6 +39,9 @@ def run(*args, env=None, check=True):
 identity = json.loads(run("version", "--json").stdout)
 assert identity["source"] == "installed-engine" and identity["version"] == expected_version, identity
 
+# #166: init registers the run and takes the ticket lock through the fleet
+# register; a smoke must never touch the operator's own.
+os.environ["HANDSOFF_FLEET_REGISTRY"] = os.path.join(tempfile.mkdtemp(prefix="handsoff-live-registry-"), "projects.json")
 with tempfile.TemporaryDirectory(prefix="handsoff-live-ops-") as tmp:
     shim = Path(tmp) / "shim"
     shim.mkdir()
