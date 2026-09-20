@@ -7,7 +7,7 @@
     "bin/handsoff_dashboard.py": "a768b2c7a5565a701a8d4ff6bd5e0297c248a3440a9e1162a6b03397bda75f82",
     "bin/handsoff_fleet.py": "dcccd7a8f130158b8431b4f0c755c50d22bb00df6b7457be2d29eec536016705",
     "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
-    "bin/handsoff_lib.py": "2c63b62d986106e2751c2b121a7e957ad9dd3a31d380d3e0146440a37c84f64a",
+    "bin/handsoff_lib.py": "2e6e878916bdc4b5a96e794c42566a813dbe7f1d101e4a373a97f01e55b37735",
     "bin/handsoff_manifest.py": "b119d1fae1e7c51863732e59aa3c067af051a4254eeb1f6fae13e91704bedb85",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
     "bin/handsoff_supervisor.py": "fb633fa5e463d66dca24ad59d1e53ddfac2e2bcbc6b3760ffc46c15dfef484aa",
@@ -19,7 +19,7 @@
     "dashboard/logo.png": "6345128f357084469b84be31c2f6d6bc26bd08950c6a9d864ea4a8902de58e59",
     "dashboard/regression.html": "1cb3e80958281d15e8ac14e49035e9bcab43870041571cd8fd25f7a663370215",
     "dashboard/regression.js": "0603c0eae773d9c4b27757ba4047c7f9c06377de6d2ab7426b71b13aa2d64101",
-    "dashboard/styles.css": "3fa80a939d3a17b8de6a58c9093f2ea5d90f7f6ace4ea4e08ac19583feee50ae",
+    "dashboard/styles.css": "17df8b11bf2c0a9638cb6e30739aa0d8873bc2620ae3317d438ebc11d50ed5a5",
     "fleet/app.js": "0a38c6af92ac1505853eec34b09f255cded14c09102f669a76973ef93d47cd57",
     "fleet/index.html": "a103d815e7ad912897a260e327fb9a3b2cd0f7251deaa0025ec7a59e34c1f500",
     "fleet/metrics.html": "3e66f7d5c29e7dc89a5d4716ebbc66913149df6a220f708f5fe14bfdd37355bf",
@@ -34,5 +34,5 @@
     "templates/handsoff.toml": "6b98f3137fcedfd14349fbaa8ce7e22f033fb37929b5b6e5b465c80ab2317f99"
   },
   "schema": 1,
-  "version": "v0.3.45"
+  "version": "v0.3.46"
 }

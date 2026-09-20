@@ -10450,10 +10450,23 @@ def project_logo(root: Path, cfg: dict) -> tuple[Path, str] | None:
         try:
             if path.stat().st_size > MAX_PROJECT_LOGO_BYTES:
                 continue
+            # The engine's own brand mark is already in the topbar; a project
+            # whose artwork IS that file (Handsoff itself) would show it twice.
+            if _same_bytes(path, engine_resource_path("dashboard/logo.png")):
+                continue
         except OSError:
             continue
         return path, content_type
     return None
+
+
+def _same_bytes(a: Path, b: Path) -> bool:
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        return hashlib.sha256(a.read_bytes()).digest() == hashlib.sha256(b.read_bytes()).digest()
+    except OSError:
+        return False
 
 
 def design_approval_blockers(status: dict, acceptance: dict, cfg: dict) -> list[str]:

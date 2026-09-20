@@ -99,8 +99,10 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 .brand-copy strong { font-size: 15px; font-weight: 700; letter-spacing: .06em; }
 .brand-copy small { font: 600 10px/1.2 var(--sans); color: var(--faint); letter-spacing: .12em; }
 .project-logo { display: block; flex: 0 0 auto; width: 44px; height: 44px; border: 1px solid var(--line-strong); border-radius: 9px; object-fit: cover; background: #000; box-shadow: 0 0 14px rgba(95, 211, 255, .18); }
-.topbar-mission { min-width: 0; display: flex; align-items: center; gap: 12px; }
-.topbar-mission-copy { min-width: 0; }
+/* The mission column may shrink, never below its logo plus a readable name,
+   and nothing in it may spill under the phase pill beside it. */
+.topbar-mission { min-width: 0; display: flex; align-items: center; gap: 12px; overflow: hidden; }
+.topbar-mission-copy { min-width: 120px; flex: 1 1 auto; }
 .topbar-mission .eyebrow { margin: 0; color: var(--faint); font: 700 10px/1.2 var(--sans); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar-mission .sep { margin: 0 8px; color: var(--line-strong); }
 .topbar-mission h1 { margin: 2px 0 0; font-size: 15px; font-weight: 600; line-height: 1.25; letter-spacing: -.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -114,7 +116,7 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 .last-sync { color: var(--faint); font: 600 10.5px/1 var(--mono); letter-spacing: .04em; white-space: nowrap; }
 @keyframes pulse { 50% { opacity: .35; } }
 .pilot-note { display: flex; align-items: center; gap: 0; margin: 0; }
-.pilot-note-input { height: 32px; width: 150px; padding: 0 10px; border: 1px solid var(--line); border-right: 0; border-radius: 6px 0 0 6px; color: var(--ink); background: rgba(0, 0, 0, .3); font: 500 12px/1 var(--sans); transition: width .2s ease; }
+.pilot-note-input { height: 32px; width: 150px; min-width: 0; padding: 0 10px; border: 1px solid var(--line); border-right: 0; border-radius: 6px 0 0 6px; color: var(--ink); background: rgba(0, 0, 0, .3); font: 500 12px/1 var(--sans); transition: width .2s ease; }
 .pilot-note-input:focus { width: 300px; }
 .pilot-note-input:focus-visible, .pilot-note-send:focus-visible, .settings-toggle:focus-visible, .console-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .pilot-note-send, .settings-toggle { height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: rgba(255, 255, 255, .02); font: 700 10.5px/1 var(--sans); letter-spacing: .08em; cursor: pointer; }
@@ -548,6 +550,9 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
 
 /* ---------- responsive ---------- */
 @media (max-width: 1240px) {
+  .topbar { gap: 14px; }
+  .last-sync { display: none; }
+  .pilot-note-input { width: 110px; }
   .bridge { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .signals-panel { grid-column: 1 / -1; }
   .signal-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }

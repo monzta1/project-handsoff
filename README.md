@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.45/project_handsoff-0.3.45-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.46/project_handsoff-0.3.46-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -478,6 +478,10 @@ Cause: the chiclets named the station only; which agent family held it was three
 ### v0.3.45 field note: the engine is named once
 
 Cause: after #161 put the ENGINE badge in the topbar, the older grey eyebrow next to the project name still printed the same version and source, so the engine appeared twice on one screen. Fix: the eyebrow carries the project name only; `app.js` writes the version to the badge alone. Cosmetic, shipped on its own because the doubled line was in front of the operator.
+
+### v0.3.46 field note: one logo, and the mission column keeps its name
+
+Cause: on Handsoff's own runs the project artwork is the engine's brand mark, so the topbar showed the same logo twice; and between 1000 and 1240 px the mission column (`minmax(0, 1fr)`) collapsed to nothing, its project logo spilled under the phase pill and `MISSION COMPLETE` was drawn over it. Fix: `project_logo()` skips artwork whose bytes equal `dashboard/logo.png`; `.topbar-mission` clips its overflow and its copy keeps a 120 px floor, while below 1240 px the sync stamp hides and the pilot note input narrows first. Note for maintainers: after editing any runtime file, regenerate the manifest before running the Python suites; the fixtures recognise their engine copy by the manifest hash and otherwise fall back to the pin path with dozens of unrelated failures.
 
 ### Cutting a release
 

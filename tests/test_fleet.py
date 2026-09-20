@@ -292,6 +292,10 @@ class ProjectLogoTests(_FleetFixture):
         big = root / "art" / "big.png"
         big.write_bytes(b"\0" * (lib.MAX_PROJECT_LOGO_BYTES + 1))
         self.assertIsNone(lib.project_logo(root, {**cfg, "logo": "art/big.png"}))
+        # A project whose artwork is the engine's own brand mark (Handsoff
+        # itself) shows no second logo: the topbar already carries that one.
+        (root / "art" / "same.png").write_bytes(lib.engine_resource_path("dashboard/logo.png").read_bytes())
+        self.assertIsNone(lib.project_logo(root, {**cfg, "logo": "art/same.png"}))
         # The config key itself is validated as a safe relative path.
         toml = root / "handsoff.toml"
         toml.write_text(toml.read_text().replace("[project]\n", '[project]\nlogo = "../escape.png"\n', 1))
