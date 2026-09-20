@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.44/project_handsoff-0.3.44-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.45/project_handsoff-0.3.45-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -474,6 +474,10 @@ Cause: the Metrics tab needed the Fleet server on the Mac, although everything i
 ### v0.3.44 field note: the role chiclets say who fills the station (#164)
 
 Cause: the chiclets named the station only; which agent family held it was three panels away in CREW. Fix: `roleWord(role, snapshot)` in `dashboard/lib/dashboard-logic.js` (the recorded actor's `claude-`/`codex-` prefix, else the configured adapter, else nothing) and `roleTitle` for the hover; `renderRoleChiclets` appends one faint lowercase word; the reviewer chiclet reads the design reviewer in Phases 1 and 2 and the implementation reviewer otherwise. `tests/dashboard/role_words.test.js` runs the real renderer against a stub DOM for all four chiclets.
+
+### v0.3.45 field note: the engine is named once
+
+Cause: after #161 put the ENGINE badge in the topbar, the older grey eyebrow next to the project name still printed the same version and source, so the engine appeared twice on one screen. Fix: the eyebrow carries the project name only; `app.js` writes the version to the badge alone. Cosmetic, shipped on its own because the doubled line was in front of the operator.
 
 ### Cutting a release
 

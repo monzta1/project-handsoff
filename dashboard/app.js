@@ -1404,8 +1404,8 @@ function render(snapshot) {
   projectLogo.classList.toggle("hidden", !snapshot.project.logo_url);
   $("feature-name").textContent = snapshot.project.feature;
   $("project-root").textContent = snapshot.root;
-  $("engine-version").textContent = `${snapshot.engine?.version || "unknown"} · ${snapshot.engine?.source || "unknown source"}`;
-  // #161: the same engine, where the operator looks first.
+  // #161: the engine is shown once, in the ENGINE badge where the operator
+  // looks first; the old eyebrow copy next to the project name is gone.
   const badge = $("engine-badge");
   if (badge) {
     const version = snapshot.engine?.version;

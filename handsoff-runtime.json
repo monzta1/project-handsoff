@@ -13,8 +13,8 @@
     "bin/handsoff_supervisor.py": "fb633fa5e463d66dca24ad59d1e53ddfac2e2bcbc6b3760ffc46c15dfef484aa",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
-    "dashboard/app.js": "b23031fbdcd1673a3ba1747b58c0d647fca7dde70e1ba760b427721f1b81526c",
-    "dashboard/index.html": "30853b247086a7cb05f1fdd985ab8d08337292777d472d9946483a711909902b",
+    "dashboard/app.js": "c06694e9bec36fa0fed161651c93b8a2900b3b273409b408e35005fd4854f0a5",
+    "dashboard/index.html": "103017339e79afd45f16557097efcc3fd0fc8a06a36d935cad0289eadf135748",
     "dashboard/lib/dashboard-logic.js": "ed30da011f1da784d4dffee43e2416c28a94df6cf4750b28d363cef4955a9822",
     "dashboard/logo.png": "6345128f357084469b84be31c2f6d6bc26bd08950c6a9d864ea4a8902de58e59",
     "dashboard/regression.html": "1cb3e80958281d15e8ac14e49035e9bcab43870041571cd8fd25f7a663370215",
@@ -34,5 +34,5 @@
     "templates/handsoff.toml": "6b98f3137fcedfd14349fbaa8ce7e22f033fb37929b5b6e5b465c80ab2317f99"
   },
   "schema": 1,
-  "version": "v0.3.44"
+  "version": "v0.3.45"
 }
