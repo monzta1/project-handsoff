@@ -343,6 +343,7 @@ def cmd_status(args) -> int:
         "effective_max_review_rounds": lib.effective_review_cap(status, cfg)
         if "review_attempts" in status else cfg.get("max_review_rounds"),
         "escalation": status.get("escalation"),
+        "usage": lib.usage_totals(status),  # #168
         "design_review": status.get("design_review"),
         "design_review_attempts": budget["attempts"], "design_review_budget": budget,
         "design_reviewer_selection": reviewer_selection,
@@ -599,6 +600,8 @@ def cmd_advance(args) -> int:
         # would keep the server from ever noticing the stop request.
         _release_run_dashboard(root, cfg)
         _release_tickets(root, "complete")  # #166
+        if lib.feature_enabled(cfg, "report_posting"):
+            _post_report(root, cfg, by=args.implemented_by or "supervisor")  # #171
     if args.progress is not None and args.progress < progress:
         print(f"NOTE: progress kept at {current_progress} (requested {args.progress} is lower)")
     print("SHIP_FEATURE_ADVANCED")
@@ -804,6 +807,7 @@ def cmd_deployment_gate(args) -> int:
             "by": args.by,
             "acceptance_hash": acceptance_digest,
             "config_hash": config_digest,
+            **lib.rules_binding(root, cfg),  # #170
             **({"auto_confirmed_from": auto_from} if auto_from else {}),
         }
         proposed["status"] = "ready_to_deploy"
@@ -1554,9 +1558,14 @@ def cmd_verify(args) -> int:
             for cmd in needed
         }
     expect_fail = bool(getattr(args, "expect_fail", False))
+    # #169: a repeat criterion runs its own commands N times, no cache.
+    repeated = {c["id"]: c for c in criteria if c.get("repeat")}
+    if repeated and expect_fail:
+        print("SHIP_FEATURE_BLOCKED: --expect-fail does not apply to a repeat criterion; record its baseline separately")
+        return 1
     # #165: a baseline is always executed against THIS tree; a cached
     # passing record from an earlier binding would be the opposite claim.
-    use_cache = not getattr(args, "no_cache", False) and not expect_fail
+    use_cache = not getattr(args, "no_cache", False) and not expect_fail and not repeated
     with lib.verify_inflight_lock(root, list(bindings.values())):
         reused: dict[str, dict] = {}
         if use_cache:
@@ -1569,8 +1578,24 @@ def cmd_verify(args) -> int:
                 if source is not None:
                     reused[cmd] = source
         launched = [cmd for cmd in needed if cmd not in reused]
-        results = lib.run_checks(cfg, root, commands=launched) if launched else []
-        results_by_command = {r["command"]: r for r in results}
+        repeat_attempts: dict[str, list[dict]] = {}
+        results_by_command: dict[str, dict] = {}
+        if repeated:
+            # each repeat criterion's commands run N times on their own; a
+            # command shared with a plain criterion is run for that one too
+            for criterion in repeated.values():
+                own = list(criterion.get("tests", []))
+                last, attempts = lib.run_repeated_checks(cfg, root, own, int(criterion["repeat"]),
+                                                         criterion.get("seed_env"), run_hash)
+                repeat_attempts[criterion["id"]] = attempts
+                for r in last:
+                    results_by_command.setdefault(r["command"], r)
+            plain_needed = [cmd for cmd in launched if cmd not in results_by_command]
+            results = (lib.run_checks(cfg, root, commands=plain_needed) if plain_needed else []) \
+                + [results_by_command[cmd] for cmd in launched if cmd in results_by_command]
+        else:
+            results = lib.run_checks(cfg, root, commands=launched) if launched else []
+        results_by_command.update({r["command"]: r for r in results})
         for cmd, source in reused.items():
             copied = next(r for r in source["results"] if r.get("command") == cmd)
             results_by_command[cmd] = {**copied, "reused_from": source["run_id"]}
@@ -1623,6 +1648,10 @@ def cmd_verify(args) -> int:
                 own_tests = list(criterion.get("tests", []))
                 own_results = [results_by_command[t] for t in own_tests]
                 own_ok = bool(own_results) and all(r["exit_code"] == 0 for r in own_results)
+                attempts = repeat_attempts.get(criterion["id"])
+                if attempts is not None:
+                    # #169: every attempt must pass; the record names the one that did not
+                    own_ok = bool(attempts) and all(a["ok"] for a in attempts) and len(attempts) == int(criterion["repeat"])
                 own_sources = {reused[t]["run_id"] for t in own_tests if t in reused}
                 # A record is executed only when every one of its commands
                 # was launched here; a partially reused multi-command record
@@ -1633,13 +1662,19 @@ def cmd_verify(args) -> int:
                 record_digest = repo_digest if executed else next(
                     (reused[t].get("repository_digest") for t in own_tests if t in reused), None)
                 reused_from = next(iter(own_sources)) if len(own_sources) == 1 else None
+                failed_attempt = next((a for a in (attempts or []) if not a["ok"]), None)
                 record = lib.append_verification(
                     root, cfg, kind="checks", ok=own_ok, by=args.by,
                                          criteria=[criterion], results=_durable_results(own_results),
                     commands=own_tests,
                     binding={t: bindings[t] for t in own_tests}, executed=executed,
                     reused_from=reused_from, feature_hash=run_hash,
-                    repository_digest=record_digest, config_digest=config_digest)
+                    repository_digest=record_digest, config_digest=config_digest,
+                    attempts=attempts,
+                    description=(f"repeat {criterion['repeat']}: failed at attempt {failed_attempt['attempt']}"
+                                 + (f" (seed {failed_attempt['seed']})" if failed_attempt.get("seed") else "")
+                                 if failed_attempt else f"repeat {criterion['repeat']}: {len(attempts)}/{criterion['repeat']} passed")
+                    if attempts is not None else None)
                 if record_digest:
                     digest_dir = root / ".handsoff-digests"
                     digest_dir.mkdir(parents=True, exist_ok=True)
@@ -1662,7 +1697,9 @@ def cmd_verify(args) -> int:
                 else:
                     criterion["state"] = "not_tested"
                 per_criterion[criterion["id"]] = {"run_id": record["run_id"], "ok": own_ok,
-                                                  "executed": executed, "reused_from": reused_from}
+                                                  "executed": executed, "reused_from": reused_from,
+                                                  **({"attempts": len(attempts), "repeat": int(criterion["repeat"])}
+                                                     if attempts is not None else {})}
             lib.sync_coverage(status, acceptance)
             _invalidate_decisions(status)
             review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
@@ -1824,6 +1861,7 @@ def cmd_design_approve(args) -> int:
             "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
             "redesigns_settled_work": args.redesigns_settled_work,
             "proposal_hash": (status.get("design_proposal") or {}).get("proposal_hash"),
+            **lib.rules_binding(root, cfg),  # #170
         }
         # In the natural AR7 flow, record-design-review left the run
         # explicitly blocked on this human decision. Once both current
@@ -2578,6 +2616,7 @@ def cmd_record_review(args) -> int:
             "reviewer_profile": reviewer_profile,
             "tests_executed": args.tests_executed,
             "profiles_distinct": profiles_distinct,
+            **lib.rules_binding(root, cfg),  # #170
             "checklist": {"symptom_reproduced": args.symptom_reproduced,
                           "symptom_resolved": "yes", "all_criteria_verified": "yes",
                           "evidence_attached": "yes"},
@@ -2796,6 +2835,7 @@ def cmd_session_result_adopt(args) -> int:
             failure["adopted"] = True
         lib.commit(root, cfg, status=status, event_kind="session_result_adopted",
                    event_message="Persisted session result adopted", session_id=args.session, by=actor)
+        lib.mark_beacon_adopted(root, args.session)  # #172
     print("SESSION_RESULT_ADOPTED")
     return 0
 
@@ -2871,7 +2911,8 @@ def cmd_verify_live(args) -> int:
             record = lib.append_verification(root, cfg, kind="live", ok=ok, by=args.by,
                                              criteria=acceptance["criteria"], results=_durable_results(results),
                                              commands=commands,
-                                             acceptance_digest=digest, config_digest=config_digest)
+                                             acceptance_digest=digest, config_digest=config_digest,
+                                             rules=lib.rules_binding(root, cfg))
             status["verification_head"] = record["hash"]
             if ok:
                 status["live_verification_id"] = record["run_id"]
@@ -2925,7 +2966,7 @@ def cmd_criterion_update(args) -> int:
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
-        if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state", "baseline")):
+        if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state", "baseline", "repeat", "seed_env")):
             print("SHIP_FEATURE_BLOCKED: criterion-update requires at least one change")
             return 1
         fields = {field: getattr(args, field) for field in ("requirement", "verification", "type", "state")
@@ -2937,6 +2978,11 @@ def cmd_criterion_update(args) -> int:
             fields["baseline"] = None if args.baseline == "none" else args.baseline
             if args.baseline_reason is not None:
                 fields["baseline_reason"] = args.baseline_reason
+        if args.repeat is not None:
+            fields["repeat"] = None if args.repeat == 1 else args.repeat
+        if args.seed_env is not None:
+            fields["seed_env"] = args.seed_env or None
+            fields.setdefault("repeat", criterion.get("repeat"))
         problems = lib.validate_criterion_fields(fields)
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
@@ -2951,6 +2997,20 @@ def cmd_criterion_update(args) -> int:
                 spec_changed = True
         if args.test is not None:
             criterion["tests"] = args.test
+            spec_changed = True
+        if args.repeat is not None or args.seed_env is not None:
+            # #169: part of the claim, so the spec hash changes
+            if args.repeat is not None:
+                if args.repeat == 1:
+                    criterion.pop("repeat", None)
+                    criterion.pop("seed_env", None)
+                else:
+                    criterion["repeat"] = args.repeat
+            if args.seed_env is not None and criterion.get("repeat"):
+                if args.seed_env:
+                    criterion["seed_env"] = args.seed_env
+                else:
+                    criterion.pop("seed_env", None)
             spec_changed = True
         if args.baseline is not None:
             # part of the claim: a baseline declaration changes the spec hash
@@ -3015,6 +3075,10 @@ def cmd_criterion_add(args) -> int:
         if args.baseline is not None:
             fields["baseline"] = args.baseline
             fields["baseline_reason"] = args.baseline_reason
+        if args.repeat is not None and args.repeat != 1:
+            fields["repeat"] = args.repeat
+        if args.seed_env:
+            fields["seed_env"] = args.seed_env
         problems = lib.validate_criterion_fields(fields, require_all=True)
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
@@ -4088,6 +4152,11 @@ def cmd_dashboard(args) -> int:
 
 def cmd_run_close(args) -> int:
     root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    if getattr(args, "post", False):
+        # #171: the report is built and posted before the close, from the
+        # ledger as it stands; the close itself is what follows.
+        _post_report(root, cfg, by=args.by)
     result = lib.close_run(
         root, by=args.by, reason=args.reason,
         expected_updated_at=getattr(args, "expected_updated_at", None),
@@ -4097,6 +4166,31 @@ def cmd_run_close(args) -> int:
     _release_tickets(root, "closed")
     print(json.dumps(result, sort_keys=True))
     return 0
+
+
+def _validate_lines(root, cfg) -> list[str]:
+    with lib.project_lock(root):
+        status, acceptance, verifications, problems = _load_all(root, cfg)
+        errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
+                                    verification_problems=problems, root=root)
+    return ["SHIP_FEATURE_VALID"] if not errors else ["SHIP_FEATURE_BLOCKED"] + [f"- {e}" for e in errors]
+
+
+def _post_report(root, cfg, *, by: str) -> dict:
+    """#171: render from the ledger, post once per ticket, record the outcome."""
+    with lib.project_lock(root):
+        status, acceptance, verifications, _problems = _load_all(root, cfg)
+        events = lib.read_events(root, cfg)
+    validate = _validate_lines(root, cfg)
+    outcome = lib.post_final_report(root, cfg, status, acceptance, events, verifications, validate, by=by)
+    with lib.project_lock(root):
+        lib.record_report_outcome(root, cfg, outcome, by=by)
+    if outcome.get("reason"):
+        print(f"HANDSOFF_REPORT_NOT_POSTED: {outcome['detail']}")
+    else:
+        print("HANDSOFF_REPORT_POSTED: " + ", ".join(f"#{p['number']}" for p in outcome["posted"])
+              + (f" (skipped: {', '.join('#' + str(x['number']) for x in outcome['skipped'])})" if outcome["skipped"] else ""))
+    return outcome
 
 
 def _release_tickets(root, state: str) -> None:
@@ -4441,6 +4535,8 @@ def build_parser() -> argparse.ArgumentParser:
     criterion.add_argument("--baseline", choices=(lib.BASELINE_NOT_APPLICABLE, "none"),
                            help="#165: not_applicable declares no failing run can exist for this criterion (with --baseline-reason); none clears it")
     criterion.add_argument("--baseline-reason")
+    criterion.add_argument("--repeat", type=int, help="#169: the command must pass this many times in a row (1 to 50; 1 clears)")
+    criterion.add_argument("--seed-env", help="#169: environment variable that receives a distinct seed per attempt")
     criterion.add_argument("--revoke-approval", action="store_true")
 
     criterion_add = sub.add_parser("criterion-add")
@@ -4452,6 +4548,8 @@ def build_parser() -> argparse.ArgumentParser:
     criterion_add.add_argument("--baseline", choices=(lib.BASELINE_NOT_APPLICABLE,),
                                help="#165: declare that no failing run can exist for this criterion (with --baseline-reason)")
     criterion_add.add_argument("--baseline-reason")
+    criterion_add.add_argument("--repeat", type=int, help="#169: the command must pass this many times in a row (1 to 50)")
+    criterion_add.add_argument("--seed-env", help="#169: environment variable that receives a distinct seed per attempt")
     criterion_add.add_argument("--revoke-approval", action="store_true")
 
     criterion_remove = sub.add_parser("criterion-remove")
@@ -4535,6 +4633,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_close.add_argument("--reason", required=True)
     run_close.add_argument("--expected-updated-at")
     run_close.add_argument("--cancel-active", action="store_true")
+    run_close.add_argument("--post", action="store_true",
+                           help="#171: post the ledger's report to each issue work item, close it and tick its epic box before closing")
 
     run_reopen = sub.add_parser("run-reopen", help="reopen a non-complete cleanly closed run")
     run_reopen.add_argument("--by", required=True)

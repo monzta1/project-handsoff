@@ -199,6 +199,31 @@ function groupByRepo(projects) {
   return [...groups.values()].map((group) => ({ ...group, name: group.roots.join(" + ") }));
 }
 
+// #168: tokens over the closed tickets in range, from the archived runs'
+// recorded usage (project.tokens: number -> {tokens_total, reported}). A
+// ticket with no recorded usage is counted as not reported, never as zero;
+// the label says how many of the closed tickets carried a number.
+function tokensForClosed(project, closures) {
+  const tokens = project && project.tokens && typeof project.tokens === "object" ? project.tokens : {};
+  let total = 0;
+  let reported = 0;
+  for (const closure of closures) {
+    const entry = tokens[String(closure.issue.number)];
+    if (entry && entry.reported && Number.isInteger(entry.tokens_total)) {
+      total += entry.tokens_total;
+      reported += 1;
+    }
+  }
+  return { total, reported, closed: closures.length };
+}
+
+function formatTokens(value) {
+  if (!value || value.closed === 0) return "n/a";
+  if (value.reported === 0) return "not reported";
+  const suffix = value.reported < value.closed ? ` (${value.reported} of ${value.closed} reported)` : "";
+  return `${value.total.toLocaleString("en-US")}${suffix}`;
+}
+
 // #156: one row per repository for the All view, sorted by closed desc, then name.
 function breakdownRows(projects, from, to) {
   return groupByRepo(projects)
@@ -208,7 +233,7 @@ function breakdownRows(projects, from, to) {
       return {
         name: project.name, repo: project.repo, openNow: series.totals.openNow, opened: series.totals.opened,
         closed: series.totals.closed, medianTtc: series.totals.medianTtc, commits: series.totals.commits,
-        releases: series.totals.releases,
+        releases: series.totals.releases, tokens: tokensForClosed(project, series.closures || []),
       };
     })
     .sort((a, b) => b.closed - a.closed || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -556,8 +581,8 @@ function renderBreakdown(container, rows) {
   copy.append(label, h2);
   head.appendChild(copy);
   container.appendChild(head);
-  tableInto(container, ["PROJECT", "REPO", "OPEN NOW", "OPENED", "CLOSED", "MEDIAN TTC", "COMMITS", "RELEASES"], rows.map((row) => [
-    row.name, row.repo, row.openNow, row.opened, row.closed, formatDays(row.medianTtc), row.commits, row.releases,
+  tableInto(container, ["PROJECT", "REPO", "OPEN NOW", "OPENED", "CLOSED", "MEDIAN TTC", "COMMITS", "RELEASES", "TOKENS"], rows.map((row) => [
+    row.name, row.repo, row.openNow, row.opened, row.closed, formatDays(row.medianTtc), row.commits, row.releases, formatTokens(row.tokens),
   ]), "metrics-table breakdown-table");
 }
 
@@ -732,7 +757,7 @@ async function load() {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     dayKey, startOfDay, endOfDay, addDays, dayRange, normalizeRange, presetRange, median, percentile, daysToClose,
-    computeSeries, commitSeries, releasesInRange, breakdownRows, groupByRepo,
+    computeSeries, commitSeries, releasesInRange, breakdownRows, groupByRepo, tokensForClosed, formatTokens,
     renderAll, renderKpis, renderTable, renderClosedChart, renderOpenedChart, renderBacklogChart, renderTtcChart,
     renderCommitsChart, renderReleasesPanel, renderBreakdown, state, load, bindControls, fillProjects, MAX_BAR, BAR_GAP,
   };

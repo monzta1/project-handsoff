@@ -58,6 +58,9 @@ reviewer = "default"
 failing_first = false   # #165: a criterion's test must be seen to fail before the feature
 launch_rules = true     # #167: rules from run history refuse a bad launch or packet first
 ticket_lock = true      # #166: init refuses a ticket another live run owns
+token_accounting = true   # #168: the adapter's printed usage is recorded, never estimated
+review_binds_rules = true # #170: a review carries the hash of the rules set it ran under
+report_posting = false    # #171: Phase 8 posts the report to each ticket (run-close --post does it once)
 
 [fallback_policy]
 # Ordered replacement profiles used only by the pure fallback planner.
@@ -132,6 +135,12 @@ commands = [
   "python3 -m unittest tests.test_ticket_lock -v",
   "python3 -m unittest tests.test_feature_settings -v",
   "node --test tests/dashboard/feature_settings.test.js",
+  "python3 -m unittest tests.test_fleet_state -v",
+  "python3 -m unittest tests.test_token_usage -v",
+  "python3 -m unittest tests.test_repeat_runs -v",
+  "python3 -m unittest tests.test_rules_binding -v",
+  "python3 -m unittest tests.test_report_posting -v",
+  "node --test tests/dashboard/tranche2.test.js",
   "scripts/no-test-docs-note.sh tests/manual-docs-note",
   "node --test tests/dashboard/operation_telemetry.test.js",
   "python3 -m unittest tests.test_evidence_drift -v",

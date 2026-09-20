@@ -888,7 +888,7 @@ function renderCriteria(criteria) {
           <span>${escapeHtml(criterion.id)}</span>
           <span>${escapeHtml(String(criterion.type || "").replaceAll("_", " "))}</span>
           <span>${escapeHtml(String(criterion.verification || "").replaceAll("_", " + "))}</span>
-          <span>${(criterion.evidence || []).length} evidence</span>${baselineLabel(criterion) ? `<span class="criterion-baseline">${escapeHtml(baselineLabel(criterion))}</span>` : ""}
+          <span>${(criterion.evidence || []).length} evidence</span>${baselineLabel(criterion) ? `<span class="criterion-baseline">${escapeHtml(baselineLabel(criterion))}</span>` : ""}${repeatLabel(criterion) ? `<span class="criterion-repeat">${escapeHtml(repeatLabel(criterion))}</span>` : ""}
         </div>
       </div>
       <span class="criterion-state ${escapeHtml(criterion.state)}">${escapeHtml(String(criterion.state || "unknown").replaceAll("_", " "))}</span>

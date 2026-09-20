@@ -188,8 +188,8 @@ test("the per-project breakdown appears on the All view only and skips projects 
   assert.equal(breakdown.classes.has("hidden"), false);
   const rows = breakdown.find((el) => el.name === "tr").slice(1).map((tr) => tr.children.map((td) => td.textContent));
   assert.deepEqual(rows, [
-    ["alpha", "o/alpha", "1", "2", "2", "1.2 d", "2", "1"],
-    ["beta", "o/beta", "0", "1", "1", "3.0 d", "0", "0"],
+    ["alpha", "o/alpha", "1", "2", "2", "1.2 d", "2", "1", "not reported"],
+    ["beta", "o/beta", "0", "1", "1", "3.0 d", "0", "0", "not reported"],
   ]);
   const one = renderFixture({ project: "o/beta" });   // #160: the filter value is the repository identity
   assert.equal(one.dom.byId.get("breakdown").classes.has("hidden"), true);
@@ -219,7 +219,7 @@ test("#160: roots sharing one repository are one filter entry, one breakdown row
   assert.match(dom.byId.get("source-note").textContent, /^4 ISSUES/);
   const rows = dom.byId.get("breakdown").find((el) => el.name === "tr").slice(1).map((tr) => tr.children.map((td) => td.textContent));
   assert.deepEqual(rows.map((row) => row[0]), ["alpha + alpha-lane-x", "beta"]);
-  assert.deepEqual(rows[0].slice(1), ["o/alpha", "1", "2", "2", "1.2 d", "2", "1"]);
+  assert.deepEqual(rows[0].slice(1), ["o/alpha", "1", "2", "2", "1.2 d", "2", "1", "not reported"]);
   const grouped = m.groupByRepo(data.projects);
   // The vm realm's arrays are not reference-equal to ours; compare the JSON.
   assert.deepEqual(JSON.parse(JSON.stringify(grouped.map((g) => [g.identity, g.roots]))),

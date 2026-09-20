@@ -863,6 +863,18 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     question_lines = [0]
     stdout_tail = [""]
     stderr_tail = [""]
+    # #168: the adapter's own usage, watched per streamed line on both
+    # streams, independent of the bounded tails above.
+    usage_watcher = lib.UsageWatcher(spec.adapter)
+    usage_enabled = lib.feature_enabled(lib.load_config(root), "token_accounting")
+
+    def end_session(state, **kw):
+        # every terminal transition of this child carries the usage seen so
+        # far (read at call time: after the streams drained, or as far as
+        # they got when the child was stopped)
+        return lib.transition_agent_session(root, session_id, state,
+                                            usage=usage_watcher.result(usage_enabled), **kw)
+
     def persist_new(items, kind):
         if items:
             lib.record_session_result(root, session_id, kind, items[-1])
@@ -928,6 +940,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         pending += chunk
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
+                        usage_watcher.feed(line)
                         if _raise_question_line(root, spec.role, session_id, line, question_errors):
                             question_lines[0] += 1
                         _parse_operation_line(line, root, session_id, spec.role)
@@ -947,6 +960,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         pending = ""
                         discarding = True
                 if pending and not discarding:
+                    usage_watcher.feed(pending)
                     if _raise_question_line(root, spec.role, session_id, pending, question_errors):
                         question_lines[0] += 1
                     _parse_operation_line(pending, root, session_id, spec.role)
@@ -978,6 +992,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             raise AgentLaunchError(
                 f"{stream_label} failed to start: {type(exc).__name__}", session_id,
             ) from exc
+    stderr_pending = [""]
     if getattr(process, "stderr", None) is not None:
         def stream_stderr() -> None:
             try:
@@ -991,6 +1006,10 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     note_output(chunk)
                     portable_output.feed("stderr", chunk)
                     stderr_tail[0] = (stderr_tail[0] + chunk)[-8192:]
+                    stderr_pending[0] += chunk
+                    while "\n" in stderr_pending[0]:
+                        line, stderr_pending[0] = stderr_pending[0].split("\n", 1)
+                        usage_watcher.feed(line)
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
@@ -1025,8 +1044,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 if stderr_reader:
                     stderr_reader.join(timeout=5)
             finally:
-                lib.transition_agent_session(
-                    root, session_id, "timed_out", exit_code=124,
+                end_session(
+                    "timed_out", exit_code=124,
                     failure=lib.classify_runtime_failure(timed_out=True),
                 )
         raise AgentLaunchError(f"agent launch timed out after {timeout} seconds", session_id) from exc
@@ -1040,8 +1059,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 if stderr_reader:
                     stderr_reader.join(timeout=5)
             finally:
-                lib.transition_agent_session(
-                    root, session_id, "cancelled", exit_code=130,
+                end_session(
+                    "cancelled", exit_code=130,
                     failure=lib.classify_runtime_failure(cancelled=True),
                 )
         raise AgentLaunchError("agent launch cancelled", session_id) from exc
@@ -1058,8 +1077,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             try:
                 _stop_process_group(process)
             finally:
-                lib.transition_agent_session(
-                    root, session_id, "cancelled", exit_code=130,
+                end_session(
+                    "cancelled", exit_code=130,
                     failure=lib.classify_runtime_failure(cancelled=True),
                 )
             raise AgentLaunchError("agent launch cancelled", session_id) from exc
@@ -1112,7 +1131,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                        "dependency": operation.get("dependency"),
                        "operation": operation.get("operation"),
                        "tail_sha256": hashlib.sha256(b"").hexdigest()}
-            lib.transition_agent_session(root, session_id, "failed", exit_code=process.returncode,
+            end_session("failed", exit_code=process.returncode,
                                         failure=failure)
             raise AgentLaunchError(failure["reason"], session_id)
         failure = lib.classify_runtime_failure(
@@ -1134,8 +1153,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 "before trailing token-budget exhaustion\n"
             )
         else:
-            lib.transition_agent_session(
-                root, session_id, "failed", exit_code=process.returncode, failure=failure,
+            end_session(
+                "failed", exit_code=process.returncode, failure=failure,
             )
             raise AgentLaunchError(f"{spec.adapter} exited with status {process.returncode}", session_id)
     if protocol_errors:
@@ -1147,8 +1166,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                                           recovered_from_rule=True, refused_text=recovered_results[-1]["text"])
             except lib.HandsoffError:
                 pass
-        lib.transition_agent_session(
-            root, session_id, "failed", exit_code=1,
+        end_session(
+            "failed", exit_code=1,
             # A malformed structured request is a deterministic contract
             # failure, not an adapter/runtime outage.  Classifying it as a
             # generic non-zero exit made execute_with_recovery spend every
@@ -1158,22 +1177,22 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
     if capture_supervisor and not supervisor_requests and question_lines[0] == 0:
-        lib.transition_agent_session(
-            root, session_id, "failed", exit_code=1,
+        end_session(
+            "failed", exit_code=1,
             failure=lib.classify_runtime_failure(orchestration_noop=True),
         )
         raise AgentLaunchError(
             "Supervisor exited without a broker request or Pilot question", session_id,
         )
     if len(architect_results) > 1:
-        lib.transition_agent_session(
-            root, session_id, "failed", exit_code=1,
+        end_session(
+            "failed", exit_code=1,
             failure=lib.classify_runtime_failure(orchestration_noop=True),
         )
         raise AgentLaunchError("Architect emitted more than one structured design proposal", session_id)
     if spec.role == "architect" and not architect_results and question_lines[0] == 0:
-        lib.transition_agent_session(
-            root, session_id, "failed", exit_code=1,
+        end_session(
+            "failed", exit_code=1,
             failure=lib.classify_runtime_failure(orchestration_noop=True),
         )
         raise AgentLaunchError("Architect exited without a structured design proposal or Pilot question", session_id)
@@ -1185,19 +1204,19 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             try:
                 code = broker.execute_architect_criteria(root, request, capability=broker._SUPERVISOR_HOST_CAPABILITY)
             except lib.HandsoffError as exc:
-                lib.transition_agent_session(root, session_id, "failed", exit_code=1,
+                end_session("failed", exit_code=1,
                                             failure=lib.classify_runtime_failure(orchestration_noop=True))
                 raise AgentLaunchError(f"Architect criteria request rejected: {str(exc)[:200]}", session_id) from exc
             if code != 0:
-                lib.transition_agent_session(root, session_id, "failed", exit_code=1,
+                end_session("failed", exit_code=1,
                                             failure=lib.classify_runtime_failure(orchestration_noop=True))
                 raise AgentLaunchError("Architect criteria transaction was refused by criteria-apply", session_id)
     if architect_results:
         try:
             lib.record_design_proposal(root, session_id, architect_results[0])
         except Exception as exc:
-            lib.transition_agent_session(
-                root, session_id, "failed", exit_code=1,
+            end_session(
+                "failed", exit_code=1,
                 failure=lib.classify_runtime_failure(exit_code=1),
             )
             raise AgentLaunchError(
@@ -1215,7 +1234,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure = {"category": "reviewer_modified_project",
                        "reason": "managed Reviewer modified the project tree",
                        "tail_sha256": hashlib.sha256(b"").hexdigest(), "changed_paths": changed_paths or ["<repository-digest-changed>"]}
-            lib.transition_agent_session(root, session_id, "failed", exit_code=1, failure=failure)
+            end_session("failed", exit_code=1, failure=failure)
             raise AgentLaunchError("Reviewer modified the project tree", session_id)
         if changed_paths or digest_changed:
             # #92: a sandboxed reviewer cannot write outside its scratch cwd,
@@ -1225,8 +1244,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                              "Host edited project during scratch review", session_id=session_id,
                              paths=changed_paths or ["<repository-digest-changed>"])
     if len(reviewer_results) > 1:
-        lib.transition_agent_session(
-            root, session_id, "failed", exit_code=1,
+        end_session(
+            "failed", exit_code=1,
             failure=lib.classify_runtime_failure(exit_code=1),
         )
         raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
@@ -1235,8 +1254,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             import handsoff_broker as broker
             broker.dispatch_reviewer_result(root, session_id, reviewer_results[0])
         except Exception as exc:
-            lib.transition_agent_session(
-                root, session_id, "failed", exit_code=1,
+            end_session(
+                "failed", exit_code=1,
                 failure={"category": "dispatch_failed", "reason": str(exc)[:200], "result_available": True,
                          "tail_sha256": hashlib.sha256(b"").hexdigest()},
             )
@@ -1249,8 +1268,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             for request in supervisor_requests:
                 broker.dispatch_supervisor_request(Path(spec.project_root or spec.cwd), request)
         except KeyboardInterrupt as exc:
-            lib.transition_agent_session(
-                root, session_id, "cancelled", exit_code=130,
+            end_session(
+                "cancelled", exit_code=130,
                 failure=lib.classify_runtime_failure(cancelled=True),
             )
             raise AgentLaunchError("agent launch cancelled", session_id) from exc
@@ -1261,16 +1280,16 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             # stays orchestration_noop (the agent's fault), distinct from
             # dispatch_failed (#84), which names a host-side failure to
             # deliver an otherwise valid result.
-            lib.transition_agent_session(
-                root, session_id, "failed", exit_code=1,
+            end_session(
+                "failed", exit_code=1,
                 failure=lib.classify_runtime_failure(orchestration_noop=True),
             )
             raise AgentLaunchError(
                 f"Supervisor broker request rejected: {str(exc)[:200]}", session_id,
             ) from exc
         except Exception as exc:
-            lib.transition_agent_session(
-                root, session_id, "failed", exit_code=1,
+            end_session(
+                "failed", exit_code=1,
                 failure={"category": "dispatch_failed", "reason": str(exc)[:200], "result_available": True,
                          "tail_sha256": hashlib.sha256(b"").hexdigest()},
             )
@@ -1278,9 +1297,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     if spec.role in {"reviewer", "architect", "supervisor"} and not reviewer_results and not architect_results and not supervisor_requests and question_lines[0] == 0:
         failure = {"category": "no_artifact", "reason": "process exited 0 without a protocol result",
                    "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
-        lib.transition_agent_session(root, session_id, "failed", exit_code=0, failure=failure)
+        end_session("failed", exit_code=0, failure=failure)
         raise AgentLaunchError(failure["reason"], session_id)
-    lib.transition_agent_session(root, session_id, "completed", exit_code=0)
+    end_session("completed", exit_code=0)
     for problem in question_errors:
         sys.stderr.write(f"HANDSOFF_QUESTION_WARNING: {problem}\n")
     return 0

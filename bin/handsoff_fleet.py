@@ -475,6 +475,14 @@ def build_metrics(path: Path | None = None, issues: "signals_module.IssueCache |
                          "releases": list(cached.get("releases") or []), "commits_since": cached.get("commits_since"),
                          "updated_since": cached.get("updated_since"), "full_pass_at": cached.get("full_pass_at"),
                          "requests_total": cached.get("requests_total"), "requests_counted": cached.get("requests_counted")})
+    # #168: tokens per closed ticket, from archived runs' recorded usage only.
+    try:
+        per_ticket = lib.tokens_per_ticket()
+    except (OSError, ValueError):
+        per_ticket = {}
+    for project in projects:
+        entry = per_ticket.get(project["root"]) or {}
+        project["tokens"] = entry.get("tickets", {})
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "started_at": started_at,
             "refreshed_at": issues.refreshed_at if issues is not None else None,
             # #158: the last X-RateLimit answer the collector saw, for the page's budget readout.

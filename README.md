@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.47/project_handsoff-0.3.47-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.48/project_handsoff-0.3.48-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -487,6 +487,10 @@ Cause: on Handsoff's own runs the project artwork is the engine's brand mark, so
 
 Cause: three losses from the 2026-09-19 runs. A green test with no red behind it was accepted as evidence; a reviewer launched at Phase 1 lost a whole Codex verdict to `dispatch_failed`, and a packet with a command line in `tests_executed` lost another to `orchestration_noop`; two sessions ran the same five tickets on two ports until the operator compared browser tabs. Fix: the three behaviours under "Workflow features" above, each behind a `[features]` switch that Mission Control edits. Two things learned while building: the fixtures recognise their engine copy by the runtime manifest hash, so every runtime edit is followed by `python3 bin/handsoff_manifest.py --version vX.Y.Z` before the Python suites run; and `init` now registers the run itself, so every fixture sets `HANDSOFF_FLEET_REGISTRY` (the base test case does) or the operator's own register fills with temp roots.
 
+### v0.3.48 field notes: the board closed (#168, #169, #170, #171, #172)
+
+Cause: five open tickets, one filed by the Pilot during tranche 1 (a run that had adopted a failed session's verdict showed FAILED on Fleet). Fix: the five sections above, three more `[features]` switches, and one repair found on the way: the runner persists every reviewer result as kind `review`, so a design verdict recovered from a refused packet adopts through the design branch now. Learned: the design gate must not compare the rules set (a Phase 6 hook edit would demand a new design); it records, the review compares.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -513,9 +517,12 @@ policy change and revokes them, like any `[workflow]` key.
 
 ```toml
 [features]
-failing_first = false   # #165, default off
-launch_rules = true     # #167, default on
-ticket_lock = true      # #166, default on
+failing_first = false        # #165, default off
+launch_rules = true          # #167, default on
+ticket_lock = true           # #166, default on
+token_accounting = true      # #168, default on
+review_binds_rules = true    # #170, default on
+report_posting = false       # #171, default off
 ```
 
 ### Failing first (#165)
@@ -550,9 +557,12 @@ so a refusal costs no attempt and no tokens; the launching event records
 field and the value seen, and when the rule says `recover_as` the packet
 is kept on the session with that field repaired so
 `session-result-adopt --session ID --by ACTOR` can re-record the verdict
-deliberately. The first two rules are the 2026-09-19 losses: a reviewer
-launched at Phase 1 (no design gate to receive a verdict) and a
-`tests_executed` that was not the bare word. A project may add its own
+deliberately. A packet rule may instead carry `max_chars` with `recover =
+"truncate"`, for a list field whose items have a bound. The first three
+rules are real losses: a reviewer launched at Phase 1 (no design gate to
+receive a verdict) and a `tests_executed` that was not the bare word, both
+2026-09-19, and a finding of 700 characters that cost the tranche-2
+implementation verdict on 2026-09-20. A project may add its own
 under `handsoff-rules/`. `analyze-archives --propose-rules` scans the
 archive for a failure shape (category, role, the event before the launch)
 that repeats across two or more runs and writes a draft under
@@ -575,6 +585,81 @@ released state on the register entry, and the lock also reads each run's
 own status, so a closed or complete run never holds a ticket. Fleet marks
 a ticket two live runs both list with `CLAIMED TWICE` on both cards. The
 register is per user, so runs on another machine are not seen.
+
+### What a ticket cost (#168)
+
+The runner watches every streamed output line on both streams and keeps
+the last usage the adapter printed: Codex's `tokens used` line and the
+number after it, Claude's stream-json `usage.input_tokens` and
+`usage.output_tokens`. It is recorded as `usage` on the session and on its
+terminal lifecycle event (`source: adapter`); a session whose adapter
+printed nothing records `not reported`; with `token_accounting` off,
+`disabled`. Nothing is ever estimated. `status` sums it by role and by
+phase (`usage`), the Phase 8 archive keeps it, and the Fleet Metrics
+breakdown has a TOKENS column: the recorded totals of the runs that
+closed each ticket in the range, `not reported` when none of them carried
+a number, never zero. A run that closed several tickets is counted against
+each and marked as shared.
+
+### Repeat runs as evidence (#169)
+
+A criterion may carry `repeat = N` (1 to 50) and `seed_env = NAME`
+(`criterion-add`/`criterion-update --repeat N --seed-env NAME`). `verify`
+then runs that criterion's commands N times in sequence with no cache and
+stops at the first failure; the record carries `attempts` (number, exit
+codes, output hashes, seed, and the failing attempt's output tail) and its
+description names the failing attempt and seed. Each attempt's seed is
+`sha256(run_hash:attempt)[:8]`, distinct and reproducible, set in `NAME`.
+The criterion row reads `5/5` or `failed at attempt 3 of 5 (seed ab12cd34)`.
+`--expect-fail` does not combine with repeat, and `[[regressions]]` groups
+never repeat.
+
+### The review certifies the rules it ran under (#170)
+
+`rules_set_hash` covers `handsoff.toml`, `.claude/settings.json`,
+`.claude/settings.local.json`, `.codex/config.toml`, `AGENTS.md`,
+`CLAUDE.md` (absent files hash as absent), the engine's `prompts/reviewer.md`
+and `rules/*.json`, and the engine version; contents are hashed, never
+stored, and `.env` is never read. `record-review`, `design-approve`,
+`deployment-gate --approve` and `verify-live` record `rules_hash` and the
+entries behind it. The review gate, the deployment gate and the live gate
+refuse when the set moved since the decision, naming the files
+(`review gate: the rules set changed since it was recorded
+(.claude/settings.json); record it again`); a fresh review re-binds. The
+design approval records the set but is not compared, so a hook edit at
+Phase 6 asks for a new review, not a new design. A decision recorded
+before the field existed carries no hash and stays valid. `doctor` reports
+`rules-set-changed: <files>`. With `review_binds_rules` off the hash is
+still recorded, nothing is refused. A hook the adapter reads from outside
+the project (a global `~/.claude/settings.json`) is not in the set.
+
+### The final report posts itself (#171)
+
+`run-close --post`, or Phase 8 completion with `report_posting = true`,
+renders the report from an allowlist of ledger fields in fixed wording
+(commits and where pushed; each criterion's id, policy, state and the
+first 120 characters of its text with its evidence run; the review's
+actor, time and hashes; the deployment approval and live check; usage
+totals; work items; `validate`'s exact lines), rewrites home paths to `~`,
+passes it through the output redactor, and refuses to post
+(`report_not_posted`, reason `redaction`) if any line still looks like a
+credential. It then posts one comment per issue work item through `gh`,
+marked `<!-- handsoff-report HEAD -->`, closes the item, and ticks its box
+in a parent epic named by a `Parent: #NN` line in the item body. The
+ledger records `report_posted` with the comment URLs; a ticket that
+already carries a report is skipped; without `gh` login nothing leaves
+(`report_not_posted`, reason `gh_auth`). Pilot notes, chat and agent
+output never enter the report. `tests/fixtures/final_report.md` pins the
+wording.
+
+### A stale failure never outranks the ledger (#172)
+
+A current session in state `failed` reads `stopped` on Mission Control
+when its persisted verdict was adopted (`result.adopted_at`) or when the
+run has since advanced past the phase the session ran in; the detail says
+which. Fleet therefore classifies such a run by its other rules, never as
+FAILED. `session-result-adopt` rewrites a beacon naming that session with
+state `adopted`. The failure itself stays in the ledger.
 
 ## Review attempts and the convergence cap
 

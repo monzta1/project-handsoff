@@ -72,6 +72,16 @@
           "baseline_reason": {
             "type": "string",
             "minLength": 1
+          },
+          "repeat": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "#169: the commands must pass this many times in a row"
+          },
+          "seed_env": {
+            "type": "string",
+            "pattern": "^[A-Z_][A-Z0-9_]{0,63}$"
           }
         }
       }

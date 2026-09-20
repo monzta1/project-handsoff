@@ -396,7 +396,7 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # valid; when present they must be null or a non-empty string. #37 adds
 # `tier` the same way: null unless a Phase-2 reviewer was launched through
 # the tiered selection, otherwise exactly "primary" or "followup".
-AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id",
+AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id", "usage",
                                  "amendment_id"}
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
@@ -2056,10 +2056,19 @@ def _validate_rule(rule: object, source: str) -> dict:
         if not isinstance(when.get("field"), str) or not when["field"].strip():
             raise HandsoffError(f"rule {source}: a packet rule needs when.field")
         allowed = rule.get("allowed")
-        if not isinstance(allowed, list) or not allowed or not all(isinstance(a, str) for a in allowed):
-            raise HandsoffError(f"rule {source}: a packet rule needs a non-empty allowed list of strings")
-        if "recover_as" in rule and rule["recover_as"] not in allowed:
+        max_chars = rule.get("max_chars")
+        if allowed is None and max_chars is None:
+            raise HandsoffError(f"rule {source}: a packet rule needs allowed (exact values) or max_chars")
+        if allowed is not None and (not isinstance(allowed, list) or not allowed or not all(isinstance(a, str) for a in allowed)):
+            raise HandsoffError(f"rule {source}: allowed must be a non-empty list of strings")
+        if max_chars is not None and (not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars < 1):
+            raise HandsoffError(f"rule {source}: max_chars must be a positive integer")
+        if "recover_as" in rule and (allowed is None or rule["recover_as"] not in allowed):
             raise HandsoffError(f"rule {source}: recover_as must be one of allowed")
+        if "recover" in rule and rule["recover"] != "truncate":
+            raise HandsoffError(f"rule {source}: recover may only be truncate")
+        if rule.get("recover") == "truncate" and max_chars is None:
+            raise HandsoffError(f"rule {source}: recover truncate needs max_chars")
         for key in ("phase_in", "amendment"):
             if key in when:
                 raise HandsoffError(f"rule {source}: when.{key} belongs to launch rules")
@@ -2131,6 +2140,21 @@ def evaluate_packet_rules(root: Path | None, cfg: dict | None, value: dict, *, r
         if field not in value:
             continue
         seen = value[field]
+        if "max_chars" in rule and rule.get("allowed") is None:
+            # a length rule: strings, or every string in a list
+            limit = rule["max_chars"]
+            items = seen if isinstance(seen, list) else [seen]
+            too_long = [i for i in items if isinstance(i, str) and len(i) > limit]
+            if not too_long:
+                continue
+            recovered = None
+            if rule.get("recover") == "truncate":
+                cut = [(i[:limit - 3] + "...") if isinstance(i, str) and len(i) > limit else i for i in items]
+                recovered = {**value, field: cut if isinstance(seen, list) else cut[0]}
+            raise PacketRuleViolation(
+                f"{rule['refuse']}; {len(too_long)} value(s) over {limit} characters (rule {rule['id']}, cause: "
+                f"{rule['cause'].get('event')} on {rule['cause'].get('root', 'a run')} {rule['cause'].get('at')})",
+                rule_id=rule["id"], field=field, value=f"{len(too_long)} over {limit}", recovered=recovered)
         if isinstance(seen, str) and seen in rule["allowed"]:
             continue
         recovered = None
@@ -2141,6 +2165,83 @@ def evaluate_packet_rules(root: Path | None, cfg: dict | None, value: dict, *, r
             f"{rule['refuse']}; got {json.dumps(shown)[:120]} (rule {rule['id']}, cause: "
             f"{rule['cause'].get('event')} on {rule['cause'].get('root', 'a run')} {rule['cause'].get('at')})",
             rule_id=rule["id"], field=field, value=seen, recovered=recovered)
+
+
+# --------------------------------------------------------------------------
+# #170: the rules set a review ran under
+# --------------------------------------------------------------------------
+
+#: Project files that decide what a reviewer saw and could run. Contents
+#: are hashed, never stored; .env and credential files are never in the set.
+RULES_SET_PROJECT_FILES = ("handsoff.toml", ".claude/settings.json", ".claude/settings.local.json",
+                           ".codex/config.toml", "AGENTS.md", "CLAUDE.md")
+
+
+def rules_set_entries(root: Path) -> dict[str, str | None]:
+    """Path -> sha256 of contents, or None when absent. Engine entries
+    (reviewer prompt, rules/*.json, manifest version) are keyed 'engine:'."""
+    root = Path(root).resolve()
+    entries: dict[str, str | None] = {}
+    for relative in RULES_SET_PROJECT_FILES:
+        path = root / relative
+        try:
+            entries[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        except OSError:
+            entries[relative] = None
+    prompt = engine_resource_path("prompts/reviewer.md")
+    try:
+        entries["engine:prompts/reviewer.md"] = hashlib.sha256(prompt.read_bytes()).hexdigest() if prompt.is_file() else None
+    except OSError:
+        entries["engine:prompts/reviewer.md"] = None
+    for rule in load_launch_rules(root):
+        try:
+            entries[f"engine:{Path(rule['source']).name}" if "/rules/" in rule["source"].replace(str(root), "")
+                    else f"project:{Path(rule['source']).name}"] = hashlib.sha256(Path(rule["source"]).read_bytes()).hexdigest()
+        except OSError:
+            continue
+    try:
+        entries["engine:version"] = json.loads((engine_root() / RUNTIME_MANIFEST_FILE).read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError):
+        entries["engine:version"] = None
+    return entries
+
+
+def rules_set_hash(root: Path, cfg: dict | None = None) -> str:
+    return hashlib.sha256(_canonical(rules_set_entries(root)).encode("utf-8")).hexdigest()
+
+
+def rules_set_diff(root: Path, recorded_entries: dict | None) -> list[str]:
+    """Which entries differ from a recorded snapshot; every entry when no
+    snapshot was recorded (an older decision carries the hash only)."""
+    current = rules_set_entries(root)
+    if not isinstance(recorded_entries, dict):
+        return sorted(current)
+    changed = [key for key in sorted(set(current) | set(recorded_entries))
+               if current.get(key) != recorded_entries.get(key)]
+    return changed
+
+
+def rules_binding(root: Path, cfg: dict) -> dict:
+    """What a decision records: the hash and the entries behind it."""
+    entries = rules_set_entries(root)
+    return {"rules_hash": hashlib.sha256(_canonical(entries).encode("utf-8")).hexdigest(),
+            "rules_entries": entries}
+
+
+def rules_binding_errors(root: Path | None, cfg: dict, decision: dict | None, label: str) -> list[str]:
+    """#170: refuse when the rules set changed since `decision` was recorded.
+    A decision without rules_hash (recorded before the field existed) is
+    accepted as it stands. With the switch off nothing is checked."""
+    if root is None or not isinstance(decision, dict) or not feature_enabled(cfg, "review_binds_rules"):
+        return []
+    recorded = decision.get("rules_hash")
+    if not recorded:
+        return []
+    if recorded == rules_set_hash(root, cfg):
+        return []
+    changed = rules_set_diff(root, decision.get("rules_entries"))
+    shown = ", ".join(changed[:8]) + (f" (+{len(changed) - 8} more)" if len(changed) > 8 else "")
+    return [f"{label}: the rules set changed since it was recorded ({shown}); record it again"]
 
 
 def update_feature_settings(root: Path, payload: object) -> dict:
@@ -2838,9 +2939,124 @@ def _validate_failure_classification(value: object) -> dict:
     return result
 
 
+# --------------------------------------------------------------------------
+# #168: usage, from the adapter's own words
+# --------------------------------------------------------------------------
+
+USAGE_SOURCES = ("adapter", "not reported", "disabled")
+_CODEX_TOKENS_LINE = re.compile(r"^\s*tokens used\s*:?\s*([0-9][0-9,]*)?\s*$", re.IGNORECASE)
+_NUMBER_LINE = re.compile(r"^\s*([0-9][0-9,]*)\s*$")
+
+
+class UsageWatcher:
+    """Watches every streamed output line (stdout and stderr alike) and keeps
+    the LAST usage the adapter printed, independent of the bounded tails.
+    Codex prints 'tokens used' and the number on the next line (or the
+    same line); Claude's stream-json carries usage.input_tokens and
+    usage.output_tokens on its events. Nothing is estimated."""
+
+    def __init__(self, adapter: str | None = None):
+        self.adapter = adapter
+        self.usage: dict | None = None
+        self._awaiting_number = False
+
+    def feed(self, line: str) -> None:
+        text = line.rstrip("\r\n")
+        if self._awaiting_number:
+            self._awaiting_number = False
+            number = _NUMBER_LINE.match(text)
+            if number:
+                self._set(total=int(number.group(1).replace(",", "")))
+                return
+        match = _CODEX_TOKENS_LINE.match(text)
+        if match:
+            if match.group(1):
+                self._set(total=int(match.group(1).replace(",", "")))
+            else:
+                self._awaiting_number = True
+            return
+        if text.startswith("{"):
+            try:
+                event = json.loads(text)
+            except ValueError:
+                return
+            usage = _find_usage(event)
+            if usage:
+                self._set(tokens_in=usage.get("input_tokens"), tokens_out=usage.get("output_tokens"))
+
+    def _set(self, *, total: int | None = None, tokens_in: int | None = None, tokens_out: int | None = None) -> None:
+        if total is None and tokens_in is None and tokens_out is None:
+            return
+        if total is None and (tokens_in is not None or tokens_out is not None):
+            total = int(tokens_in or 0) + int(tokens_out or 0)
+        self.usage = {"tokens_in": tokens_in, "tokens_out": tokens_out, "tokens_total": total, "source": "adapter"}
+
+    def result(self, enabled: bool = True) -> dict:
+        if not enabled:
+            return {"tokens_in": None, "tokens_out": None, "tokens_total": None, "source": "disabled"}
+        return dict(self.usage) if self.usage else {"tokens_in": None, "tokens_out": None, "tokens_total": None, "source": "not reported"}
+
+
+def _find_usage(value) -> dict | None:
+    """The deepest usage object with integer input/output token counts."""
+    found = None
+    if isinstance(value, dict):
+        usage = value.get("usage")
+        if isinstance(usage, dict) and any(isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool)
+                                           for k in ("input_tokens", "output_tokens")):
+            found = {k: usage.get(k) for k in ("input_tokens", "output_tokens")
+                     if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool)}
+        for child in value.values():
+            nested = _find_usage(child)
+            if nested:
+                found = nested
+    elif isinstance(value, list):
+        for child in value:
+            nested = _find_usage(child)
+            if nested:
+                found = nested
+    return found
+
+
+def validate_usage(value: object) -> dict:
+    if not isinstance(value, dict) or set(value) != {"tokens_in", "tokens_out", "tokens_total", "source"}:
+        raise HandsoffError("session usage must carry tokens_in, tokens_out, tokens_total and source")
+    if value["source"] not in USAGE_SOURCES:
+        raise HandsoffError("session usage source is invalid")
+    for key in ("tokens_in", "tokens_out", "tokens_total"):
+        number = value[key]
+        if number is not None and (not isinstance(number, int) or isinstance(number, bool) or number < 0):
+            raise HandsoffError(f"session usage {key} must be a non-negative integer or null")
+    return dict(value)
+
+
+def usage_totals(status: dict) -> dict:
+    """#168: what the run cost so far, from recorded session usage only."""
+    by_role: dict[str, int] = {}
+    by_phase: dict[str, int] = {}
+    total = 0
+    reported = not_reported = 0
+    for session in (status.get("agent_sessions") or {}).values():
+        if not isinstance(session, dict):
+            continue
+        usage = session.get("usage")
+        if not isinstance(usage, dict) or usage.get("source") != "adapter" or not isinstance(usage.get("tokens_total"), int):
+            if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
+                not_reported += 1
+            continue
+        reported += 1
+        total += usage["tokens_total"]
+        role = str(session.get("role") or "unknown")
+        phase = str(session.get("phase_number") or "unknown")
+        by_role[role] = by_role.get(role, 0) + usage["tokens_total"]
+        by_phase[phase] = by_phase.get(phase, 0) + usage["tokens_total"]
+    return {"tokens_total": total, "by_role": by_role, "by_phase": by_phase,
+            "sessions_reported": reported, "sessions_not_reported": not_reported}
+
+
 def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
-                             failure: dict | None = None) -> dict:
+                             failure: dict | None = None, usage: dict | None = None) -> dict:
     """Apply a session-ID-matched lifecycle-only update under the lock."""
     if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
         raise HandsoffError("agent session id is invalid")
@@ -2855,6 +3071,10 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         failure = _validate_failure_classification(failure)
         if not terminal or state == "completed" or failure["category"] == "still_running":
             raise HandsoffError("failure classification requires a failed terminal session")
+    if usage is not None:
+        usage = validate_usage(usage)
+        if not terminal:
+            raise HandsoffError("session usage is recorded on the terminal transition only")
     with project_lock(root.resolve()):
         root = root.resolve()
         cfg = load_config(root)
@@ -2904,6 +3124,8 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         else:
             updated["ended_at"] = now
             updated["exit_code"] = exit_code
+            if usage is not None:
+                updated["usage"] = usage  # #168
             if replacement is not None:
                 replacement_state = "recovered" if state == "completed" else "failed"
                 replacement["state"] = replacement_state
@@ -2931,6 +3153,7 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             failure_operation=failure.get("operation") if failure else None,
             replacement_id=replacement.get("replacement_id") if replacement else None,
             replacement_state=replacement.get("state") if replacement else None,
+            usage=usage,
         )
         result = deepcopy(updated)
     if terminal:
@@ -3474,7 +3697,9 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
                         binding: dict | None = None, executed: bool = True,
                         reused_from: str | None = None,
                         feature_hash: str | None = None,
-                        repository_digest: str | None = None) -> dict:
+                        repository_digest: str | None = None,
+                        attempts: list[dict] | None = None,
+                        rules: dict | None = None) -> dict:
     """Append a hash-chained evidence record. Caller must hold project_lock.
 
     #43: `binding` (command to verification_binding hash), `executed`,
@@ -3525,6 +3750,11 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
         "repository_digest": repository_digest,
         "prev_hash": prev_hash,
     }
+    if attempts is not None:
+        record["attempts"] = attempts  # #169: only a repeat record carries it
+    if rules is not None:
+        record["rules_hash"] = rules["rules_hash"]  # #170: a live record binds its rules set
+        record["rules_entries"] = rules["rules_entries"]
     record["hash"] = hashlib.sha256((_canonical(record) + prev_hash).encode("utf-8")).hexdigest()
     with path.open("a", encoding="utf-8") as fh:
         fh.write(_canonical(record) + "\n")
@@ -4425,6 +4655,13 @@ def validate_status_schema(status: dict) -> list[str]:
                 value = session.get(optional_field)
                 if optional_field == "result":
                     continue
+                if optional_field == "usage":
+                    if value is not None:
+                        try:
+                            validate_usage(value)
+                        except HandsoffError as exc:
+                            errors.append(f"{label}.usage: {exc}")
+                    continue
                 if optional_field == "phase_number":
                     if value is not None and (not isinstance(value, int) or isinstance(value, bool)
                                               or value not in PHASES):
@@ -4669,6 +4906,9 @@ FEATURES = {
     "failing_first": (False, "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165)."),
     "launch_rules": (True, "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167)."),
     "ticket_lock": (True, "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166)."),
+    "token_accounting": (True, "The usage each adapter prints is recorded on its session and summed by role, phase and ticket; nothing is estimated (#168)."),
+    "review_binds_rules": (True, "A review, design approval and deployment approval carry the hash of the rules set they ran under; a changed hook or config revokes them (#170)."),
+    "report_posting": (False, "Phase 8 completion posts the ledger's report to each ticket and closes it; off, nothing leaves the machine unless run-close --post says so (#171)."),
 }
 
 
@@ -4878,7 +5118,7 @@ def baseline_errors(criteria: list[dict], verifications: list[dict], cfg: dict) 
     return errors
 
 
-def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
+def _review_errors(status: dict, acceptance: dict, cfg: dict, root: Path | None = None) -> list[str]:
     errors: list[str] = []
     review = status.get("review")
     if not isinstance(review, dict):
@@ -4887,6 +5127,7 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("review gate: acceptance changed since review; record a new review")
     if review.get("config_hash") != config_hash(cfg):
         errors.append("review gate: workflow policy changed since review; record a new review")
+    errors.extend(rules_binding_errors(root, cfg, review, "review gate"))  # #170
     if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
         errors.append("review gate: work-item scope changed since review; record a new review")
     reviewer = review.get("by")
@@ -5110,7 +5351,7 @@ def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bo
         and amendment.get("resulting_design_hash") == current
 
 
-def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
+def _design_errors(status: dict, acceptance: dict, cfg: dict, root: Path | None = None) -> list[str]:
     """The Architect gate: Phase 3+ requires a recorded human design
     approval, for any run `requires_design_approval` (a run a NEW init
     created). Absent for any status.json that predates this field --
@@ -5126,6 +5367,9 @@ def _design_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
         errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
     if approval.get("config_hash") != config_hash(cfg):
         errors.append("design gate: workflow policy changed since design approval; record a new approval")
+    # #170: the design approval RECORDS the rules set it was given under;
+    # the comparison belongs to the review, deployment and live gates, so
+    # a hook edit at Phase 6 asks for a fresh review, not a fresh design.
     if "work_items" in acceptance and not scope_hash_matches(approval.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
         errors.append("design gate: work-item scope changed since design approval; record a new approval")
     proposal = status.get("design_proposal")
@@ -5471,7 +5715,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
 
     if phase >= 3 and full_design_required(status, acceptance, cfg):
         errors.extend(_design_review_errors(status, acceptance, cfg))
-        errors.extend(_design_errors(status, acceptance, cfg))
+        errors.extend(_design_errors(status, acceptance, cfg, root))
     # #42: an open amendment pins the run to the phase and progress it was
     # opened at, forward and back, until it is approved or escalated.
     errors.extend(amendment_freeze_errors(status))
@@ -5519,7 +5763,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         implemented_by = status.get("implemented_by")
         if not implemented_by:
             errors.append("review gate: Phase 6+ requires 'implemented_by' to be recorded")
-        errors.extend(_review_errors(status, acceptance, cfg))
+        errors.extend(_review_errors(status, acceptance, cfg, root))
 
     if cfg.get("deployment_requires_explicit_approval", True) and phase >= 8:
         approval = status.get("deployment_approved")
@@ -5529,6 +5773,8 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
             errors.append("deployment gate: the acceptance registry changed since approval was given, re-approve")
         elif approval.get("config_hash") != config_hash(cfg):
             errors.append("deployment gate: workflow policy changed since approval was given, re-approve")
+        else:
+            errors.extend(rules_binding_errors(root, cfg, approval, "deployment gate"))  # #170
 
     if phase >= 8:
         if progress != 100 or status.get("status") != "complete":
@@ -5543,6 +5789,8 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                 errors.append("live gate: acceptance changed since live verification")
             elif record.get("config_hash") != config_hash(cfg):
                 errors.append("live gate: workflow policy changed since live verification; run it again")
+            elif rules_binding_errors(root, cfg, record, "live gate"):
+                errors.extend(rules_binding_errors(root, cfg, record, "live gate"))  # #170
             elif approval.get("at") and record.get("at", "") <= approval.get("at", ""):
                 errors.append("live gate: live verification must occur after deployment approval")
 
@@ -7100,7 +7348,10 @@ CRITERION_ADD_FIELDS = ("id", "type", "requirement", "verification", "tests")
 CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "state",
                            # #165: a criterion may declare that no failing run can exist
                            # for it (a test born with the feature), with the reason audited
-                           "baseline", "baseline_reason")
+                           "baseline", "baseline_reason",
+                           # #169: N green runs in a row, with a seed per attempt
+                           "repeat", "seed_env")
+MAX_REPEAT = 50
 CRITERIA_TRANSACTION_OPS = ("add", "update", "remove")
 MAX_CRITERIA_TRANSACTION_OPERATIONS = 64
 MAX_CRITERIA_TRANSACTION_BYTES = 256 * 1024
@@ -7162,7 +7413,43 @@ def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> lis
         errors.append("'baseline_reason' is required with baseline not_applicable")
     if "baseline_reason" in fields and fields.get("baseline") != BASELINE_NOT_APPLICABLE:
         errors.append("'baseline_reason' needs baseline not_applicable")
+    if "repeat" in fields and fields["repeat"] is not None and (
+            not isinstance(fields["repeat"], int) or isinstance(fields["repeat"], bool)
+            or not 1 <= fields["repeat"] <= MAX_REPEAT):
+        errors.append(f"'repeat' must be an integer from 1 to {MAX_REPEAT}")
+    if "seed_env" in fields and fields["seed_env"] is not None and (
+            not isinstance(fields["seed_env"], str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,63}", fields["seed_env"])):
+        errors.append("'seed_env' must be an environment variable name (A-Z, 0-9, _)")
+    if fields.get("seed_env") and not fields.get("repeat"):
+        errors.append("'seed_env' needs repeat")
     return errors
+
+
+def repeat_seed(run_hash: str | None, attempt: int) -> str:
+    """#169: a distinct, reproducible seed per attempt."""
+    return hashlib.sha256(f"{run_hash or ''}:{attempt}".encode("utf-8")).hexdigest()[:8]
+
+
+def run_repeated_checks(cfg: dict, root: Path, commands: list[str], repeat: int, seed_env: str | None,
+                        run_hash: str | None, timeout: int | None = None) -> tuple[list[dict], list[dict]]:
+    """#169: run the criterion's commands `repeat` times in sequence. Returns
+    (results of the last attempt, attempts) where each attempt carries its
+    number, exit codes, output hashes, seed and, for a failing attempt, the
+    output tail. Stops at the first failing attempt: the record names it."""
+    attempts: list[dict] = []
+    last: list[dict] = []
+    for number in range(1, repeat + 1):
+        seed = repeat_seed(run_hash, number) if seed_env else None
+        env = {seed_env: seed} if seed_env else None
+        last = run_checks(cfg, root, commands=commands, timeout=timeout, env=env)
+        ok = all(r["exit_code"] == 0 for r in last)
+        attempts.append({"attempt": number, "ok": ok, "seed": seed,
+                         "exit_codes": [r["exit_code"] for r in last],
+                         "output_sha256": [r["output_sha256"] for r in last],
+                         **({} if ok else {"output_tail": last[-1]["output_tail"][-2000:]})})
+        if not ok:
+            break
+    return last, attempts
 
 
 def sync_work_item_registry(acceptance: dict, cfg: dict) -> bool:
@@ -8701,7 +8988,47 @@ def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = N
         exit_text = f"exit {view['exit_code']}" if view["exit_code"] is not None else "no exit code"
         view["detail"] = (f"{role} session {session_state.replace('_', ' ')} ({exit_text})"
                           f" at {view['ended_at'] or 'an unknown time'}")
+        superseded = failed_session_superseded(status, session)
+        if view["state"] == "failed" and superseded:
+            # #172: the failure stays in the ledger; the live reading says
+            # what the host did with it, so a stale failure never outranks
+            # a run that has moved on.
+            view["state"] = "stopped"
+            view["detail"] = f"{role} session failed ({exit_text}) at {view['ended_at'] or 'an unknown time'}; {superseded}"
     return view
+
+
+def mark_beacon_adopted(root: Path, session_id: str) -> bool:
+    """#172: after session-result-adopt the last beacon says what the host
+    did with the session. Only a beacon naming that session is rewritten;
+    another session's beacon is never touched."""
+    beacon = read_live_beacon(root)
+    if not isinstance(beacon, dict) or beacon.get("session_id") != session_id:
+        return False
+    return write_live_beacon(root, session_id=session_id, role=beacon.get("role") or "reviewer",
+                             state="adopted", pid=None, ended_at=beacon.get("ended_at"),
+                             exit_code=beacon.get("exit_code"))
+
+
+def failed_session_superseded(status: dict, session: dict) -> str | None:
+    """#172: why a failed session no longer speaks for the run: its persisted
+    result was adopted, or the run advanced past the phase the session ran
+    in. None when neither holds (a genuinely failed run stays failed)."""
+    result = session.get("result") if isinstance(session, dict) else None
+    if isinstance(result, dict) and result.get("adopted_at"):
+        return f"verdict adopted at {result['adopted_at']} by {result.get('adopted_by') or 'the host'}"
+    failures = status.get("agent_failures") if isinstance(status.get("agent_failures"), dict) else {}
+    record = failures.get(session.get("session_id")) if isinstance(session, dict) else None
+    if isinstance(record, dict) and record.get("adopted") is True:
+        return "verdict adopted by the host"
+    try:
+        session_phase = int(session.get("phase_number") or 0)
+        run_phase = int(status.get("phase_number") or 0)
+    except (TypeError, ValueError):
+        return None
+    if session_phase and run_phase > session_phase:
+        return f"session ran at phase {session_phase}; the run advanced to phase {run_phase}"
+    return None
 
 
 def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None = None) -> dict:
@@ -8730,7 +9057,7 @@ def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None =
 
 def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
                timeout: int | None = None, *, allow_regression: bool = False,
-               on_progress=None) -> list[dict]:
+               on_progress=None, env: dict | None = None) -> list[dict]:
     """Actually execute the given commands (default: [checks].commands), in
     the project root. Each result is real evidence a criterion's evidence
     list can reference, not a sentence someone typed. Timeout comes from
@@ -8755,7 +9082,8 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
             on_progress(index, len(selected), cmd, None)
         started = time.time()
         try:
-            proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=timeout,
+                                  env={**os.environ, **env} if env else None)
             returncode = proc.returncode
             output = proc.stdout + proc.stderr
         except subprocess.TimeoutExpired as exc:
@@ -9906,6 +10234,38 @@ def archive_dir() -> Path:
     return Path.home() / "Documents" / "Handsoff-Archive"
 
 
+def tokens_per_ticket(archives_dir: Path | None = None) -> dict:
+    """#168: tokens recorded per closed issue work item, per repository
+    root, from archived product runs only. A run's recorded total is
+    attributed to each of its issue work items (a run that closed three
+    tickets cost that much for the three together; the number is shown
+    against each and named as shared). A ticket whose run recorded no
+    usage reads not reported, never zero."""
+    directory = Path(archives_dir) if archives_dir is not None else archive_dir()
+    result: dict[str, dict] = {}
+    if not directory.is_dir():
+        return result
+    for path in sorted(directory.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get("run_kind") == "test":
+            continue
+        usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
+        total = usage.get("tokens_total") if usage and usage.get("sessions_reported") else None
+        acceptance = record.get("acceptance") if isinstance(record.get("acceptance"), dict) else {}
+        items = [item for item in (acceptance.get("work_items") or [])
+                 if isinstance(item, dict) and item.get("kind") == "issue" and isinstance(item.get("number"), int)]
+        root = str(record.get("root") or "")
+        for item in items:
+            entry = result.setdefault(root, {"repo": record.get("repo"), "tickets": {}})
+            entry["tickets"][str(item["number"])] = {
+                "tokens_total": total, "reported": total is not None, "shared_with": len(items) - 1,
+                "run": path.name, "completed_at": record.get("completed_at")}
+    return result
+
+
 def run_kind_for(root: Path) -> str:
     """#49: "test" or "product". An explicit HANDSOFF_RUN_KIND of exactly
     test or product wins; otherwise a root whose name starts with one of
@@ -10088,6 +10448,11 @@ def _archive_slug(text: str, max_len: int = 60) -> str:
     return (slug or "run")[:max_len]
 
 
+def _sum_known(values) -> int | None:
+    known = [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+    return sum(known) if known else None
+
+
 def build_run_metrics(status: dict, events: list[dict], verifications: list[dict], *,
                       now: datetime | None = None) -> dict:
     """Derive content-free delivery metrics from already-audited records.
@@ -10143,8 +10508,14 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
             "model": item.get("reported_model") or item.get("requested_model"),
             "phase_number": item.get("phase_number"), "state": item.get("state"),
             "duration_seconds": round(duration, 3) if duration is not None else None,
-            "input_tokens": None, "output_tokens": None, "cached_tokens": None,
-            "total_tokens": None, "usage_source": "unavailable",
+            "input_tokens": (item.get("usage") or {}).get("tokens_in"),
+            "output_tokens": (item.get("usage") or {}).get("tokens_out"),
+            "cached_tokens": None,
+            "total_tokens": (item.get("usage") or {}).get("tokens_total"),
+            # #168: 'adapter' when the adapter printed its usage, else what
+            # the session says (not reported / disabled), 'unavailable' for
+            # a session recorded before usage existed.
+            "usage_source": (item.get("usage") or {}).get("source", "unavailable"),
         })
     sessions.sort(key=lambda item: str(item.get("session_id") or ""))
     failures = sum(item.get("state") in (AGENT_SESSION_TERMINAL_STATES - {"completed"}) for item in sessions)
@@ -10207,10 +10578,12 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
         "implementation_review_attempts": len(status.get("review_attempts") or []),
         "verification_runs": len(verifications),
         "tokens": {
-            "input": sum(item["input_tokens"] for item in known_usage) if known_usage else None,
-            "output": sum(item["output_tokens"] for item in known_usage) if known_usage else None,
-            "cached": sum(item["cached_tokens"] for item in known_usage) if known_usage else None,
-            "total": sum(item["total_tokens"] for item in known_usage) if known_usage else None,
+            # #168: a component the adapter did not print stays None (Codex
+            # prints one total), never a made-up zero.
+            "input": _sum_known(item["input_tokens"] for item in known_usage),
+            "output": _sum_known(item["output_tokens"] for item in known_usage),
+            "cached": _sum_known(item["cached_tokens"] for item in known_usage),
+            "total": _sum_known(item["total_tokens"] for item in known_usage),
             "coverage": f"{len(known_usage)}/{len(sessions)} sessions",
         },
         "sessions": sessions,
@@ -10248,6 +10621,7 @@ def archive_run(root: Path, cfg: dict, status: dict, acceptance: dict,
         "verifications": verifications,
         "events": events,
         "metrics": build_run_metrics(status, events, verifications),
+        "usage": usage_totals(status),  # #168
     }
     out_dir = archive_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -11188,3 +11562,206 @@ def _question_form_errors(label: str, q: dict, answered: bool) -> list[str]:
     if not answered and (chosen is not None or other is not None):
         errors.append(f"{label} unanswered question cannot carry chosen_option or other_text")
     return errors
+
+
+# --------------------------------------------------------------------------
+# #171: the final report, from the ledger, posted once per ticket
+# --------------------------------------------------------------------------
+
+REPORT_MARKER = "<!-- handsoff-report {head} -->"
+REPORT_REQUIREMENT_CHARS = 120
+_CREDENTIAL_SHAPES = (
+    re.compile(r"\b(?:sk|ghp|github_pat|gho|ghs|ghu|xox[abpr])[_-][A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
+
+
+def _home_to_tilde(text: str) -> str:
+    home = str(Path.home())
+    return text.replace(home, "~") if home and home != "/" else text
+
+
+def report_commits(root: Path, events: list[dict], *, runner=subprocess.run) -> list[dict]:
+    """Commits made during the run, oldest first: hash and subject only,
+    from git itself, between the first event's time and now. 'not recorded'
+    when git cannot answer."""
+    started = events[0].get("at") if events else None
+    if not started:
+        return []
+    try:
+        proc = runner(["git", "-C", str(root), "log", f"--since={started}", "--reverse", "--format=%h %s"],
+                      capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    out = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        digest, _, subject = line.partition(" ")
+        out.append({"hash": digest, "subject": subject[:120]})
+    return out[:64]
+
+
+def report_push_target(root: Path, *, runner=subprocess.run) -> str:
+    try:
+        proc = runner(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "@{upstream}"],
+                      capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "not recorded"
+
+
+def render_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
+                        verifications: list[dict], validate_lines: list[str], *, runner=subprocess.run) -> str:
+    """The Phase 8 report in fixed maintainer wording, built from an
+    allowlist of ledger fields only. Never pilot notes, chat text or agent
+    output. Home paths become '~' and the text passes the output redactor;
+    whether anything credential-shaped survived is post_final_report's call."""
+    by_run = {r.get("run_id"): r for r in verifications if isinstance(r, dict)}
+    lines = [f"## Handsoff report: {str(status.get('feature') or 'run')[:200]}", ""]
+    lines.append(f"Phase {status.get('phase_number')} ({status.get('phase')}), status {status.get('status')}, "
+                 f"progress {status.get('progress')}.")
+    commits = report_commits(root, events, runner=runner)
+    lines += ["", "### Commits"]
+    if commits:
+        lines += [f"- `{c['hash']}` {c['subject']}" for c in commits]
+        lines.append(f"- pushed to: {report_push_target(root, runner=runner)}")
+    else:
+        lines.append("- not recorded")
+    lines += ["", "### Acceptance"]
+    for criterion in acceptance.get("criteria", []):
+        text = str(criterion.get("requirement") or "")
+        short = text[:REPORT_REQUIREMENT_CHARS] + ("..." if len(text) > REPORT_REQUIREMENT_CHARS else "")
+        evidence = criterion.get("evidence") or []
+        last = evidence[-1] if evidence else None
+        record = by_run.get(last) or {}
+        detail = f"evidence {last}" if last else "no evidence"
+        if record.get("kind"):
+            detail += f" ({record['kind']}, {'ok' if record.get('ok') else 'not ok'})"
+        lines.append(f"- {criterion.get('id')} [{criterion.get('verification')}] {criterion.get('state')}: {short} ({detail})")
+    review = status.get("review") if isinstance(status.get("review"), dict) else None
+    lines += ["", "### Review"]
+    if review:
+        lines.append(f"- by {review.get('by')} at {review.get('at')}")
+        lines.append(f"- acceptance hash {review.get('acceptance_hash')}")
+        if review.get("rules_hash"):
+            lines.append(f"- rules set {review['rules_hash']}")
+    else:
+        lines.append("- not recorded")
+    approval = status.get("deployment_approved") if isinstance(status.get("deployment_approved"), dict) else None
+    lines += ["", "### Deployment"]
+    lines.append(f"- approved by {approval.get('by')} at {approval.get('at')}" if approval else "- no deployment approval recorded")
+    live = by_run.get(status.get("live_verification_id")) or {}
+    lines.append(f"- live verification {'ok' if live.get('ok') else 'not ok'} at {live.get('at')}" if live else "- no live verification recorded")
+    totals = usage_totals(status)
+    lines += ["", "### Usage"]
+    if totals["sessions_reported"]:
+        lines.append(f"- {totals['tokens_total']:,} tokens over {totals['sessions_reported']} managed session(s)"
+                     + (f"; {totals['sessions_not_reported']} not reported" if totals["sessions_not_reported"] else ""))
+        for role, value in sorted(totals["by_role"].items()):
+            lines.append(f"- {role}: {value:,}")
+    else:
+        lines.append("- not reported")
+    items = derive_work_items(status, acceptance, cfg).get("items", []) if isinstance(acceptance, dict) else []
+    lines += ["", "### Work items"]
+    lines += [f"- {item.get('id')}: {item.get('status')}" for item in items] or ["- none"]
+    lines += ["", "### Validate", "```"] + [str(v) for v in (validate_lines or ["not run"])] + ["```"]
+    text = "\n".join(lines) + "\n"
+    return redact_output_text(_home_to_tilde(text))
+
+
+def report_credential_lines(text: str) -> list[str]:
+    """Lines that still look like a credential after redaction."""
+    return [line for line in text.splitlines() if any(p.search(line) for p in _CREDENTIAL_SHAPES)]
+
+
+def _gh(args: list[str], *, runner=subprocess.run, cwd: Path | None = None):
+    return runner(["gh", *args], capture_output=True, text=True, timeout=60, cwd=str(cwd) if cwd else None)
+
+
+def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
+                      verifications: list[dict], validate_lines: list[str], *, by: str,
+                      runner=subprocess.run) -> dict:
+    """#171: one comment per issue work item, marked with the ledger head so
+    a second post finds it and does nothing; the item is closed and its box
+    ticked in a parent epic. Nothing is posted when a credential shape
+    survives redaction or when gh cannot authenticate."""
+    head = _last_hash(event_log_path(root, cfg))
+    text = render_final_report(root, cfg, status, acceptance, events, verifications, validate_lines, runner=runner)
+    marker = REPORT_MARKER.format(head=head)
+    leaked = report_credential_lines(text)
+    if leaked:
+        return {"posted": [], "skipped": [], "reason": "redaction",
+                "detail": f"{len(leaked)} line(s) still credential-shaped; nothing posted"}
+    auth = _gh(["auth", "status"], runner=runner, cwd=root)
+    if auth.returncode != 0:
+        return {"posted": [], "skipped": [], "reason": "gh_auth", "detail": "gh is not authenticated; nothing posted"}
+    items = [item for item in derive_work_items(status, acceptance, cfg).get("items", [])
+             if item.get("kind") == "issue" and isinstance(item.get("number"), int)]
+    posted, skipped = [], []
+    body = marker + "\n" + text
+    for item in items:
+        number = item["number"]
+        view = _gh(["issue", "view", str(number), "--json", "body,url,state,comments"], runner=runner, cwd=root)
+        try:
+            issue = json.loads(view.stdout) if view.returncode == 0 else {}
+        except ValueError:
+            issue = {}
+        existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
+        # any earlier report on this ticket counts: the head moves with every
+        # event, the marker's prefix does not. The comment is the only
+        # part that is never repeated; close and tick are retried below
+        # until each has actually happened (review F1, tranche 2).
+        already = any(isinstance(c, str) and c.lstrip().startswith(REPORT_MARKER.split("{head}")[0]) for c in existing)
+        url = None
+        if already:
+            skipped.append({"number": number, "reason": "already posted"})
+        else:
+            comment = _gh(["issue", "comment", str(number), "--body", body], runner=runner, cwd=root)
+            if comment.returncode != 0:
+                skipped.append({"number": number, "reason": "comment failed"})
+                continue
+            url = comment.stdout.strip().splitlines()[-1] if comment.stdout.strip() else None
+        closed = str(issue.get("state") or "").upper() == "CLOSED"
+        did_close = did_tick = False
+        if not closed:
+            closed = _gh(["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
+                         runner=runner, cwd=root).returncode == 0
+            did_close = closed
+        parent_match = re.search(r"(?im)^\s*parent:\s*#([1-9][0-9]{0,8})\b", str(issue.get("body") or ""))
+        parent = int(parent_match.group(1)) if parent_match else None
+        ticked = False
+        if parent:
+            parent_view = _gh(["issue", "view", str(parent), "--json", "body"], runner=runner, cwd=root)
+            try:
+                parent_body = json.loads(parent_view.stdout).get("body") or "" if parent_view.returncode == 0 else ""
+            except ValueError:
+                parent_body = ""
+            unticked = re.compile(rf"^(\s*- \[) (\] #{number}\b)", re.MULTILINE)
+            if unticked.search(parent_body):
+                new_body = unticked.sub(r"\1x\2", parent_body, count=1)
+                ticked = _gh(["issue", "edit", str(parent), "--body", new_body], runner=runner, cwd=root).returncode == 0
+                did_tick = ticked
+            elif re.search(rf"^\s*- \[x\] #{number}\b", parent_body, re.MULTILINE | re.IGNORECASE):
+                ticked = True
+        if already and not did_close and not did_tick and closed and (ticked or not parent):
+            continue  # everything was done on an earlier post; nothing touched now
+        posted.append({"number": number, "url": url, "closed": closed, "parent": parent, "ticked": ticked,
+                       "comment": "skipped" if already else "posted"})
+    return {"posted": posted, "skipped": skipped, "reason": None, "detail": None, "head": head}
+
+
+def record_report_outcome(root: Path, cfg: dict, outcome: dict, *, by: str) -> None:
+    if outcome.get("reason"):
+        append_event(root, cfg, "report_not_posted", f"Final report not posted: {outcome['detail']}",
+                     by=by, reason=outcome["reason"])
+    else:
+        append_event(root, cfg, "report_posted", "Final report posted to the work items",
+                     by=by, posted=outcome["posted"], skipped=outcome["skipped"], head=outcome.get("head"))

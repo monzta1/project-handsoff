@@ -944,6 +944,15 @@ def build_snapshot(root: Path) -> dict:
         # #165: what the failing-first gate sees: the newest valid baseline
         # (RED before GREEN) or the declaration that none can exist.
         baseline = lib.criterion_baseline(criterion, verifications)
+        # #169: the repeat count, from the newest checks record's attempts
+        if criterion.get("repeat"):
+            newest = next((r for r in reversed(verifications) if isinstance(r, dict) and r.get("kind") == "checks"
+                           and criterion.get("id") in r.get("criteria", []) and r.get("attempts") is not None), None)
+            attempts = newest.get("attempts") if newest else None
+            failed = next((a for a in (attempts or []) if not a.get("ok")), None)
+            criterion["repeat_view"] = ({"kind": "failed", "attempt": failed["attempt"], "repeat": criterion["repeat"], "seed": failed.get("seed")}
+                                        if failed else {"kind": "passed", "attempts": len(attempts or []), "repeat": criterion["repeat"]}
+                                        if attempts else {"kind": "pending", "repeat": criterion["repeat"]})
         criterion["baseline_view"] = (
             {"kind": "not_applicable", "reason": criterion.get("baseline_reason") or ""}
             if criterion.get("baseline") == lib.BASELINE_NOT_APPLICABLE

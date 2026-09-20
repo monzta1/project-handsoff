@@ -364,7 +364,23 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
             warnings.append(f"override-undeclared: {item['path']}")
         elif item["state"] == "declared_hash_mismatch":
             warnings.append(f"override-hash-mismatch: {item['path']}")
+    # #170: a review certifies the rules set it ran under; say when it moved.
+    rules_note = None
+    try:
+        status_file = lib.status_path(root, cfg)
+        if status_file.is_file():
+            status = lib.load_unique_json(status_file)
+            review = status.get("review")
+            if isinstance(review, dict) and review.get("rules_hash"):
+                changed = lib.rules_set_diff(root, review.get("rules_entries")) \
+                    if review["rules_hash"] != lib.rules_set_hash(root, cfg) else []
+                if changed:
+                    rules_note = "rules set changed since the last review: " + ", ".join(changed)
+                    warnings.append("rules-set-changed: " + ", ".join(changed))
+    except (lib.HandsoffError, OSError, ValueError):
+        rules_note = None
     return {"ok": not any(item["state"] == "declared_stale_protocol" for item in prompt_overrides), "root": str(root), "engine": identity,
+            "rules_set": rules_note,
             "config": str(root / "handsoff.toml"),
             "adapters": lib.adapter_availability(cfg),
             "preflight": None if skip_preflight else lib.adapter_preflight(cfg, root),

@@ -43,12 +43,13 @@ class LaunchRuleTests(HandsoffTestCase):
 
     def test_the_shipped_rules_load_and_validate(self):
         rules = {r["id"]: r for r in lib.load_launch_rules(self.tmp)}
-        self.assertEqual(set(rules), {"reviewer-launch-phase-1", "reviewer-packet-tests-executed"})
+        self.assertEqual(set(rules), {"reviewer-launch-phase-1", "reviewer-packet-tests-executed", "reviewer-packet-finding-length"})
+        self.assertEqual((rules["reviewer-packet-finding-length"]["max_chars"], rules["reviewer-packet-finding-length"]["recover"]), (512, "truncate"))
         self.assertEqual(rules["reviewer-launch-phase-1"]["when"], {"command": "launch", "role": "reviewer", "phase_in": [1], "amendment": False})
         self.assertEqual(rules["reviewer-packet-tests-executed"]["allowed"], ["yes", "no", "unknown"])
         for rule in rules.values():
-            self.assertEqual(rule["cause"]["at"], "2026-09-19")
-            self.assertIn("ir-command", rule["cause"]["root"])
+            self.assertIn(rule["cause"]["at"], ("2026-09-19", "2026-09-20"))
+            self.assertTrue(rule["cause"]["root"])
         # a project's own rules join the engine's; a malformed one is an error, a duplicate id too
         mine = self.tmp / "handsoff-rules"
         mine.mkdir()
@@ -124,6 +125,26 @@ class LaunchRuleTests(HandsoffTestCase):
         with self.assertRaises(lib.HandsoffError) as ctx:
             broker.parse_reviewer_result(bad, root=self.tmp)
         self.assertNotIsInstance(ctx.exception, lib.PacketRuleViolation)
+
+    def test_a_finding_over_the_bound_is_refused_and_recovered_by_truncation(self):
+        self.init()
+        long = json.dumps({**GOOD, "decision": "changes_requested", "findings": ["incorrect_implementation: " + "x" * 700],
+                           "tests_executed": "yes"})
+        with self.assertRaises(lib.PacketRuleViolation) as ctx:
+            broker.parse_reviewer_result(long, root=self.tmp)
+        exc = ctx.exception
+        self.assertEqual(exc.field, "findings")
+        self.assertIn("each finding must be 512 characters or fewer; 1 value(s) over 512", str(exc))
+        self.assertIn("rule reviewer-packet-finding-length", str(exc))
+        self.assertEqual(exc.recovered["decision"], "changes_requested")
+        self.assertTrue(exc.recovered["findings"][0].endswith("..."))
+        self.assertLessEqual(len(exc.recovered["findings"][0]), 512 + len("other: "))
+        # a finding within the bound passes untouched
+        ok = broker.parse_reviewer_result(json.dumps({**GOOD, "decision": "changes_requested", "findings": ["other: fine"]}), root=self.tmp)
+        self.assertEqual(ok["findings"], ["other: fine"])
+        # the floor without a project still refuses, without recovery
+        with self.assertRaisesRegex(lib.HandsoffError, "findings are invalid"):
+            broker.parse_reviewer_result(long)
 
     def test_a_refused_packet_is_persisted_on_the_session_for_adoption(self):
         self.init()

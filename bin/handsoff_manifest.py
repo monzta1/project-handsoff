@@ -39,6 +39,7 @@ RUNTIME_FILES = (
     "prompts/supervisor.md",
     "rules/README.md",
     "rules/reviewer-launch-phase-1.json",
+    "rules/reviewer-packet-finding-length.json",
     "rules/reviewer-packet-tests-executed.json",
     "schemas/acceptance.schema.json",
     "schemas/status.schema.json",

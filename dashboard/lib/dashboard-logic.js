@@ -659,6 +659,17 @@ function baselineLabel(criterion) {
   return "";
 }
 
+// #169: the repeat count beside the pass: "5/5", "failed at attempt 3 (seed x)",
+// or "repeat 5" while nothing has run yet.
+function repeatLabel(criterion) {
+  const view = criterion && criterion.repeat_view;
+  if (!view || typeof view !== "object") return "";
+  if (view.kind === "passed") return `${view.attempts}/${view.repeat}`;
+  if (view.kind === "failed") return `failed at attempt ${view.attempt} of ${view.repeat}${view.seed ? ` (seed ${view.seed})` : ""}`;
+  if (view.kind === "pending") return `repeat ${view.repeat}`;
+  return "";
+}
+
 // #165 #167 #166: the [features] switches. One row per known feature from
 // the snapshot's settings.features, in the engine's own order; a snapshot
 // without the table (an older engine) renders no rows and no save.
@@ -687,6 +698,7 @@ function featuresPayload(rows, checked) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     baselineLabel,
+    repeatLabel,
     featureSwitchRows,
     featuresPayload,
     roleStation,

@@ -486,7 +486,7 @@ def parse_request(text: str) -> dict:
     return value
 
 
-def parse_reviewer_result(text: str, root: Path | None = None) -> dict:
+def parse_reviewer_result(text: str, root: Path | None = None, *, _rules_evaluated: bool = False) -> dict:
     """Parse the one bounded result a read-only Reviewer returns to its host.
     #167: packet rules (rules/*.json) are evaluated first when `root` is
     given and the project has features.launch_rules on; the built-in checks
@@ -501,7 +501,7 @@ def parse_reviewer_result(text: str, root: Path | None = None) -> dict:
     allowed = required | {"tests_executed"}
     if not isinstance(value, dict) or not required.issubset(value) or set(value) - allowed:
         raise lib.HandsoffError("Reviewer result has invalid fields")
-    if root is not None:
+    if root is not None and not _rules_evaluated:
         cfg = lib.load_config(root)
         if lib.feature_enabled(cfg, "launch_rules"):
             # a violation whose rule names recover_as carries the packet
@@ -512,7 +512,7 @@ def parse_reviewer_result(text: str, root: Path | None = None) -> dict:
             except lib.PacketRuleViolation as exc:
                 if isinstance(exc.recovered, dict):
                     try:
-                        exc.recovered = parse_reviewer_result(json.dumps(exc.recovered))
+                        exc.recovered = parse_reviewer_result(json.dumps(exc.recovered), root=root, _rules_evaluated=True)
                     except lib.HandsoffError:
                         exc.recovered = None
                 raise

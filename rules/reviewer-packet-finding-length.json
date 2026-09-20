@@ -1,0 +1,18 @@
+{
+  "id": "reviewer-packet-finding-length",
+  "cause": {
+    "root": "project-handsoff",
+    "event": "agent_session_failed",
+    "failure_category": "orchestration_noop",
+    "at": "2026-09-20",
+    "note": "The tranche-2 implementation reviewer wrote one finding of about 700 characters. The packet parser's 512-character bound refused the whole result, the session was recorded as orchestration_noop and the verdict, a real defect in report posting, had to be read out of the log by hand."
+  },
+  "when": {
+    "command": "packet",
+    "role": "reviewer",
+    "field": "findings"
+  },
+  "max_chars": 512,
+  "recover": "truncate",
+  "refuse": "reviewer packet refused: each finding must be 512 characters or fewer"
+}

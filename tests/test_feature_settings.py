@@ -25,7 +25,10 @@ class FeatureConfigTests(HandsoffTestCase):
 
     def test_defaults_when_the_table_is_absent(self):
         cfg = lib.load_config(self.tmp)
-        self.assertEqual(cfg["features"], {"failing_first": False, "launch_rules": True, "ticket_lock": True})
+        defaults = {name: default for name, (default, _text) in lib.FEATURES.items()}
+        self.assertEqual(cfg["features"], defaults)
+        self.assertEqual(defaults["failing_first"], False)
+        self.assertEqual((defaults["launch_rules"], defaults["ticket_lock"]), (True, True))
         self.assertEqual({name: item["enabled"] for name, item in lib.features_view(cfg).items()}, cfg["features"])
         for name, item in lib.features_view(cfg).items():
             self.assertEqual(item["default"], lib.FEATURES[name][0])
@@ -34,7 +37,8 @@ class FeatureConfigTests(HandsoffTestCase):
     def test_explicit_values_are_read_and_unknown_or_non_boolean_refused(self):
         self._append('\n[features]\nfailing_first = true\nticket_lock = false\n')
         cfg = lib.load_config(self.tmp)
-        self.assertEqual(cfg["features"], {"failing_first": True, "launch_rules": True, "ticket_lock": False})
+        self.assertEqual({k: cfg["features"][k] for k in ("failing_first", "launch_rules", "ticket_lock")},
+                         {"failing_first": True, "launch_rules": True, "ticket_lock": False})
         self.assertTrue(lib.feature_enabled(cfg, "failing_first"))
         self.assertFalse(lib.feature_enabled(cfg, "ticket_lock"))
         with self.assertRaisesRegex(lib.HandsoffError, "unknown workflow feature"):
@@ -55,23 +59,25 @@ class FeatureConfigTests(HandsoffTestCase):
 
     def test_update_feature_settings_patches_only_the_table_and_refuses_bad_payloads(self):
         original = self._toml().read_text()
-        result = lib.update_feature_settings(self.tmp, {"failing_first": True, "launch_rules": False, "ticket_lock": True})
-        self.assertEqual(result, {"features": {"failing_first": True, "launch_rules": False, "ticket_lock": True}})
+        defaults = {name: default for name, (default, _text) in lib.FEATURES.items()}
+        first = {**defaults, "failing_first": True, "launch_rules": False, "ticket_lock": True}
+        result = lib.update_feature_settings(self.tmp, first)
+        self.assertEqual(result, {"features": first})
         text = self._toml().read_text()
         self.assertTrue(text.startswith(original.rstrip("\n")), "everything before the table is untouched")
         self.assertIn("[features]\n", text)
         self.assertIn("failing_first = true\n", text)
         self.assertEqual(lib.load_config(self.tmp)["features"], result["features"])
         # a second save rewrites the values in place, no second table
-        lib.update_feature_settings(self.tmp, {"failing_first": False, "launch_rules": True, "ticket_lock": False})
+        second = {**defaults, "failing_first": False, "launch_rules": True, "ticket_lock": False}
+        lib.update_feature_settings(self.tmp, second)
         text = self._toml().read_text()
         self.assertEqual(text.count("[features]"), 1)
-        self.assertEqual(lib.load_config(self.tmp)["features"], {"failing_first": False, "launch_rules": True, "ticket_lock": False})
-        for bad in ({"failing_first": True}, {"failing_first": "yes", "launch_rules": True, "ticket_lock": True},
-                    {"failing_first": True, "launch_rules": True, "ticket_lock": True, "extra": True}, [], "x"):
+        self.assertEqual(lib.load_config(self.tmp)["features"], second)
+        for bad in ({"failing_first": True}, {**second, "failing_first": "yes"}, {**second, "extra": True}, [], "x"):
             with self.assertRaises(lib.HandsoffError):
                 lib.update_feature_settings(self.tmp, bad)
-        self.assertEqual(lib.load_config(self.tmp)["features"], {"failing_first": False, "launch_rules": True, "ticket_lock": False})
+        self.assertEqual(lib.load_config(self.tmp)["features"], second)
 
 
 class FeatureSettingsEndpointTests(HandsoffTestCase):
@@ -105,33 +111,28 @@ class FeatureSettingsEndpointTests(HandsoffTestCase):
     def test_snapshot_carries_features_and_the_endpoint_round_trips_and_audits(self):
         self.init()
         snapshot = dashboard.build_snapshot(self.tmp)
-        self.assertEqual({k: v["enabled"] for k, v in snapshot["settings"]["features"].items()},
-                         {"failing_first": False, "launch_rules": True, "ticket_lock": True})
+        defaults = {name: default for name, (default, _text) in lib.FEATURES.items()}
+        self.assertEqual({k: v["enabled"] for k, v in snapshot["settings"]["features"].items()}, defaults)
+        wanted = {**defaults, "failing_first": True, "launch_rules": True, "ticket_lock": False}
         server = self._serve()
         try:
-            status, payload = self._post(server, "/api/settings/features",
-                                         {"failing_first": True, "launch_rules": True, "ticket_lock": False})
+            status, payload = self._post(server, "/api/settings/features", wanted)
             self.assertEqual(status, 200, payload)
             self.assertTrue(payload["ok"])
-            self.assertEqual({k: v["enabled"] for k, v in payload["features"].items()},
-                             {"failing_first": True, "launch_rules": True, "ticket_lock": False})
-            self.assertEqual(lib.load_config(self.tmp)["features"],
-                             {"failing_first": True, "launch_rules": True, "ticket_lock": False})
+            self.assertEqual({k: v["enabled"] for k, v in payload["features"].items()}, wanted)
+            self.assertEqual(lib.load_config(self.tmp)["features"], wanted)
             events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
             audit = [e for e in events if e["kind"] == "features_updated"]
             self.assertEqual(len(audit), 1)
-            self.assertEqual(audit[0]["features"], {"failing_first": True, "launch_rules": True, "ticket_lock": False})
+            self.assertEqual(audit[0]["features"], wanted)
             # refusals: unknown key, non-boolean, wrong origin; nothing changes
-            for body in ({"failing_first": True, "launch_rules": True, "ticket_lock": False, "x": True},
-                         {"failing_first": "true", "launch_rules": True, "ticket_lock": False}):
+            for body in ({**wanted, "x": True}, {**wanted, "failing_first": "true"}):
                 status, payload = self._post(server, "/api/settings/features", body)
                 self.assertEqual(status, 400, payload)
                 self.assertFalse(payload["ok"])
-            status, payload = self._post(server, "/api/settings/features",
-                                         {"failing_first": False, "launch_rules": True, "ticket_lock": True}, origin=False)
+            status, payload = self._post(server, "/api/settings/features", defaults, origin=False)
             self.assertEqual(status, 403)
-            self.assertEqual(lib.load_config(self.tmp)["features"],
-                             {"failing_first": True, "launch_rules": True, "ticket_lock": False})
+            self.assertEqual(lib.load_config(self.tmp)["features"], wanted)
         finally:
             server.shutdown()
             server.server_close()

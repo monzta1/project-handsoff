@@ -12,8 +12,9 @@ verdict recoverable through `session-result-adopt` when the file says
 Predicates (`when`): `command` is `launch` or `packet`; `role` is one of
 the managed roles; `phase_in` is a list of phase numbers (launch rules);
 `amendment` is true or false (launch rules; absent means either); `field`
-names the packet field (packet rules) and `allowed` lists its exact
-accepted values.
+names the packet field (packet rules); `allowed` lists its exact accepted
+values (with optional `recover_as`, one of them), or `max_chars` bounds a
+string or every string in a list (with optional `recover: "truncate"`).
 
 `rules/proposed/` holds drafts written by `analyze-archives
 --propose-rules`. Nothing there is evaluated: a human moves a draft up
