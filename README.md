@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.66/project_handsoff-0.3.66-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.66/project_handsoff-0.3.66-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.67/project_handsoff-0.3.67-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.67/project_handsoff-0.3.67-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -1185,12 +1185,12 @@ What stays in the engine:
 The Miner is found through `HANDSOFF_MINER` (an executable), else `miner` on
 `PATH`, else `miner` beside the engine's own interpreter. The engine
 release names the Miner release it was verified with (`MINER_RELEASE`,
-v0.1.0 for v0.3.62); the dedicated environment gets it from that release's
+v0.2.0 since v0.3.67); the dedicated environment gets it from that release's
 wheel, the repository being private:
 
 ```bash
-gh release download v0.1.0 --repo monzta1/miner --pattern 'miner-*.whl' --dir /tmp
-~/.local/share/handsoff/venv/bin/pip install /tmp/miner-0.1.0-py3-none-any.whl
+gh release download v0.2.0 --repo monzta1/miner --pattern 'miner-*.whl' --dir /tmp
+~/.local/share/handsoff/venv/bin/pip install /tmp/miner-0.2.0-py3-none-any.whl
 ``` Tests of the trigger and the shim use a fake `miner`
 on `PATH`; the equality of the Miner's report with the engine's former scan
 is proven in the Miner's own repository.
