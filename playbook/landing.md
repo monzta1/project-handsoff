@@ -35,5 +35,8 @@ with the checkout. The order, with the refusal each step prevents:
 8. Close the issue with the written result per acceptance line,
    `run-close --by <you> --reason`, copy the four ledgers plus
    `.handsoff-event-head.json` into `.handsoff-archive/<date>-lane-<x>/`,
-   remove the worktree and branch. The dashboard port is released by
-   `advance 8`.
+   then `handsoff fleet unregister <worktree>` and only then
+   `git worktree remove` and delete the branch. `run-close` always comes
+   before the worktree goes: a root removed with its run still open is
+   forgotten by Fleet after one pass, but the log line says the run was
+   never closed (#207). The dashboard port is released by `advance 8`.

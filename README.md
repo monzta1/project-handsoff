@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.60/project_handsoff-0.3.60-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.60/project_handsoff-0.3.60-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.61/project_handsoff-0.3.61-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.61/project_handsoff-0.3.61-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -593,6 +593,28 @@ Cause: the rules for running a lane lived in one project's local,
 gitignored knowledge base on one machine; a host on the Studio would start
 without them. Fix: `playbook/` in the wheel, `handsoff playbook`, and the
 briefing carrying it on every launch.
+
+### v0.3.61 field notes: forgotten roots, and the reviewer blamed for a temp file (#207, #203)
+
+#207. Cause: `init` registers the lane's worktree with Fleet; nothing
+removed the entry when the worktree went, so nine ORPHANED cards stood
+after one day of lanes. Fix: a root that is gone is ORPHANED for one Fleet
+pass (`missing_since` on the entry), then forgotten with one
+`fleet_entry_forgotten` line in `~/.handsoff/fleet.log` naming its last
+state and whether the run was never closed; a transient absence clears
+the mark; the card carries FORGET (`/api/forget`), never Close Run.
+
+#203. Cause, found by running the module under an instrumented digest:
+the runtime's own atomic writers leave `..handsoff-live.json.tmp-<pid>-<hex>`
+on disk for a few milliseconds, and `..handsoff` escaped the `.handsoff`
+exclusion. The reviewer's tree was scanned twice (paths, then digest);
+a scan that landed in that window saw a file the other did not, and the
+managed reviewer was blamed for a tree it never touched. Every CI sighting
+named a sibling test's `PROBE.py` only because the runner's log interleaves
+that test's output. Fix: in-flight Handsoff temp files are excluded, both
+views come from one scan, the failure record says what was seen (path,
+appeared/vanished/changed, mtime, seconds after session start), and the
+post-exit reader drain has its own 60 s budget instead of the 5 s join.
 
 ### Cutting a release
 

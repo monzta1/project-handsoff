@@ -56,6 +56,8 @@ DECLINE_RESULT_PREFIX = "HANDSOFF_DESIGN_DECLINE:"
 MANAGED_ROLE_ENV = "HANDSOFF_MANAGED_SESSION_ROLE"
 MANAGED_SESSION_ENV = "HANDSOFF_MANAGED_SESSION_ID"
 MAX_AGENT_TASK_BYTES = 16 * 1024
+#: #203: how long an output reader may keep draining after the child exited.
+READER_DRAIN_SECONDS = 60
 MAX_REPLACEMENT_INPUT_BYTES = 64 * 1024
 MAX_SUPERVISOR_REQUESTS = 8
 FOLLOWUP_DESIGN_TOKEN_BUDGET = 16_000
@@ -214,6 +216,40 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
     # rules without configuration.
     text = f"{lib.playbook_section(topic)}\n\n{text}"
     return text
+
+
+def _session_started_at(root: Path, session_id: str) -> str | None:
+    try:
+        with lib.project_lock(root):
+            status = lib.load_unique_json(lib.status_path(root, lib.load_config(root)))
+        return ((status.get("agent_sessions") or {}).get(session_id) or {}).get("started_at")
+    except (lib.HandsoffError, OSError, ValueError):
+        return None
+
+
+def _describe_tree_changes(root: Path, before: dict, after: dict, changed_paths: list[str], started_at: str | None) -> list[dict]:
+    """#203: one record per changed path: appeared, vanished or changed, the
+    file's mtime, and how many seconds after the session started it was
+    written (negative means before). Content-free: paths and times only."""
+    out = []
+    try:
+        started = datetime.fromisoformat(started_at) if isinstance(started_at, str) else None
+    except ValueError:
+        started = None
+    for path in changed_paths[:16]:
+        kind = "appeared" if before.get(path) is None else "vanished" if after.get(path) is None else "changed"
+        mtime = None
+        offset = None
+        try:
+            stat = (Path(root) / path).stat()
+            written = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            mtime = written.isoformat()
+            if started is not None:
+                offset = round((written - started).total_seconds(), 3)
+        except OSError:
+            pass
+        out.append({"path": path, "kind": kind, "mtime": mtime, "seconds_after_session_start": offset})
+    return out
 
 
 def _completed_operations_section(root: Path, session_id: str | None) -> str:
@@ -818,9 +854,15 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     portable_output = _PortableOutput(
         root, session_id, spec.role, spec.adapter, spec.stdin, child_env,
     )
-    repository_digest_before = ({"entries": lib.repository_digest_entries(root, lib.load_config(root)),
-                                 "digest": lib.repository_digest(root, lib.load_config(root))}
-                                if spec.role == "reviewer" else None)
+    if spec.role == "reviewer":
+        # #203: one scan, both views: the digest is derived from the same
+        # entries the changed-path list is built from, so a file that
+        # exists only between two scans cannot change one and not the other.
+        entries_before = lib.repository_digest_entries(root, lib.load_config(root))
+        repository_digest_before = {"entries": entries_before,
+                                    "digest": lib.repository_digest_from_entries(entries_before)}
+    else:
+        repository_digest_before = None
     try:
         process = popen_factory(
             list(spec.argv),
@@ -1094,9 +1136,14 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             root, session_id, process, stop_first=not isinstance(exc, BrokenPipeError),
         )
         raise AgentLaunchError(f"agent runner I/O failed: {type(exc).__name__}", session_id) from exc
+    # #203: the child has exited, so what the readers are still doing is
+    # draining a pipe the kernel already holds; on a loaded runner that
+    # drain (tail writes, usage parsing) can outlast a 5 s join. The child's
+    # exit is the outcome, so the drain gets a budget of its own; only a
+    # grandchild that keeps the pipe open past it is "did not close".
     if reader:
         try:
-            reader.join(timeout=5)
+            reader.join(timeout=READER_DRAIN_SECONDS)
             reader_alive = reader.is_alive()
         except KeyboardInterrupt as exc:
             try:
@@ -1122,7 +1169,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             ) from reader_errors[0]
     if stderr_reader:
         try:
-            stderr_reader.join(timeout=5)
+            stderr_reader.join(timeout=READER_DRAIN_SECONDS)
             stderr_alive = stderr_reader.is_alive()
         except Exception as exc:
             _terminalize_runner_io_failure(root, session_id, process, stop_first=True)
@@ -1268,15 +1315,22 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         after = lib.repository_digest_entries(root, lib.load_config(root))
         changed_paths = [path for path in sorted(set(before) | set(after))
                          if before.get(path) != after.get(path)][:64]
-        digest_changed = isinstance(repository_digest_before, dict) and repository_digest_before.get("digest") != lib.repository_digest(root, lib.load_config(root))
+        digest_changed = isinstance(repository_digest_before, dict) \
+            and repository_digest_before.get("digest") != lib.repository_digest_from_entries(after)
         sandboxed = Path(spec.cwd).resolve() != Path(root).resolve()
         if (changed_paths or digest_changed) and not sandboxed:
             # The reviewer ran inside the tree, so a change is its own doing.
+            # #203: say what was seen, so a sighting on a loaded runner can be
+            # read: for each path, whether it appeared, vanished or changed,
+            # and when the file on disk was last written relative to the
+            # session's start.
             failure = {"category": "reviewer_modified_project",
                        "reason": "managed Reviewer modified the project tree",
-                       "tail_sha256": hashlib.sha256(b"").hexdigest(), "changed_paths": changed_paths or ["<repository-digest-changed>"]}
+                       "tail_sha256": hashlib.sha256(b"").hexdigest(), "changed_paths": changed_paths or ["<repository-digest-changed>"],
+                       "changes": _describe_tree_changes(root, before, after, changed_paths, _session_started_at(root, session_id))}
             end_session("failed", exit_code=1, failure=failure)
-            raise AgentLaunchError("Reviewer modified the project tree", session_id)
+            raise AgentLaunchError("Reviewer modified the project tree: " + ", ".join(
+                f"{c['path']} {c['kind']}" for c in failure["changes"][:4]) or "Reviewer modified the project tree", session_id)
         if changed_paths or digest_changed:
             # #92: a sandboxed reviewer cannot write outside its scratch cwd,
             # so a changed tree is the host's doing; attribute it and keep

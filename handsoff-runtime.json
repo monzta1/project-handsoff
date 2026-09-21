@@ -1,13 +1,13 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "b4a0e9176a6d23b87db97d53da44c35a95d53ec503a157873623473185f6bf7d",
+    "bin/handsoff_agent.py": "d9f39b1cbc7519a491eddff09e6e4f8efdaacdbe6bf3832bedc2366da9c2225f",
     "bin/handsoff_analyzer.py": "31495f7b0c481ee8a6a585f4c339e044439d7adca47608c9d9cdc607d03cc7e6",
     "bin/handsoff_broker.py": "99fea610e9b60dd4ba75e049c540ec41dd1f949379aeab5188cf3fd58f5110ce",
     "bin/handsoff_cli.py": "90ecdd4de811e4a1003487437bff9f2aa9dcbe50d1be9456d46e5baba1415da4",
     "bin/handsoff_dashboard.py": "e1fcec4be7aa1810e7d47f0ca3a26864eda0652d86ed293375dc560c31417413",
-    "bin/handsoff_fleet.py": "19d7de72df7b2949b35e610ae19da10bea4533a2f0268edf42a1b1bab85a3ea6",
+    "bin/handsoff_fleet.py": "3a57dc489bd6718093147272dd918d509135ab4e44937fba546891232c5b9e12",
     "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
-    "bin/handsoff_lib.py": "0da07fb704006f9a480fe80f5e6b868efcfb70000ecda085e857d191f3c0188c",
+    "bin/handsoff_lib.py": "a41ce6646b7733c7db2e7ef92c1a75cb2997b99620933e50d92ba0b011b6ed51",
     "bin/handsoff_manifest.py": "23eb3274615e25937ab082866b565602d9b48d75c221268485cc2a7c1ce864c8",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
     "bin/handsoff_supervisor.py": "e84704c88cb5ad19efcb88a0f58909f3f9b7ef579daf283d2a0d1f80c4a940b5",
@@ -20,14 +20,14 @@
     "dashboard/regression.html": "1cb3e80958281d15e8ac14e49035e9bcab43870041571cd8fd25f7a663370215",
     "dashboard/regression.js": "0603c0eae773d9c4b27757ba4047c7f9c06377de6d2ab7426b71b13aa2d64101",
     "dashboard/styles.css": "a9bd8b82dff16c9223395cc7a19c5b4de0bc0482c9e8d752e3e52c8c5c116343",
-    "fleet/app.js": "572d6f0b1a43f8eb00dc88ce85a3fbdcb4816698208089246241824dbac76088",
+    "fleet/app.js": "374115d41b99646e56d95101fca9d85e3eabcbdeee12179db759f7241ad15d79",
     "fleet/index.html": "a103d815e7ad912897a260e327fb9a3b2cd0f7251deaa0025ec7a59e34c1f500",
     "fleet/metrics.html": "3e66f7d5c29e7dc89a5d4716ebbc66913149df6a220f708f5fe14bfdd37355bf",
     "fleet/metrics.js": "9c1d75ac1f2526e36081b2f2a552258b65ee27e9b7a293f07224d9ec400bd56f",
-    "fleet/styles.css": "b704cb70864e48316e1de85abc40e73741953352f661c843897942eeba053bd8",
+    "fleet/styles.css": "2a86c5a78f00c55c366511d37c7135b982ef7b3550117f8f89a6d76958e1c7bc",
     "playbook/INDEX.md": "a777dfd04a52c01469d1256c64ea269679a22de90cefb37821780a292ca5560e",
     "playbook/index.json": "22147c514d20f0132f783b23c1ec0266ddbe5f0970237f776ca3f475251d6f16",
-    "playbook/landing.md": "d52c67c45711ba7fc7c8ab1757db26a2e87317da9ed91d96103ec8a32b6be2f3",
+    "playbook/landing.md": "5987f6646825312db48d68b7e8e768a3d28e62df4b4d279490b19c2d7c15934e",
     "playbook/lanes.md": "5e72099253fd34a2240db7d01c92b3ed025ab595e112a124dc21ef9b2fde6f1b",
     "playbook/lessons.md": "b90a350bfbbb36218b40421b1840b3908ce13e34447b19bab6198a3422dfbfd0",
     "playbook/reviewers.md": "f77b55aee806161e76acf74c79790f4339704ba1d0fce6e723dcb32ef5ed5787",
@@ -40,9 +40,9 @@
     "rules/reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "rules/reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
     "schemas/acceptance.schema.json": "80b910b8971861820fcec06b28531cdafc5871ef767211c24616803b13b896ec",
-    "schemas/status.schema.json": "0f587df1e84e7cb9bc54a9f22e7b2972b312515c3a1c536c818dee56b10b633b",
+    "schemas/status.schema.json": "37d446b4e8da758ad0d0cd35c9a648d82c813dd5e17527d712545badd56f358e",
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },
   "schema": 1,
-  "version": "v0.3.60"
+  "version": "v0.3.61"
 }
