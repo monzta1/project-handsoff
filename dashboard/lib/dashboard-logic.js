@@ -3,6 +3,25 @@
 // unmodified in both a <script> tag (as globals) and plain Node via
 // require() -- see the module.exports guard at the bottom.
 
+// #215: one line for the replacement pause: what the previous Implementer
+// session said it finished, from its ledgered account, never from its
+// transcript. Empty when there is no such account.
+function progressSummaryLabel(progress) {
+  if (!progress || typeof progress !== "object" || !progress.summary) return "";
+  const summary = progress.summary;
+  const parts = [];
+  const done = Array.isArray(summary.done) ? summary.done : [];
+  const partial = Array.isArray(summary.partial) ? summary.partial : [];
+  const untouched = Array.isArray(summary.untouched) ? summary.untouched : [];
+  if (done.length) {
+    const withTests = done.filter((c) => progress.tests && progress.tests[c]);
+    parts.push(`${done.join(", ")} done${withTests.length === done.length ? " with tests" : withTests.length ? ` (${withTests.length} with tests)` : ""}`);
+  }
+  if (partial.length) parts.push(`${partial.join(", ")} partial`);
+  if (untouched.length) parts.push(`${untouched.join(", ")} untouched`);
+  return parts.join("; ");
+}
+
 // #164: one word per role chiclet naming the agent family at that station.
 // The station's recorded actor wins (claude-* or codex-*, exactly, so a
 // finished station keeps its word); the configured adapter is the fallback
@@ -908,5 +927,6 @@ if (typeof module !== "undefined" && module.exports) {
     ciCellLabel,
     ciTicked,
     ciNote,
+    progressSummaryLabel,
   };
 }

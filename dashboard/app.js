@@ -1368,12 +1368,21 @@ function renderCrew(crew) {
     </div>`).join("");
 }
 
-function renderReplacements(replacements, recoveries = []) {
+function renderReplacements(replacements, recoveries = [], implementerProgress = null) {
   const total = replacements.length + recoveries.length;
   // #184: the card exists once there is something in it.
   const panel = $("replacement-panel");
-  if (panel) panel.classList.toggle("hidden", total === 0);
+  if (panel) panel.classList.toggle("hidden", total === 0 && !implementerProgress);
   $("replacement-count").textContent = `${total} EVENT${total === 1 ? "" : "S"}`;
+  // #215: the previous Implementer's ledgered account, so the pause says
+  // what was finished before anyone reads a diff.
+  const progressLine = progressSummaryLabel(implementerProgress);
+  const progressRow = progressLine
+    ? `<div class="replacement-item progress-item" data-progress-session="${escapeHtml(implementerProgress.session_id)}">
+      <strong>IMPLEMENTER PROGRESS · ${escapeHtml(implementerProgress.session_id)}</strong>
+      <p>${escapeHtml(progressLine)}</p>
+    </div>`
+    : "";
   const recoveryRows = recoveries.slice().reverse().map((item) => `
     <div class="replacement-item recovery-item" data-recovery-id="${escapeHtml(item.recovery_id)}">
       <strong>RECOVERY · ${escapeHtml(String(item.role || "agent").toUpperCase())} · ${escapeHtml(String(item.state || "unknown").replaceAll("_", " ").toUpperCase())} · ATTEMPT ${escapeHtml(item.attempt)}/${escapeHtml(item.cap)}</strong>
@@ -1384,8 +1393,8 @@ function renderReplacements(replacements, recoveries = []) {
       <strong>${escapeHtml(replacementHeadline(replacement))}</strong>
       <p>${escapeHtml(replacementDetail(replacement))}</p>
     </div>`);
-  $("replacement-list").innerHTML = total
-    ? [...recoveryRows, ...replacementRows].join("")
+  $("replacement-list").innerHTML = total || progressRow
+    ? [progressRow, ...recoveryRows, ...replacementRows].join("")
     : '<div class="attention-clear">No agent replacements or recoveries recorded.</div>';
 }
 
@@ -1580,7 +1589,7 @@ function render(snapshot) {
   renderQuestions(snapshot.questions || null);
   renderAttention(supervisor.attention);
   renderCrew(state.crew);
-  renderReplacements(state.replacements, snapshot.recovery?.attempts || []);
+  renderReplacements(state.replacements, snapshot.recovery?.attempts || [], snapshot.recovery?.implementer_progress || null);
   renderReviewAttempts(snapshot.review?.attempts || []);
   renderRoleChiclets(status.status === "closed" ? null : snapshot.actors.active_role, snapshot);
   renderEvents(snapshot.events, snapshot.audit.event_count);

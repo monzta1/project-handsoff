@@ -1184,6 +1184,7 @@ def build_snapshot(root: Path) -> dict:
             } for item in (status.get("review_attempts") or [])],
         },
         "recovery": {
+            "implementer_progress": lib.latest_failed_implementer_progress(status),  # #215
             "assessment": recovery_assessment,
             "lease": status.get("recovery_lease"),
             "attempts": list((status.get("recovery_attempts") or [])[-8:]),

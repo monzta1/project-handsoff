@@ -69,3 +69,12 @@ only when they touch different files; the second to land rebases (keep both
 sides, then `node --check` and `python3 -c "import ast"` on every merged
 file), regenerates the manifest, re-verifies, reaffirms. Landing is serial
 by construction: one installed engine, one live verification at a time.
+
+**One criterion per Implementer launch (#215).** When the registry has
+more than three automated criteria, brief the managed Implementer one
+criterion (or one small group) per launch. A 120,000-token budget ran
+out twice on 2026-09-19, at seven and at three criteria, and each time the
+tree held a mostly usable diff with no account of what was done. Since
+v0.3.70 the Implementer prints `HANDSOFF_PROGRESS` per criterion and a
+relaunch receives the done list, but a launch that fits its budget never
+needs the account.

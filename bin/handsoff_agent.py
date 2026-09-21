@@ -171,6 +171,9 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
                 "Write only inside the current directory.\n\n" + text)
     if role == "implementer":
         text = f"{lib.implementer_permissions_section(root)}\n\n{text}"
+        progress = _progress_section(root, role)  # #215: a relaunch knows what was finished
+        if progress:
+            text = f"{text}\n\n{progress}"
     if role in {"architect", "reviewer"}:
         # #121: the sandbox cannot take the project lock; the host records
         # every protocol line, so supervisor commands are never the answer.
@@ -250,6 +253,36 @@ def _describe_tree_changes(root: Path, before: dict, after: dict, changed_paths:
             pass
         out.append({"path": path, "kind": kind, "mtime": mtime, "seconds_after_session_start": offset})
     return out
+
+
+def _progress_section(root: Path, role: str) -> str:
+    """#215: what the previous failed Implementer session of this run said
+    it finished, so a relaunch does not redo it; empty on a first launch or
+    for any other role."""
+    if role != "implementer":
+        return ""
+    try:
+        with lib.project_lock(root):
+            status = lib.load_unique_json(lib.status_path(root, lib.load_config(root)))
+        previous = lib.latest_failed_implementer_progress(status)
+    except (lib.HandsoffError, OSError, ValueError):
+        previous = None
+    if not previous:
+        return ""
+    summary = previous["summary"]
+    lines = ["# Progress so far", "",
+             f"The previous Implementer session ({previous['session_id']}) ended before finishing. Its ledgered account:"]
+    for criterion in summary.get("done", []):
+        test = previous["tests"].get(criterion)
+        lines.append(f"- {criterion}: done" + (f" (test: {test})" if test else ""))
+    for criterion in summary.get("partial", []):
+        lines.append(f"- {criterion}: partial; check the tree before continuing")
+    for criterion in summary.get("untouched", []):
+        lines.append(f"- {criterion}: untouched")
+    if previous.get("changed_paths"):
+        lines.append("Paths it changed: " + ", ".join(previous["changed_paths"][:16]))
+    lines.append("Do not redo a done criterion; run its test to confirm, then continue with the rest.")
+    return "\n".join(lines)
 
 
 def _completed_operations_section(root: Path, session_id: str | None) -> str:
@@ -997,6 +1030,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         if _raise_question_line(root, spec.role, session_id, line, question_errors):
                             question_lines[0] += 1
                         _parse_operation_line(line, root, session_id, spec.role)
+                        _parse_progress_line(line, root, session_id, spec.role)
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                             persist_new(supervisor_requests, "supervisor_request")
@@ -1546,6 +1580,28 @@ def _claude_logical_lines(line: str) -> list[str]:
                 collect(child)
     collect(event)
     return "\n".join(texts).splitlines() if texts else []
+
+
+PROGRESS_PREFIX = "HANDSOFF_PROGRESS:"
+
+
+def _parse_progress_line(line: str, root: Path, session_id: str, role: str) -> None:
+    """#215: persist a valid per-criterion progress claim from the
+    Implementer on its session; a malformed line is a protocol warning and
+    never a failure; another role's line is ignored."""
+    if role != "implementer" or not line.startswith(PROGRESS_PREFIX):
+        return
+    try:
+        record = lib.validate_progress_line(json.loads(line[len(PROGRESS_PREFIX):].strip()))
+    except (ValueError, TypeError):
+        record = None
+    if record is None:
+        lib.count_operation_warning(root, session_id, role, "protocol_warnings")
+        return
+    try:
+        lib.record_session_progress(root, session_id, record)
+    except Exception:
+        return  # telemetry never turns a child outcome into a failure
 
 
 def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> None:
