@@ -191,11 +191,16 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
         probe = self.tmp / "PROBE.py"
         factory = mock.Mock(side_effect=lambda *a, **k: _FakeProcess(
             APPROVED, side_effect=lambda: probe.write_text("print('reviewer edit')\n")))
-        with self.assertRaisesRegex(runtime.AgentLaunchError, "modified the project tree"):
+        with self.assertRaisesRegex(runtime.AgentLaunchError, "modified the project tree: PROBE.py appeared"):
             runtime.execute_launch(self._spec(cwd=self.tmp), popen_factory=factory, beacon_interval=0.01)
         _, _, failure = self._session("reviewer")
         self.assertEqual(failure["category"], "reviewer_modified_project")
         self.assertIn("PROBE.py", failure["changed_paths"])
+        # #203: the record says what was seen, so a sighting can be read
+        change = next(c for c in failure["changes"] if c["path"] == "PROBE.py")
+        self.assertEqual(change["kind"], "appeared")
+        self.assertIsNotNone(change["mtime"])
+        self.assertGreaterEqual(change["seconds_after_session_start"], -1.0)
 
     def test_phase5_launch_refused_until_symptom_and_evidence_exist(self):
         self.init("Launch refusal fixture")

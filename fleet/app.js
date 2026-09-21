@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 let fleet = null;
 let pending = null;
 
-const ENDPOINTS = { release: "/api/release-port", close: "/api/close-run", reopen: "/api/reopen-run" };
+const ENDPOINTS = { release: "/api/release-port", close: "/api/close-run", reopen: "/api/reopen-run", forget: "/api/forget" };
 const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "quiet", "complete", "closed", "idle", "orphaned"];
 // #150/#154: only a run that is moving belongs in the grid; finished runs and
 // projects with no run at all sit in the collapsed section.
@@ -164,6 +164,9 @@ function projectCard(project) {
   const decisions = project.decisions || [];
   const title = project.initialized ? (project.feature || "No active mission") : "No active run";
   const phase = project.initialized ? `${esc(project.phase || "Uninitialized")}` : esc(project.error || "Not initialized");
+  // #207: a root that is gone says since when; the card is forgotten on the next pass.
+  const missing = state === "orphaned" && project.missing_since
+    ? ` · <span class="missing">MISSING since ${esc(stamp(project.missing_since))}, forgotten on the next pass</span>` : "";
   const link = project.dashboard_url
     ? `<a class="open-dashboard" href="${esc(project.dashboard_url)}" target="_blank" rel="noopener">OPEN DASHBOARD</a>`
     : `<span class="dashboard-note">${esc(project.dashboard_note)}</span>`;
@@ -178,7 +181,7 @@ function projectCard(project) {
     <div class="project-title">${project.logo_url ? `<img class="project-logo" src="${esc(project.logo_url)}" alt="" width="44" height="44">` : ""}<div><h3>${esc(title)}</h3>
     <p class="project-name">${esc(project.name)}${hostTag(project)}</p></div></div>
     ${phaseRail(project)}
-    <p class="phase">${phase}${asleepSuffix(project)}</p>
+    <p class="phase">${phase}${asleepSuffix(project)}${missing}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}
     ${Array.isArray(project.claimed_twice) && project.claimed_twice.length ? `<p class="claimed-twice">CLAIMED TWICE: ${esc(project.claimed_twice.map((n) => "#" + n).join(", "))} is also listed by another live run</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
@@ -189,7 +192,9 @@ function projectCard(project) {
       ${link}
       <span class="spacer"></span>
       ${project.owner ? `<button data-op="release" data-root="${esc(project.root)}">RELEASE PORT</button>` : ""}
-      ${state === "closed" && project.run_closed
+      ${state === "orphaned"
+        ? `<button class="danger" data-op="forget" data-root="${esc(project.root)}">FORGET</button>`
+        : state === "closed" && project.run_closed
         ? `<button data-op="reopen" data-root="${esc(project.root)}">REOPEN RUN</button>`
         : `<button class="danger" data-op="close" data-root="${esc(project.root)}">CLOSE RUN</button>`}
     </div>
@@ -234,7 +239,7 @@ function openConfirm(op, root) {
   const project = fleet.projects.find((item) => item.root === root);
   pending = { op, project };
   const active = (project.sessions || []).filter((session) => ["launching", "running"].includes(session.state));
-  $("confirm-title").textContent = op === "release" ? "Release owned dashboard port" : op === "reopen" ? "Reopen closed run" : "Close run";
+  $("confirm-title").textContent = op === "release" ? "Release owned dashboard port" : op === "reopen" ? "Reopen closed run" : op === "forget" ? "Forget a root that is gone" : "Close run";
   $("confirm-context").textContent = [
     `Project: ${project.name}`, `Feature: ${project.feature || "none"}`, `State: ${project.state}`,
     `Owned port: ${project.owner?.port || "none"}`,
@@ -242,9 +247,10 @@ function openConfirm(op, root) {
     op === "close"
       ? (active.length ? "Effect: owned live sessions will be cancelled, audited, then owned ports released." : "Effect: closure is audited and owned ports are released.")
       : op === "release" ? "Effect: only the verified run-owned dashboard listener is stopped."
+      : op === "forget" ? "Effect: the register entry is removed and one line goes to the fleet log; nothing on disk is touched (there is nothing there)."
       : "Effect: workflow state reopens; durable history remains unchanged.",
   ].join("\n");
-  $("reason-wrap").classList.toggle("hidden", op === "release");
+  $("reason-wrap").classList.toggle("hidden", op === "release" || op === "forget");
   $("reason").value = "";
   $("confirm").showModal();
 }
@@ -253,7 +259,7 @@ $("confirm").addEventListener("close", async () => {
   if ($("confirm").returnValue !== "default" || !pending) return;
   const { op, project } = pending;
   const reason = $("reason").value.trim();
-  if (op !== "release" && !reason) { toast("Reason required"); pending = null; return; }
+  if (op !== "release" && op !== "forget" && !reason) { toast("Reason required"); pending = null; return; }
   const active = (project.sessions || []).some((session) => ["launching", "running"].includes(session.state));
   try {
     const response = await fetch(ENDPOINTS[op], {

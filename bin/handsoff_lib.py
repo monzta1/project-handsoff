@@ -3159,7 +3159,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 
 
 def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "result_available", "adopted"} \
+    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted"} \
             or not {"category", "reason", "tail_sha256"} <= set(value):
         raise HandsoffError("agent failure classification is invalid")
     category = value.get("category")
@@ -3180,6 +3180,22 @@ def _validate_failure_classification(value: object) -> dict:
         if not isinstance(value["changed_paths"], list) or len(value["changed_paths"]) > 64 or not all(isinstance(item, str) for item in value["changed_paths"]):
             raise HandsoffError("agent failure changed paths are invalid")
         result["changed_paths"] = list(value["changed_paths"])
+    if "changes" in value:
+        # #203: what the tree looked like when the reviewer was blamed
+        changes = value["changes"]
+        if not isinstance(changes, list) or len(changes) > 16:
+            raise HandsoffError("agent failure changes are invalid")
+        kept = []
+        for item in changes:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str) \
+                    or item.get("kind") not in {"appeared", "vanished", "changed"} \
+                    or not (item.get("mtime") is None or isinstance(item["mtime"], str)) \
+                    or not (item.get("seconds_after_session_start") is None
+                            or isinstance(item["seconds_after_session_start"], (int, float))):
+                raise HandsoffError("agent failure changes are invalid")
+            kept.append({"path": item["path"], "kind": item["kind"], "mtime": item.get("mtime"),
+                         "seconds_after_session_start": item.get("seconds_after_session_start")})
+        result["changes"] = kept
     if "adopted" in value:
         if value["adopted"] is not True:
             raise HandsoffError("agent failure adopted flag is invalid")
@@ -5009,14 +5025,14 @@ def validate_status_schema(status: dict) -> list[str]:
                     continue
                 try:
                     normalized = _validate_failure_classification({
-                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation")
+                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes")
                         if isinstance(failure, dict) and key in failure
                     }) if isinstance(failure, dict) else None
                 except HandsoffError as exc:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
                 allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
-                                  "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged"}
+                                  "changes", "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged"}
                 if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
                     errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
@@ -9459,6 +9475,9 @@ def _digest_listing(root: Path, cfg: dict) -> list[str]:
                               for glob in ignores)})
 
 
+HANDSOFF_TEMP_COMPONENT = re.compile(r"\.*handsoff[^/]*\.tmp-?\d+[^/]*")
+
+
 def _digest_excluded(relative: str, state_files: set[str]) -> bool:
     """Runtime bookkeeping never counts as repository content. Beyond the
     enumerated names, every `.handsoff*` path component is Handsoff side
@@ -9479,6 +9498,13 @@ def _digest_excluded(relative: str, state_files: set[str]) -> bool:
     # recorded on every initialized and agent_session_launching event.
     if any(part.startswith(".handsoff") for part in parts):
         return True
+    # #203: the in-flight temp file of Handsoff's own atomic writers
+    # (`..handsoff-live.json.tmp-<pid>-<hex>`, `handsoff-status.json.tmp<pid>`)
+    # exists for a few milliseconds between write and rename. A digest scan
+    # that lands in that window used to see a file the other scan did not,
+    # and a managed reviewer was blamed for a tree it never touched.
+    if any(HANDSOFF_TEMP_COMPONENT.fullmatch(part) for part in parts):
+        return True
     # handsoff.toml is Handsoff's own configuration, not the product under
     # test: a live_commands line or a budget tweak must not read as source
     # drift (#93). What configuration CAN change the meaning of evidence,
@@ -9496,6 +9522,15 @@ def _digest_entry(root: Path, relative: str) -> str | None:
     if not path.is_file():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def repository_digest_from_entries(entries: dict[str, str | None]) -> str:
+    """The digest `repository_digest` would produce for one scan's entries,
+    so a caller that already holds the per-path scan does not list the tree
+    a second time (#203: two scans can disagree on a file that only
+    existed between them)."""
+    pairs = [[relative, entries[relative]] for relative in sorted(entries)]
+    return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
 
 
 def repository_digest(root: Path, cfg: dict | None = None) -> str:

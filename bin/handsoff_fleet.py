@@ -60,14 +60,14 @@ def load_registry(path: Path | None = None) -> list[dict]:
     seen = set()
     for item in payload["projects"]:
         if not isinstance(item, dict) or not {"root", "registered_at"} <= set(item) \
-                or set(item) - {"root", "registered_at", *REGISTRY_LOCK_KEYS}:
+                or set(item) - {"root", "registered_at", REGISTRY_MISSING_KEY, *REGISTRY_LOCK_KEYS}:
             raise lib.HandsoffError("Fleet registry contains an invalid project")
         root = str(Path(item["root"]).expanduser().resolve())
         if root not in seen:
             entry = {"root": root, "registered_at": item["registered_at"]}
             # #166: what the ticket lock wrote last (informational; the run's
             # own status file on disk is what the lock reads).
-            for key in REGISTRY_LOCK_KEYS:
+            for key in (*REGISTRY_LOCK_KEYS, REGISTRY_MISSING_KEY):
                 if key in item:
                     entry[key] = item[key]
             result.append(entry)
@@ -77,6 +77,94 @@ def load_registry(path: Path | None = None) -> list[dict]:
 
 #: #166: optional per-entry fields the ticket lock maintains.
 REGISTRY_LOCK_KEYS = ("work_items", "state", "updated_at")
+#: #207: a register entry whose root vanished is forgotten once it has been
+#: gone for a full pass, never on a transient absence; the entry records
+#: when it was first seen missing.
+REGISTRY_MISSING_KEY = "missing_since"
+#: #207: the forget interval. A root is marked missing_since by the first
+#: Fleet pass that finds it gone and removed by the first pass at or after
+#: this many seconds from that mark; build_fleet runs a pass on every page
+#: poll (5 s), so ORPHANED shows for this long plus at most one poll.
+FORGET_AFTER_SECONDS = 60.0
+
+
+def fleet_log_path(path: Path | None = None) -> Path:
+    """The fleet log lives beside the register it describes."""
+    return (path or registry_path()).parent / "fleet.log"
+
+
+def _fleet_log(line: str, path: Path | None = None) -> None:
+    try:
+        path = fleet_log_path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now(timezone.utc).isoformat()} {line}\n")
+    except OSError:
+        pass
+
+
+def forget_missing_roots(path: Path | None = None, *, now: datetime | None = None,
+                         forget_after: float = FORGET_AFTER_SECONDS) -> list[dict]:
+    """#207: every registered root that no longer exists is marked
+    missing_since on first sight and forgotten (unregistered, with one log
+    line naming its last state and whether the run was ever closed) once it
+    has been missing for `forget_after` seconds. A root that is back clears
+    the mark. Returns the entries forgotten on this pass."""
+    now = now or datetime.now(timezone.utc)
+    projects = load_registry(path)
+    changed = False
+    forgotten = []
+    retained = []
+    for item in projects:
+        root = Path(item["root"])
+        if root.exists():
+            if item.pop(REGISTRY_MISSING_KEY, None) is not None:
+                changed = True
+            retained.append(item)
+            continue
+        since = item.get(REGISTRY_MISSING_KEY)
+        try:
+            since_at = datetime.fromisoformat(since) if isinstance(since, str) else None
+        except ValueError:
+            since_at = None
+        if since_at is None:
+            item[REGISTRY_MISSING_KEY] = now.isoformat()
+            changed = True
+            retained.append(item)
+            continue
+        if (now - since_at).total_seconds() < forget_after:
+            retained.append(item)
+            continue
+        # at or after one forget interval: this pass removes it
+        state = item.get("state") or "unknown"
+        never_closed = state not in ("closed", "complete")
+        _fleet_log(f"fleet_entry_forgotten root={item['root']} last_state={state}"
+                   f"{' run_never_closed=true' if never_closed else ''} missing_since={since}", path)
+        forgotten.append({**item, "run_never_closed": never_closed})
+        changed = True
+    if changed:
+        save_registry(retained, path)
+    return forgotten
+
+
+def forget_project(root: Path, path: Path | None = None) -> dict:
+    """The FORGET button: removes exactly one entry whose root is gone;
+    refuses a root that exists (close or unregister that one deliberately)."""
+    if Path(str(root)).exists():
+        raise lib.HandsoffError("the root exists; close the run or unregister it deliberately")
+    projects = load_registry(path)
+    entry = next((item for item in projects if item["root"] == str(root)), None)
+    if entry is None:
+        raise lib.HandsoffError("project is not registered")
+    state = entry.get("state") or "unknown"
+    never_closed = state not in ("closed", "complete")
+    since = entry.get(REGISTRY_MISSING_KEY)
+    _fleet_log(f"fleet_entry_forgotten root={entry['root']} last_state={state}"
+               f"{' run_never_closed=true' if never_closed else ''} missing_since={since}"
+               f" by=Fleet Mission Control Pilot", path)
+    save_registry([item for item in projects if item["root"] != str(root)], path)
+    return {"forgotten": entry["root"], "last_state": state, "run_never_closed": never_closed,
+            "missing_since": since}
 #: How long a register claim stands on its own before the run's status
 #: file must exist to back it.
 CLAIM_GRACE_SECONDS = 600
@@ -378,6 +466,7 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
                 # #154: a registered project with no run is idle, not quiet; idle
                 # is filed with the finished runs, quiet is an ongoing run.
                 "initialized": False, "state": "orphaned" if not root.exists() else "idle",
+                "missing_since": entry.get(REGISTRY_MISSING_KEY),  # #207
                 "error": snap.get("error"), "owner": owner, "binding": binding,
                 "engine_version": _engine_version(root), "decisions": [],
                 "dashboard_url": dashboard_url, "dashboard_note": dashboard_note,
@@ -495,6 +584,7 @@ def build_metrics(path: Path | None = None, issues: "signals_module.IssueCache |
 
 def build_fleet(path: Path | None = None, public_base: str | None = None,
                 signals: "signals_module.SignalCache | None" = None) -> dict:
+    forget_missing_roots(path)  # #207: a vanished root is ORPHANED for one pass, then gone
     projects = [_public_dashboard_url(project_view(entry, signals), public_base) for entry in load_registry(path)]
     # #166: a ticket two live open runs both list is shown in red on both cards.
     try:
@@ -663,7 +753,7 @@ class FleetHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = urlsplit(self.path).path
-        if path not in {"/api/release-port", "/api/close-run", "/api/reopen-run"}:
+        if path not in {"/api/release-port", "/api/close-run", "/api/reopen-run", "/api/forget"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
         if not self._same_origin():
@@ -686,7 +776,9 @@ class FleetHandler(BaseHTTPRequestHandler):
                 return
             if body.get("confirm") is not True:
                 raise lib.HandsoffError("explicit confirmation is required")
-            if path == "/api/release-port":
+            if path == "/api/forget":
+                result = forget_project(Path(root), self.server.registry)  # #207
+            elif path == "/api/release-port":
                 result = lib.release_run_dashboard(Path(root))
             elif path == "/api/close-run":
                 result = lib.close_run(Path(root), by="Fleet Mission Control Pilot",

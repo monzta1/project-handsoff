@@ -32,7 +32,7 @@ test("the page subtracts sleep on both LCDs, names it beneath them and on the ph
 });
 
 test("the Fleet card names the sleep in the current phase", () => {
-  assert.match(fleetApp, /<p class="phase">\$\{phase\}\$\{asleepSuffix\(project\)\}<\/p>/);
+  assert.match(fleetApp, /<p class="phase">\$\{phase\}\$\{asleepSuffix\(project\)\}\$\{missing\}<\/p>/);
   const start = fleetApp.indexOf("function asleepSuffix("), end = fleetApp.indexOf("\nfunction projectCard(");
   const esc = (v) => String(v ?? "");
   const asleepSuffix = new Function("esc", `${fleetApp.slice(start, end)}\nreturn asleepSuffix;`)(esc);

@@ -1067,6 +1067,53 @@
             "at": {
               "type": "string",
               "format": "date-time"
+            },
+            "changed_paths": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "string"
+              }
+            },
+            "changes": {
+              "description": "#203: what the tree looked like when a reviewer was blamed for a write, one entry per changed path",
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "kind",
+                  "mtime",
+                  "seconds_after_session_start"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "appeared",
+                      "vanished",
+                      "changed"
+                    ]
+                  },
+                  "mtime": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "seconds_after_session_start": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                }
+              }
             }
           }
         }
