@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.62/project_handsoff-0.3.62-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.62/project_handsoff-0.3.62-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.63/project_handsoff-0.3.63-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.63/project_handsoff-0.3.63-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -625,6 +625,15 @@ report; without a Miner the trigger prints `HANDSOFF_ANALYSIS_SKIPPED` and
 the command refuses with the install hint. The shim stays for one release.
 Lesson: an extracted component's callers get a fake on PATH in the engine's
 tests and a live smoke against the real install, never a copy of the code.
+
+### v0.3.63 field note: the Miner beside a framework Python (#174)
+
+`verify-live` on v0.3.62 refused the shim on the very machine it was built
+on: inside the dedicated venv, macOS's framework build reports the
+framework binary as `sys.executable`, so "beside the interpreter" was not
+`venv/bin`. The lookup now reads `sys.prefix/bin/miner` first. Lesson: a
+live smoke that runs the installed pair is the only proof of an install
+path; the unit tests had a fake on PATH and could not see it.
 
 ### Cutting a release
 
