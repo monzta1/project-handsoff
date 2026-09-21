@@ -15,6 +15,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import uuid
 from copy import deepcopy
@@ -22,7 +24,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import handsoff_analyzer as analyzer  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
@@ -685,22 +686,97 @@ def advance_approved_design(root: Path) -> bool:
     return True
 
 
+# #174: the archive scan is the Miner's (monzta1/miner), installed beside
+# the engine. Handsoff keeps the trigger, the ledger record and the command
+# as a shim for one release; the rules, the drafts and the filing live there.
+MINER_RELEASE = "v0.1.0"
+MINER_INSTALL_HINT = (f"install the Miner {MINER_RELEASE}: gh release download {MINER_RELEASE} --repo monzta1/miner "
+                      f"--pattern 'miner-*.whl' --dir /tmp && python3 -m pip install /tmp/miner-*.whl "
+                      "(into the engine's own environment), or set HANDSOFF_MINER to its executable")
+
+
+def _miner_argv() -> list[str] | None:
+    """The installed Miner: HANDSOFF_MINER (an executable), else `miner` on
+    PATH, else `miner` beside this interpreter (where pip puts it in the
+    engine's own environment); None when there is none."""
+    override = os.environ.get("HANDSOFF_MINER")
+    if override:
+        return [override]
+    found = shutil.which("miner")
+    if found:
+        return [found]
+    beside = Path(sys.executable).resolve().parent / "miner"
+    if beside.is_file() and os.access(beside, os.X_OK):
+        return [str(beside)]
+    return None
+
+
+def _miner_run(subcommand: str, root, *, archive_dir=None, dry_run: bool = False) -> dict:
+    """Run one Miner command with --json and return its report. Refuses with
+    the install hint when no Miner is installed; a non-zero exit or a reply
+    that is not JSON is a HandsoffError naming the Miner's own words."""
+    argv = _miner_argv()
+    if argv is None:
+        raise lib.HandsoffError(f"no Miner is installed; {MINER_INSTALL_HINT}")
+    command = argv + [subcommand, "--root", str(root), "--json"]
+    if archive_dir:
+        command += ["--archive-dir", str(archive_dir)]
+    if dry_run:
+        command.append("--dry-run")
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
+    except OSError as exc:
+        raise lib.HandsoffError(f"the Miner could not be started ({command[0]}): {exc.strerror or exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise lib.HandsoffError("the Miner did not finish within 600 seconds") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        raise lib.HandsoffError(f"the Miner exited {completed.returncode}: {detail[-1][:200] if detail else 'no output'}")
+    try:
+        report = json.loads(completed.stdout)
+    except ValueError as exc:
+        raise lib.HandsoffError("the Miner's reply was not JSON") from exc
+    if not isinstance(report, dict):
+        raise lib.HandsoffError("the Miner's reply was not a report")
+    return report
+
+
+def _scan_event_fields(report: dict) -> dict:
+    """The counters `archive_scan_completed` records on the live ledger,
+    read from the Miner's report (the shape the engine's own scan wrote)."""
+    runs = report.get("runs") or {}
+    return {
+        "findings": len(report.get("findings") or []),
+        "filed": len(report.get("filed") or []),
+        "suppressed": len(report.get("suppressed") or []),
+        "excluded": len(report.get("excluded") or []),
+        "skipped_fixtures": len(runs.get("skipped_fixtures") or []),
+        "unreadable": len(runs.get("unreadable") or []),
+        "report_path": str(report.get("report_path") or ""),
+    }
+
+
 def _analyze_after_archive(root, cfg) -> None:
     """#49: scan the archive (the record just written included) right after
     the Phase 8 archive write, when [analysis] enabled is true, and record
-    archive_scan_completed on this run's live ledger. Any failure at all is
-    reported and never fails the advance: the transition and the archive
-    are already committed."""
+    archive_scan_completed on this run's live ledger. #174: the scan is the
+    installed Miner's; without one the step is skipped with the install
+    hint. Any failure at all is reported and never fails the advance: the
+    transition and the archive are already committed."""
     if not (cfg.get("analysis") or {}).get("enabled", True):
         return
+    if _miner_argv() is None:
+        print(f"HANDSOFF_ANALYSIS_SKIPPED (run still completed successfully): {MINER_INSTALL_HINT}")
+        return
     try:
-        report = analyzer.scan(root, cfg)
+        report = _miner_run("scan", root)
+        fields = _scan_event_fields(report)
         with lib.project_lock(root):
             lib.commit(root, cfg, event_kind="archive_scan_completed",
-                      event_message=f"Archive scan completed: {len(report['findings'])} finding(s), "
-                                    f"{len(report['filed'])} filed",
-                      **analyzer.scan_event_fields(report))
-        print(f"HANDSOFF_ANALYSIS_REPORT: {report['report_path']}")
+                      event_message=f"Archive scan completed: {fields['findings']} finding(s), "
+                                    f"{fields['filed']} filed",
+                      **fields)
+        print(f"HANDSOFF_ANALYSIS_REPORT: {fields['report_path']}")
     except Exception as exc:  # noqa: BLE001 - a scan must never fail a completed run
         print(f"HANDSOFF_ANALYSIS_FAILED (run still completed successfully): {type(exc).__name__}: {exc}")
 
@@ -708,26 +784,34 @@ def _analyze_after_archive(root, cfg) -> None:
 def cmd_analyze_archives(args) -> int:
     """#49: the same scan the Phase 8 trigger runs, on demand. Prints the
     report path. --dry-run files nothing; --archive-dir overrides the
-    archive location for this scan only."""
+    archive location for this scan only. #174: a shim over the installed
+    Miner (`miner scan`, `miner propose-rules`) for one release; without a
+    Miner it refuses with the install hint."""
     root = lib.resolve_root(args.root)
-    cfg = lib.load_config(root)
-    if getattr(args, "propose_rules", False):
-        # #167: drafts only, under rules/proposed/, never evaluated.
-        result = analyzer.propose_rules(root, cfg, archive_directory=args.archive_dir)
-        print(f"HANDSOFF_RULES_PROPOSED: {len(result['written'])} draft(s) in {result['proposed_dir']}")
-        print(json.dumps(result, indent=2))
-        return 0
-    report = analyzer.scan(root, cfg, archive_directory=args.archive_dir, dry_run=args.dry_run)
-    print(f"HANDSOFF_ANALYSIS_REPORT: {report['report_path']}")
+    lib.load_config(root)
+    try:
+        if getattr(args, "propose_rules", False):
+            # #167: drafts only, never evaluated until a human moves one up.
+            result = _miner_run("propose-rules", root, archive_dir=args.archive_dir)
+            written = result.get("written") or result.get("proposed") or []
+            print(f"HANDSOFF_RULES_PROPOSED: {len(written)} draft(s) in {result.get('proposed_dir') or result.get('rules_dir')}")
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        report = _miner_run("scan", root, archive_dir=args.archive_dir, dry_run=args.dry_run)
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
+    print(f"HANDSOFF_ANALYSIS_REPORT: {report.get('report_path')}")
+    runs = report.get("runs") or {}
     print(json.dumps({
-        "report_path": report["report_path"],
-        "filing": report["filing"],
-        "findings": [{"rule": f["rule"], "title": f["title"], "run_ids": f["run_ids"], "numbers": f["numbers"],
-                      "excluded": f["excluded"]} for f in report["findings"]],
-        "filed": report["filed"],
-        "suppressed": report["suppressed"],
-        "not_filed": report["not_filed"],
-        "runs": {key: len(value) for key, value in report["runs"].items()},
+        "report_path": report.get("report_path"),
+        "filing": report.get("filing"),
+        "findings": [{"rule": f.get("rule"), "title": f.get("title"), "run_ids": f.get("run_ids"),
+                      "numbers": f.get("numbers"), "excluded": f.get("excluded")} for f in report.get("findings") or []],
+        "filed": report.get("filed"),
+        "suppressed": report.get("suppressed"),
+        "not_filed": report.get("not_filed"),
+        "runs": {key: len(value) for key, value in runs.items() if isinstance(value, list)},
     }, indent=2))
     return 0
 

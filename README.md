@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.61/project_handsoff-0.3.61-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.61/project_handsoff-0.3.61-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.62/project_handsoff-0.3.62-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.62/project_handsoff-0.3.62-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -616,6 +616,16 @@ views come from one scan, the failure record says what was seen (path,
 appeared/vanished/changed, mtime, seconds after session start), and the
 post-exit reader drain has its own 60 s budget instead of the 5 s join.
 
+### v0.3.62 field note: the Miner leaves the engine (#174, lane 1)
+
+`bin/handsoff_analyzer.py` is gone; the archive scan is `monzta1/miner`
+v0.1.0 (its release wheel, `MINER_RELEASE`), installed beside the engine. The Phase 8 trigger and
+`analyze-archives` call `miner scan` / `miner propose-rules` and read the
+report; without a Miner the trigger prints `HANDSOFF_ANALYSIS_SKIPPED` and
+the command refuses with the install hint. The shim stays for one release.
+Lesson: an extracted component's callers get a fake on PATH in the engine's
+tests and a live smoke against the real install, never a copy of the code.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -1074,136 +1084,48 @@ Every `checks` record carries `binding` (command to binding hash), `executed`, `
 
 Invalidation is implicit: editing or adding any file the digest covers, changing a check command, the timeout, a regression group, a governance value, or the spec of a bound criterion changes the binding, and the next `verify` launches. The cache is the ledger itself: there is no side file to clear, and `.handsoff-verify-inflight/` holds only lock files.
 
-## Archive analysis
+## Archive analysis: the Miner
 
-`bin/handsoff_analyzer.py` (stdlib only) mines the completed-run archive
-described above and files evidenced improvement tickets, so what Handsoff
-learns about itself across every project turns into tracked work instead of
-a folder nobody reads (#49).
+The completed-run archive described above is mined by the Miner
+(`monzta1/miner`, its own repository since v0.3.62, #174), not by the engine.
+The Miner reads every `*.json` under the archive directory, evaluates its
+rules, drafts issues in house style, dedupes against the board and files
+them once, on the right board; it is the only thing that files issues. Its
+README carries the rules, the exclusions, the filing policy and the
+`miner.toml` keys, which are the `[analysis]` keys with the same meaning.
 
-**What it reads.** Every `*.json` under the archive directory. A file that
-does not parse is listed under `unreadable` and skipped. Two archives with
-the same `repo` and `started_at` are one run: the newest `archived_at` is
-kept (an exact tie keeps the file name that sorts last) and the rest are
-listed under `duplicates`. An archive whose `run_kind` is `test`, or, when
-`run_kind` is absent, whose repo name starts with `handsoff-test-`,
-`handsoff-selfcheck`, `handsoff-dropin`, `handsoff-benchmark`, or
-`handsoff-fixture`, is listed under `skipped_fixtures` and never mined.
-Nothing in the archive is ever deleted or rewritten. `archive_run` writes
-`run_kind` into every new archive: an explicit `HANDSOFF_RUN_KIND` of `test`
-or `product` wins, otherwise the run root's name decides by the same
-prefixes, else `product`.
+What stays in the engine:
 
-**Facts per run**, read only from ledger records: the outcome
-(`status.status`); the design-phase hours as wall clock from the first
-`phase_advanced` to Phase 2 (or `initialized` when there is none) to the first
-`phase_advanced` to Phase 3, waits included, unmeasured when either timestamp
-is missing or unparsable; the `design_review_approved` and
-`design_review_changes_requested` attempt count; the
-`design_review_budget_exhausted` and `design_review_attempt_authorized`
-counts; criteria mutations after the last `design_approved`
-(`criterion_added`, `criterion_updated`, `criterion_removed`,
-`criteria_transaction_applied`); the `recovery_escalated` count and whether
-any `agent_session_*` event exists; the `question_raised` count; `pilot_note`
-texts; cache reuse diagnostics from structural verification-ledger metadata
-(`binding`, `executed`, `reused_from`, and result eligibility flags), falling
-back to `checks_run` counters only for legacy archives; failed
-`live_checks_run` events (`verify-live` failures); `review_cap_override_recorded`
-counts. First executions, binding changes, failed/timed-out/truncated checks,
-and duplicate per-criterion rows from one execution are not counted as cache
-reuse opportunities. Timestamps are normalized to UTC ISO-8601.
+- **The trigger.** Right after the Phase 8 archive write, when `[analysis]
+  enabled` is true (the default), the engine runs `miner scan --root <root>
+  --json` and records `archive_scan_completed` on the run's live ledger with
+  the report's counters (`findings`, `filed`, `suppressed`, `excluded`,
+  `skipped_fixtures`, `unreadable`, `report_path`). A failure of any kind
+  prints `HANDSOFF_ANALYSIS_FAILED (run still completed successfully)` and
+  never fails the advance. Without a Miner installed the step prints
+  `HANDSOFF_ANALYSIS_SKIPPED (run still completed successfully)` with the
+  install hint and records nothing.
+- **The shim.** `handsoff supervisor analyze-archives [--dry-run]
+  [--archive-dir DIR] [--propose-rules]` calls `miner scan` or `miner
+  propose-rules` with the same flags and prints the report path and the
+  summary it always printed; without a Miner it refuses with
+  `SHIP_FEATURE_BLOCKED: no Miner is installed; install the Miner: ...`.
+  The shim stays for one release, then goes; call `miner` directly.
+- **`pilot-note`** and the `[analysis]` table, which the Miner reads from a
+  Handsoff project's `handsoff.toml` when there is no `miner.toml`.
 
-**Rules** (fixed ids; weight decides filing priority, highest first):
-
-| Rule | Weight | Fires when |
-| --- | --- | --- |
-| R7 | 100 | each distinct `pilot_note` text, with the run ids that carry it |
-| R6 | 90 | any `verify-live` failure |
-| R3 | 80 | `recovery_escalated` on any run with zero `agent_session_*` events |
-| R1 | 70 | design-review budget exhausted in at least 2 product runs |
-| R2 | 60 | criteria mutated after design approval in at least 2 runs |
-| R5 | 50 | median measured design-phase hours above `[analysis].design_phase_hours_threshold`, at least 3 measured runs |
-| R4 | 40 | cache hits / eligible unchanged-binding reuse opportunities below 0.20 in at least 3 product runs; legacy event counters are used only when no structural verification records exist |
-| R8 | 30 | Pilot authorizations past the design-review budget in at least 2 runs (report only) |
-| R9 | 30 | review cap overrides in at least 2 runs (report only) |
-
-Findings are ordered by weight descending, then rule id, then sorted run
-ids; run-id lists are sorted; percentages are rounded to one decimal, hours
-to two. A finding with an empty run-id list is never written or filed.
-
-**Drafts and filing.** Each R1 to R6 finding drafts an issue in house style:
-a title, `## Symptom` with the evidence (run ids and numbers), `## Cause
-hypothesis` labelled as a hypothesis, `## Benefit`, `## Required behavior`,
-`## Acceptance criteria`, and a hidden marker line `<!-- handsoff-analysis
-rule:<id> -->`. R7 (Pilot notes) is report-only by rule (`REPORT_ONLY_RULES`):
-a note is the operator's own words, so it appears as a finding in the local
-report with its run ids and a marker digest of the text, and is listed under
-`not_filed` with reason `report_only_rule`; no draft and no tracker ever
-carries the note. A product-owned draft files on the active project's
-repository only when every run behind it was archived from the root being
-analyzed (the archive holds every project's runs); otherwise it is listed
-under `not_filed` with reason `foreign_root`. A draft may contain only: the
-archive file name as run id, the repo, the first 120 characters of the
-feature title, event kinds, timestamps, numeric counters and boolean
-outcomes. No prompt, output, environment, status,
-acceptance, verification, or event-message content is ever serialized into
-a draft or a report. Filing goes through an injectable GitHub client; the
-default wraps `gh` (`gh issue list` and `gh issue create`, no shell) and
-tests inject a fake. Every filed issue carries the labels
-`from-archive-analysis` and `needs-triage`. Before filing, the client lists
-open issues and issues closed within `dedupe_days`; a draft is suppressed
-(and listed in the report) when an existing issue carries the same marker or
-its normalized title shares at least 60 percent of tokens (Jaccard over
-lowercase alphanumeric tokens). At most `max_tickets_per_scan` issues are
-filed per scan, highest weight first; the rest are listed under
-`not_filed`. `--dry-run`, `filing = "report_only"`, and a missing `gh`
-executable file nothing and say so in the report's `filing` entry.
-
-**Hard exclusions.** `GATE_WEAKENING_RULES` is the fixed set {R8, R9}: their
-natural remedy is raising `max_autonomous_design_reviews` or
-`max_review_rounds`, so they produce report entries only and are never
-filed, with no configuration to lift that.
-
-**Triggers and the report.** `advance 8` with status `complete` runs a scan
-right after the archive write when `[analysis].enabled` is true (honouring
-`HANDSOFF_ARCHIVE_DIR`), includes the archive just written without
-rewriting it, and records `archive_scan_completed` (findings, filed,
-suppressed, excluded, skipped_fixtures, unreadable counts, report path) on
-the live run's ledger only. A scan failure prints
-`HANDSOFF_ANALYSIS_FAILED (run still completed successfully): ...` and never
-fails the advance. On demand:
+The Miner is found through `HANDSOFF_MINER` (an executable), else `miner` on
+`PATH`, else `miner` beside the engine's own interpreter. The engine
+release names the Miner release it was verified with (`MINER_RELEASE`,
+v0.1.0 for v0.3.62); the dedicated environment gets it from that release's
+wheel, the repository being private:
 
 ```bash
-python3 bin/handsoff_supervisor.py analyze-archives [--dry-run] [--archive-dir DIR]
-python3 bin/handsoff_supervisor.py pilot-note --by moncy --text "Reviewer keeps asking for screenshots"
-```
-
-Each scan writes `.handsoff-analysis/<timestamp>.json` (gitignored and
-excluded from the repository digest) and prints `HANDSOFF_ANALYSIS_REPORT:
-<path>`. `pilot-note` (1 to 512 characters) records a `pilot_note` event on
-the current run; `POST /api/pilot-note` (same-origin, actor `Mission Control
-Pilot`) does the same from the small input in the dashboard header; the next
-scan lists that note as an R7 finding with its run id.
-
-**`[analysis]` keys** in `handsoff.toml` (every key optional; an invalid
-value is a load error like every other section):
-
-```toml
-[analysis]
-enabled = true                      # bool, default true
-max_tickets_per_scan = 5            # int 0 to 50, default 5
-dedupe_days = 30                    # int 0 to 365, default 30
-design_phase_hours_threshold = 1.0  # number greater than 0, default 1.0
-archive_dir = "~/Documents/Handsoff-Archive"  # optional; default HANDSOFF_ARCHIVE_DIR, else the Documents archive
-filing = "gh"                       # "gh" (default) or "report_only" (never construct a GitHub client)
-framework_repo = "monzta1/project-handsoff"  # owner/repo destination for Handsoff-engine findings
-```
-
-Miner classifies built-in workflow, recovery, verification, and live-check
-rules as framework-owned and files them against `framework_repo`, even when
-the scan was triggered from a product run. Pilot notes remain product-owned
-and file against the active repository. A rule without explicit ownership is
-ambiguous: it stays in the JSON report and is never filed automatically.
+gh release download v0.1.0 --repo monzta1/miner --pattern 'miner-*.whl' --dir /tmp
+~/.local/share/handsoff/venv/bin/pip install /tmp/miner-0.1.0-py3-none-any.whl
+``` Tests of the trigger and the shim use a fake `miner`
+on `PATH`; the equality of the Miner's report with the engine's former scan
+is proven in the Miner's own repository.
 
 ## Work items and the per-item status table
 

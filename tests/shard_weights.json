@@ -12,7 +12,7 @@
  "TestArchitectHandoffAndAuthorship": 71.3,
  "TestArchitectRespectsSettledDesigns": 0.9,
  "TestArchitectScalesDesignDepth": 1.7,
- "TestArchiveAnalyzer": 15.6,
+ "TestMinerShim": 9.0,
  "TestAtomicWrites": 0.5,
  "TestBacklogPlanner": 2.5,
  "TestBenchmarkHarness": 5.4,
