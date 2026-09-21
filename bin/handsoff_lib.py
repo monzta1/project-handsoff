@@ -10815,7 +10815,8 @@ def record_pilot_note(root: Path, *, by: object, text: object) -> dict:
 # --------------------------------------------------------------------------
 
 SLEEP_LOG_CACHE_SECONDS = 60
-_SLEEP_LOG_CACHE: dict = {"at": None, "intervals": []}
+_SLEEP_LOG_CACHE: dict = {"at": None, "intervals": [], "thread": None}
+_SLEEP_LOG_LOCK = threading.Lock()
 _SLEEP_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ([+-]\d{4}) (Sleep|Wake|DarkWake)\b")
 
 
@@ -10867,21 +10868,43 @@ def parse_sleep_log(text: str, *, now: datetime) -> list[tuple[datetime, datetim
     return merged
 
 
-def machine_sleep_intervals(*, now: datetime | None = None, log_reader=None) -> list[tuple[datetime, datetime]]:
-    """The machine's sleep intervals, cached for SLEEP_LOG_CACHE_SECONDS per
-    process. An injected log_reader (tests) bypasses the cache and pmset."""
+def _refresh_sleep_cache(now: datetime) -> None:
+    text = _read_pmset_log()
+    intervals = parse_sleep_log(text, now=now) if isinstance(text, str) else []
+    with _SLEEP_LOG_LOCK:
+        _SLEEP_LOG_CACHE["at"] = now
+        _SLEEP_LOG_CACHE["intervals"] = intervals
+        _SLEEP_LOG_CACHE["thread"] = None
+
+
+def machine_sleep_intervals(*, now: datetime | None = None, log_reader=None, wait: bool = False) -> list[tuple[datetime, datetime]]:
+    """The machine's sleep intervals from a per-process cache refreshed
+    every SLEEP_LOG_CACHE_SECONDS. `pmset -g log` is tens of thousands of
+    lines and takes seconds, so the refresh runs on a background thread
+    and never on a request: a read before the first refresh lands returns
+    [] (wall clock) rather than holding the page. `wait=True` blocks for
+    the refresh (the CLI, tests). An injected log_reader (tests) bypasses
+    the cache and pmset."""
     now = now or datetime.now(timezone.utc)
     if log_reader is not None:
         text = log_reader()
         return parse_sleep_log(text, now=now) if isinstance(text, str) else []
-    cached_at = _SLEEP_LOG_CACHE["at"]
-    if cached_at is not None and (now - cached_at).total_seconds() < SLEEP_LOG_CACHE_SECONDS:
-        return list(_SLEEP_LOG_CACHE["intervals"])
-    text = _read_pmset_log()
-    intervals = parse_sleep_log(text, now=now) if isinstance(text, str) else []
-    _SLEEP_LOG_CACHE["at"] = now
-    _SLEEP_LOG_CACHE["intervals"] = intervals
-    return list(intervals)
+    with _SLEEP_LOG_LOCK:
+        cached_at = _SLEEP_LOG_CACHE["at"]
+        fresh = cached_at is not None and (now - cached_at).total_seconds() < SLEEP_LOG_CACHE_SECONDS
+        running = _SLEEP_LOG_CACHE["thread"]
+        if fresh:
+            return list(_SLEEP_LOG_CACHE["intervals"])
+        if running is None or not running.is_alive():
+            running = threading.Thread(target=_refresh_sleep_cache, args=(now,), daemon=True, name="handsoff-sleep-log")
+            _SLEEP_LOG_CACHE["thread"] = running
+            running.start()
+        stale = list(_SLEEP_LOG_CACHE["intervals"])
+    if wait:
+        running.join(timeout=30)
+        with _SLEEP_LOG_LOCK:
+            return list(_SLEEP_LOG_CACHE["intervals"])
+    return stale
 
 
 def asleep_seconds(start: datetime | None, end: datetime | None, intervals: list[tuple[datetime, datetime]]) -> float:
