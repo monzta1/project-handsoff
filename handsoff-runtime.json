@@ -27,9 +27,9 @@
     "fleet/styles.css": "2a86c5a78f00c55c366511d37c7135b982ef7b3550117f8f89a6d76958e1c7bc",
     "playbook/INDEX.md": "a777dfd04a52c01469d1256c64ea269679a22de90cefb37821780a292ca5560e",
     "playbook/index.json": "22147c514d20f0132f783b23c1ec0266ddbe5f0970237f776ca3f475251d6f16",
-    "playbook/landing.md": "5987f6646825312db48d68b7e8e768a3d28e62df4b4d279490b19c2d7c15934e",
+    "playbook/landing.md": "a6524fb816b6c2017b5721240a09a6080b0f49796fffb96d4d26c47af3324fab",
     "playbook/lanes.md": "5e72099253fd34a2240db7d01c92b3ed025ab595e112a124dc21ef9b2fde6f1b",
-    "playbook/lessons.md": "f5ef9f3f6e1bd3b38345758007be238578d3aa08c38181675da61530344476c5",
+    "playbook/lessons.md": "cdf63d587b2dda52feaf2149bc78fa6abac918324713a7be781ac1641811f89e",
     "playbook/reviewers.md": "f77b55aee806161e76acf74c79790f4339704ba1d0fce6e723dcb32ef5ed5787",
     "prompts/architect.md": "05563511be601b20d3e0ef5f92d3d7e7b97325c049d8daad5cbcb05dcf29a310",
     "prompts/implementer.md": "e69b3092cabf269e76ed926a4788dc9f8bdbb696b2a52050f7c298cbfa36bd56",
@@ -44,5 +44,5 @@
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },
   "schema": 1,
-  "version": "v0.3.67"
+  "version": "v0.3.68"
 }

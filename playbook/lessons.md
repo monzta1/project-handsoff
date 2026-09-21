@@ -73,3 +73,5 @@ twice becomes a refusal in the engine.
 - The board moves only when the host records: criteria and the proposal go
   in before the first line of code, or the Pilot watches Orient for the
   whole build.
+- Versions are patch only, in every repository: 0.1.0 becomes 0.1.1, not
+  0.2.0, whatever the lane added. A minor is Moncy's call.
