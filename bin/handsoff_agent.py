@@ -140,7 +140,7 @@ def applicable_design_review_packet(root: Path, cfg: dict, role: str) -> dict | 
     return lib.applicable_design_review_packet(status, cfg, acceptance.get("criteria", []))
 
 
-def build_role_input(root: Path, role: str, task: str) -> str:
+def build_role_input(root: Path, role: str, task: str, topic: str | None = None) -> str:
     """Build the in-memory role prompt without persisting the assigned task.
 
     #38: the Architect and the Reviewer also receive a `# Design evidence`
@@ -159,6 +159,8 @@ def build_role_input(root: Path, role: str, task: str) -> str:
     if len(task.encode("utf-8")) > MAX_AGENT_TASK_BYTES:
         raise lib.HandsoffError(f"task exceeds {MAX_AGENT_TASK_BYTES} UTF-8 bytes")
     root = root.resolve()
+    cfg = lib.load_config(root)
+    briefing = lib.briefing_section(root, cfg, topic)
     text = f"{_role_prompt(root, role)}\n\n# Assigned task\n\n{task}"
     if role == "reviewer":
         text = (f"# Project root (read-only)\n\n{root}: use git as `git -C {root} ...` and tests as `cd {root} && python3 -m unittest ...`. "
@@ -203,6 +205,8 @@ def build_role_input(root: Path, role: str, task: str) -> str:
         answers = ""
     if answers:
         text = f"{text}\n\n{answers}"
+    if briefing:
+        text = f"{briefing}\n\n{text}"
     return text
 
 
@@ -259,7 +263,7 @@ def _phase2_design_reviewer_selection(root: Path, cfg: dict, role: str, *, which
 
 
 def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, skip_preflight: bool = False,
-                      inspection: bool = False, amendment: bool = False) -> LaunchSpec:
+                      inspection: bool = False, amendment: bool = False, topic: str | None = None) -> LaunchSpec:
     root = root.resolve()
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
@@ -296,7 +300,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     if lib.agent_profiles(cfg)[role]["adapter"] == lib.HOST_AGENT_ADAPTER:
         raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
     context = lib.managed_design_context(root, role) or {}
-    context["followup_design_token_budget"] = cfg.get("followup_design_token_budget") or max(40_000, len(build_role_input(root, role, task).encode()) // 3 + 30_000)
+    context["followup_design_token_budget"] = cfg.get("followup_design_token_budget") or max(40_000, len(build_role_input(root, role, task, topic).encode()) // 3 + 30_000)
     token_budget = _effective_token_budget(cfg["agent_token_budgets"][role], role, context)
     _refuse_reviewer_launch_over_budget(root, cfg, role)
     selection = _phase2_design_reviewer_selection(root, cfg, role, which=which)
@@ -327,7 +331,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             resolution_source = "recommended"
         else:
             resolution_source = "configured"
-    stdin = build_role_input(root, role, task)
+    stdin = build_role_input(root, role, task, topic)
     packet = applicable_design_review_packet(root, cfg, role)
     executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
@@ -1527,6 +1531,8 @@ def main() -> int:
         command = sub.add_parser(name)
         command.add_argument("role", choices=lib.SELECTABLE_AGENT_ROLES)
         command.add_argument("--task", required=True)
+        command.add_argument("--topic", default=None,
+                             help="one briefing topic to add to this launch")
         if name == "launch":
             command.add_argument("--timeout", type=int, default=3600)
             command.add_argument(
@@ -1546,7 +1552,8 @@ def main() -> int:
                 "managed roles cannot launch nested agents; return a structured request to the host Supervisor"
             )
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False),
-                                 inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)))
+                                 inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)),
+                                 topic=args.topic)
         if getattr(args, "amendment", None):
             spec = dataclasses.replace(spec, amendment_id=args.amendment)
         if args.command == "inspect":

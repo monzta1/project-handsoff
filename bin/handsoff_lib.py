@@ -150,6 +150,11 @@ DESIGN_EVIDENCE_FILE = "handsoff-design-evidence.json"
 DESIGN_EVIDENCE_ID_PATTERN = re.compile(r"^[a-z0-9-]{1,64}$")
 MAX_DESIGN_EVIDENCE_ENTRIES = 16
 MAX_DESIGN_EVIDENCE_OUTPUT_BYTES = 8192
+# #175: managed-session knowledge briefings are bounded so a project cannot
+# turn an indexed file into an unbounded launch prompt.
+MAX_BRIEFING_FILE_BYTES = 64 * 1024
+MAX_BRIEFING_TOTAL_BYTES = 256 * 1024
+BRIEFING_CONFIG_KEYS = frozenset({"index", "root"})
 DESIGN_EVIDENCE_STATES = ("current", "stale", "failed", "missing")
 #: #33: liveness beacon written by `handsoff_agent.execute_launch` while a
 #: managed child runs. Generated state (gitignored), never hashed, never
@@ -304,6 +309,7 @@ DEFAULT_CONFIG = {
     # Mission Control's settings dialog edits. Defaults live in FEATURES.
     "features": {},
     "check_commands": [],
+    "briefing": None,
     "digest_ignore": [],
     "implementer_commands": [],
     "documentation": {"files": [], "exclude": []},
@@ -729,6 +735,97 @@ def project_resource_path(root: Path, relative: str) -> Path:
     return engine_resource_path(relative)
 
 
+def briefing_section(root: Path, cfg: dict, topic: str | None = None) -> str:
+    """Resolve the bounded knowledge briefing for one managed launch.
+
+    A missing [briefing] block is deliberately a no-op. When configured, the
+    index is authoritative: always_load files are included first, followed by
+    files whose declared topics match the optional one-launch topic. Every
+    selected path must remain inside the project root and exist as a regular
+    file before a managed session can be reserved.
+    """
+    briefing = cfg.get("briefing")
+    if briefing is None:
+        if topic is not None:
+            raise HandsoffError("--topic requires a [briefing] block in handsoff.toml")
+        return ""
+    if topic is not None and (not isinstance(topic, str) or not topic.strip()):
+        raise HandsoffError("--topic must be a non-empty topic name")
+    root = Path(root).resolve()
+    index_path = (root / briefing["index"]).resolve()
+    if not index_path.is_file():
+        raise HandsoffError(f"briefing index is missing: {index_path}")
+    kb_root = (root / briefing.get("root", "")).resolve() if briefing.get("root") else index_path.parent
+    try:
+        index_path.relative_to(root)
+        kb_root.relative_to(root)
+    except ValueError as exc:
+        raise HandsoffError("briefing paths must remain inside the project root") from exc
+    try:
+        manifest = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HandsoffError(f"cannot read briefing index {index_path}: {exc}") from exc
+    if not isinstance(manifest, dict) or manifest.get("version") != 1:
+        raise HandsoffError("briefing index must be a version 1 object")
+    topics = manifest.get("topics")
+    always_load = manifest.get("always_load")
+    files = manifest.get("files")
+    if not isinstance(topics, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in topics.items()):
+        raise HandsoffError("briefing index topics must map strings to strings")
+    if not isinstance(always_load, list) or not all(isinstance(item, str) and item.strip() for item in always_load):
+        raise HandsoffError("briefing index always_load must be a list of file names")
+    if not isinstance(files, list):
+        raise HandsoffError("briefing index files must be a list")
+    declared = {}
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("file"), str) or not item["file"].strip():
+            raise HandsoffError("briefing index files must contain a file name")
+        item_topics = item.get("topics", [])
+        if not isinstance(item_topics, list) or not all(isinstance(value, str) and value in topics for value in item_topics):
+            raise HandsoffError(f"briefing index topics are invalid for {item['file']}")
+        declared[item["file"]] = tuple(item_topics)
+    selected = list(always_load)
+    if topic is not None:
+        topic = topic.strip()
+        if topic not in topics:
+            raise HandsoffError(f"briefing topic is not declared in the index: {topic}")
+        selected.extend(name for name, item_topics in declared.items() if topic in item_topics)
+    unique = []
+    for name in selected:
+        if name not in unique:
+            unique.append(name)
+    sections = []
+    total = 0
+    for name in unique:
+        relative = Path(name)
+        if relative.is_absolute():
+            raise HandsoffError(f"briefing file must be relative: {name}")
+        path = (kb_root / relative).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise HandsoffError(f"briefing file escapes the project root: {name}") from exc
+        if not path.is_file():
+            raise HandsoffError(f"briefing file is missing: {path}")
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise HandsoffError(f"cannot read briefing file {path}: {exc}") from exc
+        if len(data) > MAX_BRIEFING_FILE_BYTES:
+            raise HandsoffError(f"briefing file is larger than {MAX_BRIEFING_FILE_BYTES} bytes: {path}")
+        total += len(data)
+        if total > MAX_BRIEFING_TOTAL_BYTES:
+            raise HandsoffError(f"briefing exceeds {MAX_BRIEFING_TOTAL_BYTES} bytes")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HandsoffError(f"briefing file is not UTF-8: {path}") from exc
+        sections.append(f"## {name}\n\n{text.rstrip()}")
+    if not sections:
+        raise HandsoffError("briefing index selected no files")
+    return "# Knowledge base briefing\n\n" + "\n\n".join(sections)
+
+
 def prompt_override_diagnosis(root: Path) -> list[dict]:
     """Classify project prompt overrides against the installed engine contract.
 
@@ -937,6 +1034,7 @@ def load_config(root: Path) -> dict:
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
     digest = raw.get("digest", {})
+    briefing = raw.get("briefing")
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
     if not isinstance(digest, dict):
@@ -945,6 +1043,21 @@ def load_config(root: Path) -> dict:
         raise HandsoffError(
             "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, and analysis must be tables"
         )
+    if briefing is not None:
+        if not isinstance(briefing, dict):
+            raise HandsoffError("handsoff.toml: briefing must be a table")
+        unknown_briefing = set(briefing) - BRIEFING_CONFIG_KEYS
+        if unknown_briefing:
+            raise HandsoffError(
+                "handsoff.toml: briefing has unknown keys: " + ", ".join(sorted(unknown_briefing))
+            )
+        index = briefing.get("index")
+        if not isinstance(index, str) or not index.strip() or Path(index).is_absolute() or ".." in Path(index).parts:
+            raise HandsoffError("handsoff.toml: briefing.index must be a safe relative path")
+        kb_root = briefing.get("root", "")
+        if not isinstance(kb_root, str) or (kb_root and (Path(kb_root).is_absolute() or ".." in Path(kb_root).parts)):
+            raise HandsoffError("handsoff.toml: briefing.root must be a safe relative path when set")
+        cfg["briefing"] = {"index": index.strip(), "root": kb_root.strip()}
     cfg["status_file"] = project.get("status_file", cfg["status_file"])
     cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
     cfg["event_log"] = project.get("event_log", cfg["event_log"])
