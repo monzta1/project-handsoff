@@ -21,7 +21,7 @@
     "dashboard/regression.js": "0603c0eae773d9c4b27757ba4047c7f9c06377de6d2ab7426b71b13aa2d64101",
     "dashboard/styles.css": "a9bd8b82dff16c9223395cc7a19c5b4de0bc0482c9e8d752e3e52c8c5c116343",
     "fleet/app.js": "374115d41b99646e56d95101fca9d85e3eabcbdeee12179db759f7241ad15d79",
-    "fleet/index.html": "a103d815e7ad912897a260e327fb9a3b2cd0f7251deaa0025ec7a59e34c1f500",
+    "fleet/index.html": "8145deb9b312e1ff49558842845379caf1611d04b851ee245962149b0b127c9b",
     "fleet/metrics.html": "3e66f7d5c29e7dc89a5d4716ebbc66913149df6a220f708f5fe14bfdd37355bf",
     "fleet/metrics.js": "9c1d75ac1f2526e36081b2f2a552258b65ee27e9b7a293f07224d9ec400bd56f",
     "fleet/styles.css": "2a86c5a78f00c55c366511d37c7135b982ef7b3550117f8f89a6d76958e1c7bc",
@@ -44,5 +44,5 @@
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },
   "schema": 1,
-  "version": "v0.3.65"
+  "version": "v0.3.66"
 }

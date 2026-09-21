@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.65/project_handsoff-0.3.65-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.65/project_handsoff-0.3.65-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.66/project_handsoff-0.3.66-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.66/project_handsoff-0.3.66-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -1109,12 +1109,12 @@ Invalidation is implicit: editing or adding any file the digest covers, changing
 latest releases and says so, one line per tool:
 
 ```
-handsoff 0.3.64 -> 0.3.65
-miner already 0.2.0
-sentinel 0.2.1 -> 0.3.0
-beakon left at ed7a9b3: checkout is ahead of the release v0.5.0
-fleet restarted, engine v0.3.65
-verify: handsoff v0.3.65
+handsoff <installed> -> <latest>
+miner already <version>
+sentinel <installed> -> <latest>
+beakon left at <sha>: checkout is ahead of the release <tag>
+fleet restarted, engine <version>
+verify: handsoff <version>
 ...
 UPDATE_OK
 ```
