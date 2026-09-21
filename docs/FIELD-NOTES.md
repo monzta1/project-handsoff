@@ -254,3 +254,15 @@ local work; the command leaves such a checkout alone (never a downgrade,
 never over local changes), which the reviewer had not asked for and the
 dry run did.
 
+### v0.3.70 field notes: the evening set (#215, #216, #217, #218, #227)
+
+Five lanes, five pull requests, one release. `handsoff install-check`
+refuses the engine install under a live managed session; the Implementer
+reports per-criterion progress and a relaunch reads it; the run-page
+snapshot has a schema and eight fixture states, and the run vocabulary is
+shared once; the managed-role protocol is one document derived from the
+validators; a docs-only change is a merge and nothing more. Lesson, for the
+playbook: five parallel lanes all touch `handsoff.toml [checks]` and the
+manifest, so each landing rebases with the checks list as main's plus its
+own lines, and a lane's Phase 4 advance is the first thing after the design
+click, not the last thing before the reviewer.
