@@ -15,7 +15,7 @@
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
     "dashboard/app.js": "f374bf8fa90b260249b94bb80a28e161d70b9795158e09cb084987c6d31b0552",
     "dashboard/index.html": "5d570cda5c5b9c807326a999b98193bb29178dd1da6cb7cf8f20fec5b7defa59",
-    "dashboard/lib/dashboard-logic.js": "84fdf1bf101689263b0009773d776f56d49f29558297731ee3a8946bc6299edc",
+    "dashboard/lib/dashboard-logic.js": "8cf75e7c7264261c8999a77ca4c90c3bb0420a10fefe596643f1c66303820e23",
     "dashboard/logo.png": "6345128f357084469b84be31c2f6d6bc26bd08950c6a9d864ea4a8902de58e59",
     "dashboard/regression.html": "1cb3e80958281d15e8ac14e49035e9bcab43870041571cd8fd25f7a663370215",
     "dashboard/regression.js": "0603c0eae773d9c4b27757ba4047c7f9c06377de6d2ab7426b71b13aa2d64101",

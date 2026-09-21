@@ -748,7 +748,8 @@ function ciStateLabel(ci) {
   return "CI RUNNING";
 }
 
-const CI_DONE_STATES = ["SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "TIMED_OUT", "NEUTRAL"];
+// the same finished set the engine uses (CI_CHECK_DONE in handsoff_lib.py)
+const CI_DONE_STATES = ["SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "NEUTRAL"];
 
 function ciChecksDone(ci) {
   const checks = ci && Array.isArray(ci.checks) ? ci.checks : [];

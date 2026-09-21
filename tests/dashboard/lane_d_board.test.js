@@ -31,6 +31,13 @@ test("the label leads with a time-based percent, capped at 99 until every check 
   assert.equal(logic.ciPercent(ticked), 58);
   assert.equal(logic.ciProgressLabel(ticked), "58% · 4 of 8 checks done · 1m 12s of about 2m 04s");
   assert.equal(logic.ciNote(running), "", "the count lives in the label now");
+  // every state the engine calls finished is finished here too (review F1.1)
+  const lib = read("bin/handsoff_lib.py");
+  const engineDone = lib.match(/CI_CHECK_DONE = \{([^}]+)\}/)[1].match(/"([A-Z_]+)"/g).map((s) => s.replace(/"/g, ""));
+  const odd = [{ name: "a", state: "ACTION_REQUIRED" }, { name: "b", state: "STALE" }, { name: "c", state: "NEUTRAL" }, { name: "d", state: "SKIPPED" }];
+  assert.deepEqual(logic.ciChecksDone({ checks: odd }), { done: 4, total: 4 });
+  assert.equal(logic.ciPercent({ state: "running", progress: 1, checks: odd }), 100);
+  for (const state of engineDone) assert.equal(logic.ciChecksDone({ checks: [{ name: "x", state }] }).done, 1, state);
 });
 
 test("a chiclet says host or managed after the family", () => {
