@@ -27,6 +27,10 @@ assert completed.returncode == (0 if last.startswith("UPDATE_OK") else 1), (comp
 FORM = re.compile(r"^(handsoff|miner|sentinel|beakon) (already \S+|would update .+ -> .+|left at .+: .+|skipped: .+|failed: .+)$")
 tools = {}
 for line in lines[:-1]:
+    if line.startswith("INSTALL_CHECK_"):
+        # #216: the install check speaks first; a dry run reads OK on a quiet register
+        assert line == "INSTALL_CHECK_OK", line
+        continue
     if line.startswith("fleet "):
         assert line.startswith("fleet would restart: kickstart com.moncy.handsoff-dashboard") or line.startswith("fleet skipped"), line
         continue
