@@ -806,7 +806,7 @@ PLAYBOOK_DIR = "playbook"
 PLAYBOOK_INDEX = "index.json"
 #: the playbook part of a launch stays small enough to ride every launch;
 #: a topic that would push it past this is refused at launch, never trimmed
-MAX_PLAYBOOK_SECTION_BYTES = 12 * 1024
+MAX_PLAYBOOK_SECTION_BYTES = 16 * 1024  # #217: room for the protocol topic (8 KB) beside the index and the lanes
 
 
 def playbook_root() -> Path:

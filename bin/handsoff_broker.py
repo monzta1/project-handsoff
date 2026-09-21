@@ -29,6 +29,43 @@ HUMAN_ONLY_COMMANDS = {
 }
 _SUPERVISOR_HOST_CAPABILITY = object()
 
+#: #217: the exact field sets of every HANDSOFF_BROKER_REQUEST command the broker
+#: dispatches, (required, optional); playbook/protocol.md is derived from this
+#: table and tests/test_protocol_contract.py fails when the two disagree.
+BROKER_REQUEST_FIELDS = {
+    'advance': ({'command', 'project_root', 'actor', 'action', 'progress', 'phase'}, {'next_action', 'implemented_by', 'authorization_hold', 'status'}),
+    'amendment-escalate': ({'command', 'project_root', 'actor', 'action', 'reason', 'by'}, set()),
+    'amendment-open': ({'command', 'project_root', 'actor', 'action', 'by', 'file'}, {'request_full_redesign', 'summary'}),
+    'amendment-review': ({'decision', 'command', 'summary', 'project_root', 'actor', 'action', 'by'}, {'findings', 'adopted_session', 'adopted_by'}),
+    'amendment-revise': ({'command', 'project_root', 'actor', 'action', 'by', 'file'}, set()),
+    'background-wait-end': ({'command', 'project_root', 'actor', 'action', 'by'}, {'resume_after_authorization', 'note'}),
+    'background-wait-start': ({'command', 'project_root', 'actor', 'action', 'by'}, {'resume_after_authorization', 'note'}),
+    'criteria-apply': ({'command', 'project_root', 'actor', 'action', 'by', 'file'}, {'dry_run'}),
+    'design-evidence': ({'command', 'evidence_action', 'actor', 'project_root', 'action'}, {'force', 'ids', 'by'}),
+    'design-review-packet': ({'command', 'project_root', 'actor', 'action', 'by'}, {'dispositions'}),
+    'heartbeat': ({'command', 'project_root', 'actor', 'session', 'action', 'by'}, {'note'}),
+    'human-pause-end': ({'command', 'project_root', 'actor', 'action', 'by'}, {'resume_after_authorization', 'note'}),
+    'human-pause-start': ({'command', 'project_root', 'actor', 'action', 'by'}, {'resume_after_authorization', 'note'}),
+    'pilot-note': ({'command', 'project_root', 'actor', 'action', 'text', 'by'}, set()),
+    'question-raise': ({'command', 'project_root', 'actor', 'action', 'text', 'role', 'by'}, {'session'}),
+    'record-design-review': ({'decision', 'architect', 'command', 'summary', 'project_root', 'actor', 'action', 'by'}, {'findings', 'adopted_by', 'session', 'adopted_session', 'structural_blocker'}),
+    'record-review': ({'command', 'project_root', 'actor', 'action', 'by'}, {'reaffirm', 'adopted_by', 'symptom_reproduced', 'session', 'adopted_session', 'tests_executed'}),
+    'record-review-findings': ({'findings', 'command', 'project_root', 'actor', 'action', 'by'}, {'tests_executed', 'session', 'adopted_session', 'adopted_by'}),
+    'record-symptom-resolved': ({'command', 'project_root', 'evidence', 'actor', 'action', 'by'}, set()),
+    'recover': ({'command', 'project_root', 'actor', 'action', 'by'}, {'dry_run'}),
+    'regression-cancel': ({'command', 'project_root', 'actor', 'request_id', 'action', 'by'}, set()),
+    'regression-request': ({'command', 'project_root', 'actor', 'action', 'group', 'by'}, {'reason'}),
+    'regression-run': ({'command', 'project_root', 'actor', 'request_id', 'action', 'by'}, set()),
+    'review-attempt-start': ({'command', 'project_root', 'actor', 'action', 'by'}, {'trigger', 'reviewer', 'note'}),
+    'status': ({'action', 'project_root', 'actor', 'command'}, set()),
+    'verify': ({'criteria', 'command', 'project_root', 'actor', 'action', 'by'}, set()),
+    'work-item-activate': ({'command', 'project_root', 'actor', 'item', 'action', 'by'}, set()),
+    'work-item-update': ({'command', 'project_root', 'actor', 'item', 'action', 'by'}, {'title', 'url', 'notes', 'github_state'}),
+    'work-items-sync': ({'command', 'project_root', 'actor', 'action', 'by'}, {'from_tickets'}),
+}
+
+
+
 
 def _exact_fields(request: dict, required: set[str], optional: set[str] = set()) -> None:
     actual = set(request)
@@ -76,13 +113,10 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     if command in HUMAN_ONLY_COMMANDS:
         raise lib.HandsoffError(f"broker refuses human-only command: {command}")
     if command == "status":
-        _exact_fields(request, {"actor", "project_root", "action", "command"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         return base
     if command == "advance":
-        _exact_fields(
-            request, {"actor", "project_root", "action", "command", "phase", "progress"},
-            {"status", "implemented_by", "next_action", "authorization_hold"},
-        )
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         phase = request["phase"]
         progress = request["progress"]
         if not isinstance(phase, int) or isinstance(phase, bool) or phase not in lib.PHASES:
@@ -107,13 +141,13 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             base.extend(["--authorization-hold", hold])
         return base
     if command == "heartbeat":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "session"}, {"note"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by"), "--session", _text(request, "session")])
         if "note" in request:
             base.extend(["--note", _text(request, "note")])
         return base
     if command == "recover":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"dry_run"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by")])
         if request.get("dry_run") is True:
             base.append("--dry-run")
@@ -121,17 +155,17 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             raise lib.HandsoffError("broker recover.dry_run must be boolean")
         return base
     if command == "regression-request":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "group"}, {"reason"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--group", _text(request, "group"), "--by", _text(request, "by")])
         if "reason" in request:
             base.extend(["--reason", _text(request, "reason")])
         return base
     if command in {"regression-run", "regression-cancel"}:
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "request_id"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--request-id", _text(request, "request_id"), "--by", _text(request, "by")])
         return base
     if command == "work-items-sync":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"from_tickets"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by")])
         if request.get("from_tickets") is True:
             base.append("--from-tickets")
@@ -139,12 +173,12 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             raise lib.HandsoffError("broker from_tickets must be boolean")
         return base
     if command == "work-item-activate":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "item"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend([_text(request, "item"), "--by", _text(request, "by")])
         return base
     if command == "work-item-update":
         optional = {"title", "url", "github_state", "notes"}
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "item"}, optional)
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend([_text(request, "item"), "--by", _text(request, "by")])
         for field, flag in (("title", "--title"), ("url", "--url"),
                             ("github_state", "--github-state"), ("notes", "--notes")):
@@ -155,7 +189,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         optional = {"note"}
         if command == "background-wait-start":
             optional.add("resume_after_authorization")
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, optional)
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by")])
         if "note" in request:
             base.extend(["--note", _text(request, "note")])
@@ -165,7 +199,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             raise lib.HandsoffError("resume_after_authorization must be boolean")
         return base
     if command == "verify":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "criteria"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         criteria = request["criteria"]
         if not isinstance(criteria, list) or not criteria or not all(isinstance(c, str) and c.strip() for c in criteria):
             raise lib.HandsoffError("broker verify.criteria must be a non-empty string array")
@@ -174,9 +208,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         base.extend(["--by", _text(request, "by")])
         return base
     if command == "record-design-review":
-        _exact_fields(request, {
-            "actor", "project_root", "action", "command", "by", "architect", "decision", "summary",
-        }, {"findings", "structural_blocker", "session", "adopted_session", "adopted_by"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         decision = _text(request, "decision")
         if decision not in {"approve", "request-changes"}:
             raise lib.HandsoffError("broker design-review decision is invalid")
@@ -207,7 +239,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         # #36: the Supervisor may generate the delta packet for the next
         # attempt; every disposition string is validated by the supervisor
         # against the most recent review's findings.
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"}, {"dispositions"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by")])
         if "dispositions" in request:
             dispositions = request["dispositions"]
@@ -219,8 +251,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
                 base.extend(["--disposition", disposition])
         return base
     if command == "record-review":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"},
-                      {"symptom_reproduced", "session", "tests_executed", "adopted_session", "adopted_by", "reaffirm"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by")])
         if "session" in request:
             base.extend(["--session", _text(request, "session")])
@@ -237,16 +268,14 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             base.extend(["--symptom-reproduced", value])
         return base
     if command == "review-attempt-start":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by"},
-                      {"reviewer", "trigger", "note"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by")])
         for field, flag in (("reviewer", "--reviewer"), ("trigger", "--trigger"), ("note", "--note")):
             if field in request:
                 base.extend([flag, _text(request, field)])
         return base
     if command == "record-review-findings":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "findings"},
-                      {"session", "tests_executed", "adopted_session", "adopted_by"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         _adoption_args(request, base)
         _extend_tests_executed(base, request)
         findings = request["findings"]
@@ -261,14 +290,14 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             base.extend(["--finding", finding])
         return base
     if command == "record-symptom-resolved":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "evidence"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--evidence", _text(request, "evidence"), "--by", _text(request, "by")])
         return base
     if command == "criteria-apply":
         # #44: the Supervisor may apply (or preview) a criteria transaction
         # file; every operation is validated by the supervisor's planner
         # and refused before anything is written.
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "file"}, {"dry_run"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--file", _text(request, "file"), "--by", _text(request, "by")])
         if request.get("dry_run") is True:
             base.append("--dry-run")
@@ -279,8 +308,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         # #42: the Supervisor may open a scoped amendment from a transaction
         # file; the supervisor's planner classifies it and refuses a full
         # redesign before anything is written. Approval stays human-only.
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "file"},
-                      {"summary", "request_full_redesign"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--file", _text(request, "file"), "--by", _text(request, "by")])
         if "summary" in request:
             base.extend(["--summary", _text(request, "summary")])
@@ -290,12 +318,11 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
             raise lib.HandsoffError("broker amendment-open.request_full_redesign must be boolean")
         return base
     if command == "amendment-revise":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "file"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--file", _text(request, "file"), "--by", _text(request, "by")])
         return base
     if command == "amendment-review":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "decision", "summary"},
-                      {"findings", "adopted_session", "adopted_by"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         decision = _text(request, "decision")
         if decision not in {"approve", "request-changes"}:
             raise lib.HandsoffError("broker amendment-review decision is invalid")
@@ -310,7 +337,7 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         _adoption_args(request, base)
         return base
     if command == "question-raise":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "role", "text"}, {"session"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         role = _text(request, "role")
         if role not in lib.SELECTABLE_AGENT_ROLES:
             raise lib.HandsoffError("broker question-raise role is invalid")
@@ -321,18 +348,17 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
     if command == "pilot-note":
         # #49: the Supervisor may relay a Pilot observation onto the run
         # ledger; the supervisor validates the 1 to 512 character bound.
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "text"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by"), "--text", _text(request, "text")])
         return base
     if command == "amendment-escalate":
-        _exact_fields(request, {"actor", "project_root", "action", "command", "by", "reason"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by"), "--reason", _text(request, "reason")])
         return base
     if command == "design-evidence":
         # #38: both actions are non-human-only. `run` refreshes (or reuses)
         # the cached measurements; `show` prints their states as JSON.
-        _exact_fields(request, {"actor", "project_root", "action", "command", "evidence_action"},
-                      {"by", "ids", "force"})
+        _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         evidence_action = _text(request, "evidence_action")
         if evidence_action not in {"run", "show"}:
             raise lib.HandsoffError("broker design-evidence evidence_action must be run or show")
