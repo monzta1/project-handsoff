@@ -15,7 +15,11 @@ with the checkout. The order, with the refusal each step prevents:
    `main` now holds, so the evidence stands.
 3. `advance 7 70`.
 4. Cut the release from the merged commit: bump `pyproject` to the next
-   free patch number read from `gh release list` (two hosts may release from
+   free PATCH number read from `gh release list`. Patch only, in every
+   repository of the house (Handsoff, the Miner, Sentinel, Beakon): a lane
+   is never a minor or a major bump, whatever it adds; Moncy decides a
+   minor, nobody else (2026-09-21, after two lanes went 0.1.0 to 0.2.0).
+   Two hosts may release from
    one machine; never take a number from a brief), regenerate the manifest,
    an ANNOTATED tag on the merged sha (`git tag -a vX.Y.Z <sha> -m vX.Y.Z`; a
    lightweight tag fails `live_release_smoke`; deleting a tag under a
