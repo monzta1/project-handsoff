@@ -1058,8 +1058,17 @@ def build_snapshot(root: Path) -> dict:
         item["to_profile"] = session_view(sessions.get(replacement.get("to_session_id")))
         replacements.append(item)
     metrics = lib.build_run_metrics(status, events, verifications)
+    # #181: the CI row. ci_view refreshes through gh at most once a minute
+    # and commits the terminal event once; a gh hiccup becomes the row's
+    # note, never a failed snapshot.
+    try:
+        ci = lib.ci_view(status, root, cfg)
+    except (lib.HandsoffError, OSError) as exc:
+        ci = {**(status.get("ci") or {}), "checks": [], "progress": None, "elapsed_seconds": None,
+              "note": f"CI view unavailable: {exc}"} if isinstance(status.get("ci"), dict) else None
     return {
         "initialized": True,
+        "ci": ci,
         "generated_at": generated_at,
         "root": str(root),
         "engine": lib.runtime_identity(root),

@@ -64,6 +64,16 @@
         <section class="phase-rail-wrap" aria-label="Mission flight plan and delivery phases">
           <div class="phase-rail" id="phase-rail"></div>
           <div id="phase-7-card" class="phase-7-detail hidden" role="status" aria-live="polite"></div>
+          <section id="ci-status" class="ci-status hidden" data-state="running" role="status" aria-live="polite" aria-label="Pull request checks">
+            <div class="ci-head">
+              <span class="ci-pill" id="ci-state">CI RUNNING</span>
+              <a class="ci-link" id="ci-link" href="#" target="_blank" rel="noopener">PR</a>
+              <span class="ci-progress-label" id="ci-progress-label"></span>
+              <span class="ci-note" id="ci-note"></span>
+            </div>
+            <div class="ci-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="ci-bar"><span class="ci-bar-fill" id="ci-bar-fill"></span></div>
+            <div class="ci-cells" id="ci-cells"></div>
+          </section>
         </section>
 
         <section id="consistency-fault" class="consistency-fault hidden" role="alert" aria-live="polite"><strong>CONSISTENCY FAULT</strong><span id="consistency-fault-message"></span></section>

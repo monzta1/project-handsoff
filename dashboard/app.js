@@ -1140,6 +1140,34 @@ function renderLive(live) {
   renderLiveAge();
 }
 
+// #181: the CI row under the phase rail; hidden when no watch is recorded.
+function renderCi(ci) {
+  const strip = $("ci-status");
+  if (!strip) return;
+  if (!ci || typeof ci !== "object") {
+    strip.classList.add("hidden");
+    return;
+  }
+  strip.classList.remove("hidden");
+  strip.dataset.state = ci.state === "passed" || ci.state === "failed" ? ci.state : "running";
+  $("ci-state").textContent = ciStateLabel(ci);
+  const link = $("ci-link");
+  link.textContent = ci.pr ? `PR #${ci.pr}` : "PR";
+  if (typeof ci.url === "string" && ci.url) link.setAttribute("href", ci.url); else link.removeAttribute("href");
+  $("ci-progress-label").textContent = ciProgressLabel(ci);
+  $("ci-note").textContent = ciNote(ci);
+  const percent = ciBarPercent(ci);
+  const bar = $("ci-bar");
+  bar.classList.toggle("is-indeterminate", percent === null);
+  bar.setAttribute("aria-valuenow", String(percent === null ? 0 : percent));
+  $("ci-bar-fill").style.width = percent === null ? "" : `${percent}%`;
+  const cells = Array.isArray(ci.checks) ? ci.checks : [];
+  $("ci-cells").innerHTML = cells.map((check) => {
+    const href = typeof check.link === "string" && check.link ? ` href="${escapeHtml(check.link)}" target="_blank" rel="noopener"` : "";
+    return `<a class="ci-cell" data-state="${escapeHtml(check.state || "PENDING")}" title="${escapeHtml(check.state || "PENDING")}"${href}>${escapeHtml(ciCellLabel(check))}</a>`;
+  }).join("");
+}
+
 function renderLiveAge() {
   if (!state.live) return;
   const elapsed = state.liveReceivedAt ? (Date.now() - state.liveReceivedAt) / 1000 : 0;
@@ -1393,6 +1421,7 @@ function render(snapshot) {
   }
   if (!snapshot.initialized) {
     renderLive(null);
+    renderCi(null);
     renderAgentOutput(null);
     renderOperation(null);
     state.inputRequired = false;
@@ -1418,6 +1447,7 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
+  renderCi(snapshot.ci || null);
   const consistency = snapshot.status?.consistency_errors || [];
   $("consistency-fault").classList.toggle("hidden", !consistency.length);
   $("consistency-fault-message").textContent = consistency.join("; ");

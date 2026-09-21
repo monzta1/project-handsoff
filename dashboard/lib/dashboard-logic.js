@@ -695,6 +695,57 @@ function featuresPayload(rows, checked) {
   return payload;
 }
 
+
+// #181: text for the CI row. Pure, so tests/dashboard/ci_row.test.js
+// exercises them without a DOM.
+function ciSeconds(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  const total = Math.round(value);
+  if (total < 60) return `${total}s`;
+  return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
+}
+
+function ciStateLabel(ci) {
+  const state = ci && typeof ci.state === "string" ? ci.state : "running";
+  if (state === "passed") return "CI PASSED";
+  if (state === "failed") return "CI FAILED";
+  return "CI RUNNING";
+}
+
+function ciProgressLabel(ci) {
+  if (!ci) return "";
+  const elapsed = ciSeconds(ci.elapsed_seconds);
+  const expected = ciSeconds(ci.expected_seconds);
+  if (ci.state === "passed") return `passed in ${elapsed || "?"}${expected ? ` (last run ${expected})` : ""}`;
+  if (ci.state === "failed") return `${ci.failed_check || "a check"} failed after ${elapsed || "?"}`;
+  if (!expected) return `${elapsed || "0s"} elapsed`;
+  return `${elapsed || "0s"} of about ${expected}`;
+}
+
+function ciBarPercent(ci) {
+  if (!ci) return null;
+  if (ci.state === "passed" || ci.state === "failed") return 100;
+  if (typeof ci.progress !== "number" || !Number.isFinite(ci.progress)) return null;
+  return Math.max(0, Math.min(100, Math.round(ci.progress * 100)));
+}
+
+function ciCellLabel(check) {
+  if (!check || typeof check.name !== "string") return "";
+  const elapsed = ciSeconds(check.elapsed_seconds);
+  return elapsed ? `${check.name} ${elapsed}` : check.name;
+}
+
+function ciNote(ci) {
+  if (!ci) return "";
+  const parts = [];
+  if (typeof ci.note === "string" && ci.note) parts.push(ci.note);
+  if (ci.state === "running" && Array.isArray(ci.checks) && ci.checks.length) {
+    const done = ci.checks.filter((c) => ["SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "TIMED_OUT", "NEUTRAL"].includes(c.state)).length;
+    parts.push(`${done} of ${ci.checks.length} checks done`);
+  }
+  return parts.join(" · ");
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     baselineLabel,
@@ -766,5 +817,11 @@ if (typeof module !== "undefined" && module.exports) {
     amendmentReasonsView,
     verificationExecutionState,
     verificationExecutionLabel,
+    ciSeconds,
+    ciStateLabel,
+    ciProgressLabel,
+    ciBarPercent,
+    ciCellLabel,
+    ciNote,
   };
 }

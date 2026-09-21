@@ -1760,6 +1760,72 @@
           }
         }
       }
+    },
+    "ci": {
+      "description": "#181: the pull request watch recorded by ci-watch; null or absent when the run is not waiting on CI",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "pr": {
+          "type": "integer"
+        },
+        "head": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "running",
+            "passed",
+            "failed"
+          ]
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "ended_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "expected_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed_check": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "watched_by": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pr",
+        "head",
+        "state",
+        "started_at",
+        "watched_by"
+      ]
     }
   },
   "$defs": {

@@ -5776,6 +5776,9 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         else:
             errors.extend(rules_binding_errors(root, cfg, approval, "deployment gate"))  # #170
 
+    if phase >= 7:
+        errors.extend(ci_gate_errors(status))  # #181
+
     if phase >= 8:
         if progress != 100 or status.get("status") != "complete":
             errors.append("live gate: Phase 8 requires progress 100 and status 'complete'")
@@ -10652,6 +10655,254 @@ def record_pilot_note(root: Path, *, by: object, text: object) -> dict:
         commit(root, cfg, event_kind="pilot_note", event_message=f"Pilot note from {by.strip()}",
                by=by.strip(), text=clean)
     return {"by": by.strip(), "text": clean}
+
+
+# --------------------------------------------------------------------------
+# #181: CI as a step of the run. Since #178 a lane lands through a pull
+# request and waits for the required check; `ci-watch` records what is
+# being waited for, `ci_view` mirrors the PR's checks onto the snapshot at
+# most once a minute, and a red check refuses the Phase 7 transition until
+# a new head is watched. The engine reads gh's output and never merges.
+# --------------------------------------------------------------------------
+
+CI_FILE = ".handsoff-ci.json"
+CI_REFRESH_SECONDS = 60
+CI_STATES = ("running", "passed", "failed")
+CI_NO_HISTORY_NOTE = "no previous run to compare"
+#: gh check states that mean "finished"; anything else is still running
+CI_CHECK_DONE = {"SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "NEUTRAL"}
+CI_CHECK_RED = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE"}
+#: the only keys ever copied out of a gh record into the ledger or the side
+#: file; nothing from gh's environment or its other fields is read
+CI_CHECK_FIELDS = ("name", "state", "startedAt", "completedAt", "link", "workflow")
+
+
+def ci_side_path(root: Path) -> Path:
+    return Path(root) / CI_FILE
+
+
+def _gh_json(root: Path, args: list[str], runner=None, which=None) -> object:
+    """Run gh with --json arguments and parse its stdout. The runner and
+    which are injectable so tests never reach the real gh."""
+    runner = runner or subprocess.run
+    which = which or shutil.which
+    if which("gh") is None:
+        raise HandsoffError("ci-watch needs the gh CLI on PATH (https://cli.github.com), signed in")
+    try:
+        result = runner(["gh", *args], cwd=str(root), shell=False, text=True,
+                        capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HandsoffError(f"gh {args[0]} {args[1] if len(args) > 1 else ''}: {exc}") from exc
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "").strip().splitlines()
+        raise HandsoffError(f"gh {' '.join(args[:2])} failed: {tail[-1] if tail else 'no output'}")
+    try:
+        return json.loads(result.stdout or "null")
+    except ValueError as exc:
+        raise HandsoffError(f"gh {' '.join(args[:2])} returned something other than JSON") from exc
+
+
+def _ci_checks(root: Path, pr: int, runner=None, which=None) -> list[dict]:
+    raw = _gh_json(root, ["pr", "checks", str(pr), "--json", ",".join(CI_CHECK_FIELDS)], runner, which)
+    checks = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            continue
+        checks.append({
+            "name": item["name"],
+            "state": str(item.get("state") or "PENDING").upper(),
+            "started_at": item.get("startedAt") if isinstance(item.get("startedAt"), str) else None,
+            "completed_at": item.get("completedAt") if isinstance(item.get("completedAt"), str) else None,
+            "link": item.get("link") if isinstance(item.get("link"), str) else None,
+            "workflow": item.get("workflow") if isinstance(item.get("workflow"), str) else None,
+        })
+    return sorted(checks, key=lambda c: c["name"])
+
+
+def _iso_seconds(start: object, end: object) -> float | None:
+    try:
+        a = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        b = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    seconds = (b - a).total_seconds()
+    return seconds if seconds >= 0 else None
+
+
+def ci_expected_seconds(root: Path, workflows: list[str], runner=None, which=None) -> tuple[float | None, str | None]:
+    """The time to expect for this PR's checks: for every workflow named on
+    them (sorted, so the choice is deterministic), the newest successful run
+    on main; the largest of those durations, since the wait is the slowest
+    workflow. (None, None) when no workflow has a completed run yet."""
+    best: tuple[float, str] | None = None
+    for name in sorted({w for w in workflows if isinstance(w, str) and w.strip()}):
+        runs = _gh_json(root, ["run", "list", "--workflow", name, "--branch", "main", "--status", "success",
+                               "--limit", "1", "--json", "createdAt,updatedAt,url"], runner, which)
+        for run in runs if isinstance(runs, list) else []:
+            if not isinstance(run, dict):
+                continue
+            seconds = _iso_seconds(run.get("createdAt"), run.get("updatedAt"))
+            if seconds is None:
+                continue
+            url = run.get("url") if isinstance(run.get("url"), str) else None
+            if best is None or seconds > best[0]:
+                best = (seconds, url or "")
+    if best is None:
+        return None, None
+    return best[0], best[1] or None
+
+
+def _write_ci_side(root: Path, head: str, checks: list[dict], fetched_at: str) -> dict:
+    record = {"head": head, "fetched_at": fetched_at, "checks": checks}
+    atomic_write_json(ci_side_path(root), record)
+    return record
+
+
+def _read_ci_side(root: Path) -> dict | None:
+    path = ci_side_path(root)
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) and isinstance(record.get("checks"), list) else None
+
+
+def ci_watch_start(root: Path, cfg: dict, *, pr: object, by: object, runner=None, which=None,
+                   now: datetime | None = None) -> dict:
+    """Record that the run is waiting on pull request `pr`: its head, URL,
+    the checks it carries and the time the last successful run of the same
+    workflow(s) took. A watch on a new head replaces the previous one, which
+    is how a red watch is cleared after a fix is pushed. Caller does not
+    hold project_lock; this takes it."""
+    if not isinstance(by, str) or not by.strip():
+        raise HandsoffError("ci-watch: --by must be a non-empty string")
+    try:
+        number = int(pr)
+    except (TypeError, ValueError):
+        raise HandsoffError("ci-watch: --pr must be a pull request number") from None
+    if number < 1:
+        raise HandsoffError("ci-watch: --pr must be a pull request number")
+    root = Path(root).resolve()
+    now = now or datetime.now(timezone.utc)
+    view = _gh_json(root, ["pr", "view", str(number), "--json", "number,url,headRefOid"], runner, which)
+    if not isinstance(view, dict) or not isinstance(view.get("headRefOid"), str):
+        raise HandsoffError(f"ci-watch: gh pr view {number} did not return a head commit")
+    head = view["headRefOid"]
+    url = view.get("url") if isinstance(view.get("url"), str) else None
+    checks = _ci_checks(root, number, runner, which)
+    expected, source = ci_expected_seconds(root, [c["workflow"] for c in checks], runner, which)
+    with project_lock(root):
+        if not status_path(root, cfg).exists():
+            raise HandsoffError("ci-watch: no current run (run init first)")
+        status = load_unique_json(status_path(root, cfg))
+        status["ci"] = {
+            "pr": number, "head": head, "url": url, "state": "running",
+            "started_at": now.isoformat(), "expected_seconds": expected, "expected_source": source,
+            "failed_check": None, "watched_by": by.strip(),
+        }
+        _write_ci_side(root, head, checks, now.isoformat())
+        commit(root, cfg, status=status, event_kind="ci_watch_started",
+               event_message=f"Watching CI on PR #{number} ({len(checks)} checks)",
+               by=by.strip(), pr=number, head=head, url=url, checks=[c["name"] for c in checks],
+               expected_seconds=expected, expected_source=source)
+    return dict(status["ci"])
+
+
+def _ci_terminal(checks: list[dict]) -> tuple[str | None, str | None]:
+    """("passed"|"failed"|None, failing check name). None while any check is
+    still running or the PR carries no checks yet."""
+    if not checks or any(c["state"] not in CI_CHECK_DONE for c in checks):
+        return None, None
+    red = next((c for c in checks if c["state"] in CI_CHECK_RED), None)
+    return ("failed", red["name"]) if red else ("passed", None)
+
+
+def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
+            runner=None, which=None, refresh_seconds: int = CI_REFRESH_SECONDS,
+            force: bool = False) -> dict | None:
+    """The CI block for the snapshot, or None when no watch is recorded.
+    While the watch is running the checks are refreshed through gh when the
+    side file is older than `refresh_seconds` (the #158 conditional
+    pattern); the first time every check has completed the terminal event
+    is committed once (guarded by status.ci.state, re-read under the lock
+    like record_stall_transition). A terminal watch is served from the side
+    file and never asks gh again."""
+    watch = status.get("ci") if isinstance(status, dict) else None
+    if not isinstance(watch, dict) or watch.get("state") not in CI_STATES:
+        return None
+    root = Path(root).resolve()
+    now = now or datetime.now(timezone.utc)
+    side = _read_ci_side(root)
+    checks = list(side["checks"]) if side and side.get("head") == watch.get("head") else []
+    fetched_at = side.get("fetched_at") if side and side.get("head") == watch.get("head") else None
+    note = None
+    if watch.get("state") == "running":
+        age = _iso_seconds(fetched_at, now.isoformat()) if fetched_at else None
+        if force or age is None or age >= refresh_seconds:
+            try:
+                checks = _ci_checks(root, int(watch["pr"]), runner, which)
+                fetched_at = now.isoformat()
+                _write_ci_side(root, str(watch.get("head")), checks, fetched_at)
+            except HandsoffError as exc:
+                note = str(exc)
+        terminal, failing = _ci_terminal(checks)
+        if terminal:
+            with project_lock(root):
+                current = load_unique_json(status_path(root, cfg))
+                live = current.get("ci") if isinstance(current.get("ci"), dict) else None
+                if live and live.get("head") == watch.get("head") and live.get("state") == "running":
+                    live["state"] = terminal
+                    live["failed_check"] = failing
+                    live["ended_at"] = now.isoformat()
+                    current["ci"] = live
+                    if terminal == "passed":
+                        commit(root, cfg, status=current, event_kind="ci_passed",
+                               event_message=f"CI passed on PR #{live['pr']} ({len(checks)} checks)",
+                               pr=live["pr"], head=live["head"], checks=len(checks))
+                    else:
+                        commit(root, cfg, status=current, event_kind="ci_failed",
+                               event_message=f"CI failed on PR #{live['pr']}: {failing}",
+                               pr=live["pr"], head=live["head"], failed_check=failing)
+                    watch = dict(live)
+    started = watch.get("started_at")
+    ended = watch.get("ended_at")
+    elapsed = _iso_seconds(started, ended or now.isoformat()) if started else None
+    expected = watch.get("expected_seconds")
+    progress = None
+    if isinstance(expected, (int, float)) and expected > 0 and elapsed is not None:
+        progress = min(elapsed / float(expected), 1.0)
+    if watch.get("state") != "running":
+        progress = 1.0
+    if not isinstance(expected, (int, float)):
+        note = note or CI_NO_HISTORY_NOTE
+    elif watch.get("state") == "running" and elapsed is not None and elapsed > expected:
+        note = note or "over the last run's time"
+    cells = []
+    for check in checks:
+        cell_elapsed = _iso_seconds(check.get("started_at"), check.get("completed_at") or now.isoformat()) \
+            if check.get("started_at") else None
+        cells.append({"name": check["name"], "state": check["state"], "elapsed_seconds": cell_elapsed,
+                      "link": check.get("link"), "workflow": check.get("workflow")})
+    return {
+        "pr": watch.get("pr"), "head": watch.get("head"), "url": watch.get("url"),
+        "state": watch.get("state"), "started_at": started, "ended_at": ended,
+        "elapsed_seconds": elapsed, "expected_seconds": expected, "expected_source": watch.get("expected_source"),
+        "progress": progress, "failed_check": watch.get("failed_check"), "watched_by": watch.get("watched_by"),
+        "fetched_at": fetched_at, "checks": cells, "note": note,
+    }
+
+
+def ci_gate_errors(status: dict) -> list[str]:
+    """One line while the watched head has a failed check. Evaluated on the
+    proposed status like every gate, so it refuses the 6 to 7 transition."""
+    watch = status.get("ci") if isinstance(status, dict) else None
+    if not isinstance(watch, dict) or watch.get("state") != "failed":
+        return []
+    check = watch.get("failed_check") or "a check"
+    link = f" ({watch['url']})" if isinstance(watch.get("url"), str) else ""
+    return [f"CI: {check} failed on PR #{watch.get('pr')}{link}; fix, push, and run ci-watch on the new head"]
 
 
 # --------------------------------------------------------------------------
