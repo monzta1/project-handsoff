@@ -50,7 +50,7 @@ def plan(total: int) -> list[list[str]]:
     weights = json.loads(WEIGHTS.read_text()) if WEIGHTS.exists() else {}
     known = [weights[c] / counts[c] for c in counts if c in weights and weights[c] > 0]
     per_test = statistics.median(known) if known else 1.0
-    cost = {c: float(weights.get(c) or counts[c] * per_test) for c in counts}
+    cost = {c: float(weights[c]) if c in weights else counts[c] * per_test for c in counts}
     shards: list[list[str]] = [[] for _ in range(total)]
     load = [0.0] * total
     for name in sorted(counts, key=lambda c: (-cost[c], c)):
