@@ -81,8 +81,8 @@ with tempfile.TemporaryDirectory(prefix="handsoff-miner-shim-smoke-") as tmp:
                              capture_output=True, text=True, env=env)
     assert refused.returncode == 1, refused.stdout + refused.stderr
     assert "SHIP_FEATURE_BLOCKED:" in refused.stdout, refused.stdout
-    reports_after = sorted((project / ".handsoff-analysis").glob("*.json"))
-    assert reports_after == [report_path], reports_after
+    reports_after = sorted(p.resolve() for p in (project / ".handsoff-analysis").glob("*.json"))
+    assert reports_after == [report_path.resolve()], reports_after
 
 documents_after = sorted(p.name for p in documents.iterdir()) if documents.exists() else []
 assert documents_after == documents_before, "the smoke wrote into the operator's Documents archive"
