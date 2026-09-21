@@ -458,6 +458,14 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--dry-run", action="store_true", help="print what would change; call nothing that writes")
     update.add_argument("--only", default=None, help="comma-separated subset, e.g. handsoff,miner")
     update.add_argument("--config", default=None, help="update.toml (default ~/.handsoff/update.toml)")
+    update.add_argument("--force", action="store_true", help="#216: install over live managed sessions, ledgered on each run")
+    update.add_argument("--by", default=None, help="who forces (required with --force)")
+    update.add_argument("--note", default=None, help="why (ledgered with --force)")
+    check = sub.add_parser("install-check", help="#216: refuse the engine install while any registered run has a live "
+                                                 "managed session; --force --by <you> overrides and ledgers it")
+    check.add_argument("--force", action="store_true")
+    check.add_argument("--by", default=None)
+    check.add_argument("--note", default=None)
     upgrade = sub.add_parser("upgrade")
     upgrade.add_argument("root", nargs="?", default=".")
     upgrade.add_argument("--to", required=True)
@@ -542,11 +550,14 @@ def main() -> int:
             try:
                 cfg = handsoff_update.load_config(args.config)
                 outcome = handsoff_update.update(cfg, only=[t.strip() for t in args.only.split(",") if t.strip()] if args.only else None,
-                                                 dry_run=args.dry_run)
+                                                 dry_run=args.dry_run, force=args.force, by=args.by, note=args.note)
             except handsoff_update.UpdateError as exc:
                 print(f"SHIP_FEATURE_BLOCKED: {exc}")
                 return 1
             return outcome["exit_code"]
+        elif args.command == "install-check":
+            import handsoff_update
+            return handsoff_update.install_check(force=args.force, by=args.by, note=args.note)["exit_code"]
         elif args.command == "upgrade":
             result = change_pin(_root(args.root), args.to, dry_run=args.dry_run, action="upgrade")
         elif args.command == "rollback":

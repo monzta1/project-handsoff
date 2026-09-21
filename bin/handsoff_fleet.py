@@ -147,6 +147,36 @@ def forget_missing_roots(path: Path | None = None, *, now: datetime | None = Non
     return forgotten
 
 
+def live_managed_sessions(path: Path | None = None) -> list[dict]:
+    """#216: every managed session that is launching or running on any
+    registered root, read from each root's own status file: [{root, role,
+    session_id, actor, state}]. A root that is gone or whose status cannot
+    be read is skipped, never counted; the register is the list of roots
+    and the ledger is the truth about sessions."""
+    out = []
+    for entry in load_registry(path):
+        root = Path(entry["root"])
+        try:
+            cfg = lib.load_config(root)
+            status = lib.load_unique_json(lib.status_path(root, cfg))
+        except (lib.HandsoffError, OSError, ValueError):
+            continue
+        for role, session in lib.current_agent_sessions(status).items():
+            if isinstance(session, dict) and session.get("state") in ("launching", "running"):
+                out.append({"root": str(root), "role": role, "session_id": session.get("session_id"),
+                            "actor": session.get("actor"), "state": session.get("state")})
+    return sorted(out, key=lambda item: (item["root"], item["role"]))
+
+
+def install_blocked(path: Path | None = None) -> dict | None:
+    """#216: the engine badge's word while an install would land on a live
+    session: {count, sessions: [{root, role, session_id}]} or None."""
+    sessions = live_managed_sessions(path)
+    if not sessions:
+        return None
+    return {"count": len(sessions), "sessions": [{k: s[k] for k in ("root", "role", "session_id")} for s in sessions]}
+
+
 def forget_project(root: Path, path: Path | None = None) -> dict:
     """The FORGET button: removes exactly one entry whose root is gone;
     refuses a root that exists (close or unregister that one deliberately)."""
@@ -596,7 +626,7 @@ def build_fleet(path: Path | None = None, public_base: str | None = None,
     decisions = [{"root": item["root"], "project": item["name"], "feature": item.get("feature"), **action}
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
-            "engine": dict(FLEET_ENGINE),  # #161
+            "engine": {**FLEET_ENGINE, "install_blocked": install_blocked(path)},  # #161, #216
             "decisions": decisions, "counts": {state: sum(item["state"] == state for item in projects)
                                                  for state in ("running", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "idle", "orphaned")}}
 

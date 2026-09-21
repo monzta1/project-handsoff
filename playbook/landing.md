@@ -25,8 +25,12 @@ with the checkout. The order, with the refusal each step prevents:
    lightweight tag fails `live_release_smoke`; deleting a tag under a
    published release turns it into a draft), `gh release create` with the
    wheel.
-5. Install it (INSTALL.md "Clean patch upgrade") and kickstart the Fleet
-   LaunchAgent. Until this step `verify-live` refuses: "installed engine is
+5. `handsoff install-check` first: it refuses while any registered run has
+   a live managed session (root, role and session id named), because two
+   sessions share one venv and a launch must never start against an engine
+   half replaced; finish or cancel the session, or `--force --by <you>`,
+   which is ledgered on each affected run (#216). Then install it
+   (INSTALL.md "Clean patch upgrade") and kickstart the Fleet LaunchAgent. Until this step `verify-live` refuses: "installed engine is
    X, this checkout is Y: install the release first". Wait a minute for the
    Fleet signals cache.
 6. `verify-live --by <pilot>`; a "latest release reads X, gh says Y" line
