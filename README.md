@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.64/project_handsoff-0.3.64-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.64/project_handsoff-0.3.64-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.65/project_handsoff-0.3.65-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.65/project_handsoff-0.3.65-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -635,6 +635,16 @@ framework binary as `sys.executable`, so "beside the interpreter" was not
 live smoke that runs the installed pair is the only proof of an install
 path; the unit tests had a fake on PATH and could not see it.
 
+### v0.3.65 field note: one command updates the house (#219)
+
+Four tools, four INSTALL pages, two machines. `handsoff update` reads the
+latest release per tool, installs or checks out what is behind, restarts
+what runs here and prints one line per tool. The first dry run on the
+build machine found the Beakon checkout eight commits ahead of v0.5.0 with
+local work; the command leaves such a checkout alone (never a downgrade,
+never over local changes), which the reviewer had not asked for and the
+dry run did.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -1092,6 +1102,55 @@ python3 bin/handsoff_supervisor.py verify --criterion REQ-001 --by implementer-1
 Every `checks` record carries `binding` (command to binding hash), `executed`, `reused_from` (the source `vr-...` run id, or null), and `feature_hash` inside the hashed, chained record, and each entry in `results` carries `duration_s`, `timed_out`, `truncated`, and `output_bytes` next to the command, exit code, and output digest. A reused record copies its results from the source (each copied entry also names its `reused_from`), so the flags travel with it. A criterion with several tests gets `executed true` only when every one of its commands was launched in that call; a partially reused record is never a source and names a single `reused_from` only when all of its reused results came from one record. The CLI output lists `launched` and `reused`, the `checks_run` event carries `launched_count` and `reused_count`, and Mission Control's evidence telemetry shows an EXECUTED or REUSED pill per record (a record written before #43 has neither field, loads as before, and is never a reuse source).
 
 Invalidation is implicit: editing or adding any file the digest covers, changing a check command, the timeout, a regression group, a governance value, or the spec of a bound criterion changes the binding, and the next `verify` launches. The cache is the ledger itself: there is no side file to clear, and `.handsoff-verify-inflight/` holds only lock files.
+
+## Updating the house
+
+`handsoff update` (#219) brings the four tools on this machine to their
+latest releases and says so, one line per tool:
+
+```
+handsoff 0.3.64 -> 0.3.65
+miner already 0.2.0
+sentinel 0.2.1 -> 0.3.0
+beakon left at ed7a9b3: checkout is ahead of the release v0.5.0
+fleet restarted, engine v0.3.65
+verify: handsoff v0.3.65
+...
+UPDATE_OK
+```
+
+- Handsoff, the Miner and Sentinel are wheels on GitHub releases: the
+  latest tag comes from `gh release list`, the wheel is downloaded to a
+  temp dir and installed into the engine's venv with
+  `pip install --force-reinstall --no-deps`, and `pip show` is read again.
+- Beakon is a checkout with launchd services: `git fetch --tags`, the
+  release tag must resolve, `git checkout <tag>`, then every loaded
+  `com.beakon.*` label is kickstarted. A checkout whose HEAD is ahead of
+  the release is left where it is; one with local changes fails with the
+  reason. The same command serves the Studio and the MacBook: it discovers
+  which labels are loaded.
+- Then the Fleet service is kickstarted and polled until it answers with
+  the engine version.
+- Never a downgrade: installed == latest reads `already`, installed >
+  latest reads `left at`. A version is `v?digits(.digits)*`; a prerelease
+  or build suffix does not parse and the tool is skipped with the reason.
+- `--dry-run` prints `would update` lines and calls nothing that writes;
+  `--only handsoff,miner` limits the set (without `handsoff` in it, Fleet
+  is not restarted); `--config` names another `update.toml`.
+- One tool's failure leaves the others updated; the last line is
+  `UPDATE_OK` or `UPDATE_FAILED: <tools>` with exit 1.
+- No token is read, printed or written: `gh` holds the login. Without one,
+  every wheel tool reads `skipped: no gh login`; Beakon still updates from
+  the tags its checkout can fetch.
+
+Configuration, all optional, in `~/.handsoff/update.toml`:
+
+```toml
+[update]
+venv = "~/.local/share/handsoff/venv"
+beakon_checkout = "~/Projects/beakon"
+# tools.<name> = { repo = "owner/name", kind = "wheel" | "checkout", package = "<pip name>" }
+```
 
 ## Archive analysis: the Miner
 

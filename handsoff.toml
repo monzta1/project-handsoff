@@ -202,10 +202,11 @@ commands = [
   "python3 -m unittest tests.test_handsoff_supervisor.TestMinerShim -v",
   "python3 -m unittest tests.test_launch_rules -v",
   "python3 -m unittest tests.test_packaging -v",
+  "python3 -m unittest tests.test_update -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
-live_commands = ["python3 tests/live_metrics_site_smoke.py", "python3 tests/live_fleet_metrics_smoke.py", "python3 tests/live_fleet_signals_smoke.py", "python3 tests/live_offline_smoke.py", "python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py", "python3 tests/live_miner_shim_smoke.py"]
+live_commands = ["python3 tests/live_metrics_site_smoke.py", "python3 tests/live_fleet_metrics_smoke.py", "python3 tests/live_fleet_signals_smoke.py", "python3 tests/live_offline_smoke.py", "python3 tests/live_doctor_smoke.py", "python3 tests/live_release_smoke.py", "python3 tests/live_host_roles_smoke.py", "python3 tests/live_operations_smoke.py", "python3 tests/live_mission_control_smoke.py", "python3 tests/live_miner_shim_smoke.py", "python3 tests/live_update_smoke.py"]
 # Per-command timeout. A hanging check is killed and recorded as exit 124
 # rather than hanging the Supervisor indefinitely.
 timeout_seconds = 600

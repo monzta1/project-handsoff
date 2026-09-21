@@ -453,6 +453,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("commands", help="print the argparse command reference")
     playbook = sub.add_parser("playbook", help="#208: print the engine's lane playbook (the index, or one topic)")
     playbook.add_argument("topic", nargs="?", default=None, help="lanes, landing, reviewers, lessons")
+    update = sub.add_parser("update", help="#219: bring handsoff, miner, sentinel and beakon to their latest releases "
+                                           "on this machine, restart what runs here, print one line per tool")
+    update.add_argument("--dry-run", action="store_true", help="print what would change; call nothing that writes")
+    update.add_argument("--only", default=None, help="comma-separated subset, e.g. handsoff,miner")
+    update.add_argument("--config", default=None, help="update.toml (default ~/.handsoff/update.toml)")
     upgrade = sub.add_parser("upgrade")
     upgrade.add_argument("root", nargs="?", default=".")
     upgrade.add_argument("--to", required=True)
@@ -532,6 +537,16 @@ def main() -> int:
         elif args.command == "playbook":
             print(lib.playbook_text(args.topic), end="")
             return 0
+        elif args.command == "update":
+            import handsoff_update
+            try:
+                cfg = handsoff_update.load_config(args.config)
+                outcome = handsoff_update.update(cfg, only=[t.strip() for t in args.only.split(",") if t.strip()] if args.only else None,
+                                                 dry_run=args.dry_run)
+            except handsoff_update.UpdateError as exc:
+                print(f"SHIP_FEATURE_BLOCKED: {exc}")
+                return 1
+            return outcome["exit_code"]
         elif args.command == "upgrade":
             result = change_pin(_root(args.root), args.to, dry_run=args.dry_run, action="upgrade")
         elif args.command == "rollback":

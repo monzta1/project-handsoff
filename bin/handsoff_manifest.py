@@ -19,6 +19,7 @@ RUNTIME_FILES = (
     "bin/handsoff_regress.py",
     "bin/handsoff_supervisor.py",
     "bin/handsoff_tranche.py",
+    "bin/handsoff_update.py",
     "bin/validate_handsoff_status.py",
     "dashboard/app.js",
     "dashboard/index.html",
