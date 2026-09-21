@@ -48,3 +48,14 @@ with the checkout. The order, with the refusal each step prevents:
    before the worktree goes: a root removed with its run still open is
    forgotten by Fleet after one pass, but the log line says the run was
    never closed (#207). The dashboard port is released by `advance 8`.
+
+**Docs-only lane.** A lane that changes only Markdown (README.md, docs/,
+the playbook) is criteria, the reviewer, a pull request and the merge:
+no version bump, no release, no `verify-live`. CI classifies the pull
+request from its diff and runs the `docs` job alone (the documentation
+audit and the docs suites, about twenty seconds) in place of the shards;
+the wheel does not carry the documentation, so the release smoke is not
+in play. In that lane's worktree set `require_live_verification = false`
+in `handsoff.toml` (never committed) so Phase 8 needs no live run;
+`run-close` after the merge. A lane that touches one line of code with
+its Markdown is not docs-only; send the Markdown alone (#227).
