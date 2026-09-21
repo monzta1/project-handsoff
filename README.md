@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.57/project_handsoff-0.3.57-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.57/project_handsoff-0.3.57-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.58/project_handsoff-0.3.58-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.58/project_handsoff-0.3.58-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -567,12 +567,21 @@ per-process cache; a request before the first read lands sees no sleep
 (wall clock) and the next one sees the intervals; nothing on the request
 path waits for it.
 
+### v0.3.58 field note: a stale manifest names its fix (#204)
+
+Cause: three times in one day a host edited bin/ or prompts/ and launched
+a reviewer or ran verify before regenerating the manifest, and read
+"override not declared" or "runtime files do not match; reinstall the
+engine", both pointing at the wrong place; a knowledge-base rule did not
+stop the third. Fix: `stale_manifest_refusal` and the one line above,
+from every path that reads the manifest.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
 
 1. Set `version` in `pyproject.toml` to `X.Y.Z`.
-2. Regenerate the runtime manifest after the last runtime-file edit: `python3 bin/handsoff_manifest.py --version vX.Y.Z` (it rewrites `handsoff-runtime.json`; a wheel built from a stale manifest makes `doctor` refuse every project). The manifest covers `rules/` too.
+2. Regenerate the runtime manifest after the last runtime-file edit: `python3 bin/handsoff_manifest.py --version vX.Y.Z` (it rewrites `handsoff-runtime.json`; a wheel built from a stale manifest makes `doctor` refuse every project). The manifest covers `rules/` too. In this checkout the engine enforces it (#204): once a file the manifest lists changes, every ledger command, the reviewer launch, `doctor` and the dashboard refuse with `the runtime manifest is stale (<files> changed after it was written): run python3 bin/handsoff_manifest.py --version vX.Y.Z, then retry`, so a reviewer never reads a tree the manifest does not describe.
 3. Point the wheel references in `INSTALL.md` and this README at `vX.Y.Z`; the rollback example in `INSTALL.md` keeps its older release under its `handsoff-doc: intentional` marker.
 4. Commit as `Bump to vX.Y.Z` (or fold the bump into the feature commit, as the field-note fixes do), then `git tag -a vX.Y.Z -m "vX.Y.Z: one-line summary"`.
 5. `git push origin main` and `git push origin vX.Y.Z`.

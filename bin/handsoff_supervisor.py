@@ -105,6 +105,13 @@ def _load(root: Path, cfg: dict):
 
 
 def _load_all(root: Path, cfg: dict):
+    # #204: an engine checkout whose runtime files changed after the
+    # manifest was written refuses every ledger command with the fix named,
+    # before the command can produce evidence against a tree the manifest
+    # does not describe. Thin projects are untouched.
+    stale = lib.stale_manifest_refusal(root)
+    if stale:
+        raise lib.HandsoffError(stale)
     status, acceptance = _load(root, cfg)
     verifications, verification_problems = lib.load_verifications(root, cfg)
     return status, acceptance, verifications, verification_problems

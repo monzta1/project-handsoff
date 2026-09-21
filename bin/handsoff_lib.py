@@ -571,6 +571,9 @@ def _runtime_identity_with_manifest(root: Path) -> dict:
         try:
             pin = pin_path.read_text(encoding="utf-8").strip()
         except FileNotFoundError as exc:
+            stale = stale_manifest_refusal(root)  # #204
+            if stale:
+                raise HandsoffError(stale) from exc
             raise HandsoffError(f"Handsoff engine version pin is missing: {pin_path}; run `handsoff init {root}`") from exc
         if not version_satisfies(manifest["version"], pin):
             raise HandsoffError(
@@ -668,8 +671,60 @@ def engine_history(events: list[dict]) -> list[dict]:
     return seen
 
 
+def stale_manifest_refusal(root: Path) -> str | None:
+    """#204: an engine checkout (bin/handsoff_manifest.py beside
+    handsoff-runtime.json) whose runtime files changed after the manifest
+    was written. Returns the one line that names the changed files and
+    the exact command; None for a thin project or a checkout in step.
+    Three hosts in one day edited bin/ or prompts/, launched a reviewer or
+    ran verify, and read 'override not declared' or 'runtime files do not
+    match; reinstall the engine', both of which point at the wrong place."""
+    root = Path(root).resolve()
+    manifest_path = root / RUNTIME_MANIFEST_FILE
+    generator = root / "bin" / "handsoff_manifest.py"
+    pyproject = root / "pyproject.toml"
+    if not manifest_path.is_file() or not generator.is_file() or not pyproject.is_file():
+        return None
+    try:
+        if 'name = "project-handsoff"' not in pyproject.read_text(encoding="utf-8"):
+            return None  # a thin project that happens to carry the generator
+    except OSError:
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        files = manifest.get("files") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    changed = []
+    for relative, expected in sorted(files.items()):
+        if not isinstance(relative, str) or relative.startswith(("/", "../")):
+            continue
+        target = root / relative
+        try:
+            actual = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
+        except OSError:
+            actual = None
+        if actual != expected:
+            changed.append(relative)
+    if not changed:
+        return None
+    version = None
+    try:
+        match = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+        version = match.group(1) if match else None
+    except OSError:
+        pass
+    shown = ", ".join(changed[:6]) + (f" (+{len(changed) - 6} more)" if len(changed) > 6 else "")
+    tag = f"v{version}" if version else "vX.Y.Z"
+    return (f"the runtime manifest is stale ({shown} changed after it was written): "
+            f"run python3 bin/handsoff_manifest.py --version {tag}, then retry")
+
+
 def validate_runtime_integrity(root: Path) -> dict:
     """Refuse stale drop-ins, incompatible pins, or a corrupted installed engine."""
+    stale = stale_manifest_refusal(root)
+    if stale:
+        raise HandsoffError(stale)
     root = Path(root).resolve()
     identity = _runtime_identity_with_manifest(root)
     manifest = identity.pop("manifest")
@@ -716,6 +771,9 @@ def project_resource_path(root: Path, relative: str) -> Path:
     """Resolve an optional thin-project override only when hash-declared."""
     root = Path(root).resolve()
     candidate = (root / relative).resolve()
+    stale = stale_manifest_refusal(root)  # #204: an engine checkout out of step says so first
+    if stale:
+        raise HandsoffError(stale)
     drop_in = _looks_like_runtime_drop_in(root)
     if drop_in:
         return candidate
