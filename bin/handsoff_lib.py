@@ -10976,6 +10976,15 @@ def host_wait_view(status: dict, events: list[dict], cfg: dict, *, now: datetime
         times.append(status["updated_at"])
     since = max(times) if times else None
     silent = _iso_seconds(since, now.isoformat()) if since else None
+    # #193: silence is awake time; a closed lid is not the host ignoring the run
+    slept = 0.0
+    if silent is not None:
+        try:
+            began = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+            slept = asleep_seconds(began, now, machine_sleep_intervals(now=now))
+            silent = max(silent - slept, 0.0)
+        except (TypeError, ValueError):
+            slept = 0.0
     limit = float(cfg.get("stall_minutes", 10) or 10) * 60
     if silent is None or silent < limit:
         return None
@@ -10989,7 +10998,7 @@ def host_wait_view(status: dict, events: list[dict], cfg: dict, *, now: datetime
         action = str(status.get("next_action") or "the next step")
         launch_role = None
     return {"family": host["family"], "actor": host["actor"], "since": since,
-            "silent_seconds": silent, "action": action, "launch_role": launch_role}
+            "silent_seconds": silent, "asleep_seconds": round(slept, 3), "action": action, "launch_role": launch_role}
 
 
 # --------------------------------------------------------------------------

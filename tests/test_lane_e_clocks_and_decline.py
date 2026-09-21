@@ -125,6 +125,25 @@ class SleepAwareBoardTests(HandsoffTestCase):
             plain = dashboard.build_snapshot(self.tmp)
         lib._SLEEP_LOG_CACHE["at"] = None
         self.assertIsNotNone(plain["activity"]["stall_warning"], "without the sleep the same silence is a stall")
+        # the host-wait line (#194) reads awake silence too: 3 minutes is nobody waiting
+        with mock.patch.object(lib, "_read_pmset_log", return_value=log):
+            lib._SLEEP_LOG_CACHE["at"] = None
+            self.assertIsNone(lib.host_wait_view(self.read_status(), self._events(), self.cfg))
+        # and with a ledger whose newest write is 31 minutes old (the events
+        # are hash-chained, so this is a pure call with old timestamps)
+        then = (now - timedelta(minutes=31)).isoformat()
+        old_status = {**self.read_status(), "updated_at": then}
+        old_events = [{"kind": "initialized", "at": then, "by": "claude-host"}]
+        with mock.patch.object(lib, "_read_pmset_log", return_value=log):
+            lib._SLEEP_LOG_CACHE["at"] = None
+            self.assertIsNone(lib.host_wait_view(old_status, old_events, self.cfg, now=now), "28 of the 31 minutes were asleep")
+        with mock.patch.object(lib, "_read_pmset_log", return_value=""):
+            lib._SLEEP_LOG_CACHE["at"] = None
+            waiting = lib.host_wait_view(old_status, old_events, self.cfg, now=now)
+        lib._SLEEP_LOG_CACHE["at"] = None
+        self.assertIsNotNone(waiting)
+        self.assertEqual(waiting["asleep_seconds"], 0.0)
+        self.assertGreaterEqual(waiting["silent_seconds"], 30 * 60)
 
 
 class RunnerDeclineTests(HandsoffTestCase):
