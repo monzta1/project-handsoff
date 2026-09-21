@@ -150,6 +150,14 @@ function hostWaitTag(project) {
   return `<span class="host-wait">WAITING ON HOST ${esc(String(wait.family || "unknown").toUpperCase())}${words ? " " + esc(words) : ""}</span>`;
 }
 
+// #193: the card's phase line names how long the machine slept in this phase.
+function asleepSuffix(project) {
+  const seconds = Number(project && project.phase_asleep_seconds);
+  if (!Number.isFinite(seconds) || seconds < 60) return "";
+  const words = seconds < 3600 ? `${Math.floor(seconds / 60)} min` : `${Math.floor(seconds / 3600)} h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")} m`;
+  return ` <span class="asleep">asleep ${esc(words)}</span>`;
+}
+
 function projectCard(project) {
   const state = project.state || "quiet";
   const engine = engineMeta(project);
@@ -170,7 +178,7 @@ function projectCard(project) {
     <div class="project-title">${project.logo_url ? `<img class="project-logo" src="${esc(project.logo_url)}" alt="" width="44" height="44">` : ""}<div><h3>${esc(title)}</h3>
     <p class="project-name">${esc(project.name)}${hostTag(project)}</p></div></div>
     ${phaseRail(project)}
-    <p class="phase">${phase}</p>
+    <p class="phase">${phase}${asleepSuffix(project)}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}
     ${Array.isArray(project.claimed_twice) && project.claimed_twice.length ? `<p class="claimed-twice">CLAIMED TWICE: ${esc(project.claimed_twice.map((n) => "#" + n).join(", "))} is also listed by another live run</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}

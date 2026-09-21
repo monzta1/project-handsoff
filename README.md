@@ -22,7 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.55/project_handsoff-0.3.55-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.56/project_handsoff-0.3.56-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.56/project_handsoff-0.3.56-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -549,6 +550,12 @@ and no number; the crew chiclets named the family but not whether the
 station was the host or a managed session. Fix: the host-wait line and
 the Fleet tag, percent complete on the CI label, `host` or `managed` on
 every chiclet.
+### v0.3.56 field notes: the clocks know the Mac slept, and a decline is reviewed (#193, #177)
+
+Cause: two runs read "design debate for 7 hours" while the machine was
+asleep; #177's decline closed a run without the reviewer's word and a
+managed Architect had no way to emit it. Fix: the sections "The clocks
+know the Mac slept" and "The Architect can decline" above.
 
 ### Cutting a release
 
@@ -761,6 +768,24 @@ which. Fleet therefore classifies such a run by its other rules, never as
 FAILED. `session-result-adopt` rewrites a beacon naming that session with
 state `adopted`. The failure itself stays in the ledger.
 
+### The clocks know the Mac slept (#193)
+
+A laptop that sleeps after a minute idle made two runs read "design debate
+for 7 hours" while nothing was happening. macOS logs every transition
+(`pmset -g log`: "Entering Sleep", "Wake", "DarkWake"), each line with
+its own UTC offset, so `machine_sleep_intervals` reads them exactly: a
+Sleep opens an interval, only a Wake closes it, a DarkWake (maintenance)
+leaves it open, an open one closes at now, and the offset on the line is
+the timezone (a DST change is two offsets, nothing ambiguous). Every
+duration the board computes is awake time with the sleep beside it: the
+run elapsed, each phase, session durations, verification and wait times
+(`metrics.asleep_seconds`, `metrics.phase_asleep_seconds`), the liveness
+age and the stall warning (a closed lid is never a stall), the CI row's
+elapsed. Mission Control's LCD clocks count awake time and read "asleep
+7 h 03 m" beneath; the phase list and the Fleet card carry the same words.
+The ledger is untouched; sleep is subtracted at read time; on a machine
+without `pmset` every number is the wall clock and the sleep is 0.
+
 ### The Architect can decline (#177)
 
 Some issues should die at Phase 2. When the criteria describe a change
@@ -777,16 +802,23 @@ python3 bin/handsoff_supervisor.py design-decline --by claude-architect \
   --alternative "fill every required item at Phase 5 and keep the gate"
 ```
 
-Only at Phase 1 or 2, with no approved design, no live managed session
-and an open run. The decline (reason, up to eight evidence lines, an
-alternative, the design and acceptance hashes of the criteria it answers)
-and the closure are one commit: a `design_declined` event, then
-`run_closed` with `outcome: not_planned`. Mission Control's briefing reads
-"Not planned, declined by X: reason"; Fleet reads the run as closed, never
-failed; `advance 3` is refused. The command prints the maintainer-voice
-text for the issue. Not yet: the runner does not dispatch the protocol
-line from a managed Architect session (the host records it), and the
-design reviewer does not review a decline.
+Only at Phase 2, with no approved design, no live managed session and an
+open run. The decline (reason, up to eight evidence lines, an alternative,
+the design and acceptance hashes of the criteria it answers) is recorded
+as a pending state, and the independent design reviewer judges it like a
+proposal, for its evidence and never for the effort saved: the reviewer
+packet carries `design_decline` in place of a proposal; `record-design-review
+--approve` records `design_decline_approved` and closes the run with
+`outcome: not_planned` in the same commit; `--request-changes` records
+`design_decline_changes_requested` with the findings and sends it back,
+the run staying at Phase 2 for a new proposal or decline. `advance 3` is
+refused while a decline is pending; the architect cannot review its own
+decline. A managed Architect emits the line and the runner records it
+with the session's actor (a turn with both a proposal and a decline is
+refused). Mission Control's briefing reads "Not planned, declined by X:
+reason" once approved; Fleet reads the run as closed, never failed. Not
+yet: a Pilot veto from Mission Control (a closed run can be reopened as
+today).
 
 ### One implementer rule for every run (#176)
 

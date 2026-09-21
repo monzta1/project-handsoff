@@ -1279,23 +1279,34 @@ function renderClocks() {
   if (!mission || !phase) return;
   const anchors = state.clocks || {};
   const now = Date.now();
+  // #193: the LCDs count awake time. The snapshot's asleep seconds (run and
+  // current phase) are subtracted from the wall clock since the anchor; a
+  // sleep that happens between snapshots is taken off at the next one.
   if (anchors.startedAt) {
     const end = anchors.endedAt ? new Date(anchors.endedAt).getTime() : now;
-    mission.querySelector(".lcd-live").textContent = lcdText((end - new Date(anchors.startedAt).getTime()) / 1000);
+    mission.querySelector(".lcd-live").textContent = lcdText((end - new Date(anchors.startedAt).getTime()) / 1000 - (anchors.asleepSeconds || 0));
     mission.dataset.frozen = anchors.endedAt ? "true" : "false";
   }
   if (anchors.phaseStartedAt) {
     const end = anchors.endedAt ? new Date(anchors.endedAt).getTime() : now;
-    phase.querySelector(".lcd-live").textContent = lcdText((end - new Date(anchors.phaseStartedAt).getTime()) / 1000);
+    phase.querySelector(".lcd-live").textContent = lcdText((end - new Date(anchors.phaseStartedAt).getTime()) / 1000 - (anchors.phaseAsleepSeconds || 0));
     phase.dataset.frozen = anchors.endedAt ? "true" : "false";
   }
 }
 
 function renderMetrics(metrics) {
   if (!metrics) return;
-  state.clocks = { startedAt: metrics.started_at || null, endedAt: metrics.ended_at || null, phaseStartedAt: metrics.phase_started_at || null };
+  const currentPhase = String(state.phaseNumber ?? "");
+  state.clocks = { startedAt: metrics.started_at || null, endedAt: metrics.ended_at || null, phaseStartedAt: metrics.phase_started_at || null,
+    asleepSeconds: metrics.asleep_seconds || 0, phaseAsleepSeconds: (metrics.phase_asleep_seconds || {})[currentPhase] || 0 };
   renderClocks();
-  $("metrics-elapsed").textContent = metricDuration(metrics.elapsed_seconds);
+  // #193: awake time, with the sleep named beside it when there was any
+  const asleep = asleepLabel(metrics.asleep_seconds);
+  $("metrics-elapsed").textContent = metricDuration(metrics.elapsed_seconds) + (asleep ? ` (${asleep})` : "");
+  const clockNote = $("mission-clock-asleep");
+  if (clockNote) clockNote.textContent = asleep;
+  const phaseNote = $("phase-clock-asleep");
+  if (phaseNote) phaseNote.textContent = asleepLabel((metrics.phase_asleep_seconds || {})[currentPhase]);
   $("metrics-sessions").textContent = String(metrics.managed_sessions || 0);
   $("metrics-failures").textContent = `${metrics.failed_sessions || 0} / ${metrics.replacement_count || 0}`;
   $("metrics-reviews").textContent = `${metrics.design_review_attempts || 0} / ${metrics.implementation_review_attempts || 0}`;
@@ -1318,8 +1329,11 @@ function renderMetrics(metrics) {
     ? `TOKEN SIGNAL · ${metrics.tokens?.coverage || ""}`
     : `TOKENS NOT REPORTED · ${metrics.tokens?.coverage || "0/0 sessions"}`;
   $("metrics-phase-list").innerHTML = Object.entries(metrics.phase_seconds || {})
-    .filter(([, seconds]) => Number(seconds) > 0)
-    .map(([phase, seconds]) => `<span>PHASE ${escapeHtml(phase)} <strong>${escapeHtml(metricDuration(seconds))}</strong></span>`)
+    .filter(([phase, seconds]) => Number(seconds) > 0 || Number((metrics.phase_asleep_seconds || {})[phase]) > 0)
+    .map(([phase, seconds]) => {
+      const slept = asleepLabel((metrics.phase_asleep_seconds || {})[phase]);
+      return `<span>PHASE ${escapeHtml(phase)} <strong>${escapeHtml(metricDuration(seconds))}</strong>${slept ? ` <small>${escapeHtml(slept)}</small>` : ""}</span>`;
+    })
     .join("");
   $("metrics-session-list").innerHTML = (metrics.largest_sessions || [])
     .map((session) => `<span>${escapeHtml(String(session.role || "agent").toUpperCase())} · ${escapeHtml(session.adapter || "unknown")} · ${escapeHtml(session.model || "default")} <strong>${escapeHtml(metricDuration(session.duration_seconds))}</strong></span>`)
@@ -1481,6 +1495,7 @@ function render(snapshot) {
   $("consistency-fault-message").textContent = consistency.join("; ");
   renderAgentOutput(snapshot.runtime?.agent_output || null);
   renderOperation(snapshot.runtime?.operation || null);
+  state.phaseNumber = snapshot.status?.phase_number ?? null;
   renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);

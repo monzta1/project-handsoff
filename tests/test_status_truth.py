@@ -99,7 +99,8 @@ class StatusTruthTests(unittest.TestCase):
     def test_liveness_view_has_shared_contract(self):
         self.beacon(self.now - timedelta(seconds=1))
         view = lib.liveness_view(self.status, self.root, self.cfg, self.now)
-        self.assertEqual(set(view), {"seconds_since_activity", "process_signal", "stall_warning",
+        # #193: asleep_seconds joined the contract (the age is awake time)
+        self.assertEqual(set(view), {"seconds_since_activity", "asleep_seconds", "process_signal", "stall_warning",
                                      "stall_threshold_minutes", "assessment", "activity_note"})
 
     def test_agent_output_states_have_timing_contract(self):

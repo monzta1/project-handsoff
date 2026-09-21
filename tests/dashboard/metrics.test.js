@@ -30,7 +30,9 @@ test("LCD mission clocks tick from ledger anchors and freeze on completion", () 
   const css = read("dashboard/styles.css");
   for (const id of ["mission-clock", "phase-clock"]) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(html, /lcd-ghost" aria-hidden="true">88:88:88</);
-  assert.match(app, /state\.clocks = \{ startedAt: metrics\.started_at \|\| null, endedAt: metrics\.ended_at \|\| null, phaseStartedAt: metrics\.phase_started_at \|\| null \}/);
+  // #193: the anchors carry the sleep the clocks subtract
+  assert.match(app, /state\.clocks = \{ startedAt: metrics\.started_at \|\| null, endedAt: metrics\.ended_at \|\| null, phaseStartedAt: metrics\.phase_started_at \|\| null,\n    asleepSeconds: metrics\.asleep_seconds \|\| 0, phaseAsleepSeconds: \(metrics\.phase_asleep_seconds \|\| \{\}\)\[currentPhase\] \|\| 0 \};/);
+  assert.match(app, /- \(anchors\.asleepSeconds \|\| 0\)\)/);
   assert.match(app, /window\.setInterval\(renderClocks, 1000\)/);
   assert.match(app, /mission\.dataset\.frozen = anchors\.endedAt \? "true" : "false"/);
   assert.match(css, /\.lcd\[data-frozen="true"\] \.lcd-live/);
