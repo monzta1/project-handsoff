@@ -122,8 +122,29 @@ function renderEngineBadge(data) {
   const badge = $("engine-badge");
   if (!badge) return;
   const engine = data?.engine || {};
-  badge.textContent = `ENGINE ${engine.version && engine.version !== "unknown" ? engine.version : "UNKNOWN"}`;
-  badge.title = engine.source && engine.source !== "unknown" ? `Engine the Fleet server runs (${engine.source})` : "Engine the Fleet server runs";
+  badge.textContent = engineBadgeLabel(engine);
+  badge.title = engineBadgeTitle(engine);
+  badge.classList.toggle("install-blocked", Boolean(engine.install_blocked));
+}
+
+// #216: while any registered run has a live managed session, an engine
+// install would land under it; the badge says so and names the sessions.
+function engineBadgeLabel(engine) {
+  const version = engine && engine.version && engine.version !== "unknown" ? engine.version : "UNKNOWN";
+  const blocked = engine && engine.install_blocked;
+  if (blocked && Number(blocked.count) > 0) {
+    return `ENGINE ${version} (install blocked: ${blocked.count} live session${blocked.count === 1 ? "" : "s"})`;
+  }
+  return `ENGINE ${version}`;
+}
+
+function engineBadgeTitle(engine) {
+  const base = engine && engine.source && engine.source !== "unknown" ? `Engine the Fleet server runs (${engine.source})` : "Engine the Fleet server runs";
+  const blocked = engine && engine.install_blocked;
+  if (blocked && Array.isArray(blocked.sessions) && blocked.sessions.length) {
+    return base + "; install blocked by " + blocked.sessions.map((s) => `${s.role} ${s.session_id} on ${s.root}`).join(", ");
+  }
+  return base;
 }
 
 function engineMeta(project) {

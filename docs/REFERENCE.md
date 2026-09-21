@@ -387,7 +387,7 @@ Every release is a wheel attached to a GitHub release whose tag matches `pyproje
 4. Commit as `Bump to vX.Y.Z` (or fold the bump into the feature commit, as the field-note fixes do), then `git tag -a vX.Y.Z -m "vX.Y.Z: one-line summary"`.
 5. `git push origin main` and `git push origin vX.Y.Z`.
 6. `python3 -m pip wheel --no-deps -w dist .` (the checkout's own `build/` folder shadows the `build` module, so `python3 -m build` fails here) and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
-7. Upgrade the dedicated environment per `INSTALL.md` ("Clean patch upgrade") and confirm with `handsoff version --json` and `handsoff doctor` on a thin project. Projects on `0.3.*` need nothing else.
+7. `handsoff install-check` (it refuses while any registered run has a live managed session, naming the root, role and session id; `--force --by <you>` is ledgered on each affected run, #216), then upgrade the dedicated environment per `INSTALL.md` ("Clean patch upgrade") and confirm with `handsoff version --json` and `handsoff doctor` on a thin project. Projects on `0.3.*` need nothing else.
 
 #### What CI runs
 

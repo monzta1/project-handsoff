@@ -332,8 +332,46 @@ def line_for(result: dict) -> str:
     return f"{tool} {action}" + (f": {result.get('reason')}" if result.get("reason") else "")
 
 
+def install_check(*, force: bool = False, by: str | None = None, note: str | None = None,
+                  registry: Path | None = None, out=print) -> dict:
+    """#216: refuse to replace the shared engine while any registered run
+    has a live managed session. Prints one 'blocked: <root> <role>
+    <session_id>' line per live session. Returns {blocked: [...], forced:
+    bool, exit_code}: 1 when blocked and not forced; 2 when --force lacks
+    --by; 0 otherwise. --force records engine_install_forced on each
+    affected run, once per root under that root's lock."""
+    import handsoff_fleet as fleet
+    sessions = fleet.live_managed_sessions(registry)
+    for session in sessions:
+        out(f"blocked: {session['root']} {session['role']} {session['session_id']}")
+    if not sessions:
+        out("INSTALL_CHECK_OK")
+        return {"blocked": [], "forced": False, "exit_code": 0}
+    if not force:
+        out(f"INSTALL_CHECK_BLOCKED: {len(sessions)} live managed session(s); finish or cancel them, or --force --by <you>")
+        return {"blocked": sessions, "forced": False, "exit_code": 1}
+    if not by or not str(by).strip():
+        out("INSTALL_CHECK_REFUSED: --force needs --by <actor>; the override is ledgered on each affected run")
+        return {"blocked": sessions, "forced": False, "exit_code": 2}
+    import handsoff_lib as lib
+    by_root: dict[str, list[dict]] = {}
+    for session in sessions:
+        by_root.setdefault(session["root"], []).append(session)
+    for root, group in by_root.items():
+        root_path = Path(root)
+        with lib.project_lock(root_path):
+            cfg = lib.load_config(root_path)
+            lib.commit(root_path, cfg, event_kind="engine_install_forced",
+                       event_message=f"Engine install forced over {len(group)} live managed session(s) by {by}",
+                       by=str(by).strip(), note=(note or "")[:512],
+                       sessions=[{"role": s["role"], "session_id": s["session_id"]} for s in group])
+    out("INSTALL_CHECK_FORCED")
+    return {"blocked": sessions, "forced": True, "exit_code": 0}
+
+
 def update(cfg: dict, *, only: list[str] | None = None, dry_run: bool = False, out=print,
-           runner: Runner | None = None, fleet_wait: float = 30.0) -> dict:
+           runner: Runner | None = None, fleet_wait: float = 30.0, force: bool = False,
+           by: str | None = None, note: str | None = None, registry: Path | None = None) -> dict:
     """The whole run. Returns {results, fleet, verify, failed, exit_code}."""
     runner = runner or Runner(dry_run=dry_run)
     names = [n for n in TOOL_ORDER if n in cfg["tools"]] + sorted(n for n in cfg["tools"] if n not in TOOL_ORDER)
@@ -343,6 +381,15 @@ def update(cfg: dict, *, only: list[str] | None = None, dry_run: bool = False, o
             raise UpdateError(f"unknown tool(s): {', '.join(unknown)}; known: {', '.join(names)}")
         names = [n for n in names if n in only]
     logged_in = gh_logged_in(cfg, runner)
+    # #216: never replace the shared engine under a live managed session
+    if any(cfg["tools"][n]["kind"] == "wheel" for n in names):
+        check = install_check(force=force and not dry_run, by=by, note=note, registry=registry, out=out)
+        if check["exit_code"] and not (dry_run and check["exit_code"] == 1):
+            out("UPDATE_FAILED: install blocked")
+            return {"results": [], "fleet": None, "verify": {}, "failed": ["install-check"], "exit_code": 1}
+        if dry_run and check["blocked"]:
+            out("dry run: the install would be blocked; nothing else is checked")
+            return {"results": [], "fleet": None, "verify": {}, "failed": ["install-check"], "exit_code": 1}
     results = []
     for name in names:
         spec = cfg["tools"][name]
