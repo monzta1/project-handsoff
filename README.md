@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.48/project_handsoff-0.3.48-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.49/project_handsoff-0.3.49-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -491,6 +491,17 @@ Cause: three losses from the 2026-09-19 runs. A green test with no red behind it
 
 Cause: five open tickets, one filed by the Pilot during tranche 1 (a run that had adopted a failed session's verdict showed FAILED on Fleet). Fix: the five sections above, three more `[features]` switches, and one repair found on the way: the runner persists every reviewer result as kind `review`, so a design verdict recovered from a refused packet adopts through the design branch now. Learned: the design gate must not compare the rules set (a Phase 6 hook edit would demand a new design); it records, the review compares.
 
+### v0.3.49 field notes: CI on the board (#181)
+
+Cause: with `main` protected (#178) every lane waits about two minutes on
+the pull request's checks (#180), and the run sat at Phase 6 looking idle
+while the operator watched a GitHub tab. Fix: the section "CI is a step of
+the run" above; `ci-watch`, the CI row, and the Phase 7 gate on a red
+check. Found on the way and filed, not fixed here: a missing
+`.handsoff-version` pin takes the whole page offline instead of one badge
+(#185); the operations console prints 21 rows that cannot act (#183,
+#184); the page says "host" where it could say which host (#186).
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -660,6 +671,47 @@ run has since advanced past the phase the session ran in; the detail says
 which. Fleet therefore classifies such a run by its other rules, never as
 FAILED. `session-result-adopt` rewrites a beacon naming that session with
 state `adopted`. The failure itself stays in the ledger.
+
+### CI is a step of the run (#181)
+
+Since #178 a lane in a repository with a protected `main` lands through a
+pull request and waits for the required check. That wait belongs to the
+run, so it is on the board:
+
+```
+python3 bin/handsoff_supervisor.py ci-watch --pr 180 --by claude-host
+python3 bin/handsoff_supervisor.py ci-watch --poll
+```
+
+`ci-watch --pr N`, run right after `gh pr create`, records a
+`ci_watch_started` event with the PR number and URL, its head commit, the
+names of its checks, and the time to expect: for every workflow named on
+the checks (sorted, so the choice is deterministic), the newest successful
+run on `main`, the largest of those durations, and that run's URL as
+`expected_source`. No history means `expected_seconds` null and the note
+"no previous run to compare". `status.ci` holds the watch; the checks
+themselves live in the `.handsoff-ci.json` side file, Handsoff state the
+digest never counts.
+
+Mission Control then shows a CI row under the phase rail: a pill (CI
+RUNNING, PASSED, FAILED), a bar of elapsed over expected (indeterminate
+without history, "over the last run's time" once past it), one cell per
+check with its state and elapsed time linking to its job (a matrix
+workflow renders one cell per job: the six `python (shard i of 6)` from
+#180), and the PR link. The snapshot refreshes the checks through `gh pr
+checks` at most once a minute (the #158 conditional pattern); `--poll`
+forces one refresh and prints the view as JSON. The engine reads gh's
+output and never merges: merging stays `gh pr merge --auto`. Nothing from
+gh's environment is read or stored; only the check fields named in
+`CI_CHECK_FIELDS` ever reach the ledger or the side file.
+
+The first time every check has completed, one terminal event is recorded:
+`ci_passed`, or `ci_failed` naming the first red check. While the watched
+head has a failed check, `compute_errors` adds one line, `CI: <check>
+failed on PR #N (<url>); fix, push, and run ci-watch on the new head`,
+which refuses the Phase 6 to 7 transition; a watch on a new head replaces
+the failed one and clears it. A passed watch adds nothing. A terminal
+watch is served from the side file and never asks gh again.
 
 ## Review attempts and the convergence cap
 

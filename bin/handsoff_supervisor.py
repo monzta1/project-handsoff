@@ -88,6 +88,7 @@ OPERATION_REGISTRY = {
     "question-answer": {"class": "operator-facing", "surface": "questions-panel"},
     "analyze-archives": {"class": "automatic", "surface": "flight-log"},
     "pilot-note": {"class": "operator-facing", "surface": "pilot-note-form"},
+    "ci-watch": {"class": "agent-only", "surface": "ci-status"},
     "run-close": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "run-reopen": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "advance": {"class": "agent-only", "surface": "phase-rail"},
@@ -693,6 +694,35 @@ def cmd_pilot_note(args) -> int:
     root = lib.resolve_root(args.root)
     record = lib.record_pilot_note(root, by=args.by, text=args.text)
     print(f"PILOT_NOTE_RECORDED: {len(record['text'])} characters by {record['by']}")
+    return 0
+
+
+def cmd_ci_watch(args) -> int:
+    """#181: record that the run is waiting on a pull request's checks
+    (--pr), or refresh and print the CI view (--poll). The host runs
+    `ci-watch --pr N` right after `gh pr create`; Mission Control then
+    shows the CI row until every check has completed."""
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    if args.pr is None and not args.poll:
+        print("CI_WATCH_BLOCKED: give --pr N to start a watch or --poll to refresh the current one")
+        return 1
+    try:
+        if args.pr is not None:
+            watch = lib.ci_watch_start(root, cfg, pr=args.pr, by=args.by)
+            expected = f"{watch['expected_seconds']:.0f} s expected" if watch.get("expected_seconds") else lib.CI_NO_HISTORY_NOTE
+            print(f"CI_WATCH_STARTED: PR #{watch['pr']} head {watch['head'][:12]}; {expected}")
+        if args.poll:
+            with lib.project_lock(root):
+                status = lib.load_unique_json(lib.status_path(root, cfg))
+            view = lib.ci_view(status, root, cfg, force=True)
+            if view is None:
+                print("CI_WATCH_NONE: no watch is recorded on this run")
+                return 1
+            print(json.dumps(view, indent=1, sort_keys=True))
+    except lib.HandsoffError as exc:
+        print(f"CI_WATCH_BLOCKED: {exc}")
+        return 1
     return 0
 
 
@@ -4628,6 +4658,12 @@ def build_parser() -> argparse.ArgumentParser:
     pilot_note.add_argument("--by", required=True)
     pilot_note.add_argument("--text", required=True, help="1 to 512 characters")
 
+    ci_watch = sub.add_parser("ci-watch", help="#181: watch a pull request's checks as a step of the run; "
+                              "Mission Control shows the CI row until they complete")
+    ci_watch.add_argument("--pr", type=int, default=None, help="pull request number to watch (starts a watch)")
+    ci_watch.add_argument("--by", default="host", help="who started the watch")
+    ci_watch.add_argument("--poll", action="store_true", help="refresh now and print the CI view as JSON")
+
     run_close = sub.add_parser("run-close", help="cleanly close a run and release owned resources")
     run_close.add_argument("--by", required=True)
     run_close.add_argument("--reason", required=True)
@@ -4733,6 +4769,7 @@ def main() -> int:
         "question-answer": cmd_question_answer,
         "analyze-archives": cmd_analyze_archives,
         "pilot-note": cmd_pilot_note,
+        "ci-watch": cmd_ci_watch,
         "run-close": cmd_run_close,
         "run-reopen": cmd_run_reopen,
     }
