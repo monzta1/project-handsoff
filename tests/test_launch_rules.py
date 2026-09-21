@@ -2,16 +2,18 @@
 adapter is resolved; packet rules refuse a reviewer result at the boundary
 and keep it adoptable; --propose-rules drafts, never enables."""
 import json
+import os
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
-import handsoff_analyzer as analyzer  # noqa: E402
 import handsoff_broker as broker  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 
@@ -185,56 +187,31 @@ class LaunchRuleTests(HandsoffTestCase):
 
 
 class ProposeRulesTests(HandsoffTestCase):
-    def _archive(self, directory, name, root, failures, repo="monzta1/x", started="2026-09-0"):
-        events = [{"kind": "initialized", "at": f"{started}1T00:00:00+00:00"}]
-        for index, (category, role, preceding) in enumerate(failures):
-            sid = f"hs-{name}-{index}"
-            events.append({"kind": preceding, "at": f"{started}2T00:00:00+00:00"})
-            events.append({"kind": "agent_session_launching", "session_id": sid, "role": role, "at": f"{started}2T00:01:00+00:00"})
-            events.append({"kind": "agent_session_failed", "session_id": sid, "role": role,
-                           "failure": {"category": category, "reason": "x"}, "at": f"{started}2T00:02:00+00:00"})
-        record = {"repo": repo, "root": root, "started_at": f"{started}1T00:00:00+00:00", "archived_at": f"{started}3T00:00:00+00:00",
-                  "feature": name, "status": {"phase_number": 8, "status": "complete"}, "acceptance": {"criteria": []},
-                  "events": events, "verifications": [], "metrics": {}, "run_kind": "product"}
-        (directory / f"{name}.json").write_text(json.dumps(record))
+    """#167 drafting moved to the Miner with #174 (its test_propose_rules
+    covers the shapes); the engine keeps the CLI flag as a shim that calls
+    `miner propose-rules` and reads its reply."""
 
-    def test_two_runs_with_one_shape_draft_a_rule_one_run_drafts_nothing_existing_when_is_skipped(self):
-        archives = self.tmp / "archive"
-        archives.mkdir()
-        rules_dir = self.tmp / "rules"
-        self._archive(archives, "run-a", "/p/a", [("dispatch_failed", "implementer", "criterion_added")], started="2026-09-0")
-        self._archive(archives, "run-b", "/p/b", [("dispatch_failed", "implementer", "criterion_added")], repo="monzta1/y", started="2026-09-1")
-        self._archive(archives, "run-c", "/p/c", [("timeout", "architect", "design_proposal_recorded")], repo="monzta1/z", started="2026-09-2")
-        cfg = lib.load_config(self.tmp)
-        result = analyzer.propose_rules(self.tmp, cfg, archive_directory=archives, rules_dir=rules_dir)
-        self.assertEqual(len(result["written"]), 1, result)
-        draft = json.loads(Path(result["written"][0]).read_text())
-        self.assertTrue(draft["draft"])
-        self.assertEqual(draft["when"], {"command": "launch", "role": "implementer"})
-        self.assertEqual(draft["cause"]["failure_category"], "dispatch_failed")
-        self.assertEqual(len(draft["cause"]["occurrences"]), 2)
-        self.assertIn("/p/a", draft["cause"]["root"])
-        self.assertTrue(Path(result["written"][0]).parent.name == "proposed")
-        self.assertEqual([s["reason"] for s in result["skipped"]], ["one run only"])
-        # drafts are never loaded as rules
-        self.assertNotIn(draft["id"], {r["id"] for r in lib.load_launch_rules(self.tmp)})
-        # a shape whose when-clause an existing rule carries is not proposed again
-        mine = self.tmp / "handsoff-rules"
-        mine.mkdir()
-        (mine / "implementer.json").write_text(json.dumps({"id": "implementer-hold", "cause": {"event": "x", "at": "2026-01-01"},
-                                                           "when": {"command": "launch", "role": "implementer"}, "refuse": "hold"}))
-        Path(result["written"][0]).unlink()
-        result = analyzer.propose_rules(self.tmp, cfg, archive_directory=archives, rules_dir=rules_dir)
-        self.assertEqual(result["written"], [])
-        self.assertIn("an existing rule carries this when-clause", [s["reason"] for s in result["skipped"]])
-
-    def test_the_cli_flag_writes_drafts_and_evaluates_nothing(self):
+    def test_the_cli_flag_calls_the_miner_and_evaluates_nothing(self):
         self.init()
         archives = self.tmp / "archive"
         archives.mkdir()
-        r = run(["analyze-archives", "--propose-rules", "--archive-dir", str(archives)], cwd=self.tmp)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("HANDSOFF_RULES_PROPOSED: 0 draft(s)", r.stdout)
+        shim_dir = Path(tempfile.mkdtemp(prefix="handsoff-miner-shim-"))
+        log = shim_dir / "argv.json"
+        fake = shim_dir / "miner"
+        fake.write_text("#!/usr/bin/env python3\nimport json, sys\n"
+                        f"open({str(log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+                        "print(json.dumps({'written': [], 'skipped': [], 'proposed_dir': 'rules/proposed'}))\n")
+        fake.chmod(0o755)
+        try:
+            with mock.patch.dict(os.environ, {"HANDSOFF_MINER": str(fake)}):
+                r = run(["analyze-archives", "--propose-rules", "--archive-dir", str(archives)], cwd=self.tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("HANDSOFF_RULES_PROPOSED: 0 draft(s) in rules/proposed", r.stdout)
+            self.assertEqual(json.loads(log.read_text()),
+                             ["propose-rules", "--root", str(self.tmp.resolve()), "--json", "--archive-dir", str(archives)])
+            self.assertFalse((self.tmp / "rules" / "proposed").exists())
+        finally:
+            shutil.rmtree(shim_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
