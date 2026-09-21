@@ -61,7 +61,7 @@ class RunnerAndModulesTests(unittest.TestCase):
         self.assertLess(max(loads) - min(loads), 20, loads)
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
         self.assertIn("python3 tests/shard.py --modules --total 4 --index ${{ matrix.shard }}", workflow)
-        self.assertIn("needs: [python, modules, dashboard]", workflow)
+        self.assertIn("needs: [changes, python, modules, dashboard, docs]", workflow)  # #227 adds the docs path
         self.assertIn('test "${{ needs.modules.result }}" = "success"', workflow)
         # the plan runs one process per module
         self.assertIn('subprocess.run([sys.executable, "-m", "unittest", f"tests.{name}"]', (ROOT / "tests" / "shard.py").read_text())
