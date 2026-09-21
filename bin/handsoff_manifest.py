@@ -24,6 +24,7 @@ RUNTIME_FILES = (
     "dashboard/app.js",
     "dashboard/index.html",
     "dashboard/lib/dashboard-logic.js",
+    "dashboard/lib/run-vocabulary.js",
     "dashboard/logo.png",
     "dashboard/regression.html",
     "dashboard/regression.js",
@@ -49,6 +50,7 @@ RUNTIME_FILES = (
     "rules/reviewer-packet-tests-executed.json",
     "schemas/acceptance.schema.json",
     "schemas/status.schema.json",
+    "schemas/snapshot.schema.json",
     "templates/handsoff.toml",
 )
 

@@ -1,0 +1,1451 @@
+{
+ "acceptance": {
+  "blocked": 0,
+  "criteria": [
+   {
+    "authored_by": "test-architect",
+    "baseline_view": {
+     "kind": "none"
+    },
+    "evidence": [
+     "vr-5f60168854c244ac92dd70f066423109"
+    ],
+    "id": "REQ-001",
+    "requirement": "State the exact observable outcome.",
+    "state": "passing",
+    "tests": [
+     "true"
+    ],
+    "type": "primary_fix",
+    "verification": "automated"
+   }
+  ],
+  "failing": 0,
+  "not_tested": 0,
+  "original_symptom_resolved": true,
+  "passing": 1,
+  "total": 1
+ },
+ "activity": {
+  "activity_note": null,
+  "asleep_seconds": 0.0,
+  "assessment": {
+   "assigned_role": null,
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "process_signal": "none",
+  "seconds_since_activity": 0,
+  "stall_threshold_minutes": 10,
+  "stall_warning": null
+ },
+ "activity_note": null,
+ "actors": {
+  "active_role": null,
+  "approved_by": "moncy",
+  "architect": "test-architect",
+  "design_reviewed_by": "test-design-reviewer",
+  "implemented_by": "impl-1",
+  "reviewed_by": "rev-1"
+ },
+ "amendment": null,
+ "audit": {
+  "chain_errors": [],
+  "engine_error": null,
+  "event_count": 19,
+  "gate_errors": [],
+  "healthy": true,
+  "verification_head": "2b142a34a26e0000c534142f335b456b84357145911d8fe4259016a9a6b6caec",
+  "verification_runs": 2
+ },
+ "ci": null,
+ "crew": [
+  {
+   "actor": "test-architect",
+   "key": "architect",
+   "label": "ARCHITECT",
+   "session": null
+  },
+  {
+   "actor": "test-design-reviewer",
+   "key": "design_reviewer",
+   "label": "DESIGN REVIEWER",
+   "session": null
+  },
+  {
+   "actor": null,
+   "key": "supervisor",
+   "label": "SUPERVISOR",
+   "session": null
+  },
+  {
+   "actor": "impl-1",
+   "key": "implementer",
+   "label": "IMPLEMENTER",
+   "session": null
+  },
+  {
+   "actor": "rev-1",
+   "key": "reviewer",
+   "label": "REVIEWER",
+   "session": null
+  },
+  {
+   "actor": "moncy",
+   "key": "approver",
+   "label": "APPROVER",
+   "session": null
+  }
+ ],
+ "design_evidence": [],
+ "design_review_packet": null,
+ "engine": {
+  "compatibility": "v0.3.69",
+  "manifest_sha256": "b3fabcb7a79b6f9f87457a4529f659905a88b51f6b49bf08c0a094f68d08b3b8",
+  "source": "project-drop-in",
+  "source_root": "<root>",
+  "version": "v0.3.69"
+ },
+ "escalation": null,
+ "events": [
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.961056+00:00",
+   "hash": "97e5b9090d49a29732e059c64c0730af2574816f85c79e29df54d906a913eedc",
+   "kind": "dashboard_release_skipped",
+   "message": "Run-owned dashboard release skipped: no run-owned dashboard",
+   "prev_hash": "97255e1baa4f20f611d469a75bb19c00ea0c0f81cc7efd9843459ff4e4db0fa4",
+   "reason": "no run-owned dashboard",
+   "status_sha256": "6a3c48e31762c5c82e5e68717480f4bbaa909583390a0c91003d95cf9943c7ca"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.958718+00:00",
+   "hash": "97255e1baa4f20f611d469a75bb19c00ea0c0f81cc7efd9843459ff4e4db0fa4",
+   "kind": "phase_advanced",
+   "message": "Advanced to Live verified",
+   "phase_number": 8,
+   "prev_hash": "3cc2a8a29dde2f18767da3ed958ab0deb69d0175e55ecfeecee0c318cb4f047e",
+   "progress": 100,
+   "status_sha256": "6a3c48e31762c5c82e5e68717480f4bbaa909583390a0c91003d95cf9943c7ca"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.868656+00:00",
+   "by": "moncy",
+   "hash": "3cc2a8a29dde2f18767da3ed958ab0deb69d0175e55ecfeecee0c318cb4f047e",
+   "kind": "live_checks_run",
+   "message": "Ran configured live checks",
+   "ok": true,
+   "prev_hash": "2a08066b9d3f494d638d22fafde099f627385e458a182a41f05c5c0921d2f6fb",
+   "run_id": "vr-087a1b3d75a6490d800d468dfe4b87d2",
+   "status_sha256": "68d06f2fa8912b2b992b697bb9c3011567876f7ea34c17fac7eab0d3b2cecd82"
+  },
+  {
+   "acceptance_hash": "a38d66d8c6d52e2bacb658b146fb2c1decddd71adcf03d648eaa03b87e91ed80",
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.796138+00:00",
+   "by": "moncy",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "hash": "2a08066b9d3f494d638d22fafde099f627385e458a182a41f05c5c0921d2f6fb",
+   "kind": "deployment_approved",
+   "message": "Explicit deployment approval recorded",
+   "prev_hash": "3045b8de8c981b64bf96c23d321be20f1a6c7a75003b60ca4c9367ae70002f6d",
+   "status_sha256": "01c011fa5881f4453b188ef6793a07bc471cdf904315557ad4eb8ae86ef7a704"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.686054+00:00",
+   "hash": "3045b8de8c981b64bf96c23d321be20f1a6c7a75003b60ca4c9367ae70002f6d",
+   "kind": "phase_advanced",
+   "message": "Advanced to Awaiting deployment approval",
+   "phase_number": 7,
+   "prev_hash": "f41654273a2439d8874f1bf9af78060a0d7abbd263ee21bafd7517c678a99bd9",
+   "progress": 70,
+   "status_sha256": "5860b9d53dda8ad46e5db60c0ba7806d9e87d7701506fb28fe07684ffd0a7f2b"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.597327+00:00",
+   "hash": "f41654273a2439d8874f1bf9af78060a0d7abbd263ee21bafd7517c678a99bd9",
+   "kind": "phase_advanced",
+   "message": "Advanced to Checks & documentation",
+   "phase_number": 6,
+   "prev_hash": "e0fa526dfb64f1ac4f3fe574324a1cafcdc5c4bbd49e7a1be172d5f186e56a8a",
+   "progress": 65,
+   "status_sha256": "8a2b6b62d484a0a7f64e8a2050bc4dc803b2827a388a57838d8cbd9a3afd8dda"
+  },
+  {
+   "acceptance_hash": "a38d66d8c6d52e2bacb658b146fb2c1decddd71adcf03d648eaa03b87e91ed80",
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.507793+00:00",
+   "by": "rev-1",
+   "hash": "e0fa526dfb64f1ac4f3fe574324a1cafcdc5c4bbd49e7a1be172d5f186e56a8a",
+   "implementer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "kind": "review_approved",
+   "message": "Independent review approved current acceptance",
+   "prev_hash": "e9d3efc251659fddfd91592d339ef16c98d2dc6b54b4c59288bf64ee4a0a49a0",
+   "profiles_distinct": false,
+   "reviewer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "reviewer_session_id": null,
+   "status_sha256": "a8dbc87e3abf7e4a3b73ac74d1ed029439b18496357027116a3dd087de7395b5"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.507518+00:00",
+   "attempt": 1,
+   "attempt_id": "ha-d6ebca5251924af586a0fc433ab89300",
+   "disposition": "approved",
+   "hash": "e9d3efc251659fddfd91592d339ef16c98d2dc6b54b4c59288bf64ee4a0a49a0",
+   "kind": "review_attempt_closed",
+   "message": "Review attempt 1 approved",
+   "prev_hash": "52c9c1b0131ca385d97e6989921453bff163a92cd5bf9def64d862080975b4e5",
+   "reviewer": "rev-1",
+   "status_sha256": "a8dbc87e3abf7e4a3b73ac74d1ed029439b18496357027116a3dd087de7395b5"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.418191+00:00",
+   "hash": "52c9c1b0131ca385d97e6989921453bff163a92cd5bf9def64d862080975b4e5",
+   "kind": "phase_advanced",
+   "message": "Advanced to Independent review",
+   "phase_number": 5,
+   "prev_hash": "c190cdee676e475f37053c38c84a47b04fa4f9b51de1cbdf249bdbd47f12133b",
+   "progress": 50,
+   "status_sha256": "57f093914f412253aa040826f73020ec0477565f80c8865798ad0e63671f9147"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.329421+00:00",
+   "hash": "c190cdee676e475f37053c38c84a47b04fa4f9b51de1cbdf249bdbd47f12133b",
+   "kind": "phase_advanced",
+   "message": "Advanced to Implementation",
+   "phase_number": 4,
+   "prev_hash": "715b17d9498a90467973cc2ba714643dae59de8f4540e7ecd20ba9228a665cb8",
+   "progress": 50,
+   "status_sha256": "096d5bb4f5938b3cd096cf18a22b00d0460a7a6abcf3605a2c6f1efa707e7d79"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "at": "2026-09-21T22:51:54.263277+00:00",
+   "hash": "715b17d9498a90467973cc2ba714643dae59de8f4540e7ecd20ba9228a665cb8",
+   "kind": "phase_advanced",
+   "message": "Advanced to Design approved",
+   "phase_number": 3,
+   "prev_hash": "09c1a5c37cafd0d51576a8c12785fb15123ae8dd1d6fe6debc524a422ee3555e",
+   "progress": 50,
+   "status_sha256": "dd7580131e856dbcbc7b28e1459a70115c406ce231fa2381747e72ce07826698"
+  },
+  {
+   "acceptance_sha256": "293611fba1acd94d2b8454df32c8c52880192ff7d642bbc5e3864b20ab8228c6",
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:54.197601+00:00",
+   "by": "test-approver",
+   "hash": "09c1a5c37cafd0d51576a8c12785fb15123ae8dd1d6fe6debc524a422ee3555e",
+   "kind": "design_approved",
+   "message": "Test-fixture design approval",
+   "prev_hash": "4d8622b4e39c44dc3b3c8601b2e726ba3059b0c866a22de8aa537c55a5a7b156",
+   "redesigns_settled_work": null,
+   "status_sha256": "56f16f052ae6fb2fd200d1bdd7aac8b8bfeeba8b7d3f17c971579b04e00a6e8b"
+  }
+ ],
+ "generated_at": "2026-09-21T22:51:54.971958+00:00",
+ "host": {
+  "actor": null,
+  "family": "unknown",
+  "source": "none"
+ },
+ "host_wait": null,
+ "initialized": true,
+ "input_required": {
+  "amendment_decision": null,
+  "amendment_id": null,
+  "amendment_round": null,
+  "blockers": [],
+  "kind": null,
+  "message": null,
+  "preauthorized": null,
+  "question_cards": [],
+  "question_id": null,
+  "request_id": null,
+  "required": false,
+  "turn": null
+ },
+ "live": {
+  "activity_source": "workflow",
+  "detail": "run complete",
+  "ended_at": null,
+  "exit_code": null,
+  "last_activity_at": "2026-09-21T22:51:54.934743+00:00",
+  "process_signal": "none",
+  "role": null,
+  "seconds_since_activity": 0,
+  "session_id": null,
+  "state": "complete"
+ },
+ "metrics": {
+  "asleep_seconds": 0.0,
+  "background_wait_seconds": 0.0,
+  "baseline": {
+   "reason": "no compatible historical cohort selected",
+   "sample_size": 0,
+   "state": "unavailable"
+  },
+  "design_review_attempts": 1,
+  "elapsed_seconds": 1.237,
+  "ended_at": "2026-09-21T22:51:54.934743+00:00",
+  "failed_sessions": 0,
+  "generated_at": "2026-09-21T22:51:55.005745+00:00",
+  "implementation_review_attempts": 1,
+  "largest_sessions": [],
+  "managed_sessions": 0,
+  "phase_asleep_seconds": {
+   "1": 0.0,
+   "2": 0.0,
+   "3": 0.0,
+   "4": 0.0,
+   "5": 0.0,
+   "6": 0.0,
+   "7": 0.0,
+   "8": 0.0
+  },
+  "phase_seconds": {
+   "1": 0.356,
+   "2": 0.209,
+   "3": 0.066,
+   "4": 0.089,
+   "5": 0.179,
+   "6": 0.089,
+   "7": 0.273,
+   "8": 0.0
+  },
+  "phase_started_at": "2026-09-21T22:51:54.958718+00:00",
+  "pilot_wait_seconds": 0.0,
+  "recovery_attempts": 0,
+  "replacement_count": 0,
+  "sessions": [],
+  "started_at": "2026-09-21T22:51:53.697727+00:00",
+  "tokens": {
+   "cached": null,
+   "coverage": "0/0 sessions",
+   "input": null,
+   "output": null,
+   "total": null
+  },
+  "verification_runs": 2,
+  "verification_seconds": 0.0
+ },
+ "operations": {
+  "engine": {
+   "commands": {
+    "doctor": "handsoff doctor <root>",
+    "install": "handsoff init <root>",
+    "migrate": "handsoff migrate <root>",
+    "migrate_preview": "handsoff migrate <root> --dry-run",
+    "rollback": "handsoff rollback <root>",
+    "rollback_preview": "handsoff rollback <root> --dry-run",
+    "upgrade": "handsoff upgrade <root> --to v0.3.69",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.69 --dry-run"
+   },
+   "compatibility": "v0.3.69",
+   "execution": "unavailable",
+   "execution_reason": "execution is not offered while a dashboard is serving this root",
+   "pin": "v0.3.69",
+   "reason": null,
+   "source": "project-drop-in",
+   "source_root": "<root>",
+   "version": "v0.3.69"
+  },
+  "inventory": [
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Authorize the reviewed design",
+    "kind": "design_approve",
+    "operation": "design-approve",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Request a design revision",
+    "kind": "design_reject",
+    "operation": "design-reject",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Authorize live verification",
+    "kind": "deployment_approve",
+    "operation": "deployment-gate",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Revoke deployment approval",
+    "kind": "deployment_revoke",
+    "operation": "deployment-gate",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Hold deployment",
+    "kind": "deployment_hold",
+    "operation": "human-pause-start",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Permit one more design review",
+    "kind": "design_review_authorize",
+    "operation": "design-review-authorize",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Escalate the reviewer tier",
+    "kind": "design_review_escalate",
+    "operation": "design-review-escalate",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Extend the implementation review cap once",
+    "kind": "review_cap_override",
+    "operation": "review-cap-override",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Clear the recovery hold",
+    "kind": "recovery_acknowledge",
+    "operation": "recovery-acknowledge",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Retry one bounded recovery attempt",
+    "kind": "recover",
+    "operation": "recover",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Pause the mission",
+    "kind": "pause",
+    "operation": "human-pause-start",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "muted"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Resume the mission",
+    "kind": "resume",
+    "operation": "human-pause-end",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Close the run and release resources",
+    "kind": "run_close",
+    "operation": "run-close",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Reopen the run",
+    "kind": "run_reopen",
+    "operation": "run-reopen",
+    "reason": "run is complete",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Accept the requested regression",
+    "kind": "regression_accept",
+    "operation": "regression-decide",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Decline the requested regression",
+    "kind": "regression_decline",
+    "operation": "regression-decide",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Cancel the regression request",
+    "kind": "regression_cancel",
+    "operation": "regression-cancel",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Launch a selected managed role",
+    "kind": "launch_role",
+    "launchable_roles": [],
+    "operation": "launch-role",
+    "reason": "run is not in progress",
+    "requires_reason": false,
+    "role": null,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Run focused criterion verification",
+    "criteria": [],
+    "kind": "verify_criterion",
+    "operation": "verify",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Run live verification",
+    "kind": "verify_live",
+    "operation": "verify-live",
+    "reason": "run is complete",
+    "requires_reason": false,
+    "tone": "primary"
+   }
+  ],
+  "verification": {
+   "in_flight": [],
+   "latest": {
+    "REQ-001": {
+     "at": "2026-09-21T22:51:53.843644+00:00",
+     "ok": true,
+     "run_id": "vr-5f60168854c244ac92dd70f066423109"
+    }
+   },
+   "live": {
+    "at": "2026-09-21T22:51:54.867970+00:00",
+    "in_flight": null,
+    "last_failure": null,
+    "ok": true,
+    "run_id": "vr-087a1b3d75a6490d800d468dfe4b87d2"
+   }
+  }
+ },
+ "operator_actions": [
+  {
+   "action_id": "run_close:f41414b36d71864a",
+   "binding": "f41414b36d71864a",
+   "consequence": "Records closure and releases run-owned resources",
+   "created_at": "2026-09-21T22:51:54.934743+00:00",
+   "kind": "run_close",
+   "label": "Cleanly close run",
+   "operation": "run-close",
+   "reason": null,
+   "requesting_role": null,
+   "requesting_session": null,
+   "requires_confirmation": true,
+   "requires_reason": true,
+   "tone": "danger",
+   "type": "run_close"
+  }
+ ],
+ "phases": [
+  {
+   "name": "Orient",
+   "number": 1,
+   "state": "complete"
+  },
+  {
+   "name": "Design debate",
+   "number": 2,
+   "state": "complete"
+  },
+  {
+   "name": "Design approved",
+   "number": 3,
+   "state": "complete"
+  },
+  {
+   "name": "Implementation",
+   "number": 4,
+   "state": "complete"
+  },
+  {
+   "name": "Independent review",
+   "number": 5,
+   "state": "complete"
+  },
+  {
+   "name": "Checks & documentation",
+   "number": 6,
+   "state": "complete"
+  },
+  {
+   "name": "Awaiting deployment approval",
+   "number": 7,
+   "state": "complete"
+  },
+  {
+   "name": "Live verified",
+   "number": 8,
+   "state": "complete"
+  }
+ ],
+ "policy": {
+  "configured_checks": 1,
+  "configured_live_checks": 1,
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_reviewer_escalation": null,
+  "design_reviewer_selection": {
+   "consistency_errors": [],
+   "current": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "next": {
+    "adapter": "codex",
+    "error": null,
+    "model": "default",
+    "reason": "no_followup_configured",
+    "tier": "primary"
+   }
+  },
+  "design_round": 0,
+  "effective_max_review_rounds": 3,
+  "explicit_approval": true,
+  "live_verification": true,
+  "max_autonomous_design_reviews": 2,
+  "max_design_rounds": 3,
+  "max_review_rounds": 3,
+  "review_cap_overrides": 0,
+  "review_round": 1
+ },
+ "project": {
+  "feature": "Snapshot contract",
+  "logo_url": null,
+  "name": "handsoff-test-m0wz3b0b"
+ },
+ "questions": {
+  "answered": [],
+  "blocking": [],
+  "by_role": [],
+  "open": [],
+  "total": 0
+ },
+ "recovery": {
+  "assessment": {
+   "assigned_role": null,
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "attempts": [],
+  "cap": 3,
+  "lease": null,
+  "watchdog_enabled": true
+ },
+ "regression": {
+  "current": null,
+  "history": [],
+  "last": null,
+  "pending": null,
+  "release_plan": null
+ },
+ "review": {
+  "attempts": [
+   {
+    "attempt": 1,
+    "attempt_id": "ha-d6ebca5251924af586a0fc433ab89300",
+    "closed_at": "2026-09-21T22:51:54.506834+00:00",
+    "disposition": "approved",
+    "findings_count": 0,
+    "opened_at": "2026-09-21T22:51:54.483646+00:00",
+    "reviewer": "rev-1",
+    "tests_executed": "unknown",
+    "trigger": "initial"
+   }
+  ]
+ },
+ "root": "<root>",
+ "runtime": {
+  "agent_output": null,
+  "current_sessions": {
+   "architect": null,
+   "implementer": null,
+   "reviewer": null,
+   "supervisor": null
+  },
+  "operation": {
+   "assessment": "no operation telemetry reported by this session",
+   "attempt": null,
+   "availability": "unavailable",
+   "current": null,
+   "dependency_class": null,
+   "elapsed_seconds": null,
+   "history": [],
+   "last_success_at": null,
+   "late_telemetry": 0,
+   "protocol_warnings": 0,
+   "retry_count": 0,
+   "role": null,
+   "session_id": null,
+   "timeout_seconds": null
+  },
+  "replacements": []
+ },
+ "settings": {
+  "agents": {
+   "architect": "auto",
+   "implementer": "auto",
+   "reviewer": "auto",
+   "supervisor": "auto"
+  },
+  "allowed_adapters": [
+   "auto",
+   "codex",
+   "claude"
+  ],
+  "allowed_adapters_by_role": {
+   "architect": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ],
+   "implementer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "reviewer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "supervisor": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ]
+  },
+  "availability": {
+   "claude": {
+    "available": true,
+    "executable": "<home>/.local/share/claude/versions/2.1.270"
+   },
+   "codex": {
+    "available": true,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js"
+   }
+  },
+  "availability_scope": "Executable discovery only; it does not prove authentication, account entitlement, network access, or model validity.",
+  "crew": {
+   "architect": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "implementer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   }
+  },
+  "default_adapter": "codex",
+  "default_order": [
+   "codex",
+   "claude"
+  ],
+  "effective_profiles": {
+   "architect": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "implementer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   }
+  },
+  "fallbacks": {
+   "architect": [],
+   "implementer": [],
+   "reviewer": [],
+   "supervisor": []
+  },
+  "features": {
+   "failing_first": {
+    "default": false,
+    "description": "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165).",
+    "enabled": false
+   },
+   "launch_rules": {
+    "default": true,
+    "description": "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167).",
+    "enabled": true
+   },
+   "report_posting": {
+    "default": false,
+    "description": "Phase 8 completion posts the ledger's report to each ticket and closes it; off, nothing leaves the machine unless run-close --post says so (#171).",
+    "enabled": false
+   },
+   "review_binds_rules": {
+    "default": true,
+    "description": "A review, design approval and deployment approval carry the hash of the rules set they ran under; a changed hook or config revokes them (#170).",
+    "enabled": true
+   },
+   "ticket_lock": {
+    "default": true,
+    "description": "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166).",
+    "enabled": true
+   },
+   "token_accounting": {
+    "default": true,
+    "description": "The usage each adapter prints is recorded on its session and summed by role, phase and ticket; nothing is estimated (#168).",
+    "enabled": true
+   }
+  },
+  "max_failovers_per_role": 2,
+  "max_fallback_profiles": 8,
+  "profile_sources": {
+   "architect": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "implementer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "reviewer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "supervisor": {
+    "adapter": "explicit",
+    "model": "explicit"
+   }
+  },
+  "profiles": {
+   "architect": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "implementer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "reviewer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "auto",
+    "model": "default"
+   }
+  },
+  "providers": {
+   "claude": {
+    "executable": "<home>/.local/share/claude/versions/2.1.270",
+    "label": "Claude Code",
+    "state": "detected"
+   },
+   "codex": {
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "label": "Codex CLI",
+    "state": "detected"
+   },
+   "grok": {
+    "credential_env_var": "XAI_API_KEY",
+    "label": "Grok",
+    "state": "requires_setup"
+   },
+   "ollama": {
+    "executable": "/opt/homebrew/Cellar/ollama/0.20.5/bin/ollama",
+    "label": "Ollama (local models)",
+    "models": [
+     "qwen3-coder:30b"
+    ],
+    "state": "detected"
+   },
+   "openai_compatible": {
+    "credential_env_var": "OPENAI_API_KEY",
+    "endpoint_env_var": "OPENAI_BASE_URL",
+    "label": "OpenAI-compatible endpoint",
+    "state": "requires_setup"
+   }
+  },
+  "providers_scope": "Detection only, shown for information: CLI providers are checked for an executable on PATH, credentialed providers for the presence of an environment variable name. Handsoff never reads, displays, or stores credential values -- you supply them yourself.",
+  "recommended_crew": {
+   "architect": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "implementer": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   }
+  },
+  "reviewer_followup": null
+ },
+ "status": {
+  "active_work_item": "issue-218",
+  "activity": {
+   "activity_note": null,
+   "asleep_seconds": 0.0,
+   "assessment": {
+    "assigned_role": null,
+    "lost_session_id": null,
+    "reason": "run_state",
+    "silent_minutes": null,
+    "state": "not_applicable",
+    "threshold_minutes": null
+   },
+   "process_signal": "none",
+   "seconds_since_activity": 0,
+   "stall_threshold_minutes": 10,
+   "stall_warning": null
+  },
+  "amendment": null,
+  "amendments": [],
+  "background_wait": null,
+  "consistency_errors": [],
+  "deployment_approved": {
+   "acceptance_hash": "a38d66d8c6d52e2bacb658b146fb2c1decddd71adcf03d648eaa03b87e91ed80",
+   "at": "2026-09-21T22:51:54.774621+00:00",
+   "by": "moncy",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d"
+  },
+  "design_approved": {
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:54.196271+00:00",
+   "by": "test-approver",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "proposal_hash": null,
+   "redesigns_settled_work": null,
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "summary": "Test-fixture design approval"
+  },
+  "design_proposal": null,
+  "design_review": {
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:54.129716+00:00",
+   "attempt": 1,
+   "by": "test-design-reviewer",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "decision": "approved",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "findings": [],
+   "head": null,
+   "proposal_hash": null,
+   "reviewer_profile": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "structural_blocker": false,
+   "summary": "Test-fixture independent design review"
+  },
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_review_history": [
+   {
+    "attempt": 1,
+    "by": "test-design-reviewer",
+    "criteria_ids": [
+     "REQ-001"
+    ],
+    "criterion_hashes": {
+     "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+    },
+    "decision": "approved",
+    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+    "findings": [],
+    "head": null,
+    "proposal_hash": null,
+    "structural_blocker": false
+   }
+  ],
+  "design_round": 0,
+  "escalation": null,
+  "events": [],
+  "feature": "Snapshot contract",
+  "implemented_by": "impl-1",
+  "last_heartbeat_at": null,
+  "last_heartbeat_owner": null,
+  "legacy_review_round_offset": 0,
+  "live": {
+   "activity_source": "workflow",
+   "detail": "run complete",
+   "ended_at": null,
+   "exit_code": null,
+   "last_activity_at": "2026-09-21T22:51:54.934743+00:00",
+   "process_signal": "none",
+   "role": null,
+   "seconds_since_activity": 0,
+   "session_id": null,
+   "state": "complete"
+  },
+  "live_verification_id": "vr-087a1b3d75a6490d800d468dfe4b87d2",
+  "next_action": "Workflow complete; no further action required.",
+  "original_symptom_evidence_id": "vr-5f60168854c244ac92dd70f066423109",
+  "pending_questions": [],
+  "phase": "Live verified",
+  "phase_number": 8,
+  "process_signal": "none",
+  "progress": 100,
+  "reassurance": "",
+  "recovery_attempts": [],
+  "recovery_lease": null,
+  "regression_requests": [],
+  "requirement_coverage": {
+   "blocked": 0,
+   "failing": 0,
+   "not_tested": 0,
+   "original_symptom_resolved": true,
+   "passing": 1
+  },
+  "requires_design_approval": true,
+  "requires_design_review": true,
+  "retry_count": 0,
+  "review": {
+   "acceptance_hash": "a38d66d8c6d52e2bacb658b146fb2c1decddd71adcf03d648eaa03b87e91ed80",
+   "at": "2026-09-21T22:51:54.483838+00:00",
+   "by": "rev-1",
+   "checklist": {
+    "all_criteria_verified": "yes",
+    "evidence_attached": "yes",
+    "symptom_reproduced": "yes",
+    "symptom_resolved": "yes"
+   },
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "implementer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "profiles_distinct": false,
+   "reviewer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "tests_executed": "unknown"
+  },
+  "review_attempts": [
+   {
+    "acceptance_hash": "a38d66d8c6d52e2bacb658b146fb2c1decddd71adcf03d648eaa03b87e91ed80",
+    "attempt": 1,
+    "attempt_id": "ha-d6ebca5251924af586a0fc433ab89300",
+    "closed_at": "2026-09-21T22:51:54.506834+00:00",
+    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+    "disposition": "approved",
+    "findings": [],
+    "opened_at": "2026-09-21T22:51:54.483646+00:00",
+    "opened_by": "rev-1",
+    "phase_number": 5,
+    "reviewer": "rev-1",
+    "session_ids": [],
+    "tests_executed": "unknown",
+    "trigger": "initial",
+    "trigger_detail": ""
+   }
+  ],
+  "review_cap_overrides": [],
+  "review_round": 1,
+  "reviewed_by": "rev-1",
+  "reviewer_checklist": {
+   "all_criteria_verified": "yes",
+   "evidence_attached": "yes",
+   "symptom_reproduced": "yes",
+   "symptom_resolved": "yes"
+  },
+  "stall_warning": null,
+  "status": "complete",
+  "summary": "",
+  "updated_at": "2026-09-21T22:51:54.934743+00:00",
+  "verification_head": "2b142a34a26e0000c534142f335b456b84357145911d8fe4259016a9a6b6caec",
+  "verification_progress": 100,
+  "work_item_delivery": {
+   "issue-218": {
+    "baseline_head": null,
+    "confirmed_at": null,
+    "confirmed_by": null,
+    "escalation_reason": null,
+    "facts": null,
+    "implemented_by": "impl-1",
+    "lane": "full",
+    "requested_lane": "full",
+    "review_hash": null,
+    "reviewed_by": null
+   }
+  }
+ },
+ "supervisor": {
+  "attention": [],
+  "completed": [
+   "1 acceptance criterion verified",
+   "Original symptom verified as resolved",
+   "Independent review recorded",
+   "Deployment approval recorded",
+   "Live verification passed"
+  ],
+  "headline": "Objectives neutralized. Mission complete, Pilot.",
+  "label": "Mission complete",
+  "latest_event": {
+   "at": "2026-09-21T22:51:54.961056+00:00",
+   "kind": "dashboard_release_skipped",
+   "message": "Run-owned dashboard release skipped: no run-owned dashboard"
+  },
+  "next_action": "Workflow complete; no further action required.",
+  "reassurance": "Reactor core stable. Safety interlocks active. I will advance only when every required gate is satisfied.",
+  "summary": "All 1 acceptance criteria are evidenced, the original symptom is resolved, and the live verification gate has passed.",
+  "tone": "success"
+ },
+ "tickets": [],
+ "tranche": null,
+ "verification": {
+  "in_flight": [],
+  "latest": {
+   "REQ-001": {
+    "at": "2026-09-21T22:51:53.843644+00:00",
+    "ok": true,
+    "run_id": "vr-5f60168854c244ac92dd70f066423109"
+   }
+  },
+  "live": {
+   "at": "2026-09-21T22:51:54.867970+00:00",
+   "in_flight": null,
+   "last_failure": null,
+   "ok": true,
+   "run_id": "vr-087a1b3d75a6490d800d468dfe4b87d2"
+  }
+ },
+ "verifications": [
+  {
+   "acceptance_hash": "a38d66d8c6d52e2bacb658b146fb2c1decddd71adcf03d648eaa03b87e91ed80",
+   "at": "2026-09-21T22:51:54.867970+00:00",
+   "binding": null,
+   "by": "moncy",
+   "commands": [
+    "true"
+   ],
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "criteria": [
+    "REQ-001"
+   ],
+   "criterion_hashes": {
+    "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+   },
+   "description": "",
+   "executed": true,
+   "feature_hash": null,
+   "hash": "2b142a34a26e0000c534142f335b456b84357145911d8fe4259016a9a6b6caec",
+   "kind": "live",
+   "ok": true,
+   "prev_hash": "acbf978d636c75adb7f27a7acbc74440a034302649518a21d73bcdf4b6da75ee",
+   "repository_digest": null,
+   "results": [
+    {
+     "command": "true",
+     "duration_s": 0.0,
+     "exit_code": 0,
+     "output_bytes": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "timed_out": false,
+     "truncated": false
+    }
+   ],
+   "reused_from": null,
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "run_id": "vr-087a1b3d75a6490d800d468dfe4b87d2"
+  },
+  {
+   "acceptance_hash": null,
+   "at": "2026-09-21T22:51:53.843644+00:00",
+   "binding": {
+    "true": "8eb0d59612a47daed880a547b0a3216333933406c19ad1734410a61938896934"
+   },
+   "by": "test-implementer",
+   "commands": [
+    "true"
+   ],
+   "config_hash": "a5a4b1182748478f6bd0b57a10b4d889a9edb7fd3087f943c295fde158be0da4",
+   "criteria": [
+    "REQ-001"
+   ],
+   "criterion_hashes": {
+    "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+   },
+   "description": "",
+   "executed": true,
+   "feature_hash": "cf43e7654330943621578318fd10a7edc7c5e78da3ea8c0b18b8dc432024cb50",
+   "hash": "acbf978d636c75adb7f27a7acbc74440a034302649518a21d73bcdf4b6da75ee",
+   "kind": "checks",
+   "ok": true,
+   "prev_hash": "GENESIS",
+   "repository_digest": "0fabb7393190c70fb57084ece2784212a6ed31337f86369300d64946c8f9f761",
+   "results": [
+    {
+     "command": "true",
+     "duration_s": 0.0,
+     "exit_code": 0,
+     "output_bytes": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "timed_out": false,
+     "truncated": false
+    }
+   ],
+   "reused_from": null,
+   "run_id": "vr-5f60168854c244ac92dd70f066423109"
+  }
+ ],
+ "work_items": {
+  "aggregate": {
+   "counts": {
+    "awaiting_approval": 0,
+    "blocked": 0,
+    "done": 1,
+    "in_progress": 0,
+    "in_review": 0,
+    "not_started": 0,
+    "recovering": 0,
+    "unscoped": 0
+   },
+   "done": 1,
+   "progress": 100,
+   "total": 1
+  },
+  "items": [
+   {
+    "blocker": "",
+    "created_at": "2026-09-21T22:51:53.693150+00:00",
+    "criteria": [
+     "REQ-001"
+    ],
+    "discrepancy": null,
+    "github_checked_at": null,
+    "github_state": null,
+    "id": "issue-218",
+    "kind": "issue",
+    "lane": "full",
+    "lane_confirmed": false,
+    "lane_escalation": null,
+    "lane_facts": null,
+    "notes": "",
+    "number": 218,
+    "phase_or_next": "Workflow complete; no further action required.",
+    "progress": 100,
+    "required": true,
+    "status": "done",
+    "title": "Issue #218",
+    "updated_at": "2026-09-21T22:51:53.693150+00:00",
+    "url": ""
+   }
+  ],
+  "multi": false,
+  "registry": "persisted",
+  "tickets_config_deprecated": false,
+  "unattributed_criteria": []
+ }
+}

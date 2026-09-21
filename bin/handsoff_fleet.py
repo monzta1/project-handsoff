@@ -770,6 +770,16 @@ class FleetHandler(BaseHTTPRequestHandler):
                   "/styles.css": ("styles.css", "text/css; charset=utf-8"),
                   "/metrics": ("metrics.html", "text/html; charset=utf-8"),
                   "/metrics.js": ("metrics.js", "text/javascript; charset=utf-8")}
+        if path == "/lib/run-vocabulary.js":
+            # #218: the run vocabulary is the engine's dashboard/lib file, served here too
+            try:
+                body = lib.engine_resource_path("dashboard/lib/run-vocabulary.js").read_bytes()
+            except OSError:
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "run vocabulary is missing"})
+                return
+            self._headers(HTTPStatus.OK, "text/javascript; charset=utf-8", len(body))
+            self.wfile.write(body)
+            return
         asset = assets.get(path)
         if asset:
             try:

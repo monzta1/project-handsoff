@@ -1,0 +1,1479 @@
+{
+ "acceptance": {
+  "blocked": 0,
+  "criteria": [
+   {
+    "authored_by": "test-architect",
+    "baseline_view": {
+     "kind": "none"
+    },
+    "evidence": [
+     "vr-45f65f4686a841f994cc867c5bc8ac79"
+    ],
+    "id": "REQ-001",
+    "requirement": "State the exact observable outcome.",
+    "state": "passing",
+    "tests": [
+     "true"
+    ],
+    "type": "primary_fix",
+    "verification": "automated"
+   }
+  ],
+  "failing": 0,
+  "not_tested": 0,
+  "original_symptom_resolved": true,
+  "passing": 1,
+  "total": 1
+ },
+ "activity": {
+  "activity_note": null,
+  "asleep_seconds": 0.0,
+  "assessment": {
+   "assigned_role": "supervisor",
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "process_signal": "none",
+  "seconds_since_activity": 0,
+  "stall_threshold_minutes": 10,
+  "stall_warning": null
+ },
+ "activity_note": null,
+ "actors": {
+  "active_role": null,
+  "approved_by": "moncy",
+  "architect": "test-architect",
+  "design_reviewed_by": "test-design-reviewer",
+  "implemented_by": "impl-1",
+  "reviewed_by": "rev-1"
+ },
+ "amendment": null,
+ "audit": {
+  "chain_errors": [],
+  "engine_error": null,
+  "event_count": 18,
+  "gate_errors": [],
+  "healthy": true,
+  "verification_head": "d43f02d6d4185816ecae4f4ff72d267170fad66838b0a9e653622180463593b0",
+  "verification_runs": 2
+ },
+ "ci": null,
+ "crew": [
+  {
+   "actor": "test-architect",
+   "key": "architect",
+   "label": "ARCHITECT",
+   "session": null
+  },
+  {
+   "actor": "test-design-reviewer",
+   "key": "design_reviewer",
+   "label": "DESIGN REVIEWER",
+   "session": null
+  },
+  {
+   "actor": null,
+   "key": "supervisor",
+   "label": "SUPERVISOR",
+   "session": null
+  },
+  {
+   "actor": "impl-1",
+   "key": "implementer",
+   "label": "IMPLEMENTER",
+   "session": null
+  },
+  {
+   "actor": "rev-1",
+   "key": "reviewer",
+   "label": "REVIEWER",
+   "session": null
+  },
+  {
+   "actor": "moncy",
+   "key": "approver",
+   "label": "APPROVER",
+   "session": null
+  }
+ ],
+ "design_evidence": [],
+ "design_review_packet": null,
+ "engine": {
+  "compatibility": "v0.3.69",
+  "manifest_sha256": "b3fabcb7a79b6f9f87457a4529f659905a88b51f6b49bf08c0a094f68d08b3b8",
+  "source": "project-drop-in",
+  "source_root": "<root>",
+  "version": "v0.3.69"
+ },
+ "escalation": null,
+ "events": [
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:56.620016+00:00",
+   "by": "moncy",
+   "cancelled_active": false,
+   "hash": "d5d3b81458fc4466b5ee8f9f2da2e0a6ba6023d6c67895db7b96681766c752e1",
+   "kind": "run_closed",
+   "message": "Pilot cleanly closed the run: fixture",
+   "outcome": "closed",
+   "prev_hash": "a750ae45c08aaefbdc24477af535e82a01c9a3dc871407c98850fc3b8b83e22b",
+   "session_ids": [],
+   "status_sha256": "b476c0760d0bdebdd937492f80bebf39912be5539c4a861d7f4f1a90f667024b"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:56.543016+00:00",
+   "by": "moncy",
+   "hash": "a750ae45c08aaefbdc24477af535e82a01c9a3dc871407c98850fc3b8b83e22b",
+   "kind": "live_checks_run",
+   "message": "Ran configured live checks",
+   "ok": true,
+   "prev_hash": "5b9c798d8c392ed60c4e0765ade54d11f8294a9f8ce046999367de1fed003f08",
+   "run_id": "vr-e7126a2085e746ae928c344b5cbfc664",
+   "status_sha256": "faf3497b6dca334c3eb1a9689a9fdd5ed648ac9cd6bc6b614459b18326d97d33"
+  },
+  {
+   "acceptance_hash": "b019ebed684ed39d155accae5ba8291f0021ba0b2cd20558955b88748419b681",
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:56.459448+00:00",
+   "by": "moncy",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "hash": "5b9c798d8c392ed60c4e0765ade54d11f8294a9f8ce046999367de1fed003f08",
+   "kind": "deployment_approved",
+   "message": "Explicit deployment approval recorded",
+   "prev_hash": "edcdbeb4f1282e94c4c332cdfcb31ec288e5aa96aefac83c173c88b9f7fb1afa",
+   "status_sha256": "cad412eb45b92c3ad14ef4b11c4471c20499d94fd5fcff36438320722eac8646"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:56.317236+00:00",
+   "hash": "edcdbeb4f1282e94c4c332cdfcb31ec288e5aa96aefac83c173c88b9f7fb1afa",
+   "kind": "phase_advanced",
+   "message": "Advanced to Awaiting deployment approval",
+   "phase_number": 7,
+   "prev_hash": "f964235293e5b69139b1c41c827946ea9fb3a708d5476e1f695740aa8a3c4aff",
+   "progress": 70,
+   "status_sha256": "93335bdf1ff313563f8612180a2cdc3b631371db215885557f70ff1136395dbb"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:56.195388+00:00",
+   "hash": "f964235293e5b69139b1c41c827946ea9fb3a708d5476e1f695740aa8a3c4aff",
+   "kind": "phase_advanced",
+   "message": "Advanced to Checks & documentation",
+   "phase_number": 6,
+   "prev_hash": "3bcdea91c43de98b8d6310b43d009aca1824ac5c6812b3bafba479cba042449b",
+   "progress": 65,
+   "status_sha256": "e603997266bdb6448570323e41c516acc96c520b3c39a97d6a9200d3c6528e53"
+  },
+  {
+   "acceptance_hash": "b019ebed684ed39d155accae5ba8291f0021ba0b2cd20558955b88748419b681",
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:56.080986+00:00",
+   "by": "rev-1",
+   "hash": "3bcdea91c43de98b8d6310b43d009aca1824ac5c6812b3bafba479cba042449b",
+   "implementer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "kind": "review_approved",
+   "message": "Independent review approved current acceptance",
+   "prev_hash": "0037000e5650e8f827baea79877320a57eaeef842f3ba659c8687e59fb31ebab",
+   "profiles_distinct": false,
+   "reviewer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "reviewer_session_id": null,
+   "status_sha256": "d102569b22f7df5a7b38aa18fcb4dd0afb4d1915c2048d2c824884017a419383"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:56.080637+00:00",
+   "attempt": 1,
+   "attempt_id": "ha-e9df37065dba4c48acde232b9c089e52",
+   "disposition": "approved",
+   "hash": "0037000e5650e8f827baea79877320a57eaeef842f3ba659c8687e59fb31ebab",
+   "kind": "review_attempt_closed",
+   "message": "Review attempt 1 approved",
+   "prev_hash": "bd4e2651832216a326cc9f44a5f44a5ddb8a3228d2025547c680eb5f0ddff45c",
+   "reviewer": "rev-1",
+   "status_sha256": "d102569b22f7df5a7b38aa18fcb4dd0afb4d1915c2048d2c824884017a419383"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:55.965345+00:00",
+   "hash": "bd4e2651832216a326cc9f44a5f44a5ddb8a3228d2025547c680eb5f0ddff45c",
+   "kind": "phase_advanced",
+   "message": "Advanced to Independent review",
+   "phase_number": 5,
+   "prev_hash": "f7af41a6db9bfcf43851c724526382933bd5af2a7b67662bd52a20bb97a50d4b",
+   "progress": 50,
+   "status_sha256": "8d2a31fecfc8f9a1c610c3a11ba7d03f4fa1f140fb6bc4ffa8f658f36b0f0bc4"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:55.855768+00:00",
+   "hash": "f7af41a6db9bfcf43851c724526382933bd5af2a7b67662bd52a20bb97a50d4b",
+   "kind": "phase_advanced",
+   "message": "Advanced to Implementation",
+   "phase_number": 4,
+   "prev_hash": "5187d50273a0d2db142e22c7d0c5835a7905bd359908b88829b2b72e86f54a6b",
+   "progress": 50,
+   "status_sha256": "f2eab57e5239dd2052cdcbca537d68918984f07c7344486195754754e69d979b"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "at": "2026-09-21T22:51:55.773754+00:00",
+   "hash": "5187d50273a0d2db142e22c7d0c5835a7905bd359908b88829b2b72e86f54a6b",
+   "kind": "phase_advanced",
+   "message": "Advanced to Design approved",
+   "phase_number": 3,
+   "prev_hash": "afdd2de3cabf941b85c845fd72c3d2a744c60b361b22ba64696e61970cc7d693",
+   "progress": 50,
+   "status_sha256": "26d7a6e7ca7083e14bc726a80a34242fa0c4e91376056743ab6475b4a4eec20d"
+  },
+  {
+   "acceptance_sha256": "d00361a22e726abdb92dda6a266b33c68449d4d639275a393835f0b4cf07a00a",
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:55.692732+00:00",
+   "by": "test-approver",
+   "hash": "afdd2de3cabf941b85c845fd72c3d2a744c60b361b22ba64696e61970cc7d693",
+   "kind": "design_approved",
+   "message": "Test-fixture design approval",
+   "prev_hash": "72e441d2cf5d5110a7eeee09b79c7141fc662e4bcf32bd18183a23a8f5ad879f",
+   "redesigns_settled_work": null,
+   "status_sha256": "01c48fcde176b512bd6a3c83523934a6ee53adeb68c002f4cfdf730792a4babd"
+  },
+  {
+   "acceptance_sha256": "2c3c7ea67e60f41b7487a6492d36b39b4406013721dc08894803230781b9ac3f",
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:55.609497+00:00",
+   "authorized": false,
+   "by": "test-design-reviewer",
+   "decision": "approved",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "design_review_attempt": 1,
+   "design_review_limit": 2,
+   "escalation_consumed": false,
+   "findings": 0,
+   "hash": "72e441d2cf5d5110a7eeee09b79c7141fc662e4bcf32bd18183a23a8f5ad879f",
+   "head": null,
+   "kind": "design_review_approved",
+   "message": "Independent design review approved: Test-fixture independent design review",
+   "prev_hash": "c331f7363d6032c01156055cc6c5e2542a78286405df100dfbff5ce56f8db483",
+   "reviewer_profile": {
+    "adapter": "codex",
+    "model": "default"
+   },
+   "reviewer_selection_reason": "first_review",
+   "reviewer_session_id": null,
+   "reviewer_tier": "primary",
+   "status_sha256": "13916a8e374505fa9c464009833be9723e987842b20960687cd0b2bb53ea5bcd",
+   "structural_blocker": false
+  }
+ ],
+ "generated_at": "2026-09-21T22:51:56.629802+00:00",
+ "host": {
+  "actor": null,
+  "family": "unknown",
+  "source": "none"
+ },
+ "host_wait": null,
+ "initialized": true,
+ "input_required": {
+  "amendment_decision": null,
+  "amendment_id": null,
+  "amendment_round": null,
+  "blockers": [],
+  "kind": null,
+  "message": null,
+  "preauthorized": null,
+  "question_cards": [],
+  "question_id": null,
+  "request_id": null,
+  "required": false,
+  "turn": null
+ },
+ "live": {
+  "activity_source": "workflow",
+  "detail": "no managed process is running",
+  "ended_at": null,
+  "exit_code": null,
+  "last_activity_at": "2026-09-21T22:51:56.618908+00:00",
+  "process_signal": "none",
+  "role": null,
+  "seconds_since_activity": 0,
+  "session_id": null,
+  "state": "idle"
+ },
+ "metrics": {
+  "asleep_seconds": 0.0,
+  "background_wait_seconds": 0.0,
+  "baseline": {
+   "reason": "no compatible historical cohort selected",
+   "sample_size": 0,
+   "state": "unavailable"
+  },
+  "design_review_attempts": 1,
+  "elapsed_seconds": 1.544,
+  "ended_at": null,
+  "failed_sessions": 0,
+  "generated_at": "2026-09-21T22:51:56.642635+00:00",
+  "implementation_review_attempts": 1,
+  "largest_sessions": [],
+  "managed_sessions": 0,
+  "phase_asleep_seconds": {
+   "1": 0.0,
+   "2": 0.0,
+   "3": 0.0,
+   "4": 0.0,
+   "5": 0.0,
+   "6": 0.0,
+   "7": 0.0,
+   "8": 0.0
+  },
+  "phase_seconds": {
+   "1": 0.414,
+   "2": 0.26,
+   "3": 0.082,
+   "4": 0.11,
+   "5": 0.23,
+   "6": 0.122,
+   "7": 0.325,
+   "8": 0.0
+  },
+  "phase_started_at": "2026-09-21T22:51:56.317236+00:00",
+  "pilot_wait_seconds": 0.0,
+  "recovery_attempts": 0,
+  "replacement_count": 0,
+  "sessions": [],
+  "started_at": "2026-09-21T22:51:55.098872+00:00",
+  "tokens": {
+   "cached": null,
+   "coverage": "0/0 sessions",
+   "input": null,
+   "output": null,
+   "total": null
+  },
+  "verification_runs": 2,
+  "verification_seconds": 0.0
+ },
+ "operations": {
+  "engine": {
+   "commands": {
+    "doctor": "handsoff doctor <root>",
+    "install": "handsoff init <root>",
+    "migrate": "handsoff migrate <root>",
+    "migrate_preview": "handsoff migrate <root> --dry-run",
+    "rollback": "handsoff rollback <root>",
+    "rollback_preview": "handsoff rollback <root> --dry-run",
+    "upgrade": "handsoff upgrade <root> --to v0.3.69",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.69 --dry-run"
+   },
+   "compatibility": "v0.3.69",
+   "execution": "unavailable",
+   "execution_reason": "execution is not offered while a dashboard is serving this root",
+   "pin": "v0.3.69",
+   "reason": null,
+   "source": "project-drop-in",
+   "source_root": "<root>",
+   "version": "v0.3.69"
+  },
+  "inventory": [
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Authorize the reviewed design",
+    "kind": "design_approve",
+    "operation": "design-approve",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Request a design revision",
+    "kind": "design_reject",
+    "operation": "design-reject",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Authorize live verification",
+    "kind": "deployment_approve",
+    "operation": "deployment-gate",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Revoke deployment approval",
+    "kind": "deployment_revoke",
+    "operation": "deployment-gate",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Hold deployment",
+    "kind": "deployment_hold",
+    "operation": "human-pause-start",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Permit one more design review",
+    "kind": "design_review_authorize",
+    "operation": "design-review-authorize",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Escalate the reviewer tier",
+    "kind": "design_review_escalate",
+    "operation": "design-review-escalate",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Extend the implementation review cap once",
+    "kind": "review_cap_override",
+    "operation": "review-cap-override",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Clear the recovery hold",
+    "kind": "recovery_acknowledge",
+    "operation": "recovery-acknowledge",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Retry one bounded recovery attempt",
+    "kind": "recover",
+    "operation": "recover",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Pause the mission",
+    "kind": "pause",
+    "operation": "human-pause-start",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "muted"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Resume the mission",
+    "kind": "resume",
+    "operation": "human-pause-end",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Close the run and release resources",
+    "kind": "run_close",
+    "operation": "run-close",
+    "reason": "run is closed",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": "run_reopen:fc4ea7363ddef186",
+    "availability": "actionable",
+    "consequence": "Reopen the run",
+    "kind": "run_reopen",
+    "operation": "run-reopen",
+    "reason": "",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Accept the requested regression",
+    "kind": "regression_accept",
+    "operation": "regression-decide",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Decline the requested regression",
+    "kind": "regression_decline",
+    "operation": "regression-decide",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Cancel the regression request",
+    "kind": "regression_cancel",
+    "operation": "regression-cancel",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Launch a selected managed role",
+    "kind": "launch_role",
+    "launchable_roles": [],
+    "operation": "launch-role",
+    "reason": "run is not in progress",
+    "requires_reason": false,
+    "role": "supervisor",
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Run focused criterion verification",
+    "criteria": [],
+    "kind": "verify_criterion",
+    "operation": "verify",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Run live verification",
+    "kind": "verify_live",
+    "operation": "verify-live",
+    "reason": "run is closed",
+    "requires_reason": false,
+    "tone": "primary"
+   }
+  ],
+  "verification": {
+   "in_flight": [],
+   "latest": {
+    "REQ-001": {
+     "at": "2026-09-21T22:51:55.258723+00:00",
+     "ok": true,
+     "run_id": "vr-45f65f4686a841f994cc867c5bc8ac79"
+    }
+   },
+   "live": {
+    "at": "2026-09-21T22:51:56.542252+00:00",
+    "in_flight": null,
+    "last_failure": null,
+    "ok": true,
+    "run_id": "vr-e7126a2085e746ae928c344b5cbfc664"
+   }
+  }
+ },
+ "operator_actions": [
+  {
+   "action_id": "run_reopen:fc4ea7363ddef186",
+   "binding": "fc4ea7363ddef186",
+   "consequence": "Restores this run for continued work",
+   "created_at": "2026-09-21T22:51:56.618908+00:00",
+   "kind": "run_reopen",
+   "label": "Reopen mission",
+   "operation": "run-reopen",
+   "reason": null,
+   "requesting_role": "supervisor",
+   "requesting_session": null,
+   "requires_confirmation": false,
+   "requires_reason": true,
+   "tone": "primary",
+   "type": "run_reopen"
+  }
+ ],
+ "phases": [
+  {
+   "name": "Orient",
+   "number": 1,
+   "state": "complete"
+  },
+  {
+   "name": "Design debate",
+   "number": 2,
+   "state": "complete"
+  },
+  {
+   "name": "Design approved",
+   "number": 3,
+   "state": "complete"
+  },
+  {
+   "name": "Implementation",
+   "number": 4,
+   "state": "complete"
+  },
+  {
+   "name": "Independent review",
+   "number": 5,
+   "state": "complete"
+  },
+  {
+   "name": "Checks & documentation",
+   "number": 6,
+   "state": "complete"
+  },
+  {
+   "name": "Run closed",
+   "number": 7,
+   "state": "closed"
+  },
+  {
+   "name": "Live verified",
+   "number": 8,
+   "state": "upcoming"
+  }
+ ],
+ "policy": {
+  "configured_checks": 1,
+  "configured_live_checks": 1,
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_reviewer_escalation": null,
+  "design_reviewer_selection": {
+   "consistency_errors": [],
+   "current": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "next": {
+    "adapter": "codex",
+    "error": null,
+    "model": "default",
+    "reason": "no_followup_configured",
+    "tier": "primary"
+   }
+  },
+  "design_round": 0,
+  "effective_max_review_rounds": 3,
+  "explicit_approval": true,
+  "live_verification": true,
+  "max_autonomous_design_reviews": 2,
+  "max_design_rounds": 3,
+  "max_review_rounds": 3,
+  "review_cap_overrides": 0,
+  "review_round": 1
+ },
+ "project": {
+  "feature": "Snapshot contract",
+  "logo_url": null,
+  "name": "handsoff-test-si_qdr6h"
+ },
+ "questions": {
+  "answered": [],
+  "blocking": [],
+  "by_role": [],
+  "open": [],
+  "total": 0
+ },
+ "recovery": {
+  "assessment": {
+   "assigned_role": "supervisor",
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "attempts": [],
+  "cap": 3,
+  "lease": null,
+  "watchdog_enabled": true
+ },
+ "regression": {
+  "current": null,
+  "history": [],
+  "last": null,
+  "pending": null,
+  "release_plan": null
+ },
+ "review": {
+  "attempts": [
+   {
+    "attempt": 1,
+    "attempt_id": "ha-e9df37065dba4c48acde232b9c089e52",
+    "closed_at": "2026-09-21T22:51:56.079771+00:00",
+    "disposition": "approved",
+    "findings_count": 0,
+    "opened_at": "2026-09-21T22:51:56.049271+00:00",
+    "reviewer": "rev-1",
+    "tests_executed": "unknown",
+    "trigger": "initial"
+   }
+  ]
+ },
+ "root": "<root>",
+ "runtime": {
+  "agent_output": null,
+  "current_sessions": {
+   "architect": null,
+   "implementer": null,
+   "reviewer": null,
+   "supervisor": null
+  },
+  "operation": {
+   "assessment": "no operation telemetry reported by this session",
+   "attempt": null,
+   "availability": "unavailable",
+   "current": null,
+   "dependency_class": null,
+   "elapsed_seconds": null,
+   "history": [],
+   "last_success_at": null,
+   "late_telemetry": 0,
+   "protocol_warnings": 0,
+   "retry_count": 0,
+   "role": null,
+   "session_id": null,
+   "timeout_seconds": null
+  },
+  "replacements": []
+ },
+ "settings": {
+  "agents": {
+   "architect": "auto",
+   "implementer": "auto",
+   "reviewer": "auto",
+   "supervisor": "auto"
+  },
+  "allowed_adapters": [
+   "auto",
+   "codex",
+   "claude"
+  ],
+  "allowed_adapters_by_role": {
+   "architect": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ],
+   "implementer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "reviewer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "supervisor": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ]
+  },
+  "availability": {
+   "claude": {
+    "available": true,
+    "executable": "<home>/.local/share/claude/versions/2.1.270"
+   },
+   "codex": {
+    "available": true,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js"
+   }
+  },
+  "availability_scope": "Executable discovery only; it does not prove authentication, account entitlement, network access, or model validity.",
+  "crew": {
+   "architect": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "implementer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   }
+  },
+  "default_adapter": "codex",
+  "default_order": [
+   "codex",
+   "claude"
+  ],
+  "effective_profiles": {
+   "architect": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "implementer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   }
+  },
+  "fallbacks": {
+   "architect": [],
+   "implementer": [],
+   "reviewer": [],
+   "supervisor": []
+  },
+  "features": {
+   "failing_first": {
+    "default": false,
+    "description": "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165).",
+    "enabled": false
+   },
+   "launch_rules": {
+    "default": true,
+    "description": "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167).",
+    "enabled": true
+   },
+   "report_posting": {
+    "default": false,
+    "description": "Phase 8 completion posts the ledger's report to each ticket and closes it; off, nothing leaves the machine unless run-close --post says so (#171).",
+    "enabled": false
+   },
+   "review_binds_rules": {
+    "default": true,
+    "description": "A review, design approval and deployment approval carry the hash of the rules set they ran under; a changed hook or config revokes them (#170).",
+    "enabled": true
+   },
+   "ticket_lock": {
+    "default": true,
+    "description": "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166).",
+    "enabled": true
+   },
+   "token_accounting": {
+    "default": true,
+    "description": "The usage each adapter prints is recorded on its session and summed by role, phase and ticket; nothing is estimated (#168).",
+    "enabled": true
+   }
+  },
+  "max_failovers_per_role": 2,
+  "max_fallback_profiles": 8,
+  "profile_sources": {
+   "architect": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "implementer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "reviewer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "supervisor": {
+    "adapter": "explicit",
+    "model": "explicit"
+   }
+  },
+  "profiles": {
+   "architect": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "implementer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "reviewer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "auto",
+    "model": "default"
+   }
+  },
+  "providers": {
+   "claude": {
+    "executable": "<home>/.local/share/claude/versions/2.1.270",
+    "label": "Claude Code",
+    "state": "detected"
+   },
+   "codex": {
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "label": "Codex CLI",
+    "state": "detected"
+   },
+   "grok": {
+    "credential_env_var": "XAI_API_KEY",
+    "label": "Grok",
+    "state": "requires_setup"
+   },
+   "ollama": {
+    "executable": "/opt/homebrew/Cellar/ollama/0.20.5/bin/ollama",
+    "label": "Ollama (local models)",
+    "models": [
+     "qwen3-coder:30b"
+    ],
+    "state": "detected"
+   },
+   "openai_compatible": {
+    "credential_env_var": "OPENAI_API_KEY",
+    "endpoint_env_var": "OPENAI_BASE_URL",
+    "label": "OpenAI-compatible endpoint",
+    "state": "requires_setup"
+   }
+  },
+  "providers_scope": "Detection only, shown for information: CLI providers are checked for an executable on PATH, credentialed providers for the presence of an environment variable name. Handsoff never reads, displays, or stores credential values -- you supply them yourself.",
+  "recommended_crew": {
+   "architect": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "implementer": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   }
+  },
+  "reviewer_followup": null
+ },
+ "status": {
+  "active_work_item": "issue-218",
+  "activity": {
+   "activity_note": null,
+   "asleep_seconds": 0.0,
+   "assessment": {
+    "assigned_role": "supervisor",
+    "lost_session_id": null,
+    "reason": "run_state",
+    "silent_minutes": null,
+    "state": "not_applicable",
+    "threshold_minutes": null
+   },
+   "process_signal": "none",
+   "seconds_since_activity": 0,
+   "stall_threshold_minutes": 10,
+   "stall_warning": null
+  },
+  "amendment": null,
+  "amendments": [],
+  "background_wait": null,
+  "consistency_errors": [],
+  "deployment_approved": {
+   "acceptance_hash": "b019ebed684ed39d155accae5ba8291f0021ba0b2cd20558955b88748419b681",
+   "at": "2026-09-21T22:51:56.432845+00:00",
+   "by": "moncy",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d"
+  },
+  "design_approved": {
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:55.691050+00:00",
+   "by": "test-approver",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "proposal_hash": null,
+   "redesigns_settled_work": null,
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "summary": "Test-fixture design approval"
+  },
+  "design_proposal": null,
+  "design_review": {
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:55.608492+00:00",
+   "attempt": 1,
+   "by": "test-design-reviewer",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "decision": "approved",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "findings": [],
+   "head": null,
+   "proposal_hash": null,
+   "reviewer_profile": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "structural_blocker": false,
+   "summary": "Test-fixture independent design review"
+  },
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_review_history": [
+   {
+    "attempt": 1,
+    "by": "test-design-reviewer",
+    "criteria_ids": [
+     "REQ-001"
+    ],
+    "criterion_hashes": {
+     "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+    },
+    "decision": "approved",
+    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+    "findings": [],
+    "head": null,
+    "proposal_hash": null,
+    "structural_blocker": false
+   }
+  ],
+  "design_round": 0,
+  "escalation": null,
+  "events": [],
+  "feature": "Snapshot contract",
+  "human_pause": null,
+  "implemented_by": "impl-1",
+  "last_heartbeat_at": null,
+  "last_heartbeat_owner": null,
+  "legacy_review_round_offset": 0,
+  "live": {
+   "activity_source": "workflow",
+   "detail": "no managed process is running",
+   "ended_at": null,
+   "exit_code": null,
+   "last_activity_at": "2026-09-21T22:51:56.618908+00:00",
+   "process_signal": "none",
+   "role": null,
+   "seconds_since_activity": 0,
+   "session_id": null,
+   "state": "idle"
+  },
+  "live_verification_id": "vr-e7126a2085e746ae928c344b5cbfc664",
+  "next_action": "Run closed by the Pilot. Reopen it from Mission Control to continue.",
+  "original_symptom_evidence_id": "vr-45f65f4686a841f994cc867c5bc8ac79",
+  "pending_questions": [],
+  "phase": "Run closed",
+  "phase_number": 7,
+  "process_signal": "none",
+  "progress": 90,
+  "reassurance": "",
+  "recovery_attempts": [],
+  "recovery_lease": null,
+  "regression_requests": [],
+  "requirement_coverage": {
+   "blocked": 0,
+   "failing": 0,
+   "not_tested": 0,
+   "original_symptom_resolved": true,
+   "passing": 1
+  },
+  "requires_design_approval": true,
+  "requires_design_review": true,
+  "retry_count": 0,
+  "review": {
+   "acceptance_hash": "b019ebed684ed39d155accae5ba8291f0021ba0b2cd20558955b88748419b681",
+   "at": "2026-09-21T22:51:56.049522+00:00",
+   "by": "rev-1",
+   "checklist": {
+    "all_criteria_verified": "yes",
+    "evidence_attached": "yes",
+    "symptom_reproduced": "yes",
+    "symptom_resolved": "yes"
+   },
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "implementer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "profiles_distinct": false,
+   "reviewer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "tests_executed": "unknown"
+  },
+  "review_attempts": [
+   {
+    "acceptance_hash": "b019ebed684ed39d155accae5ba8291f0021ba0b2cd20558955b88748419b681",
+    "attempt": 1,
+    "attempt_id": "ha-e9df37065dba4c48acde232b9c089e52",
+    "closed_at": "2026-09-21T22:51:56.079771+00:00",
+    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+    "disposition": "approved",
+    "findings": [],
+    "opened_at": "2026-09-21T22:51:56.049271+00:00",
+    "opened_by": "rev-1",
+    "phase_number": 5,
+    "reviewer": "rev-1",
+    "session_ids": [],
+    "tests_executed": "unknown",
+    "trigger": "initial",
+    "trigger_detail": ""
+   }
+  ],
+  "review_cap_overrides": [],
+  "review_round": 1,
+  "reviewed_by": "rev-1",
+  "reviewer_checklist": {
+   "all_criteria_verified": "yes",
+   "evidence_attached": "yes",
+   "symptom_reproduced": "yes",
+   "symptom_resolved": "yes"
+  },
+  "run_closed": {
+   "at": "2026-09-21T22:51:56.618908+00:00",
+   "by": "moncy",
+   "cancelled_active": false,
+   "outcome": "closed",
+   "reason": "fixture",
+   "session_ids": []
+  },
+  "stall_warning": null,
+  "status": "closed",
+  "summary": "",
+  "updated_at": "2026-09-21T22:51:56.618908+00:00",
+  "verification_head": "d43f02d6d4185816ecae4f4ff72d267170fad66838b0a9e653622180463593b0",
+  "verification_progress": 80,
+  "work_item_delivery": {
+   "issue-218": {
+    "baseline_head": null,
+    "confirmed_at": null,
+    "confirmed_by": null,
+    "escalation_reason": null,
+    "facts": null,
+    "implemented_by": "impl-1",
+    "lane": "full",
+    "requested_lane": "full",
+    "review_hash": null,
+    "reviewed_by": null
+   }
+  }
+ },
+ "supervisor": {
+  "attention": [],
+  "completed": [
+   "1 acceptance criterion verified",
+   "Original symptom verified as resolved",
+   "Independent review recorded",
+   "Deployment approval recorded",
+   "Live verification passed"
+  ],
+  "headline": "Mission closed by moncy: fixture",
+  "label": "Mission closed",
+  "latest_event": {
+   "at": "2026-09-21T22:51:56.620016+00:00",
+   "kind": "run_closed",
+   "message": "Pilot cleanly closed the run: fixture"
+  },
+  "next_action": "Run closed by the Pilot. Reopen it from Mission Control to continue.",
+  "reassurance": "Reactor core stable. Safety interlocks active. I will advance only when every required gate is satisfied.",
+  "summary": "Run closed by the Pilot. Reopen it from Mission Control to continue.",
+  "tone": "steady"
+ },
+ "tickets": [],
+ "tranche": null,
+ "verification": {
+  "in_flight": [],
+  "latest": {
+   "REQ-001": {
+    "at": "2026-09-21T22:51:55.258723+00:00",
+    "ok": true,
+    "run_id": "vr-45f65f4686a841f994cc867c5bc8ac79"
+   }
+  },
+  "live": {
+   "at": "2026-09-21T22:51:56.542252+00:00",
+   "in_flight": null,
+   "last_failure": null,
+   "ok": true,
+   "run_id": "vr-e7126a2085e746ae928c344b5cbfc664"
+  }
+ },
+ "verifications": [
+  {
+   "acceptance_hash": "b019ebed684ed39d155accae5ba8291f0021ba0b2cd20558955b88748419b681",
+   "at": "2026-09-21T22:51:56.542252+00:00",
+   "binding": null,
+   "by": "moncy",
+   "commands": [
+    "true"
+   ],
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "criteria": [
+    "REQ-001"
+   ],
+   "criterion_hashes": {
+    "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+   },
+   "description": "",
+   "executed": true,
+   "feature_hash": null,
+   "hash": "d43f02d6d4185816ecae4f4ff72d267170fad66838b0a9e653622180463593b0",
+   "kind": "live",
+   "ok": true,
+   "prev_hash": "2ee431d88749724a2fb81607621553b8bb89a6f311aef1cafe99cf91403fa28b",
+   "repository_digest": null,
+   "results": [
+    {
+     "command": "true",
+     "duration_s": 0.0,
+     "exit_code": 0,
+     "output_bytes": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "timed_out": false,
+     "truncated": false
+    }
+   ],
+   "reused_from": null,
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "run_id": "vr-e7126a2085e746ae928c344b5cbfc664"
+  },
+  {
+   "acceptance_hash": null,
+   "at": "2026-09-21T22:51:55.258723+00:00",
+   "binding": {
+    "true": "8eb0d59612a47daed880a547b0a3216333933406c19ad1734410a61938896934"
+   },
+   "by": "test-implementer",
+   "commands": [
+    "true"
+   ],
+   "config_hash": "a5a4b1182748478f6bd0b57a10b4d889a9edb7fd3087f943c295fde158be0da4",
+   "criteria": [
+    "REQ-001"
+   ],
+   "criterion_hashes": {
+    "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+   },
+   "description": "",
+   "executed": true,
+   "feature_hash": "52b537882cd83002ec3034eb58d4c5c3aab28db3aee7740b6bf46e7efa287e31",
+   "hash": "2ee431d88749724a2fb81607621553b8bb89a6f311aef1cafe99cf91403fa28b",
+   "kind": "checks",
+   "ok": true,
+   "prev_hash": "GENESIS",
+   "repository_digest": "0fabb7393190c70fb57084ece2784212a6ed31337f86369300d64946c8f9f761",
+   "results": [
+    {
+     "command": "true",
+     "duration_s": 0.0,
+     "exit_code": 0,
+     "output_bytes": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "timed_out": false,
+     "truncated": false
+    }
+   ],
+   "reused_from": null,
+   "run_id": "vr-45f65f4686a841f994cc867c5bc8ac79"
+  }
+ ],
+ "work_items": {
+  "aggregate": {
+   "counts": {
+    "awaiting_approval": 0,
+    "blocked": 0,
+    "done": 0,
+    "in_progress": 1,
+    "in_review": 0,
+    "not_started": 0,
+    "recovering": 0,
+    "unscoped": 0
+   },
+   "done": 0,
+   "progress": 80,
+   "total": 1
+  },
+  "items": [
+   {
+    "blocker": "",
+    "created_at": "2026-09-21T22:51:55.094110+00:00",
+    "criteria": [
+     "REQ-001"
+    ],
+    "discrepancy": null,
+    "github_checked_at": null,
+    "github_state": null,
+    "id": "issue-218",
+    "kind": "issue",
+    "lane": "full",
+    "lane_confirmed": false,
+    "lane_escalation": null,
+    "lane_facts": null,
+    "notes": "",
+    "number": 218,
+    "phase_or_next": "Run closed by the Pilot. Reopen it from Mission Control to continue.",
+    "progress": 80,
+    "required": true,
+    "status": "in_progress",
+    "title": "Issue #218",
+    "updated_at": "2026-09-21T22:51:55.094110+00:00",
+    "url": ""
+   }
+  ],
+  "multi": false,
+  "registry": "persisted",
+  "tickets_config_deprecated": false,
+  "unattributed_criteria": []
+ }
+}

@@ -927,6 +927,24 @@ gh release download v0.2.0 --repo monzta1/miner --pattern 'miner-*.whl' --dir /t
 on `PATH`; the equality of the Miner's report with the engine's former scan
 is proven in the Miner's own repository.
 
+## The snapshot contract and the run vocabulary
+
+`schemas/snapshot.schema.json` (#218) describes what `build_snapshot` emits
+for `/api/dashboard`: the top level is closed (every emitted key listed and
+required), the objects the pages switch on are closed with their enums
+(`phases[].state`, `input_required.kind` and `turn`, `supervisor.label` and
+`tone`, `verification.live`), and `runtime` and `metrics` are the
+intentionally open objects. `tests/test_snapshot_contract.py` drives a
+fixture run to eight states (in progress, waiting on the pilot,
+pre-authorized, live verification running and failed, complete, closed,
+offline), validates the fresh snapshot against the schema and compares it
+with the committed fixture under `tests/fixtures/snapshots/`
+(`HANDSOFF_REGENERATE_SNAPSHOT_FIXTURES=1` rewrites them after a deliberate
+contract change). `dashboard/lib/run-vocabulary.js` holds `STATE_ORDER`,
+`FINISHED_STATES`, `STATE_LABELS` and `lcdText` once; the run page, both
+Fleet pages and the Regression Console load it before their own script,
+and the run dashboard and Fleet both serve it at `/lib/run-vocabulary.js`.
+
 ## Work items and the per-item status table
 
 Scope means the set of items that carry acceptance criteria: the work-item scope hash covers the id, kind, and number of every item with at least one mapped criterion (untagged criteria attach to a single-item registry's only item), so editing `required`, `notes`, `title`, `url`, or `github_state` with `work-item-update` changes no scope hash and resets no decision (gates also accept the legacy digest that included `required`, so runs recorded by earlier engines keep their approvals). Once deployment approval is recorded the item set is frozen: a `work-items-sync` or `work-item-update` that would add or remove items is refused with the reason. `work-items-sync` never appends a feature-title ask beside explicit issue items; it prints `WORK_ITEM_SYNC_SKIPPED` and accepts `--item` for deliberate additions. A criterion whose tag matches no registry item is always rendered as `unattributed`, in single-item registries too, and `status` lists `unattributed_criteria` (#79). Criteria transactions register criterion-tag identities but never append a feature-title ask beside explicit issue items; `work-item-remove ITEM --by ACTOR` removes an item that maps to zero criteria without invalidating any decision, and is refused for items with criteria or after deployment approval; a required item with no criteria is reported as `unscoped` with that command in the gate message. Gate comparisons accept every historical digest formula (pre-v0.3.11 with `required`, the same normalized to true, and the v0.3.11 identity-only digest over all items), so runs recorded by earlier engines keep their approvals (#82). New runs persist `work_items` automatically. GitHub references become stable `issue-N` identities; criterion prefixes such as `[#29]` and `[cross]` map acceptance to `issue-29` and `ask-cross`. Plain asks split only on explicit semicolons, newlines, or numbered prefixes, never on an ambiguous conjunction. `work-items-sync --by ACTOR --from-tickets` migrates a legacy run; `work-item-activate` records the current item, and `work-item-update` changes display metadata, implementation identity, or recorded GitHub state. Mission Control shows the queue with canonical status, lane, measured caps, per-item progress, blocker, timestamps, and GitHub discrepancies. Recorded GitHub state is display input only; it never overrides Handsoff evidence. Persisted required items prevent completion until every row is done; optional rows remain visible without holding completion, while legacy derived-only rows remain informational.

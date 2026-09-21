@@ -29,6 +29,7 @@ function loadFleetPage() {
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "..", "dashboard", "lib", "run-vocabulary.js"), "utf8"), context, { filename: "dashboard/lib/run-vocabulary.js" });  // #218: loaded before app.js, as the page does
   vm.runInContext(app, context, { filename: "fleet/app.js" });
   return context;
 }

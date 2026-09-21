@@ -3,14 +3,8 @@ let fleet = null;
 let pending = null;
 
 const ENDPOINTS = { release: "/api/release-port", close: "/api/close-run", reopen: "/api/reopen-run", forget: "/api/forget" };
-const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "quiet", "complete", "closed", "idle", "orphaned"];
-// #150/#154: only a run that is moving belongs in the grid; finished runs and
-// projects with no run at all sit in the collapsed section.
-const FINISHED_STATES = new Set(["complete", "closed", "idle", "orphaned"]);
-const STATE_LABELS = {
-  waiting: "WAITING ON PILOT", failed: "FAILED", stalled: "STALLED", running: "RUNNING",
-  quiet: "QUIET", offline: "DASHBOARD OFFLINE", complete: "COMPLETE", closed: "CLOSED", idle: "NO RUN", orphaned: "ORPHANED",
-};
+// STATE_ORDER, FINISHED_STATES, STATE_LABELS and lcdText come from
+// /lib/run-vocabulary.js, loaded before this file (#218).
 
 const esc = (value) => String(value ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");
 
@@ -45,12 +39,8 @@ function timing(project) {
   return started + finished;
 }
 
-function lcdText(seconds) {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const s = total % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
+// STATE_ORDER, FINISHED_STATES, STATE_LABELS and lcdText come from
+// /lib/run-vocabulary.js, loaded before this file (#218).
 // LCD elapsed counters tick locally from each project's ledger anchors and
 // freeze when the run is complete.
 function renderClocks() {
