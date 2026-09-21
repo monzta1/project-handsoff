@@ -39,6 +39,7 @@ RUNTIME_FILES = (
     "playbook/landing.md",
     "playbook/lanes.md",
     "playbook/lessons.md",
+    "playbook/protocol.md",
     "playbook/reviewers.md",
     "prompts/architect.md",
     "prompts/implementer.md",

@@ -42,7 +42,7 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
 
     def test_every_playbook_file_is_in_the_manifest_and_the_wheel(self):
         files = sorted(p.name for p in PLAYBOOK.iterdir() if p.is_file())
-        self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md", "lessons.md", "reviewers.md"])
+        self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md", "lessons.md", "protocol.md", "reviewers.md"])
         manifest = json.loads((ROOT / "handsoff-runtime.json").read_text())
         for name in files:
             self.assertIn(f"playbook/{name}", manifest["files"], name)
@@ -54,7 +54,7 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         self.assertIn('"playbook/lanes.md"', (ROOT / "bin" / "handsoff_manifest.py").read_text())
         index = json.loads((PLAYBOOK / "index.json").read_text())
         self.assertEqual(index["always_load"], ["INDEX.md", "lanes.md"])
-        self.assertEqual(set(index["topics"]), {"lanes", "landing", "reviewers", "lessons"})
+        self.assertEqual(set(index["topics"]), {"lanes", "landing", "reviewers", "lessons", "protocol"})
         for item in index["files"]:
             self.assertTrue((PLAYBOOK / item["file"]).is_file(), item["file"])
         for name in files:
@@ -92,7 +92,7 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         big = {**index, "files": [*index["files"], {"file": "huge.md", "topics": ["lanes"]}]}
         with mock.patch.object(lib, "playbook_index", return_value=big), \
                 mock.patch.object(lib, "playbook_root", return_value=copy):
-            with self.assertRaisesRegex(lib.HandsoffError, "over 12288"):
+            with self.assertRaisesRegex(lib.HandsoffError, "over 16384"):
                 lib.playbook_section("lanes")
         # a project with its own [briefing] KB gets both, playbook first
         import shutil
