@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.56/project_handsoff-0.3.56-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.56/project_handsoff-0.3.56-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.57/project_handsoff-0.3.57-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.57/project_handsoff-0.3.57-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -557,6 +557,16 @@ asleep; #177's decline closed a run without the reviewer's word and a
 managed Architect had no way to emit it. Fix: the sections "The clocks
 know the Mac slept" and "The Architect can decline" above.
 
+### v0.3.57 field note: the sleep log is read off the request path (#193)
+
+Cause: `pmset -g log` is 33,000 lines and takes three seconds on this
+Mac; v0.3.56 read it on the first snapshot, so every new dashboard's
+first page waited that long and `live_offline_smoke` found the page not
+yet rendered. Fix: the log is read on a background thread into the
+per-process cache; a request before the first read lands sees no sleep
+(wall clock) and the next one sees the intervals; nothing on the request
+path waits for it.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -783,8 +793,10 @@ run elapsed, each phase, session durations, verification and wait times
 age and the stall warning (a closed lid is never a stall), the CI row's
 elapsed. Mission Control's LCD clocks count awake time and read "asleep
 7 h 03 m" beneath; the phase list and the Fleet card carry the same words.
-The ledger is untouched; sleep is subtracted at read time; on a machine
-without `pmset` every number is the wall clock and the sleep is 0.
+The ledger is untouched; sleep is subtracted at read time; the log is
+read on a background thread (it is tens of thousands of lines), so a
+request never waits for it; on a machine without `pmset` every number is
+the wall clock and the sleep is 0.
 
 ### The Architect can decline (#177)
 

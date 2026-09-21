@@ -56,16 +56,40 @@ class SleepLogTests(unittest.TestCase):
         self.assertEqual(lib.asleep_seconds(start, end, lib.parse_sleep_log(LOG + LOG, now=NOW)), 25500.0)
         self.assertEqual(lib.awake_seconds(start, end, []), 28800.0)
 
-    def test_without_pmset_every_number_is_the_wall_clock(self):
-        lib._SLEEP_LOG_CACHE["at"] = None
+    def test_without_pmset_every_number_is_the_wall_clock_and_a_request_never_waits_for_the_log(self):
+        lib._SLEEP_LOG_CACHE["at"] = None; lib._SLEEP_LOG_CACHE["intervals"] = []; lib._SLEEP_LOG_CACHE["thread"] = None
         with mock.patch.object(lib.shutil, "which", return_value=None):
-            self.assertEqual(lib.machine_sleep_intervals(now=NOW), [])
+            self.assertEqual(lib.machine_sleep_intervals(now=NOW, wait=True), [])
         self.assertEqual(lib.machine_sleep_intervals(now=NOW, log_reader=lambda: None), [])
         self.assertEqual(len(lib.machine_sleep_intervals(now=NOW, log_reader=lambda: LOG)), 1)
-        lib._SLEEP_LOG_CACHE["at"] = None
+        # the log takes seconds on a real Mac (33,000 lines): a request gets
+        # the cache (empty before the first read lands) and never blocks
+        lib._SLEEP_LOG_CACHE["at"] = None; lib._SLEEP_LOG_CACHE["intervals"] = []; lib._SLEEP_LOG_CACHE["thread"] = None
+        import time
+        def slow():
+            time.sleep(0.5)
+            return LOG
+        with mock.patch.object(lib, "_read_pmset_log", side_effect=slow):
+            started = time.time()
+            first = lib.machine_sleep_intervals(now=NOW)
+            self.assertLess(time.time() - started, 0.2)
+            self.assertEqual(first, [])
+            self.assertEqual(len(lib.machine_sleep_intervals(now=NOW, wait=True)), 1)
+        lib._SLEEP_LOG_CACHE["at"] = None; lib._SLEEP_LOG_CACHE["intervals"] = []; lib._SLEEP_LOG_CACHE["thread"] = None
 
 
 class SleepAwareBoardTests(HandsoffTestCase):
+    def _reset(self):
+        lib._SLEEP_LOG_CACHE["at"] = None
+        lib._SLEEP_LOG_CACHE["intervals"] = []
+        lib._SLEEP_LOG_CACHE["thread"] = None
+
+    def _prime(self):
+        """The log is read on a background thread and never on a request;
+        the test waits for that read so the snapshot sees the intervals."""
+        self._reset()
+        lib.machine_sleep_intervals(wait=True)
+
     def setUp(self):
         super().setUp()
         (self.tmp / ".handsoff-version").write_text("0.3.*\n")
@@ -106,11 +130,11 @@ class SleepAwareBoardTests(HandsoffTestCase):
         status["updated_at"] = (now - timedelta(minutes=31)).isoformat()
         lib.commit(self.tmp, self.cfg, status=status, event_kind="fixture", event_message="then silence")
         with mock.patch.object(lib, "_read_pmset_log", return_value=log):
-            lib._SLEEP_LOG_CACHE["at"] = None
+            self._prime()
             snapshot = dashboard.build_snapshot(self.tmp)
             fleet.register_project(self.tmp, self.registry)
             card = next(p for p in fleet.build_fleet(self.registry)["projects"] if p["root"] == str(self.tmp.resolve()))
-        lib._SLEEP_LOG_CACHE["at"] = None
+        self._reset()
         # the run itself started seconds ago (the ledger is hash-chained, so
         # its events are fresh); the silence since updated_at is what slept
         activity = snapshot["activity"]
@@ -121,9 +145,9 @@ class SleepAwareBoardTests(HandsoffTestCase):
         self.assertIn("phase_asleep_seconds", card)
         # without the sleep the same silence is a stall
         with mock.patch.object(lib, "_read_pmset_log", return_value=""):
-            lib._SLEEP_LOG_CACHE["at"] = None
+            self._prime()
             plain = dashboard.build_snapshot(self.tmp)
-        lib._SLEEP_LOG_CACHE["at"] = None
+        self._reset()
         self.assertIsNotNone(plain["activity"]["stall_warning"], "without the sleep the same silence is a stall")
         # the host-wait line (#194) reads awake silence too: 3 minutes is nobody waiting
         with mock.patch.object(lib, "_read_pmset_log", return_value=log):
@@ -135,12 +159,12 @@ class SleepAwareBoardTests(HandsoffTestCase):
         old_status = {**self.read_status(), "updated_at": then}
         old_events = [{"kind": "initialized", "at": then, "by": "claude-host"}]
         with mock.patch.object(lib, "_read_pmset_log", return_value=log):
-            lib._SLEEP_LOG_CACHE["at"] = None
+            self._prime()
             self.assertIsNone(lib.host_wait_view(old_status, old_events, self.cfg, now=now), "28 of the 31 minutes were asleep")
         with mock.patch.object(lib, "_read_pmset_log", return_value=""):
-            lib._SLEEP_LOG_CACHE["at"] = None
+            self._prime()
             waiting = lib.host_wait_view(old_status, old_events, self.cfg, now=now)
-        lib._SLEEP_LOG_CACHE["at"] = None
+        self._reset()
         self.assertIsNotNone(waiting)
         self.assertEqual(waiting["asleep_seconds"], 0.0)
         self.assertGreaterEqual(waiting["silent_seconds"], 30 * 60)
