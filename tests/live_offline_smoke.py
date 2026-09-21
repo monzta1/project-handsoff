@@ -61,12 +61,12 @@ evaluate.counter = 0
 
 # #190: a precondition that is not met names itself and its fix; a bare
 # BLOCKED sent two hosts looking in the wrong place on 2026-09-21.
-if not os.path.exists(CHROME):
-    print(f"LIVE_OFFLINE_BLOCKED: Chrome not found at {CHROME}")
-    raise SystemExit(1)
 if websocket_client is None:
     print(f"LIVE_OFFLINE_BLOCKED: websockets is not importable by {sys.executable} "
           f"({sys.executable} -m pip install websockets, or the 'live' extra of the engine)")
+    raise SystemExit(1)
+if not os.path.exists(CHROME):
+    print(f"LIVE_OFFLINE_BLOCKED: Chrome not found at {CHROME}")
     raise SystemExit(1)
 
 # Every process this smoke starts is registered here and stopped in the

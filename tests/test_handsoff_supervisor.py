@@ -2270,7 +2270,10 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             def kill(self):
                 return None
 
-        with self.assertRaisesRegex(self.lib.HandsoffError, "BrokenPipeError"):
+        # #179: a child that closes its stdin before the task is written
+        # (EPIPE on the write) is judged by its exit status, never by the
+        # runner's pipe; this child exits 7.
+        with self.assertRaisesRegex(self.lib.HandsoffError, "exited with status 7"):
             self.runtime.execute_launch(
                 self._spec(role="supervisor"),
                 popen_factory=mock.Mock(return_value=SupervisorProcess(7, broken=True)),
