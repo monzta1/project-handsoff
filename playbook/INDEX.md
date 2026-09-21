@@ -18,3 +18,11 @@ trimmed, so a file that grows is shortened by its author.
 | landing | landing.md | before `advance 6`: the pull request, the release, the install, verify-live, Phase 8, the archive |
 | reviewers | reviewers.md | before launching a reviewer: what a task names, delta attempts, declines |
 | lessons | lessons.md | once per session: every rule that cost a round, and the refusal it prevents |
+
+A managed launch's text is assembled in this order: the playbook (this
+index and `lanes.md`, plus one topic when asked), the project's knowledge
+base when `[briefing]` declares one, the role's context (sandbox note,
+design packet, managed design context), the role prompt, the assigned task,
+then evidence, resume scope and Pilot answers. The playbook is first so it
+is read first; the role prompt's own contract stays where the engine has
+always put it.

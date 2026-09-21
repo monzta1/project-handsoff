@@ -68,6 +68,12 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
             text = agent.build_role_input(tmp, "reviewer", "review it")
         self.assertTrue(text.startswith("# Handsoff playbook\n\n## playbook/INDEX.md"))
         self.assertIn("## playbook/lanes.md", text)
+        # the order every launch keeps: playbook, then the project KB, then
+        # role context (sandbox, design context, a packet), then the role
+        # prompt, then the task (review F1.2)
+        self.assertLess(text.index("# Handsoff playbook"), text.index("# Sandbox"))
+        self.assertLess(text.index("# Sandbox"), text.index("ROLE PROMPT"))
+        self.assertLess(text.index("ROLE PROMPT"), text.index("# Assigned task"))
         self.assertNotIn("## playbook/lessons.md", text, "a topic rides only when asked")
         with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
             with_topic = agent.build_role_input(tmp, "reviewer", "review it", "lessons")
@@ -78,15 +84,16 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
             section = lib.playbook_section(name)
             self.assertLessEqual(len(section.encode("utf-8")), lib.MAX_PLAYBOOK_SECTION_BYTES, name)
         self.assertLessEqual(len(lib.playbook_section(None).encode("utf-8")), lib.MAX_PLAYBOOK_SECTION_BYTES)
+        # an oversize playbook is refused at launch; proven on a temp copy, never the real one
+        import shutil
+        copy = Path(tempfile.mkdtemp(prefix="handsoff-playbook-copy-")) / "playbook"
+        shutil.copytree(PLAYBOOK, copy)
+        (copy / "huge.md").write_text("x" * (lib.MAX_PLAYBOOK_SECTION_BYTES + 1))
         big = {**index, "files": [*index["files"], {"file": "huge.md", "topics": ["lanes"]}]}
         with mock.patch.object(lib, "playbook_index", return_value=big), \
-                mock.patch.object(lib, "playbook_root", return_value=PLAYBOOK):
-            (PLAYBOOK / "huge.md").write_text("x" * (lib.MAX_PLAYBOOK_SECTION_BYTES + 1))
-            try:
-                with self.assertRaisesRegex(lib.HandsoffError, "over 12288"):
-                    lib.playbook_section("lanes")
-            finally:
-                (PLAYBOOK / "huge.md").unlink()
+                mock.patch.object(lib, "playbook_root", return_value=copy):
+            with self.assertRaisesRegex(lib.HandsoffError, "over 12288"):
+                lib.playbook_section("lanes")
         # a project with its own [briefing] KB gets both, playbook first
         import shutil
         shutil.copy(ROOT / "tests/fixtures/briefing-index.json", tmp / "index.json")
@@ -95,6 +102,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
             both = agent.build_role_input(tmp, "implementer", "build it", "ui")
         self.assertLess(both.index("# Handsoff playbook"), both.index("# Knowledge base briefing"))
+        self.assertLess(both.index("# Knowledge base briefing"), both.index("ROLE PROMPT"))
+        self.assertLess(both.index("ROLE PROMPT"), both.index("# Assigned task"))
         self.assertIn("## UI.md", both)
         # a topic named in both indexes rides from both (F1.1); one in neither is refused
         collide = json.loads((tmp / "index.json").read_text())

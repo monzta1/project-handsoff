@@ -27,7 +27,6 @@ class StaleManifestTests(HandsoffTestCase):
         # the base fixture copies bin/, schemas/, dashboard/, rules/; an
         # engine checkout also has prompts/ and the project's pyproject
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        shutil.copytree(ROOT / "playbook", self.tmp / "playbook")  # #208: listed in the manifest too
         shutil.copy(ROOT / "pyproject.toml", self.tmp / "pyproject.toml")
         (self.tmp / ".handsoff-version").write_text("0.3.*\n")
 
