@@ -7,7 +7,7 @@
     "bin/handsoff_dashboard.py": "e1fcec4be7aa1810e7d47f0ca3a26864eda0652d86ed293375dc560c31417413",
     "bin/handsoff_fleet.py": "19d7de72df7b2949b35e610ae19da10bea4533a2f0268edf42a1b1bab85a3ea6",
     "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
-    "bin/handsoff_lib.py": "da97b2f9d01b06f58d0af2699210a428749d2b60046c0528bc2f0f508e854f26",
+    "bin/handsoff_lib.py": "242727b601bb12da0e00a063c856d1f31c9954b4c61db80b69aa9d2aa42c3bd2",
     "bin/handsoff_manifest.py": "3882f86627004ded29c672a56f5cab377f80a3b1299a37be899d28bbb12e280f",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
     "bin/handsoff_supervisor.py": "e84704c88cb5ad19efcb88a0f58909f3f9b7ef579daf283d2a0d1f80c4a940b5",
@@ -38,5 +38,5 @@
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },
   "schema": 1,
-  "version": "v0.3.58"
+  "version": "v0.3.59"
 }

@@ -552,6 +552,13 @@ def _runtime_identity_with_manifest(root: Path) -> dict:
     drop_in = _looks_like_runtime_drop_in(root)
     source = "project-drop-in" if drop_in else "installed-engine"
     path = root / RUNTIME_MANIFEST_FILE if drop_in else engine_root() / RUNTIME_MANIFEST_FILE
+    # #204: an engine checkout whose listed files changed after the manifest
+    # was written says so on every read of the identity, the dashboard's
+    # engine badge and the Fleet card included (they render the reason as
+    # ENGINE UNKNOWN, #185), not only when the pin is missing.
+    stale = stale_manifest_refusal(root)
+    if stale:
+        raise HandsoffError(stale)
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -571,9 +578,6 @@ def _runtime_identity_with_manifest(root: Path) -> dict:
         try:
             pin = pin_path.read_text(encoding="utf-8").strip()
         except FileNotFoundError as exc:
-            stale = stale_manifest_refusal(root)  # #204
-            if stale:
-                raise HandsoffError(stale) from exc
             raise HandsoffError(f"Handsoff engine version pin is missing: {pin_path}; run `handsoff init {root}`") from exc
         if not version_satisfies(manifest["version"], pin):
             raise HandsoffError(

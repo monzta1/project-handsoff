@@ -56,6 +56,18 @@ class StaleManifestTests(HandsoffTestCase):
                                  "--by", "codex-reviewer", "--task", "t"], capture_output=True, text=True, timeout=60)
         self.assertNotEqual(launch.returncode, 0)
         self.assertIn("the runtime manifest is stale", launch.stdout + launch.stderr)
+        # the dashboard's engine badge and the Fleet card read it too: the
+        # identity raises, the snapshot degrades to UNKNOWN with the reason
+        # (#185) instead of showing the old version as healthy
+        import handsoff_dashboard as dashboard
+        import handsoff_fleet as fleet
+        with self.assertRaisesRegex(lib.HandsoffError, "the runtime manifest is stale"):
+            lib.runtime_identity(self.tmp)
+        snapshot = dashboard.build_snapshot(self.tmp)
+        self.assertEqual(snapshot["engine"]["version"], "unknown")
+        self.assertIn("the runtime manifest is stale (dashboard/app.js changed", snapshot["engine"]["reason"])
+        self.assertIn("the runtime manifest is stale", snapshot["audit"]["engine_error"])
+        self.assertEqual(fleet._engine_version(self.tmp), "unknown")
         # more than six changed files are counted, not listed
         for name in ("a", "b", "c", "d", "e", "f", "g"):
             (self.tmp / "bin" / f"{name}.py").write_text("x")

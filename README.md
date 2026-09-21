@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.58/project_handsoff-0.3.58-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.58/project_handsoff-0.3.58-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.59/project_handsoff-0.3.59-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.59/project_handsoff-0.3.59-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -575,6 +575,17 @@ a reviewer or ran verify before regenerating the manifest, and read
 engine", both pointing at the wrong place; a knowledge-base rule did not
 stop the third. Fix: `stale_manifest_refusal` and the one line above,
 from every path that reads the manifest.
+
+### v0.3.59 field note: the badge reads the stale manifest too (#204)
+
+Cause: v0.3.58 claimed every reader refused, and the dashboard's engine
+badge did not: the check sat only on the missing-pin path, so with a pin
+present (every initialised project) an edited runtime file left the badge
+reading healthy; the acceptance named the engine view and no test
+exercised it. Fix: the check runs on every read of the runtime identity;
+the badge reads ENGINE UNKNOWN with the reason (#185) and Fleet reads
+unknown; the test now covers both. Lesson, in the knowledge base: a claim
+of "every reader" needs a test per reader, named in the criterion.
 
 ### Cutting a release
 
