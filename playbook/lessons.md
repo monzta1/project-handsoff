@@ -45,3 +45,31 @@ twice becomes a refusal in the engine.
   building.
 - A red shard on a green tree: `gh run rerun <id> --failed`; a real failure is
   a new commit and a full run.
+- `init --item` takes `#174` or `issue-174`, never a bare `174`: a bare
+  number becomes an "ask" item with no ticket, the run is never registered
+  with Fleet, and the card is missing until `fleet register` by hand.
+- The implementation reviewer is launched from Phase 5: at Phase 4 its
+  result is persisted but refused ("requires Phase 5"); `advance 5
+  --implemented-by`, then `session-result-adopt --session <sid>` recovers it.
+- Wait for a managed session on the LEDGER (the session's state leaving
+  launching/running), never by grepping its log: the test suites the
+  reviewer runs print `HANDSOFF_REVIEW_RESULT` and `SHIP_FEATURE_BLOCKED`
+  lines of their own, and a grep on those wakes early with the wrong verdict.
+- Never chain `design-propose && design-review-packet && launch` on a
+  `grep -c` or any step that can print without succeeding: a refused
+  proposal left the old one recorded and the reviewer reviewed that. The
+  launch waits for `DESIGN_PROPOSAL_RECORDED` and the packet's JSON.
+- Unit tests with a fake on PATH cannot see an install path: `sys.executable`
+  inside a macOS framework venv is the framework binary, not `venv/bin`,
+  and only the live smoke against the installed pair caught it. Every
+  "the installed X finds Y" claim gets a live smoke.
+- An exactly-once hand-off over Beakon rides on the gateway's content digest:
+  deterministic bytes per item, the marker with those bytes saved before
+  transmit, the marker's own bytes retransmitted (never a rebuild from an
+  issue that may have been edited), the receipt saved before the comment.
+- A Phase 8 run from a checkout runs under the system interpreter: anything
+  the engine finds through its own venv (the Miner) is absent there and the
+  trigger takes its skip path; do not read that ledger as "the install works".
+- The board moves only when the host records: criteria and the proposal go
+  in before the first line of code, or the Pilot watches Orient for the
+  whole build.
