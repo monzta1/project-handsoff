@@ -799,6 +799,9 @@ def project_resource_path(root: Path, relative: str) -> Path:
 
 PLAYBOOK_DIR = "playbook"
 PLAYBOOK_INDEX = "index.json"
+#: the playbook part of a launch stays small enough to ride every launch;
+#: a topic that would push it past this is refused at launch, never trimmed
+MAX_PLAYBOOK_SECTION_BYTES = 12 * 1024
 
 
 def playbook_root() -> Path:
@@ -847,7 +850,12 @@ def playbook_section(topic: str | None = None) -> str:
         if name not in unique:
             unique.append(name)
     sections = [f"## playbook/{name}\n\n{(root / name).read_text(encoding='utf-8').rstrip()}" for name in unique]
-    return "# Handsoff playbook\n\n" + "\n\n".join(sections)
+    text = "# Handsoff playbook\n\n" + "\n\n".join(sections)
+    size = len(text.encode("utf-8"))
+    if size > MAX_PLAYBOOK_SECTION_BYTES:
+        raise HandsoffError(f"the playbook section for a launch is {size} bytes, over {MAX_PLAYBOOK_SECTION_BYTES}"
+                            f" (files: {', '.join(unique)}); shorten the playbook")
+    return text
 
 
 def briefing_section(root: Path, cfg: dict, topic: str | None = None) -> str:
@@ -902,9 +910,12 @@ def briefing_section(root: Path, cfg: dict, topic: str | None = None) -> str:
     selected = list(always_load)
     if topic is not None:
         topic = topic.strip()
+        # A topic is looked up in both indexes (#208): a playbook topic rides
+        # from the playbook, a project topic from the project's KB, and a name
+        # declared in both rides from both. Only a name in neither is refused.
         if topic not in topics:
             if topic in playbook_index()["topics"]:
-                topic = None  # a playbook topic, carried by playbook_section
+                topic = None  # carried by playbook_section
             else:
                 raise HandsoffError(f"briefing topic is not declared in the index: {topic}")
         else:

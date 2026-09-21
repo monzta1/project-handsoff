@@ -6,7 +6,11 @@ playbook <topic>` prints one file. Managed sessions receive `lanes` with
 every launch (the briefing, #175); a host reads `lanes.md` before `init`,
 `landing.md` before `advance 6`, `lessons.md` once per session. Project
 knowledge (a device's quirks, a repository's audits, accounts) is the
-project's own knowledge base, declared in `handsoff.toml [briefing]`.
+project's own knowledge base, declared in `handsoff.toml [briefing]`. A
+`--topic` on a launch is looked up in both: a playbook topic rides from
+here, a project topic from the project's KB, a name declared in both rides
+from both. The playbook part of a launch is refused past 12 KB, never
+trimmed, so a file that grows is shortened by its author.
 
 | Topic | File | Read when |
 |---|---|---|

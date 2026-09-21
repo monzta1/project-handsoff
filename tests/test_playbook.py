@@ -72,8 +72,21 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
             with_topic = agent.build_role_input(tmp, "reviewer", "review it", "lessons")
         self.assertIn("## playbook/lessons.md", with_topic)
-        section = lib.playbook_section("landing")
-        self.assertLess(len(section.encode("utf-8")), 12 * 1024, "the playbook stays small enough to ride every launch")
+        # every topic's section fits the bound the engine enforces at launch (F1.2)
+        index = json.loads((PLAYBOOK / "index.json").read_text())
+        for name in sorted(index["topics"]):
+            section = lib.playbook_section(name)
+            self.assertLessEqual(len(section.encode("utf-8")), lib.MAX_PLAYBOOK_SECTION_BYTES, name)
+        self.assertLessEqual(len(lib.playbook_section(None).encode("utf-8")), lib.MAX_PLAYBOOK_SECTION_BYTES)
+        big = {**index, "files": [*index["files"], {"file": "huge.md", "topics": ["lanes"]}]}
+        with mock.patch.object(lib, "playbook_index", return_value=big), \
+                mock.patch.object(lib, "playbook_root", return_value=PLAYBOOK):
+            (PLAYBOOK / "huge.md").write_text("x" * (lib.MAX_PLAYBOOK_SECTION_BYTES + 1))
+            try:
+                with self.assertRaisesRegex(lib.HandsoffError, "over 12288"):
+                    lib.playbook_section("lanes")
+            finally:
+                (PLAYBOOK / "huge.md").unlink()
         # a project with its own [briefing] KB gets both, playbook first
         import shutil
         shutil.copy(ROOT / "tests/fixtures/briefing-index.json", tmp / "index.json")
@@ -83,6 +96,17 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
             both = agent.build_role_input(tmp, "implementer", "build it", "ui")
         self.assertLess(both.index("# Handsoff playbook"), both.index("# Knowledge base briefing"))
         self.assertIn("## UI.md", both)
+        # a topic named in both indexes rides from both (F1.1); one in neither is refused
+        collide = json.loads((tmp / "index.json").read_text())
+        collide["topics"]["lessons"] = "the project's own lessons"
+        collide["files"].append({"file": "UI.md", "topics": ["lessons"]})
+        (tmp / "index.json").write_text(json.dumps(collide))
+        with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
+            shared = agent.build_role_input(tmp, "implementer", "build it", "lessons")
+        self.assertIn("## playbook/lessons.md", shared)
+        self.assertIn("## UI.md", shared)
+        with self.assertRaisesRegex(lib.HandsoffError, "not declared in the index: nowhere"):
+            lib.briefing_section(tmp, lib.load_config(tmp), "nowhere")
 
     @unittest.skipUnless(LOCAL_KB.is_file(), "the local knowledge base is on one machine only")
     def test_nothing_in_the_local_kb_engine_rules_is_missing_from_the_playbook(self):
