@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
 import unittest
+
+from tests.test_handsoff_supervisor import docs_text
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -8,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class GovernanceDocumentationTests(unittest.TestCase):
     def test_readme_documents_all_four_governance_features(self):
-        text = (ROOT / "README.md").read_text()
+        text = docs_text()
         for heading in (
             "## Review attempts and the convergence cap",
             "## Automatic recovery of stalled runs",

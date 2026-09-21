@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from unittest import TestCase
 
-from tests.test_handsoff_supervisor import BIN, ROOT, HandsoffTestCase, run
+from tests.test_handsoff_supervisor import BIN, ROOT, HandsoffTestCase, run, docs_text
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -46,7 +46,7 @@ class LiveCommandLoadValidationTests(HandsoffTestCase):
 
 class DigestIgnoreDocsTests(TestCase):
     def test_readme_documents_digest_ignore_next_to_documentation_exclude(self):
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme = docs_text()
         i = readme.index("[digest] ignore")
         self.assertIn("[documentation] exclude", readme)
         self.assertIn("handsoff-doc: intentional", readme)
@@ -55,7 +55,7 @@ class DigestIgnoreDocsTests(TestCase):
         self.assertIn("repository digest", section)
 
     def test_changelog_names_each_field_note_defect(self):
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme = docs_text()
         for phrase in ("--verbose", "installed-engine", "--reaffirm", "automated_and_browser",
                        "live_commands", "[digest] ignore", "network_access", "field notes"):
             self.assertIn(phrase, readme, phrase)

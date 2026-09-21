@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.test_handsoff_supervisor import ROOT, BIN, run
+from tests.test_handsoff_supervisor import ROOT, BIN, run, docs_text
 
 sys.path.insert(0, str(BIN))
 import handsoff_cli as cli
@@ -270,7 +270,7 @@ class VersionedRuntimeTests(unittest.TestCase):
         proof = (ROOT / "docs" / "FIELD-PROOF.md").read_text()
         self.assertIn("--to X.Y.*", proof)
         self.assertNotIn("handsoff upgrade /abs/path/to/project --to vX.Y.Z", proof)
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("### v0.3.25 field notes", readme)
         self.assertIn("### Cutting a release", readme)
         release = readme.split("### Cutting a release", 1)[1].split("\n## ", 1)[0]

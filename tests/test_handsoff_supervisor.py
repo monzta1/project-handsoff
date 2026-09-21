@@ -143,6 +143,15 @@ def _harness_env():
     return dict(os.environ)
 
 
+def docs_text(root: Path = ROOT) -> str:
+    """The documentation as one contract: the landing README, the reference
+    and the field notes (#224 split the README into three files; every
+    heading and string a test reads lives in one of them)."""
+    return "\n".join((root / name).read_text(encoding="utf-8")
+                     for name in ("README.md", "docs/REFERENCE.md", "docs/FIELD-NOTES.md")
+                     if (root / name).is_file())
+
+
 def run(args, cwd):
     args = list(args)
     # Evidence and item gates may legitimately move fixture progress beyond
@@ -1335,7 +1344,7 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
         self.assertIn("profile_sources", app_script)
 
     def test_docs_describe_the_default_crew_and_overrides(self):
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("## Default crew", readme)
         section = readme.split("## Default crew", 1)[1].split("\n## ", 1)[0]
         for text in ("claude-opus-5", "codex", "[agents]", "[models]", "auto", "configure-me",
@@ -1773,7 +1782,7 @@ class TestDesignEvidenceCache(HandsoffTestCase):
                     self.broker._workflow_argv(self.tmp.resolve(), request)
 
     def test_docs_and_gitignore_cover_the_side_file(self):
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("## Design evidence", readme)
         self.assertIn("design-evidence run", readme)
         self.assertIn("design-evidence show", readme)
@@ -5788,7 +5797,7 @@ class TestLiveSessionStatus(HandsoffTestCase):
 
     def test_gitignore_and_docs_cover_the_beacon(self):
         self.assertIn(".handsoff-live.json", (ROOT / ".gitignore").read_text().splitlines())
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("(#33)", readme)
         self.assertIn("**Live status.**", readme)
         for key in self.BEACON_KEYS:
@@ -6431,7 +6440,7 @@ class TestOutputLiveness(HandsoffTestCase):
 
     def test_gitignore_and_docs_cover_the_output_file(self):
         self.assertIn(".handsoff-output-liveness.json", (ROOT / ".gitignore").read_text().splitlines())
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("(#41)", readme)
         self.assertIn("Agent active; latest output N seconds ago", readme)
         for key in self.OUTPUT_KEYS:
@@ -7064,7 +7073,7 @@ class TestCriteriaTransaction(HandsoffTestCase):
                     self.broker._workflow_argv(self.tmp.resolve(), request)
 
     def test_readme_documents_the_transaction(self):
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("(#44)", readme)
         self.assertIn("### Criteria transactions", readme)
         self.assertIn("criteria-apply --file", readme)
@@ -7821,7 +7830,7 @@ class TestAmendmentLane(HandsoffTestCase):
         self.assertEqual(self._snapshot(), before)
 
     def test_readme_documents_the_lane(self):
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("(#42)", readme)
         self.assertIn("### Amendment lane", readme)
         section = readme[readme.index("### Amendment lane"):readme.index("## Work items and the per-item")]
