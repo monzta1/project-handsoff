@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.52/project_handsoff-0.3.52-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.53/project_handsoff-0.3.53-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -526,6 +526,21 @@ and a grid of token dashes filled the rest; and the new CI row showed one
 run's queue time as the estimate, a timer that jumped once a poll, and a
 red watch a rerun could not clear. Fix: the three sections above.
 
+### v0.3.53 field notes: the suite means the whole tree (#179, #176, #177)
+
+Cause: CI ran one file of 54; the runner reported a broken pipe where a
+child had simply exited (three red shards in five pull requests); five
+modules were red on `main` for reasons no lane had touched (a shared fleet
+register, the dogfood config inherited by a fixture, a review not
+reaffirmed after a config edit, a README wording, the checkout's own run
+refusing a fixture's launch); the Phase 8 implementer gate fired on one
+run and not another; and the Architect had no way to say a change is not
+needed. Fix: the sections "What CI runs", "One implementer rule for every
+run" and "The Architect can decline" above. Open on #177: the runner does
+not yet dispatch `HANDSOFF_DESIGN_DECLINE` from a managed Architect and the
+design reviewer does not yet review a decline. Filed on the way: #193, the
+clocks count the hours the Mac was asleep.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -537,6 +552,20 @@ Every release is a wheel attached to a GitHub release whose tag matches `pyproje
 5. `git push origin main` and `git push origin vX.Y.Z`.
 6. `python3 -m pip wheel --no-deps -w dist .` (the checkout's own `build/` folder shadows the `build` module, so `python3 -m build` fails here) and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
 7. Upgrade the dedicated environment per `INSTALL.md` ("Clean patch upgrade") and confirm with `handsoff version --json` and `handsoff doctor` on a thin project. Projects on `0.3.*` need nothing else.
+
+#### What CI runs
+
+`.github/workflows/ci.yml` runs on every pull request and every push to
+`main`: six `python (shard i of 6)` jobs deal the classes of
+`tests/test_handsoff_supervisor.py` (`tests/shard.py`, weights in
+`tests/shard_weights.json`), four `modules (shard i of 4)` jobs deal every
+other `tests/test_*.py` module, one process per module (`tests/shard.py
+--modules`, weights in `tests/shard_module_weights.json`; the scripts that
+are not unittest modules are named in `MODULE_SCRIPTS` and never silently
+skipped), and `dashboard` runs the node suite. The required check `tests`
+gathers all three, so `main` cannot take a change that reddens any module
+(#179). Refresh the weight files from a run's log when a shard drifts past
+the others.
 
 #### Landing a lane in this repository, in order
 
@@ -722,6 +751,44 @@ run has since advanced past the phase the session ran in; the detail says
 which. Fleet therefore classifies such a run by its other rules, never as
 FAILED. `session-result-adopt` rewrites a beacon naming that session with
 state `adopted`. The failure itself stays in the ledger.
+
+### The Architect can decline (#177)
+
+Some issues should die at Phase 2. When the criteria describe a change
+whose absence causes no observed harm, or a harm the engine already
+prevents elsewhere, the Architect's honest outcome is not a design for
+unnecessary work: `prompts/architect.md` names a third protocol line,
+`HANDSOFF_DESIGN_DECLINE: {"reason": ..., "evidence": [...],
+"alternative": ...|null}`, and the host records it:
+
+```
+python3 bin/handsoff_supervisor.py design-decline --by claude-architect \
+  --reason "the Phase 8 gate already refuses an item without implemented_by" \
+  --evidence "lane A refused issue-179 at advance 8 on 2026-09-21" \
+  --alternative "fill every required item at Phase 5 and keep the gate"
+```
+
+Only at Phase 1 or 2, with no approved design, no live managed session
+and an open run. The decline (reason, up to eight evidence lines, an
+alternative, the design and acceptance hashes of the criteria it answers)
+and the closure are one commit: a `design_declined` event, then
+`run_closed` with `outcome: not_planned`. Mission Control's briefing reads
+"Not planned, declined by X: reason"; Fleet reads the run as closed, never
+failed; `advance 3` is refused. The command prints the maintainer-voice
+text for the issue. Not yet: the runner does not dispatch the protocol
+line from a managed Architect session (the host records it), and the
+design reviewer does not review a decline.
+
+### One implementer rule for every run (#176)
+
+`advance 5 --implemented-by X` records X as the run's implementer and on
+every required work item's delivery record that has none, creating the
+record for a tag-derived item (one that entered the registry through a
+`[#N]` criterion rather than `init --item`). A single-item run and a
+three-item run therefore reach the Phase 8 gate the same way. A host that
+wants a different actor on one item sets it with `work-item-update
+--implemented-by` before Phase 8; an item that appears after Phase 5 is
+still refused there until it has one.
 
 ### The page names the host (#186)
 

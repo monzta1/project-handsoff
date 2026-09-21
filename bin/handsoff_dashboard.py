@@ -799,8 +799,12 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
     if isinstance(status.get("run_closed"), dict):
         closed = status["run_closed"]
         tone = "steady"
-        label = "Mission closed"
-        headline = f"Mission closed by {closed.get('by')}: {closed.get('reason')}"
+        if closed.get("outcome") == "not_planned":  # #177
+            label = "Not planned"
+            headline = f"Not planned, declined by {closed.get('by')}: {closed.get('reason')}"
+        else:
+            label = "Mission closed"
+            headline = f"Mission closed by {closed.get('by')}: {closed.get('reason')}"
         summary = status.get("next_action") or "The run is closed."
     elif input_request["required"]:
         pilot_turn = input_request.get("turn") == "pilot" and not input_request.get("preauthorized")

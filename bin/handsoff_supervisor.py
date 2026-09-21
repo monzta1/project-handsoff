@@ -90,6 +90,7 @@ OPERATION_REGISTRY = {
     "analyze-archives": {"class": "automatic", "surface": "flight-log"},
     "pilot-note": {"class": "operator-facing", "surface": "pilot-note-form"},
     "ci-watch": {"class": "agent-only", "surface": "ci-status"},
+    "design-decline": {"class": "agent-only", "surface": "phase-rail"},
     "run-close": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "run-reopen": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "advance": {"class": "agent-only", "surface": "phase-rail"},
@@ -489,10 +490,23 @@ def cmd_advance(args) -> int:
                 implemented_by = max(done, key=lambda item: item.get("ended_at") or "")["actor"]
         if implemented_by:
             proposed["implemented_by"] = implemented_by
-            active = proposed.get("active_work_item")
-            delivery = proposed.get("work_item_delivery") or {}
-            if active in delivery:
-                delivery[active]["implemented_by"] = implemented_by
+            # #176: the run-level implementer is the default per-item
+            # implementer. Every required item's delivery record that has
+            # none takes it (a record is created for an item that has none,
+            # the tag-derived kind), so one run with one item and one run
+            # with three behave the same at the Phase 8 gate; a host can
+            # still name another actor per item with work-item-update
+            # before Phase 8, and an item added after Phase 5 is refused
+            # there as before.
+            delivery = proposed.get("work_item_delivery")
+            if not isinstance(delivery, dict):
+                delivery = proposed["work_item_delivery"] = {}
+            registry = lib.effective_work_items(acceptance, cfg)[0] if isinstance(acceptance, dict) else []
+            for item_id, record in lib.new_work_item_delivery(registry, "full").items():
+                delivery.setdefault(item_id, record)
+            for item_id, record in delivery.items():
+                if isinstance(record, dict) and not record.get("implemented_by"):
+                    record["implemented_by"] = implemented_by
         if args.authorization_hold:
             if args.phase != 2 or proposed.get("status") != "blocked":
                 print("SHIP_FEATURE_INVALID: --authorization-hold requires Phase 2 with --status blocked")
@@ -717,6 +731,28 @@ def cmd_pilot_note(args) -> int:
     root = lib.resolve_root(args.root)
     record = lib.record_pilot_note(root, by=args.by, text=args.text)
     print(f"PILOT_NOTE_RECORDED: {len(record['text'])} characters by {record['by']}")
+    return 0
+
+
+def cmd_design_decline(args) -> int:
+    """#177: the Architect declines the change. Recorded like a proposal,
+    hash-bound to the criteria, and the run closes as not_planned. The
+    host posts the reason on the issue in maintainer voice; the printed
+    lines are that text."""
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    try:
+        record = lib.record_design_decline(root, cfg, by=args.by, reason=args.reason,
+                                           evidence=args.evidence, alternative=args.alternative)
+    except lib.HandsoffError as exc:
+        print(f"DESIGN_DECLINE_BLOCKED: {exc}")
+        return 1
+    print(f"DESIGN_DECLINED: run closed as not_planned by {record['by']}")
+    print(f"Not planned: {record['reason']}")
+    for item in record["evidence"]:
+        print(f"- {item}")
+    if record["alternative"]:
+        print(f"Instead: {record['alternative']}")
     return 0
 
 
@@ -4699,6 +4735,13 @@ def build_parser() -> argparse.ArgumentParser:
     pilot_note.add_argument("--by", required=True)
     pilot_note.add_argument("--text", required=True, help="1 to 512 characters")
 
+    decline = sub.add_parser("design-decline", help="#177: the Architect declines the change at Phase 1 or 2; "
+                             "recorded hash-bound to the criteria, the run closes as not_planned")
+    decline.add_argument("--by", required=True, help="the Architect actor")
+    decline.add_argument("--reason", required=True, help="1 to 512 characters: why the change is not needed")
+    decline.add_argument("--evidence", action="append", default=[], help="what shows it (repeatable, at most 8)")
+    decline.add_argument("--alternative", default=None, help="what to do instead, if anything")
+
     ci_watch = sub.add_parser("ci-watch", help="#181: watch a pull request's checks as a step of the run; "
                               "Mission Control shows the CI row until they complete")
     ci_watch.add_argument("--pr", type=int, default=None, help="pull request number to watch (starts a watch)")
@@ -4811,6 +4854,7 @@ def main() -> int:
         "analyze-archives": cmd_analyze_archives,
         "pilot-note": cmd_pilot_note,
         "ci-watch": cmd_ci_watch,
+        "design-decline": cmd_design_decline,
         "run-close": cmd_run_close,
         "run-reopen": cmd_run_reopen,
     }

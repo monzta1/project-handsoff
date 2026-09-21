@@ -14,7 +14,10 @@ class ClaudeAdapterTests(TestCase):
         cfg = lib.load_config(Path('.'))
         cfg['agents']['reviewer'] = 'claude'
         # The launch spec is computed against a fixture, never the repository's own run.
-        with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None):
+        with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), \
+                mock.patch.object(lib, "evaluate_launch_rules", return_value=None):
+            # the launch rules read the repository's own run (#165); a checkout
+            # at Phase 1 would refuse the reviewer here, which is not this test
             spec = agent.build_launch_spec(Path('.'), 'reviewer', 'review', which=lambda x: '/bin/claude')
         self.assertIn('--output-format', spec.argv)
         self.assertIn('stream-json', spec.argv)

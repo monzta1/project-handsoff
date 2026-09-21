@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,12 @@ import handsoff_lib as lib  # noqa: E402
 class GovernanceCrossTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="handsoff-cross-"))
+        # #166 registers the run and takes the ticket lock through the fleet
+        # register; two fixtures claiming #28 through one register refuse
+        # each other (#179). Every fixture gets its own, beside the root.
+        self._registry_before = os.environ.get("HANDSOFF_FLEET_REGISTRY")
+        self.registry_dir = Path(tempfile.mkdtemp(prefix="handsoff-cross-registry-"))
+        os.environ["HANDSOFF_FLEET_REGISTRY"] = str(self.registry_dir / "projects.json")
         for name in ("handsoff.toml", ".gitignore"):
             shutil.copy(ROOT / name, self.root / name)
         shutil.copytree(ROOT / "schemas", self.root / "schemas")
@@ -29,6 +36,11 @@ class GovernanceCrossTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def tearDown(self):
+        if self._registry_before is None:
+            os.environ.pop("HANDSOFF_FLEET_REGISTRY", None)
+        else:
+            os.environ["HANDSOFF_FLEET_REGISTRY"] = self._registry_before
+        shutil.rmtree(self.registry_dir, ignore_errors=True)
         shutil.rmtree(self.root, ignore_errors=True)
 
     def cli(self, *args):
@@ -82,13 +94,15 @@ class GovernanceCrossTests(unittest.TestCase):
         shutil.copytree(ROOT / "schemas", other / "schemas")
         init = subprocess.run(
             [sys.executable, str(BIN / "handsoff_supervisor.py"), "--root", str(other),
-             "init", "ignored #99", "--item", "#31 Review convergence", "--item", "improve docs"],
+             # #166: one ticket, one run. #31 is held by the fixture root from
+             # setUp, so this second root claims a ticket of its own.
+             "init", "ignored #99", "--item", "#41 Review convergence", "--item", "improve docs"],
             capture_output=True, text=True, timeout=20,
         )
         self.assertEqual(init.returncode, 0, init.stdout + init.stderr)
         initialized = json.loads((other / "handsoff-acceptance.json").read_text())
         self.assertEqual([item["id"] for item in initialized["work_items"]],
-                         ["issue-31", "ask-improve-docs"])
+                         ["issue-41", "ask-improve-docs"])
 
         untagged = self.cli("criterion-add", "REQ-UNTAGGED", "--type", "supporting",
                             "--requirement", "No owner", "--verification", "automated",
@@ -181,7 +195,8 @@ class GovernanceCrossTests(unittest.TestCase):
         shutil.copytree(ROOT / "schemas", other / "schemas")
         init = subprocess.run(
             [sys.executable, str(BIN / "handsoff_supervisor.py"), "--root", str(other),
-             "init", "Cross governance #31 and #28"], capture_output=True, text=True, timeout=20,
+             # #166: the setUp root holds #31 and #28; this one claims others
+             "init", "Cross governance #131 and #128"], capture_output=True, text=True, timeout=20,
         )
         self.assertEqual(init.returncode, 0, init.stdout + init.stderr)
         events = other / "handsoff-events.jsonl"

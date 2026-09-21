@@ -275,7 +275,7 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertIn("### Cutting a release", readme)
         release = readme.split("### Cutting a release", 1)[1].split("\n## ", 1)[0]
         for step in ("handsoff_manifest.py --version vX.Y.Z", "git tag -a vX.Y.Z", "git push origin main",
-                     "git push origin vX.Y.Z", "python3 -m build --wheel", "gh release create vX.Y.Z"):
+                     "git push origin vX.Y.Z", "python3 -m pip wheel --no-deps -w dist .", "gh release create vX.Y.Z"):
             self.assertIn(step, release)
         self.assertIn("cosmetic-only change", release)
         self.assertIn("PREFLIGHT_TOKEN_BUDGET", readme)

@@ -10996,6 +10996,66 @@ def ci_gate_errors(status: dict) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# #177: the Architect can say "do not build this". A decline is recorded
+# like a proposal (bounded, hash-bound to the criteria) and closes the run
+# as not_planned; the reason goes on the ledger and, by the host, on the
+# issue. Only at Phase 1 or 2, before any design is approved.
+# --------------------------------------------------------------------------
+
+MAX_DECLINE_EVIDENCE = 8
+
+
+def record_design_decline(root: Path, cfg: dict, *, by: object, reason: object, evidence: object = None,
+                          alternative: object = None) -> dict:
+    if not isinstance(by, str) or not by.strip():
+        raise HandsoffError("design-decline: --by must be a non-empty string")
+    if not isinstance(reason, str) or not 1 <= len(" ".join(reason.split())) <= 512:
+        raise HandsoffError("design-decline: --reason must be 1 to 512 characters")
+    items = list(evidence or [])
+    if len(items) > MAX_DECLINE_EVIDENCE or any(not isinstance(e, str) or not 1 <= len(e.strip()) <= 512 for e in items):
+        raise HandsoffError(f"design-decline: --evidence takes at most {MAX_DECLINE_EVIDENCE} items of 1 to 512 characters")
+    if alternative is not None and (not isinstance(alternative, str) or not 1 <= len(alternative.strip()) <= 512):
+        raise HandsoffError("design-decline: --alternative must be 1 to 512 characters when given")
+    root = Path(root).resolve()
+    # Preflight under the lock, then one write: the decline event, the
+    # status record and the not_planned closure land in a single commit
+    # (close_run carries them as status_patch and extra_events), so a
+    # closure that cannot happen leaves no decline behind (design review
+    # F1.1). A live managed session is refused up front for the same
+    # reason: cancelling it is the Pilot's run-close, not a decline's.
+    with project_lock(root):
+        status = load_unique_json(status_path(root, cfg))
+        acceptance = load_unique_json(acceptance_path(root, cfg))
+        phase = int(status.get("phase_number", 0) or 0)
+        if phase not in (1, 2):
+            raise HandsoffError(f"design-decline: only at Phase 1 or 2 (the run is at Phase {phase}); a declined change has no approved design")
+        if isinstance(status.get("design_approved"), dict) or (status.get("design_review") or {}).get("decision") == "approved":
+            raise HandsoffError("design-decline: the design is already approved; a change of mind after approval is an amendment or a run-close, not a decline")
+        if isinstance(status.get("run_closed"), dict):
+            raise HandsoffError("design-decline: the run is already closed")
+        live = [sid for sid, session in (status.get("agent_sessions") or {}).items()
+                if isinstance(session, dict) and session.get("state") in ("launching", "running")]
+        if live:
+            raise HandsoffError(f"design-decline: a managed session is live ({', '.join(live)}); let it finish or run-close first")
+        record = {
+            "by": by.strip(), "at": datetime.now(timezone.utc).isoformat(),
+            "reason": " ".join(reason.split()), "evidence": [e.strip() for e in items],
+            "alternative": alternative.strip() if isinstance(alternative, str) else None,
+            "design_hash": design_hash(acceptance.get("criteria", [])),
+            "acceptance_hash": acceptance_hash(acceptance.get("criteria", [])),
+        }
+        expected_updated_at = status.get("updated_at")
+    declined_event = {"kind": "design_declined", "message": f"Architect declined the change: {record['reason']}",
+                      "by": record["by"], "reason": record["reason"], "evidence": record["evidence"],
+                      "alternative": record["alternative"], "design_hash": record["design_hash"],
+                      "acceptance_hash": record["acceptance_hash"]}
+    close_run(root, by=record["by"], reason=record["reason"], outcome="not_planned",
+              expected_updated_at=expected_updated_at,
+              status_patch={"design_declined": record}, extra_events=[declined_event])
+    return record
+
+
+# --------------------------------------------------------------------------
 # #40: run-owned dashboard release
 # --------------------------------------------------------------------------
 # A dashboard launched with `dashboard --owned-by-run` belongs to one run of
@@ -11228,9 +11288,13 @@ def _terminate_owned_session_process(root: Path, session: dict, *, wait: float =
     return {"session_id": session_id, "pid": pid, "signal": "SIGKILL"}
 
 
+RUN_OUTCOMES = ("closed", "not_planned")
+
+
 def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | None = None,
               cancel_active: bool = False, terminate_process=_terminate_owned_session_process,
-              release_dashboard: bool = True) -> dict:
+              release_dashboard: bool = True, outcome: str = "closed",
+              status_patch: dict | None = None, extra_events: list[dict] | None = None) -> dict:
     """Audit and resource-close one run without deleting any durable artifact.
 
     Live processes are cancelled only when a fresh beacon, the current
@@ -11280,17 +11344,26 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
         proposed["background_wait"] = None
         proposed["human_pause"] = None
         proposed["recovery_lease"] = None
+        if outcome not in RUN_OUTCOMES:
+            raise HandsoffError(f"run outcome must be one of {', '.join(RUN_OUTCOMES)}")
+        # #177: a decline's record and its closure are one write-ahead unit
+        for key, value in (status_patch or {}).items():
+            proposed[key] = value
         proposed["run_closed"] = {
-            "by": actor, "at": now, "reason": why,
+            "by": actor, "at": now, "reason": why, "outcome": outcome,
             "cancelled_active": bool(live), "session_ids": [item["session_id"] for item in live],
         }
-        proposed["next_action"] = "Run closed by the Pilot. Reopen it from Mission Control to continue."
+        proposed["next_action"] = ("Not planned: the Architect declined this change; the reason is on the ledger and the issue."
+                                   if outcome == "not_planned" else
+                                   "Run closed by the Pilot. Reopen it from Mission Control to continue.")
         proposed["updated_at"] = now
         errors = validate_status_schema(proposed)
         if errors:
             raise HandsoffError(errors[0])
         commit(root, cfg, status=proposed, event_kind="run_closed",
-               event_message=f"Pilot cleanly closed the run: {why}", by=actor,
+               event_message=(f"Run closed as not planned: {why}" if outcome == "not_planned"
+                              else f"Pilot cleanly closed the run: {why}"), by=actor, outcome=outcome,
+               extra_events=list(extra_events or []),
                cancelled_active=bool(live), session_ids=[item["session_id"] for item in live])
     dashboard = release_run_dashboard(root) if release_dashboard else {
         "released": False, "reason": "dashboard release delegated to caller",
