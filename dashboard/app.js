@@ -1512,7 +1512,9 @@ function render(snapshot) {
   $("symptom-detail").textContent = acceptance.original_symptom_resolved ? "neutralization confirmed" : "neutralization unconfirmed";
   stateClass($("symptom-state"), acceptance.original_symptom_resolved ? "is-good" : "is-warning");
   $("audit-state").textContent = snapshot.audit.healthy ? "INTACT" : "BLOCKED";
-  $("audit-detail").textContent = snapshot.audit.healthy ? `${snapshot.audit.event_count} chained events verified` : `${snapshot.audit.gate_errors.length + snapshot.audit.chain_errors.length} integrity issue(s)`;
+  // #185: an engine identity that could not be read is one line here, never a dead page.
+  const engineError = typeof snapshot.audit.engine_error === "string" && snapshot.audit.engine_error ? ` · engine: ${snapshot.audit.engine_error}` : "";
+  $("audit-detail").textContent = (snapshot.audit.healthy ? `${snapshot.audit.event_count} chained events verified` : `${snapshot.audit.gate_errors.length + snapshot.audit.chain_errors.length} integrity issue(s)`) + engineError;
   stateClass($("audit-state"), snapshot.audit.healthy ? "is-good" : "is-bad");
   $("approval-state").textContent = status.deployment_approved ? "APPROVED" : "PENDING";
   $("approval-detail").textContent = status.deployment_approved ? `by ${status.deployment_approved.by}` : policy.explicit_approval ? "Pilot authorization required" : "approval interlock disabled";

@@ -14,10 +14,17 @@ and expose `handsoff` at `$HOME/.local/bin/handsoff`:
 python3 -m venv "$HOME/.local/share/handsoff/venv"
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade pip
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.50/project_handsoff-0.3.50-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.51/project_handsoff-0.3.51-py3-none-any.whl"
+"$HOME/.local/share/handsoff/venv/bin/python" -m pip install "websockets>=12"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$HOME/.local/share/handsoff/venv/bin/handsoff" "$HOME/.local/bin/handsoff"
 ```
+
+The `websockets` line is the engine's `live` extra (#190): the live checks
+in `handsoff.toml` (`live_commands`) run `python3 tests/live_offline_smoke.py`
+and friends under whichever `python3` is first on the host's `PATH`, so that
+interpreter needs `websockets` too (`python3 -m pip install websockets`); the
+smoke names the interpreter it lacks it in when it refuses.
 
 Add `$HOME/.local/bin` to `PATH` once if it is not already there. Then initialize
 each repository as a thin Handsoff project:
@@ -28,7 +35,7 @@ handsoff doctor /absolute/path/to/project
 ```
 
 `init` defaults to a compatible patch pin such as `0.3.*`. That lets a project use
-security and bug-fix releases within the same minor line. Pass `--pin v0.3.50` only
+security and bug-fix releases within the same minor line. Pass `--pin v0.3.51` only
 when the project must remain on one exact engine build.
 
 ## Clean patch upgrade
@@ -38,7 +45,7 @@ version-named environment and do not change scripts, aliases, or LaunchAgents:
 
 ```bash
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade --force-reinstall \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.50/project_handsoff-0.3.50-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.51/project_handsoff-0.3.51-py3-none-any.whl"
 handsoff version --json
 handsoff doctor /absolute/path/to/project
 ```
@@ -57,8 +64,8 @@ Keep an exact pin only when the project must stay on one exact engine build
 (strict reproducibility). Then, and only then, record each patch explicitly:
 
 ```bash
-handsoff upgrade /absolute/path/to/project --to v0.3.50 --dry-run
-handsoff upgrade /absolute/path/to/project --to v0.3.50
+handsoff upgrade /absolute/path/to/project --to v0.3.51 --dry-run
+handsoff upgrade /absolute/path/to/project --to v0.3.51
 ```
 
 Replace `v0.3.29` with the release being installed. Instruction files that a

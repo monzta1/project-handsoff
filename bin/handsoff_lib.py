@@ -603,6 +603,15 @@ def runtime_identity(root: Path) -> dict:
     return identity
 
 
+def engine_manifest_version() -> str | None:
+    """The version of the engine running this code, from its own manifest;
+    None when it cannot be read."""
+    try:
+        return json.loads((engine_root() / RUNTIME_MANIFEST_FILE).read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def ledger_engine_identity(root: Path) -> dict | None:
     """#117: the three identity fields an event carries so an archive can
     say which engine ran it; None when the identity cannot be read (the

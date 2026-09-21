@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.50/project_handsoff-0.3.50-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.51/project_handsoff-0.3.51-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -502,6 +502,22 @@ check. Found on the way and filed, not fixed here: a missing
 (#185); the operations console prints 21 rows that cannot act (#183,
 #184); the page says "host" where it could say which host (#186).
 
+### v0.3.51 field notes: a lane cannot trip on the floor (#185, #190)
+
+Cause: two runs on 2026-09-21 stopped four times for reasons that were
+not the code. A worktree without `.handsoff-version` made every
+`/api/dashboard` request raise, so the page read DASHBOARD OFFLINE while
+the server was up; `live_offline_smoke` printed one word when the host's
+`python3` lacked `websockets`; after the release was installed, `advance 8`
+refused "the rules set changed (engine:version)" while `record-review
+--reaffirm` refused "nothing to reaffirm"; and a `[checks]` test asserted a
+literal engine version. Fix: the snapshot degrades the engine badge to
+UNKNOWN with the reason on the audit strip and `init` writes the missing
+pin; the smoke names the interpreter and the fix, and `websockets` is the
+engine's `live` extra; reaffirm re-binds a current review whose rules set
+changed and the ledger names what changed; the test reads the manifest.
+The landing order below is the order this release was landed by.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -513,6 +529,33 @@ Every release is a wheel attached to a GitHub release whose tag matches `pyproje
 5. `git push origin main` and `git push origin vX.Y.Z`.
 6. `python3 -m pip wheel --no-deps -w dist .` (the checkout's own `build/` folder shadows the `build` module, so `python3 -m build` fails here) and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
 7. Upgrade the dedicated environment per `INSTALL.md` ("Clean patch upgrade") and confirm with `handsoff version --json` and `handsoff doctor` on a thin project. Projects on `0.3.*` need nothing else.
+
+#### Landing a lane in this repository, in order
+
+`main` is protected (required check `tests`, strict), so a lane lands
+through a pull request, and the live checks compare the installed engine
+with the checkout. The order, with the refusal each step prevents:
+
+1. `advance 6`, push the branch, `gh pr create`, `ci-watch --pr N` (#181),
+   `gh pr merge N --auto --merge --delete-branch`; wait for MERGED. Stay in
+   the worktree: its tree is what `main` now holds, so the evidence stands.
+2. `advance 7`.
+3. Cut the release from the merged commit: steps 1 to 6 above, with an
+   ANNOTATED tag on that commit (`git tag -a vX.Y.Z <sha> -m vX.Y.Z`; a
+   lightweight tag fails `live_release_smoke`, and deleting a tag under a
+   published release turns it into a draft).
+4. Install it (INSTALL.md "Clean patch upgrade") and kickstart the Fleet
+   LaunchAgent. Until this step `verify-live` refuses: "installed engine is
+   X, this checkout is Y: install the release first".
+5. `verify-live --by <pilot>`; the Fleet signals cache turns over within a
+   minute of the release, so a "latest release reads X, gh says Y" line
+   means wait one minute and run it again.
+6. `work-item-update`, then `advance 8 100`. If it refuses "the rules set
+   changed since it was recorded (engine:version)", the review was
+   recorded under the previous engine: `record-review --by <reviewer>
+   --reaffirm ...` re-binds it (#179) and `advance 8` passes.
+7. Close the issue with the result per acceptance line, `run-close`,
+   archive the ledgers, remove the worktree.
 
 Cut a release when behaviour, prompts, schemas or the runtime manifest change. A cosmetic-only change (dashboard markup, styles, assets) rides with the next such release; every project on the compatible line picks it up then without a pin bump.
 
