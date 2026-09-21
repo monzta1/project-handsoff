@@ -176,6 +176,7 @@ commands = [
   "python3 -m unittest tests.test_fleet_metrics.ConditionalCollectorTests -v",
   "python3 -m unittest tests.test_design_gate_config -v",
   "python3 -m unittest tests.test_fleet_metrics.RegistryWakeTests -v",
+  "python3 -m unittest tests.test_briefing -v",
   "python3 -m unittest tests.test_fleet_metrics.RepoDedupeTests -v",
   "node --test tests/dashboard/engine_badge.test.js",
   "python3 -m unittest tests.test_fleet.EngineBadgeTests -v",

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "note": "Small fixture based on ToneCommand kb/index.json.",
+  "topics": {
+    "general": "project workflow and conventions",
+    "ui": "dashboard and browser work",
+    "hardware": "hardware safety facts"
+  },
+  "always_load": [
+    "INDEX.md"
+  ],
+  "files": [
+    {
+      "file": "INDEX.md",
+      "topics": ["general"],
+      "summary": "Briefing entry point."
+    },
+    {
+      "file": "UI.md",
+      "topics": ["ui"],
+      "summary": "Browser rules."
+    },
+    {
+      "file": "HARDWARE.md",
+      "topics": ["hardware"],
+      "summary": "Hardware rules."
+    }
+  ]
+}
