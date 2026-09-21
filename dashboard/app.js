@@ -1268,11 +1268,7 @@ function metricDuration(value) {
 
 // #clock: LCD counters tick locally from the ledger anchors, so they move
 // every second between snapshots and freeze once the run is complete.
-function lcdText(seconds) {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const s = total % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
+// lcdText comes from /lib/run-vocabulary.js, loaded before this file (#218).
 
 function renderClocks() {
   const mission = $("mission-clock"); const phase = $("phase-clock");

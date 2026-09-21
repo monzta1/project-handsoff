@@ -31,8 +31,10 @@ test("offline dims the mission, holds the stepper, and the stream error triggers
   assert.match(dashboard, /if \(Date\.now\(\) - state\.lastStreamRefresh >= 5000\)/);
   assert.match(dashboard, /window\.setInterval\(refresh, 5000\)/);
   assert.match(dashboard, /state\.offlineSince = null;\s*renderOffline\(\);/);
-  assert.match(fleet, /STATE_ORDER = \["waiting", "failed", "offline"/);
-  assert.match(fleet, /offline: "DASHBOARD OFFLINE"/);
+  // #218: the order lives in the shared vocabulary the page loads first
+  const vocab = read("dashboard/lib/run-vocabulary.js");
+  assert.match(vocab, /STATE_ORDER = \["waiting", "failed", "offline"/);
+  assert.match(vocab, /offline: "DASHBOARD OFFLINE"/);
   assert.match(fleetStyle, /\.project\[data-state="offline"\] \{ opacity: \.45/);
 });
 

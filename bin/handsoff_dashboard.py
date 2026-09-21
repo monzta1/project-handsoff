@@ -39,6 +39,7 @@ ASSETS = {
     "/regression.js": ("regression.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/lib/dashboard-logic.js": ("lib/dashboard-logic.js", "text/javascript; charset=utf-8"),
+    "/lib/run-vocabulary.js": ("lib/run-vocabulary.js", "text/javascript; charset=utf-8"),  # #218
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/logo.png": ("logo.png", "image/png"),
 }

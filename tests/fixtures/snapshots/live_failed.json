@@ -1,0 +1,1498 @@
+{
+ "acceptance": {
+  "blocked": 0,
+  "criteria": [
+   {
+    "authored_by": "test-architect",
+    "baseline_view": {
+     "kind": "none"
+    },
+    "evidence": [
+     "vr-1571995b47144ea68390ad73732e071c"
+    ],
+    "id": "REQ-001",
+    "requirement": "State the exact observable outcome.",
+    "state": "passing",
+    "tests": [
+     "true"
+    ],
+    "type": "primary_fix",
+    "verification": "automated"
+   }
+  ],
+  "failing": 0,
+  "not_tested": 0,
+  "original_symptom_resolved": true,
+  "passing": 1,
+  "total": 1
+ },
+ "activity": {
+  "activity_note": null,
+  "asleep_seconds": 0.0,
+  "assessment": {
+   "assigned_role": "supervisor",
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "process_signal": "none",
+  "seconds_since_activity": 0,
+  "stall_threshold_minutes": 10,
+  "stall_warning": null
+ },
+ "activity_note": null,
+ "actors": {
+  "active_role": "supervisor",
+  "approved_by": "moncy",
+  "architect": "test-architect",
+  "design_reviewed_by": "test-design-reviewer",
+  "implemented_by": "impl-1",
+  "reviewed_by": "rev-1"
+ },
+ "amendment": null,
+ "audit": {
+  "chain_errors": [],
+  "engine_error": null,
+  "event_count": 17,
+  "gate_errors": [],
+  "healthy": true,
+  "verification_head": "09ffa7e2fc223c3a25ded1f4aa8d8e3e29043f25bdd59c20813de9f021c389bc",
+  "verification_runs": 2
+ },
+ "ci": null,
+ "crew": [
+  {
+   "actor": "test-architect",
+   "key": "architect",
+   "label": "ARCHITECT",
+   "session": null
+  },
+  {
+   "actor": "test-design-reviewer",
+   "key": "design_reviewer",
+   "label": "DESIGN REVIEWER",
+   "session": null
+  },
+  {
+   "actor": null,
+   "key": "supervisor",
+   "label": "SUPERVISOR",
+   "session": null
+  },
+  {
+   "actor": "impl-1",
+   "key": "implementer",
+   "label": "IMPLEMENTER",
+   "session": null
+  },
+  {
+   "actor": "rev-1",
+   "key": "reviewer",
+   "label": "REVIEWER",
+   "session": null
+  },
+  {
+   "actor": "moncy",
+   "key": "approver",
+   "label": "APPROVER",
+   "session": null
+  }
+ ],
+ "design_evidence": [],
+ "design_review_packet": null,
+ "engine": {
+  "compatibility": "v0.3.69",
+  "manifest_sha256": "b3fabcb7a79b6f9f87457a4529f659905a88b51f6b49bf08c0a094f68d08b3b8",
+  "source": "project-drop-in",
+  "source_root": "<root>",
+  "version": "v0.3.69"
+ },
+ "escalation": null,
+ "events": [
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.687419+00:00",
+   "by": "moncy",
+   "hash": "1c80d09fcb4de4043144e8c1560c0ecb2d6d1e892923c5008862bbeeffa4a149",
+   "kind": "live_checks_run",
+   "message": "Ran configured live checks",
+   "ok": false,
+   "prev_hash": "7a81c38e733e04b9e3299deaf69ddcc9d460814e0136e49a8af53e13e00d86f9",
+   "run_id": "vr-d286748b59a54c67a77af55f3374de81",
+   "status_sha256": "dde684aa1ed2c20be9d96c950b993edb0d598a71f9a083db0b739100d561341d"
+  },
+  {
+   "acceptance_hash": "67abb47355e4ec26c6817feea8ca816181f8f89f8dea28643e7b02f83170e7dc",
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.607402+00:00",
+   "by": "moncy",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "hash": "7a81c38e733e04b9e3299deaf69ddcc9d460814e0136e49a8af53e13e00d86f9",
+   "kind": "deployment_approved",
+   "message": "Explicit deployment approval recorded",
+   "prev_hash": "75878754e5390b9957d15ea025d27a9d0b9cc48647439121748d4387133e88e1",
+   "status_sha256": "2dbc8e5b60e4aec8eaa216a6cf8ee11a2f34949422fd7a1d837b7c207485739f"
+  },
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.478613+00:00",
+   "hash": "75878754e5390b9957d15ea025d27a9d0b9cc48647439121748d4387133e88e1",
+   "kind": "phase_advanced",
+   "message": "Advanced to Awaiting deployment approval",
+   "phase_number": 7,
+   "prev_hash": "27aac46c5bc3b65e92cab7f0823350eb3bbefd296e382350cd033c756ad1e17e",
+   "progress": 70,
+   "status_sha256": "e0dc509656c0e3343a8780de5c817b9623db6e41126a2438e05ec7265a2eda67"
+  },
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.375366+00:00",
+   "hash": "27aac46c5bc3b65e92cab7f0823350eb3bbefd296e382350cd033c756ad1e17e",
+   "kind": "phase_advanced",
+   "message": "Advanced to Checks & documentation",
+   "phase_number": 6,
+   "prev_hash": "278842327c11cb1ee7a0a8bf18cfac5364cf43f09d2f61f225d2718ed84deb1f",
+   "progress": 65,
+   "status_sha256": "e939ba7466320a364703e70437f57a531b2fb647471e5d0c49a6ef97534f27ec"
+  },
+  {
+   "acceptance_hash": "67abb47355e4ec26c6817feea8ca816181f8f89f8dea28643e7b02f83170e7dc",
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.271338+00:00",
+   "by": "rev-1",
+   "hash": "278842327c11cb1ee7a0a8bf18cfac5364cf43f09d2f61f225d2718ed84deb1f",
+   "implementer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "kind": "review_approved",
+   "message": "Independent review approved current acceptance",
+   "prev_hash": "596dcc260c64ac4433e2be44d358b9d7363c2a22e1b246a86ba4b948f7d9f5d3",
+   "profiles_distinct": false,
+   "reviewer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "reviewer_session_id": null,
+   "status_sha256": "88d22a2908a8c61a6a2487f4fc44c2c53bb3c6886d0e5d6c9bd14b6c511bc50c"
+  },
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.271030+00:00",
+   "attempt": 1,
+   "attempt_id": "ha-42ec095492c8420088e2351343130dd5",
+   "disposition": "approved",
+   "hash": "596dcc260c64ac4433e2be44d358b9d7363c2a22e1b246a86ba4b948f7d9f5d3",
+   "kind": "review_attempt_closed",
+   "message": "Review attempt 1 approved",
+   "prev_hash": "d1773ff47ddd89c0a3cd54d8e1c4f17d8ed2aff5c85b8cdb98ea9e874d9a9918",
+   "reviewer": "rev-1",
+   "status_sha256": "88d22a2908a8c61a6a2487f4fc44c2c53bb3c6886d0e5d6c9bd14b6c511bc50c"
+  },
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.167452+00:00",
+   "hash": "d1773ff47ddd89c0a3cd54d8e1c4f17d8ed2aff5c85b8cdb98ea9e874d9a9918",
+   "kind": "phase_advanced",
+   "message": "Advanced to Independent review",
+   "phase_number": 5,
+   "prev_hash": "0971a53df493f093e402606da5d64c72ff3561bd80cf472d75f7ef7132caecf5",
+   "progress": 50,
+   "status_sha256": "c8737e53c623f85a1c0be3d06854d3a931201544af4524b5cda197ebedd4cf27"
+  },
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:59.061225+00:00",
+   "hash": "0971a53df493f093e402606da5d64c72ff3561bd80cf472d75f7ef7132caecf5",
+   "kind": "phase_advanced",
+   "message": "Advanced to Implementation",
+   "phase_number": 4,
+   "prev_hash": "01e4ec7a6b38a22496c2bbe10d9046cded59a273053547c896ecc27dca207f20",
+   "progress": 50,
+   "status_sha256": "e525789087938ea834d04f2568eade9a2cb7475508e4984e1e74bea0d31c81c1"
+  },
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "at": "2026-09-21T22:51:58.978572+00:00",
+   "hash": "01e4ec7a6b38a22496c2bbe10d9046cded59a273053547c896ecc27dca207f20",
+   "kind": "phase_advanced",
+   "message": "Advanced to Design approved",
+   "phase_number": 3,
+   "prev_hash": "c280baa34822fd4a990401e77c352291edf3b6c86b928ec2ef5fe47b74ef4062",
+   "progress": 50,
+   "status_sha256": "c901989c4369d30c01eee715c82e1902d1f855084c7164aaed3a5a1927c6ef32"
+  },
+  {
+   "acceptance_sha256": "2944a895e8d95cbdc9e45810f19d14c9dbddb04518636a9301be901468780992",
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:58.908840+00:00",
+   "by": "test-approver",
+   "hash": "c280baa34822fd4a990401e77c352291edf3b6c86b928ec2ef5fe47b74ef4062",
+   "kind": "design_approved",
+   "message": "Test-fixture design approval",
+   "prev_hash": "a2e14e4d893a6d927d7f78da2a6170f3115d7cd33f975825750989a94aa801de",
+   "redesigns_settled_work": null,
+   "status_sha256": "bb3e22395b8876a30bf1d2cb2b240294562178384aa810ea6b0ef085373f0670"
+  },
+  {
+   "acceptance_sha256": "a6535e99b8dafebfb940d2b8ccb3358d8a451671e5201a9f6427e34e3dbcc132",
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:58.837715+00:00",
+   "authorized": false,
+   "by": "test-design-reviewer",
+   "decision": "approved",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "design_review_attempt": 1,
+   "design_review_limit": 2,
+   "escalation_consumed": false,
+   "findings": 0,
+   "hash": "a2e14e4d893a6d927d7f78da2a6170f3115d7cd33f975825750989a94aa801de",
+   "head": null,
+   "kind": "design_review_approved",
+   "message": "Independent design review approved: Test-fixture independent design review",
+   "prev_hash": "cc2599b35ef54398796072ac6ba803205710c0610637c27428d524fdb5197d0a",
+   "reviewer_profile": {
+    "adapter": "codex",
+    "model": "default"
+   },
+   "reviewer_selection_reason": "first_review",
+   "reviewer_session_id": null,
+   "reviewer_tier": "primary",
+   "status_sha256": "bec83b46b421fcbbf19c4d9c04fd6a3a4093279484460274103c35dee0fe0ab8",
+   "structural_blocker": false
+  },
+  {
+   "acceptance_sha256": "a6535e99b8dafebfb940d2b8ccb3358d8a451671e5201a9f6427e34e3dbcc132",
+   "at": "2026-09-21T22:51:58.756827+00:00",
+   "hash": "cc2599b35ef54398796072ac6ba803205710c0610637c27428d524fdb5197d0a",
+   "kind": "phase_advanced",
+   "message": "Advanced to Design debate",
+   "phase_number": 2,
+   "prev_hash": "875e7f4a940beabed23bee91ab90377c124c1230de9ca7e1fa525bf8099111e9",
+   "progress": 20,
+   "status_sha256": "2fb99bd5241d3857b0beb443a115ff4307e1b4a9aacbc816fd10ced1ef08e103"
+  }
+ ],
+ "generated_at": "2026-09-21T22:51:59.693948+00:00",
+ "host": {
+  "actor": null,
+  "family": "unknown",
+  "source": "none"
+ },
+ "host_wait": null,
+ "initialized": true,
+ "input_required": {
+  "amendment_decision": null,
+  "amendment_id": null,
+  "amendment_round": null,
+  "blockers": [],
+  "kind": null,
+  "message": null,
+  "preauthorized": null,
+  "question_cards": [],
+  "question_id": null,
+  "request_id": null,
+  "required": false,
+  "turn": null
+ },
+ "live": {
+  "activity_source": "workflow",
+  "detail": "no managed process is running",
+  "ended_at": null,
+  "exit_code": null,
+  "last_activity_at": "2026-09-21T22:51:59.686712+00:00",
+  "process_signal": "none",
+  "role": null,
+  "seconds_since_activity": 0,
+  "session_id": null,
+  "state": "idle"
+ },
+ "metrics": {
+  "asleep_seconds": 0.0,
+  "background_wait_seconds": 0.0,
+  "baseline": {
+   "reason": "no compatible historical cohort selected",
+   "sample_size": 0,
+   "state": "unavailable"
+  },
+  "design_review_attempts": 1,
+  "elapsed_seconds": 1.357,
+  "ended_at": null,
+  "failed_sessions": 0,
+  "generated_at": "2026-09-21T22:51:59.728331+00:00",
+  "implementation_review_attempts": 1,
+  "largest_sessions": [],
+  "managed_sessions": 0,
+  "phase_asleep_seconds": {
+   "1": 0.0,
+   "2": 0.0,
+   "3": 0.0,
+   "4": 0.0,
+   "5": 0.0,
+   "6": 0.0,
+   "7": 0.0,
+   "8": 0.0
+  },
+  "phase_seconds": {
+   "1": 0.386,
+   "2": 0.222,
+   "3": 0.083,
+   "4": 0.106,
+   "5": 0.208,
+   "6": 0.103,
+   "7": 0.25,
+   "8": 0.0
+  },
+  "phase_started_at": "2026-09-21T22:51:59.478613+00:00",
+  "pilot_wait_seconds": 0.0,
+  "recovery_attempts": 0,
+  "replacement_count": 0,
+  "sessions": [],
+  "started_at": "2026-09-21T22:51:58.371223+00:00",
+  "tokens": {
+   "cached": null,
+   "coverage": "0/0 sessions",
+   "input": null,
+   "output": null,
+   "total": null
+  },
+  "verification_runs": 2,
+  "verification_seconds": 0.0
+ },
+ "operations": {
+  "engine": {
+   "commands": {
+    "doctor": "handsoff doctor <root>",
+    "install": "handsoff init <root>",
+    "migrate": "handsoff migrate <root>",
+    "migrate_preview": "handsoff migrate <root> --dry-run",
+    "rollback": "handsoff rollback <root>",
+    "rollback_preview": "handsoff rollback <root> --dry-run",
+    "upgrade": "handsoff upgrade <root> --to v0.3.69",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.69 --dry-run"
+   },
+   "compatibility": "v0.3.69",
+   "execution": "unavailable",
+   "execution_reason": "execution is not offered while a dashboard is serving this root",
+   "pin": "v0.3.69",
+   "reason": null,
+   "source": "project-drop-in",
+   "source_root": "<root>",
+   "version": "v0.3.69"
+  },
+  "inventory": [
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Authorize the reviewed design",
+    "kind": "design_approve",
+    "operation": "design-approve",
+    "reason": "operation is not currently applicable",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Request a design revision",
+    "kind": "design_reject",
+    "operation": "design-reject",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Authorize live verification",
+    "kind": "deployment_approve",
+    "operation": "deployment-gate",
+    "reason": "no deployment approval is pending",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": "deployment_revoke:37d7dfdaf8e5fbeb",
+    "availability": "actionable",
+    "consequence": "Revoke deployment approval",
+    "kind": "deployment_revoke",
+    "operation": "deployment-gate",
+    "reason": "",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Hold deployment",
+    "kind": "deployment_hold",
+    "operation": "human-pause-start",
+    "reason": "no deployment approval is pending",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Permit one more design review",
+    "kind": "design_review_authorize",
+    "operation": "design-review-authorize",
+    "reason": "budget is not exhausted",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Escalate the reviewer tier",
+    "kind": "design_review_escalate",
+    "operation": "design-review-escalate",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Extend the implementation review cap once",
+    "kind": "review_cap_override",
+    "operation": "review-cap-override",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Clear the recovery hold",
+    "kind": "recovery_acknowledge",
+    "operation": "recovery-acknowledge",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Retry one bounded recovery attempt",
+    "kind": "recover",
+    "operation": "recover",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": "pause:37d7dfdaf8e5fbeb",
+    "availability": "actionable",
+    "consequence": "Pause the mission",
+    "kind": "pause",
+    "operation": "human-pause-start",
+    "reason": "",
+    "requires_reason": true,
+    "tone": "muted"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Resume the mission",
+    "kind": "resume",
+    "operation": "human-pause-end",
+    "reason": "operation is not currently applicable",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": "run_close:37d7dfdaf8e5fbeb",
+    "availability": "actionable",
+    "consequence": "Close the run and release resources",
+    "kind": "run_close",
+    "operation": "run-close",
+    "reason": "",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Reopen the run",
+    "kind": "run_reopen",
+    "operation": "run-reopen",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Accept the requested regression",
+    "kind": "regression_accept",
+    "operation": "regression-decide",
+    "reason": "no regression request is pending",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Decline the requested regression",
+    "kind": "regression_decline",
+    "operation": "regression-decide",
+    "reason": "no regression request is pending",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Cancel the regression request",
+    "kind": "regression_cancel",
+    "operation": "regression-cancel",
+    "reason": "no regression request is pending",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Launch a selected managed role",
+    "kind": "launch_role",
+    "launchable_roles": [],
+    "operation": "launch-role",
+    "reason": "run is not in progress",
+    "requires_reason": false,
+    "role": "supervisor",
+    "tone": "primary"
+   },
+   {
+    "action_id": "verify_criterion:37d7dfdaf8e5fbeb",
+    "availability": "actionable",
+    "consequence": "runs the configured checks for the selected criteria as Mission Control Pilot and appends ledger records",
+    "criteria": [
+     "REQ-001"
+    ],
+    "kind": "verify_criterion",
+    "operation": "verify",
+    "reason": "",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": "verify_live:37d7dfdaf8e5fbeb",
+    "availability": "actionable",
+    "consequence": "runs [checks].live_commands as Mission Control Pilot",
+    "kind": "verify_live",
+    "operation": "verify-live",
+    "reason": "",
+    "requires_reason": false,
+    "tone": "primary"
+   }
+  ],
+  "verification": {
+   "in_flight": [],
+   "latest": {
+    "REQ-001": {
+     "at": "2026-09-21T22:51:58.530798+00:00",
+     "ok": true,
+     "run_id": "vr-1571995b47144ea68390ad73732e071c"
+    }
+   },
+   "live": {
+    "at": "2026-09-21T22:51:59.686599+00:00",
+    "in_flight": null,
+    "last_failure": {
+     "at": "2026-09-21T22:51:59.686599+00:00",
+     "command": "false",
+     "exit_code": 1,
+     "output_tail": "",
+     "run_id": "vr-d286748b59a54c67a77af55f3374de81"
+    },
+    "ok": false,
+    "run_id": "vr-d286748b59a54c67a77af55f3374de81"
+   }
+  }
+ },
+ "operator_actions": [
+  {
+   "action_id": "pause:37d7dfdaf8e5fbeb",
+   "binding": "37d7dfdaf8e5fbeb",
+   "consequence": "Records an explicit Pilot pause",
+   "created_at": "2026-09-21T22:51:59.686712+00:00",
+   "kind": "pause",
+   "label": "Pause mission",
+   "operation": "human-pause-start",
+   "reason": null,
+   "requesting_role": "supervisor",
+   "requesting_session": null,
+   "requires_confirmation": false,
+   "requires_reason": true,
+   "tone": "muted",
+   "type": "pause"
+  },
+  {
+   "action_id": "run_close:37d7dfdaf8e5fbeb",
+   "binding": "37d7dfdaf8e5fbeb",
+   "consequence": "Records closure and releases run-owned resources",
+   "created_at": "2026-09-21T22:51:59.686712+00:00",
+   "kind": "run_close",
+   "label": "Cleanly close run",
+   "operation": "run-close",
+   "reason": null,
+   "requesting_role": "supervisor",
+   "requesting_session": null,
+   "requires_confirmation": true,
+   "requires_reason": true,
+   "tone": "danger",
+   "type": "run_close"
+  }
+ ],
+ "phases": [
+  {
+   "name": "Orient",
+   "number": 1,
+   "state": "complete"
+  },
+  {
+   "name": "Design debate",
+   "number": 2,
+   "state": "complete"
+  },
+  {
+   "name": "Design approved",
+   "number": 3,
+   "state": "complete"
+  },
+  {
+   "name": "Implementation",
+   "number": 4,
+   "state": "complete"
+  },
+  {
+   "name": "Independent review",
+   "number": 5,
+   "state": "complete"
+  },
+  {
+   "name": "Checks & documentation",
+   "number": 6,
+   "state": "complete"
+  },
+  {
+   "name": "LIVE VERIFICATION FAILED \u00b7 false exit 1",
+   "number": 7,
+   "state": "active"
+  },
+  {
+   "name": "Live verified",
+   "number": 8,
+   "state": "upcoming"
+  }
+ ],
+ "policy": {
+  "configured_checks": 1,
+  "configured_live_checks": 1,
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_reviewer_escalation": null,
+  "design_reviewer_selection": {
+   "consistency_errors": [],
+   "current": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "next": {
+    "adapter": "codex",
+    "error": null,
+    "model": "default",
+    "reason": "no_followup_configured",
+    "tier": "primary"
+   }
+  },
+  "design_round": 0,
+  "effective_max_review_rounds": 3,
+  "explicit_approval": true,
+  "live_verification": true,
+  "max_autonomous_design_reviews": 2,
+  "max_design_rounds": 3,
+  "max_review_rounds": 3,
+  "review_cap_overrides": 0,
+  "review_round": 1
+ },
+ "project": {
+  "feature": "Snapshot contract",
+  "logo_url": null,
+  "name": "handsoff-test-6_7b2kny"
+ },
+ "questions": {
+  "answered": [],
+  "blocking": [],
+  "by_role": [],
+  "open": [],
+  "total": 0
+ },
+ "recovery": {
+  "assessment": {
+   "assigned_role": "supervisor",
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "attempts": [],
+  "cap": 3,
+  "lease": null,
+  "watchdog_enabled": true
+ },
+ "regression": {
+  "current": null,
+  "history": [],
+  "last": null,
+  "pending": null,
+  "release_plan": null
+ },
+ "review": {
+  "attempts": [
+   {
+    "attempt": 1,
+    "attempt_id": "ha-42ec095492c8420088e2351343130dd5",
+    "closed_at": "2026-09-21T22:51:59.270246+00:00",
+    "disposition": "approved",
+    "findings_count": 0,
+    "opened_at": "2026-09-21T22:51:59.243851+00:00",
+    "reviewer": "rev-1",
+    "tests_executed": "unknown",
+    "trigger": "initial"
+   }
+  ]
+ },
+ "root": "<root>",
+ "runtime": {
+  "agent_output": null,
+  "current_sessions": {
+   "architect": null,
+   "implementer": null,
+   "reviewer": null,
+   "supervisor": null
+  },
+  "operation": {
+   "assessment": "no operation telemetry reported by this session",
+   "attempt": null,
+   "availability": "unavailable",
+   "current": null,
+   "dependency_class": null,
+   "elapsed_seconds": null,
+   "history": [],
+   "last_success_at": null,
+   "late_telemetry": 0,
+   "protocol_warnings": 0,
+   "retry_count": 0,
+   "role": null,
+   "session_id": null,
+   "timeout_seconds": null
+  },
+  "replacements": []
+ },
+ "settings": {
+  "agents": {
+   "architect": "auto",
+   "implementer": "auto",
+   "reviewer": "auto",
+   "supervisor": "auto"
+  },
+  "allowed_adapters": [
+   "auto",
+   "codex",
+   "claude"
+  ],
+  "allowed_adapters_by_role": {
+   "architect": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ],
+   "implementer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "reviewer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "supervisor": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ]
+  },
+  "availability": {
+   "claude": {
+    "available": true,
+    "executable": "<home>/.local/share/claude/versions/2.1.270"
+   },
+   "codex": {
+    "available": true,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js"
+   }
+  },
+  "availability_scope": "Executable discovery only; it does not prove authentication, account entitlement, network access, or model validity.",
+  "crew": {
+   "architect": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "implementer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   }
+  },
+  "default_adapter": "codex",
+  "default_order": [
+   "codex",
+   "claude"
+  ],
+  "effective_profiles": {
+   "architect": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "implementer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   }
+  },
+  "fallbacks": {
+   "architect": [],
+   "implementer": [],
+   "reviewer": [],
+   "supervisor": []
+  },
+  "features": {
+   "failing_first": {
+    "default": false,
+    "description": "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165).",
+    "enabled": false
+   },
+   "launch_rules": {
+    "default": true,
+    "description": "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167).",
+    "enabled": true
+   },
+   "report_posting": {
+    "default": false,
+    "description": "Phase 8 completion posts the ledger's report to each ticket and closes it; off, nothing leaves the machine unless run-close --post says so (#171).",
+    "enabled": false
+   },
+   "review_binds_rules": {
+    "default": true,
+    "description": "A review, design approval and deployment approval carry the hash of the rules set they ran under; a changed hook or config revokes them (#170).",
+    "enabled": true
+   },
+   "ticket_lock": {
+    "default": true,
+    "description": "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166).",
+    "enabled": true
+   },
+   "token_accounting": {
+    "default": true,
+    "description": "The usage each adapter prints is recorded on its session and summed by role, phase and ticket; nothing is estimated (#168).",
+    "enabled": true
+   }
+  },
+  "max_failovers_per_role": 2,
+  "max_fallback_profiles": 8,
+  "profile_sources": {
+   "architect": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "implementer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "reviewer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "supervisor": {
+    "adapter": "explicit",
+    "model": "explicit"
+   }
+  },
+  "profiles": {
+   "architect": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "implementer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "reviewer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "auto",
+    "model": "default"
+   }
+  },
+  "providers": {
+   "claude": {
+    "executable": "<home>/.local/share/claude/versions/2.1.270",
+    "label": "Claude Code",
+    "state": "detected"
+   },
+   "codex": {
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "label": "Codex CLI",
+    "state": "detected"
+   },
+   "grok": {
+    "credential_env_var": "XAI_API_KEY",
+    "label": "Grok",
+    "state": "requires_setup"
+   },
+   "ollama": {
+    "executable": "/opt/homebrew/Cellar/ollama/0.20.5/bin/ollama",
+    "label": "Ollama (local models)",
+    "models": [
+     "qwen3-coder:30b"
+    ],
+    "state": "detected"
+   },
+   "openai_compatible": {
+    "credential_env_var": "OPENAI_API_KEY",
+    "endpoint_env_var": "OPENAI_BASE_URL",
+    "label": "OpenAI-compatible endpoint",
+    "state": "requires_setup"
+   }
+  },
+  "providers_scope": "Detection only, shown for information: CLI providers are checked for an executable on PATH, credentialed providers for the presence of an environment variable name. Handsoff never reads, displays, or stores credential values -- you supply them yourself.",
+  "recommended_crew": {
+   "architect": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "implementer": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   }
+  },
+  "reviewer_followup": null
+ },
+ "status": {
+  "active_work_item": "issue-218",
+  "activity": {
+   "activity_note": null,
+   "asleep_seconds": 0.0,
+   "assessment": {
+    "assigned_role": "supervisor",
+    "lost_session_id": null,
+    "reason": "run_state",
+    "silent_minutes": null,
+    "state": "not_applicable",
+    "threshold_minutes": null
+   },
+   "process_signal": "none",
+   "seconds_since_activity": 0,
+   "stall_threshold_minutes": 10,
+   "stall_warning": null
+  },
+  "amendment": null,
+  "amendments": [],
+  "background_wait": null,
+  "consistency_errors": [],
+  "deployment_approved": {
+   "acceptance_hash": "67abb47355e4ec26c6817feea8ca816181f8f89f8dea28643e7b02f83170e7dc",
+   "at": "2026-09-21T22:51:59.582601+00:00",
+   "by": "moncy",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d"
+  },
+  "design_approved": {
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:58.907406+00:00",
+   "by": "test-approver",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "proposal_hash": null,
+   "redesigns_settled_work": null,
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "summary": "Test-fixture design approval"
+  },
+  "design_proposal": null,
+  "design_review": {
+   "architect": "test-architect",
+   "at": "2026-09-21T22:51:58.836847+00:00",
+   "attempt": 1,
+   "by": "test-design-reviewer",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "decision": "approved",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "findings": [],
+   "head": null,
+   "proposal_hash": null,
+   "reviewer_profile": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "structural_blocker": false,
+   "summary": "Test-fixture independent design review"
+  },
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_review_history": [
+   {
+    "attempt": 1,
+    "by": "test-design-reviewer",
+    "criteria_ids": [
+     "REQ-001"
+    ],
+    "criterion_hashes": {
+     "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+    },
+    "decision": "approved",
+    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+    "findings": [],
+    "head": null,
+    "proposal_hash": null,
+    "structural_blocker": false
+   }
+  ],
+  "design_round": 0,
+  "escalation": null,
+  "events": [],
+  "feature": "Snapshot contract",
+  "implemented_by": "impl-1",
+  "last_heartbeat_at": null,
+  "last_heartbeat_owner": null,
+  "legacy_review_round_offset": 0,
+  "live": {
+   "activity_source": "workflow",
+   "detail": "no managed process is running",
+   "ended_at": null,
+   "exit_code": null,
+   "last_activity_at": "2026-09-21T22:51:59.686712+00:00",
+   "process_signal": "none",
+   "role": null,
+   "seconds_since_activity": 0,
+   "session_id": null,
+   "state": "idle"
+  },
+  "live_verification_id": null,
+  "next_action": "Deploy the reviewed change and run live verification.",
+  "original_symptom_evidence_id": "vr-1571995b47144ea68390ad73732e071c",
+  "pending_questions": [],
+  "phase": "LIVE VERIFICATION FAILED \u00b7 false exit 1",
+  "phase_number": 7,
+  "process_signal": "none",
+  "progress": 90,
+  "reassurance": "",
+  "recovery_attempts": [],
+  "recovery_lease": null,
+  "regression_requests": [],
+  "requirement_coverage": {
+   "blocked": 0,
+   "failing": 0,
+   "not_tested": 0,
+   "original_symptom_resolved": true,
+   "passing": 1
+  },
+  "requires_design_approval": true,
+  "requires_design_review": true,
+  "retry_count": 0,
+  "review": {
+   "acceptance_hash": "67abb47355e4ec26c6817feea8ca816181f8f89f8dea28643e7b02f83170e7dc",
+   "at": "2026-09-21T22:51:59.244069+00:00",
+   "by": "rev-1",
+   "checklist": {
+    "all_criteria_verified": "yes",
+    "evidence_attached": "yes",
+    "symptom_reproduced": "yes",
+    "symptom_resolved": "yes"
+   },
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "implementer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "profiles_distinct": false,
+   "reviewer_profile": {
+    "adapter": "auto",
+    "effective_adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+   },
+   "rules_hash": "289563118445763592bc830c9c78c78d374f0af956e95949cb6b9c560a1da59d",
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "tests_executed": "unknown"
+  },
+  "review_attempts": [
+   {
+    "acceptance_hash": "67abb47355e4ec26c6817feea8ca816181f8f89f8dea28643e7b02f83170e7dc",
+    "attempt": 1,
+    "attempt_id": "ha-42ec095492c8420088e2351343130dd5",
+    "closed_at": "2026-09-21T22:51:59.270246+00:00",
+    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+    "disposition": "approved",
+    "findings": [],
+    "opened_at": "2026-09-21T22:51:59.243851+00:00",
+    "opened_by": "rev-1",
+    "phase_number": 5,
+    "reviewer": "rev-1",
+    "session_ids": [],
+    "tests_executed": "unknown",
+    "trigger": "initial",
+    "trigger_detail": ""
+   }
+  ],
+  "review_cap_overrides": [],
+  "review_round": 1,
+  "reviewed_by": "rev-1",
+  "reviewer_checklist": {
+   "all_criteria_verified": "yes",
+   "evidence_attached": "yes",
+   "symptom_reproduced": "yes",
+   "symptom_resolved": "yes"
+  },
+  "stall_warning": null,
+  "status": "ready_to_deploy",
+  "summary": "",
+  "updated_at": "2026-09-21T22:51:59.686712+00:00",
+  "verification_head": "09ffa7e2fc223c3a25ded1f4aa8d8e3e29043f25bdd59c20813de9f021c389bc",
+  "verification_progress": 80,
+  "work_item_delivery": {
+   "issue-218": {
+    "baseline_head": null,
+    "confirmed_at": null,
+    "confirmed_by": null,
+    "escalation_reason": null,
+    "facts": null,
+    "implemented_by": "impl-1",
+    "lane": "full",
+    "requested_lane": "full",
+    "review_hash": null,
+    "reviewed_by": null
+   }
+  }
+ },
+ "supervisor": {
+  "attention": [],
+  "completed": [
+   "1 acceptance criterion verified",
+   "Original symptom verified as resolved",
+   "Independent review recorded",
+   "Deployment approval recorded"
+  ],
+  "headline": "System online. LIVE VERIFICATION FAILED \u00b7 false exit 1 sequence active, Pilot.",
+  "label": "Trajectory stable",
+  "latest_event": {
+   "at": "2026-09-21T22:51:59.687419+00:00",
+   "kind": "live_checks_run",
+   "message": "Ran configured live checks"
+  },
+  "next_action": "Deploy the reviewed change and run live verification.",
+  "reassurance": "Reactor core stable. Safety interlocks active. I will advance only when every required gate is satisfied.",
+  "summary": "Progress is 90% with 1 of 1 acceptance criteria verified. The original symptom is confirmed resolved.",
+  "tone": "steady"
+ },
+ "tickets": [],
+ "tranche": null,
+ "verification": {
+  "in_flight": [],
+  "latest": {
+   "REQ-001": {
+    "at": "2026-09-21T22:51:58.530798+00:00",
+    "ok": true,
+    "run_id": "vr-1571995b47144ea68390ad73732e071c"
+   }
+  },
+  "live": {
+   "at": "2026-09-21T22:51:59.686599+00:00",
+   "in_flight": null,
+   "last_failure": {
+    "at": "2026-09-21T22:51:59.686599+00:00",
+    "command": "false",
+    "exit_code": 1,
+    "output_tail": "",
+    "run_id": "vr-d286748b59a54c67a77af55f3374de81"
+   },
+   "ok": false,
+   "run_id": "vr-d286748b59a54c67a77af55f3374de81"
+  }
+ },
+ "verifications": [
+  {
+   "acceptance_hash": "67abb47355e4ec26c6817feea8ca816181f8f89f8dea28643e7b02f83170e7dc",
+   "at": "2026-09-21T22:51:59.686599+00:00",
+   "binding": null,
+   "by": "moncy",
+   "commands": [
+    "false"
+   ],
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "criteria": [
+    "REQ-001"
+   ],
+   "criterion_hashes": {
+    "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+   },
+   "description": "",
+   "executed": true,
+   "feature_hash": null,
+   "hash": "09ffa7e2fc223c3a25ded1f4aa8d8e3e29043f25bdd59c20813de9f021c389bc",
+   "kind": "live",
+   "ok": false,
+   "prev_hash": "33efd83418d09586ceb6b16bb43d50eb6e86655e0ebf433ce02ef0e9233fa7ca",
+   "repository_digest": null,
+   "results": [
+    {
+     "command": "false",
+     "duration_s": 0.0,
+     "exit_code": 1,
+     "output_bytes": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "output_tail": "",
+     "timed_out": false,
+     "truncated": false
+    }
+   ],
+   "reused_from": null,
+   "rules_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.69",
+    "handsoff.toml": "d8ca3c114e6fc796739b889d0716c20daf9c63ea16aefe5dbb7187b61c31d10f"
+   },
+   "rules_hash": "25a6e0f0be06bb30c5c5995b65a77c6b8724c8d37359e5efefd9903c402bb03c",
+   "run_id": "vr-d286748b59a54c67a77af55f3374de81"
+  },
+  {
+   "acceptance_hash": null,
+   "at": "2026-09-21T22:51:58.530798+00:00",
+   "binding": {
+    "true": "8eb0d59612a47daed880a547b0a3216333933406c19ad1734410a61938896934"
+   },
+   "by": "test-implementer",
+   "commands": [
+    "true"
+   ],
+   "config_hash": "a5a4b1182748478f6bd0b57a10b4d889a9edb7fd3087f943c295fde158be0da4",
+   "criteria": [
+    "REQ-001"
+   ],
+   "criterion_hashes": {
+    "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+   },
+   "description": "",
+   "executed": true,
+   "feature_hash": "4a926d35ba4a576e9b783c2bd1bcb7a96661312850df4c37159c8acccc6cf8ac",
+   "hash": "33efd83418d09586ceb6b16bb43d50eb6e86655e0ebf433ce02ef0e9233fa7ca",
+   "kind": "checks",
+   "ok": true,
+   "prev_hash": "GENESIS",
+   "repository_digest": "0fabb7393190c70fb57084ece2784212a6ed31337f86369300d64946c8f9f761",
+   "results": [
+    {
+     "command": "true",
+     "duration_s": 0.0,
+     "exit_code": 0,
+     "output_bytes": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "timed_out": false,
+     "truncated": false
+    }
+   ],
+   "reused_from": null,
+   "run_id": "vr-1571995b47144ea68390ad73732e071c"
+  }
+ ],
+ "work_items": {
+  "aggregate": {
+   "counts": {
+    "awaiting_approval": 0,
+    "blocked": 0,
+    "done": 0,
+    "in_progress": 1,
+    "in_review": 0,
+    "not_started": 0,
+    "recovering": 0,
+    "unscoped": 0
+   },
+   "done": 0,
+   "progress": 80,
+   "total": 1
+  },
+  "items": [
+   {
+    "blocker": "",
+    "created_at": "2026-09-21T22:51:58.366303+00:00",
+    "criteria": [
+     "REQ-001"
+    ],
+    "discrepancy": null,
+    "github_checked_at": null,
+    "github_state": null,
+    "id": "issue-218",
+    "kind": "issue",
+    "lane": "full",
+    "lane_confirmed": false,
+    "lane_escalation": null,
+    "lane_facts": null,
+    "notes": "",
+    "number": 218,
+    "phase_or_next": "Deploy the reviewed change and run live verification.",
+    "progress": 80,
+    "required": true,
+    "status": "in_progress",
+    "title": "Issue #218",
+    "updated_at": "2026-09-21T22:51:58.366303+00:00",
+    "url": ""
+   }
+  ],
+  "multi": false,
+  "registry": "persisted",
+  "tickets_config_deprecated": false,
+  "unattributed_criteria": []
+ }
+}

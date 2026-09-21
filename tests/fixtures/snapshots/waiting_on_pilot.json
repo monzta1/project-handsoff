@@ -1,0 +1,1296 @@
+{
+ "acceptance": {
+  "blocked": 0,
+  "criteria": [
+   {
+    "baseline_view": {
+     "kind": "none"
+    },
+    "evidence": [
+     "vr-2e271f3c6059435fb98c5ead046174ab"
+    ],
+    "id": "REQ-001",
+    "requirement": "State the exact observable outcome.",
+    "state": "passing",
+    "tests": [
+     "true"
+    ],
+    "type": "primary_fix",
+    "verification": "automated"
+   }
+  ],
+  "failing": 0,
+  "not_tested": 0,
+  "original_symptom_resolved": false,
+  "passing": 1,
+  "total": 1
+ },
+ "activity": {
+  "activity_note": null,
+  "asleep_seconds": 0.0,
+  "assessment": {
+   "assigned_role": "reviewer",
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "process_signal": "none",
+  "seconds_since_activity": 0,
+  "stall_threshold_minutes": 10,
+  "stall_warning": null
+ },
+ "activity_note": null,
+ "actors": {
+  "active_role": null,
+  "approved_by": null,
+  "architect": "test-architect",
+  "design_reviewed_by": "test-design-reviewer",
+  "implemented_by": null,
+  "reviewed_by": null
+ },
+ "amendment": null,
+ "audit": {
+  "chain_errors": [],
+  "engine_error": null,
+  "event_count": 6,
+  "gate_errors": [],
+  "healthy": true,
+  "verification_head": "0c458bf09e76dd55f79ff5c675fed29faae3a7159c17c57d7a648a11c05cf3b3",
+  "verification_runs": 1
+ },
+ "ci": null,
+ "crew": [
+  {
+   "actor": "test-architect",
+   "key": "architect",
+   "label": "ARCHITECT",
+   "session": null
+  },
+  {
+   "actor": "test-design-reviewer",
+   "key": "design_reviewer",
+   "label": "DESIGN REVIEWER",
+   "session": null
+  },
+  {
+   "actor": null,
+   "key": "supervisor",
+   "label": "SUPERVISOR",
+   "session": null
+  },
+  {
+   "actor": null,
+   "key": "implementer",
+   "label": "IMPLEMENTER",
+   "session": null
+  },
+  {
+   "actor": null,
+   "key": "reviewer",
+   "label": "REVIEWER",
+   "session": null
+  },
+  {
+   "actor": null,
+   "key": "approver",
+   "label": "APPROVER",
+   "session": null
+  }
+ ],
+ "design_evidence": [],
+ "design_review_packet": null,
+ "engine": {
+  "compatibility": "v0.3.69",
+  "manifest_sha256": "b3fabcb7a79b6f9f87457a4529f659905a88b51f6b49bf08c0a094f68d08b3b8",
+  "source": "project-drop-in",
+  "source_root": "<root>",
+  "version": "v0.3.69"
+ },
+ "escalation": null,
+ "events": [
+  {
+   "acceptance_sha256": "76ff12536f9fb8dd310b11aa255052dfdf30a0a01092177ca41846bf63e6b915",
+   "architect": "test-architect",
+   "at": "2026-09-21T22:52:00.881405+00:00",
+   "authorized": false,
+   "by": "test-design-reviewer",
+   "decision": "approved",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "design_review_attempt": 1,
+   "design_review_limit": 2,
+   "escalation_consumed": false,
+   "findings": 0,
+   "hash": "b2ac4411387b9ab8899fc481648651835f678b327e1a9e526962ca7d5f3b9b93",
+   "head": null,
+   "kind": "design_review_approved",
+   "message": "Independent design review approved: Test-fixture independent design review",
+   "prev_hash": "26e772b93fc7e3751be5e323bdece4ab285d555784ac7a15de027733096ea71a",
+   "reviewer_profile": {
+    "adapter": "codex",
+    "model": "default"
+   },
+   "reviewer_selection_reason": "first_review",
+   "reviewer_session_id": null,
+   "reviewer_tier": "primary",
+   "status_sha256": "6eaafce4e2923b79619681d4d60b0db032fc5361cfe264e2b9ff993942a83e14",
+   "structural_blocker": false
+  },
+  {
+   "acceptance_sha256": "76ff12536f9fb8dd310b11aa255052dfdf30a0a01092177ca41846bf63e6b915",
+   "at": "2026-09-21T22:52:00.793319+00:00",
+   "hash": "26e772b93fc7e3751be5e323bdece4ab285d555784ac7a15de027733096ea71a",
+   "kind": "phase_advanced",
+   "message": "Advanced to Design debate",
+   "phase_number": 2,
+   "prev_hash": "95358943ad08e5d284a923d5408b2eb16c2565230276e16fd6bae84895cd9e20",
+   "progress": 20,
+   "status_sha256": "61224151b2aab8b613447c57fdf8951f3159c3dbe98e4ff4c3708751efa70bb2"
+  },
+  {
+   "acceptance_sha256": "76ff12536f9fb8dd310b11aa255052dfdf30a0a01092177ca41846bf63e6b915",
+   "architect": "host-architect",
+   "at": "2026-09-21T22:52:00.717011+00:00",
+   "based_on_review_attempt": 0,
+   "counts": {
+    "approach": 1,
+    "constraints": 0,
+    "decisions": 1,
+    "tradeoffs": 0,
+    "verification": 1
+   },
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "hash": "95358943ad08e5d284a923d5408b2eb16c2565230276e16fd6bae84895cd9e20",
+   "kind": "design_proposal_recorded",
+   "message": "Bounded Architect design proposal recorded",
+   "prev_hash": "bed6825654616bfe749289b5ebf9436a234b072fea41a41814a254c4833f814c",
+   "proposal_hash": "32242a274301144a064dd07a74765d47c518cf1f2c0a18e46854fc230b02b5ae",
+   "session_id": null,
+   "status_sha256": "70697341406d0b9b1b3c4c7b3469026d20885b94739f0d90c8afc333ae45a0a8"
+  },
+  {
+   "acceptance_sha256": "76ff12536f9fb8dd310b11aa255052dfdf30a0a01092177ca41846bf63e6b915",
+   "at": "2026-09-21T22:52:00.638614+00:00",
+   "criteria": {
+    "REQ-001": {
+     "executed": true,
+     "ok": true,
+     "reused_from": null,
+     "run_id": "vr-2e271f3c6059435fb98c5ead046174ab"
+    }
+   },
+   "hash": "bed6825654616bfe749289b5ebf9436a234b072fea41a41814a254c4833f814c",
+   "kind": "checks_run",
+   "launched_count": 1,
+   "message": "Ran and attached configured checks",
+   "prev_hash": "1b49d51d20317419fa4ac6b00a41b99f645b6ddae7e9451bbc83e0321733c1e8",
+   "results": [
+    {
+     "command": "true",
+     "exit_code": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+   ],
+   "reused_count": 0,
+   "review_attempt_refreshed": null,
+   "status_sha256": "80e0e77552560cd60ebbf3b3e43ca62a67d26f67c09cbce6c9ce3fb9135c7b83"
+  },
+  {
+   "acceptance_sha256": "4bd4f62bde1d94416fb5e9f94527f4172de6295759c7265bcc9c2513703c3a90",
+   "at": "2026-09-21T22:52:00.527694+00:00",
+   "criterion": "REQ-001",
+   "decisions_revoked": [],
+   "hash": "1b49d51d20317419fa4ac6b00a41b99f645b6ddae7e9451bbc83e0321733c1e8",
+   "kind": "criterion_updated",
+   "message": "Acceptance criterion updated",
+   "prev_hash": "b654161082389272f2b07589e3397376a2861515fc34dda891273cde31915d9f",
+   "status_sha256": "2e0ce9deddf43d01cf2dc548a1fe7c6c359a4c31fdd1aa669dcd7a58c743266a",
+   "work_item_scope_changed": false
+  },
+  {
+   "acceptance_sha256": "8ccf9e284191e780c803c601722d2a6d9804bfe4b82bda706df358308510f4ae",
+   "at": "2026-09-21T22:52:00.447619+00:00",
+   "by": null,
+   "engine": {
+    "manifest_sha256": "b3fabcb7a79b6f9f87457a4529f659905a88b51f6b49bf08c0a094f68d08b3b8",
+    "source": "project-drop-in",
+    "version": "v0.3.69"
+   },
+   "hash": "b654161082389272f2b07589e3397376a2861515fc34dda891273cde31915d9f",
+   "kind": "initialized",
+   "message": "Handsoff initialized for 'Snapshot contract'",
+   "pin_written": null,
+   "prev_hash": "GENESIS",
+   "project_root": "<root>",
+   "status_sha256": "a049d6196b5e2618074b80f8f4552dd0f88ac17c0be925b4ed87145e14c770cf",
+   "ticket_lock": "evaluated"
+  }
+ ],
+ "generated_at": "2026-09-21T22:52:00.888321+00:00",
+ "host": {
+  "actor": null,
+  "family": "unknown",
+  "source": "none"
+ },
+ "host_wait": null,
+ "initialized": true,
+ "input_required": {
+  "amendment_decision": null,
+  "amendment_id": null,
+  "amendment_round": null,
+  "blockers": [],
+  "kind": "design_approval",
+  "message": "Independent design review is approved. Authorize this exact design to open Phase 3.",
+  "preauthorized": null,
+  "question_cards": [],
+  "question_id": null,
+  "request_id": null,
+  "required": true,
+  "turn": "pilot"
+ },
+ "live": {
+  "activity_source": "workflow",
+  "detail": "Get explicit human approval of the independently reviewed design.",
+  "ended_at": null,
+  "exit_code": null,
+  "last_activity_at": "2026-09-21T22:52:00.880482+00:00",
+  "process_signal": "none",
+  "role": null,
+  "seconds_since_activity": 0,
+  "session_id": null,
+  "state": "waiting"
+ },
+ "metrics": {
+  "asleep_seconds": 0.0,
+  "background_wait_seconds": 0.0,
+  "baseline": {
+   "reason": "no compatible historical cohort selected",
+   "sample_size": 0,
+   "state": "unavailable"
+  },
+  "design_review_attempts": 1,
+  "elapsed_seconds": 0.476,
+  "ended_at": null,
+  "failed_sessions": 0,
+  "generated_at": "2026-09-21T22:52:00.924008+00:00",
+  "implementation_review_attempts": 0,
+  "largest_sessions": [],
+  "managed_sessions": 0,
+  "phase_asleep_seconds": {
+   "1": 0.0,
+   "2": 0.0,
+   "3": 0.0,
+   "4": 0.0,
+   "5": 0.0,
+   "6": 0.0,
+   "7": 0.0,
+   "8": 0.0
+  },
+  "phase_seconds": {
+   "1": 0.346,
+   "2": 0.131,
+   "3": 0.0,
+   "4": 0.0,
+   "5": 0.0,
+   "6": 0.0,
+   "7": 0.0,
+   "8": 0.0
+  },
+  "phase_started_at": "2026-09-21T22:52:00.793319+00:00",
+  "pilot_wait_seconds": 0.0,
+  "recovery_attempts": 0,
+  "replacement_count": 0,
+  "sessions": [],
+  "started_at": "2026-09-21T22:52:00.447619+00:00",
+  "tokens": {
+   "cached": null,
+   "coverage": "0/0 sessions",
+   "input": null,
+   "output": null,
+   "total": null
+  },
+  "verification_runs": 1,
+  "verification_seconds": 0.0
+ },
+ "operations": {
+  "engine": {
+   "commands": {
+    "doctor": "handsoff doctor <root>",
+    "install": "handsoff init <root>",
+    "migrate": "handsoff migrate <root>",
+    "migrate_preview": "handsoff migrate <root> --dry-run",
+    "rollback": "handsoff rollback <root>",
+    "rollback_preview": "handsoff rollback <root> --dry-run",
+    "upgrade": "handsoff upgrade <root> --to v0.3.69",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.69 --dry-run"
+   },
+   "compatibility": "v0.3.69",
+   "execution": "unavailable",
+   "execution_reason": "execution is not offered while a dashboard is serving this root",
+   "pin": "v0.3.69",
+   "reason": null,
+   "source": "project-drop-in",
+   "source_root": "<root>",
+   "version": "v0.3.69"
+  },
+  "inventory": [
+   {
+    "action_id": "design_approve:56e5ed286f0eaebb",
+    "availability": "actionable",
+    "consequence": "Authorize the reviewed design",
+    "kind": "design_approve",
+    "operation": "design-approve",
+    "reason": "",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": "design_reject:56e5ed286f0eaebb",
+    "availability": "actionable",
+    "consequence": "Request a design revision",
+    "kind": "design_reject",
+    "operation": "design-reject",
+    "reason": "",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Authorize live verification",
+    "kind": "deployment_approve",
+    "operation": "deployment-gate",
+    "reason": "no deployment approval is pending",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Revoke deployment approval",
+    "kind": "deployment_revoke",
+    "operation": "deployment-gate",
+    "reason": "no deployment approval is pending",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Hold deployment",
+    "kind": "deployment_hold",
+    "operation": "human-pause-start",
+    "reason": "no deployment approval is pending",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Permit one more design review",
+    "kind": "design_review_authorize",
+    "operation": "design-review-authorize",
+    "reason": "budget is not exhausted",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Escalate the reviewer tier",
+    "kind": "design_review_escalate",
+    "operation": "design-review-escalate",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Extend the implementation review cap once",
+    "kind": "review_cap_override",
+    "operation": "review-cap-override",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Clear the recovery hold",
+    "kind": "recovery_acknowledge",
+    "operation": "recovery-acknowledge",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Retry one bounded recovery attempt",
+    "kind": "recover",
+    "operation": "recover",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": "pause:56e5ed286f0eaebb",
+    "availability": "actionable",
+    "consequence": "Pause the mission",
+    "kind": "pause",
+    "operation": "human-pause-start",
+    "reason": "",
+    "requires_reason": true,
+    "tone": "muted"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Resume the mission",
+    "kind": "resume",
+    "operation": "human-pause-end",
+    "reason": "operation is not currently applicable",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": "run_close:56e5ed286f0eaebb",
+    "availability": "actionable",
+    "consequence": "Close the run and release resources",
+    "kind": "run_close",
+    "operation": "run-close",
+    "reason": "",
+    "requires_reason": true,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Reopen the run",
+    "kind": "run_reopen",
+    "operation": "run-reopen",
+    "reason": "operation is not currently applicable",
+    "requires_reason": true,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Accept the requested regression",
+    "kind": "regression_accept",
+    "operation": "regression-decide",
+    "reason": "no regression request is pending",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Decline the requested regression",
+    "kind": "regression_decline",
+    "operation": "regression-decide",
+    "reason": "no regression request is pending",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Cancel the regression request",
+    "kind": "regression_cancel",
+    "operation": "regression-cancel",
+    "reason": "no regression request is pending",
+    "requires_reason": false,
+    "tone": "danger"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Launch a selected managed role",
+    "kind": "launch_role",
+    "launchable_roles": [],
+    "operation": "launch-role",
+    "reason": "run is not in progress",
+    "requires_reason": false,
+    "role": "reviewer",
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Run focused criterion verification",
+    "criteria": [],
+    "kind": "verify_criterion",
+    "operation": "verify",
+    "reason": "verification requires Phase 4 to 7, current phase is 2",
+    "requires_reason": false,
+    "tone": "primary"
+   },
+   {
+    "action_id": null,
+    "availability": "unavailable",
+    "consequence": "Run live verification",
+    "kind": "verify_live",
+    "operation": "verify-live",
+    "reason": "live verification requires Phase 7 or 8, current phase is 2",
+    "requires_reason": false,
+    "tone": "primary"
+   }
+  ],
+  "verification": {
+   "in_flight": [],
+   "latest": {
+    "REQ-001": {
+     "at": "2026-09-21T22:52:00.625553+00:00",
+     "ok": true,
+     "run_id": "vr-2e271f3c6059435fb98c5ead046174ab"
+    }
+   },
+   "live": {
+    "at": null,
+    "in_flight": null,
+    "last_failure": null,
+    "ok": null,
+    "run_id": null
+   }
+  }
+ },
+ "operator_actions": [
+  {
+   "action_id": "design_approve:56e5ed286f0eaebb",
+   "binding": "56e5ed286f0eaebb",
+   "consequence": "Opens Phase 3 for the exact reviewed design",
+   "created_at": "2026-09-21T22:52:00.880482+00:00",
+   "kind": "design_approve",
+   "label": "Authorize design",
+   "operation": "design-approve",
+   "reason": "Independent design review is approved. Authorize this exact design to open Phase 3.",
+   "requesting_role": null,
+   "requesting_session": null,
+   "requires_confirmation": false,
+   "requires_reason": false,
+   "tone": "primary",
+   "type": "design_approval"
+  },
+  {
+   "action_id": "design_reject:56e5ed286f0eaebb",
+   "binding": "56e5ed286f0eaebb",
+   "consequence": "Returns the design to the Architect and Reviewer",
+   "created_at": "2026-09-21T22:52:00.880482+00:00",
+   "kind": "design_reject",
+   "label": "Request design revision",
+   "operation": "design-reject",
+   "reason": "Independent design review is approved. Authorize this exact design to open Phase 3.",
+   "requesting_role": null,
+   "requesting_session": null,
+   "requires_confirmation": false,
+   "requires_reason": true,
+   "tone": "danger",
+   "type": "design_approval"
+  },
+  {
+   "action_id": "run_close:56e5ed286f0eaebb",
+   "binding": "56e5ed286f0eaebb",
+   "consequence": "Records closure and releases run-owned resources",
+   "created_at": "2026-09-21T22:52:00.880482+00:00",
+   "kind": "run_close",
+   "label": "Cleanly close run",
+   "operation": "run-close",
+   "reason": "Independent design review is approved. Authorize this exact design to open Phase 3.",
+   "requesting_role": null,
+   "requesting_session": null,
+   "requires_confirmation": true,
+   "requires_reason": true,
+   "tone": "danger",
+   "type": "design_approval"
+  }
+ ],
+ "phases": [
+  {
+   "name": "Orient",
+   "number": 1,
+   "state": "complete"
+  },
+  {
+   "name": "Design debate",
+   "number": 2,
+   "state": "active"
+  },
+  {
+   "name": "Design approved",
+   "number": 3,
+   "state": "upcoming"
+  },
+  {
+   "name": "Implementation",
+   "number": 4,
+   "state": "upcoming"
+  },
+  {
+   "name": "Independent review",
+   "number": 5,
+   "state": "upcoming"
+  },
+  {
+   "name": "Checks & documentation",
+   "number": 6,
+   "state": "upcoming"
+  },
+  {
+   "name": "Awaiting deployment approval",
+   "number": 7,
+   "state": "upcoming"
+  },
+  {
+   "name": "Live verified",
+   "number": 8,
+   "state": "upcoming"
+  }
+ ],
+ "policy": {
+  "configured_checks": 1,
+  "configured_live_checks": 1,
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_reviewer_escalation": null,
+  "design_reviewer_selection": {
+   "consistency_errors": [],
+   "current": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "next": {
+    "adapter": "codex",
+    "error": null,
+    "model": "default",
+    "reason": "no_followup_configured",
+    "tier": "primary"
+   }
+  },
+  "design_round": 0,
+  "effective_max_review_rounds": 3,
+  "explicit_approval": true,
+  "live_verification": true,
+  "max_autonomous_design_reviews": 2,
+  "max_design_rounds": 3,
+  "max_review_rounds": 3,
+  "review_cap_overrides": 0,
+  "review_round": 0
+ },
+ "project": {
+  "feature": "Snapshot contract",
+  "logo_url": null,
+  "name": "handsoff-test-2g_8t92j"
+ },
+ "questions": {
+  "answered": [],
+  "blocking": [],
+  "by_role": [],
+  "open": [],
+  "total": 0
+ },
+ "recovery": {
+  "assessment": {
+   "assigned_role": "reviewer",
+   "lost_session_id": null,
+   "reason": "run_state",
+   "silent_minutes": null,
+   "state": "not_applicable",
+   "threshold_minutes": null
+  },
+  "attempts": [],
+  "cap": 3,
+  "lease": null,
+  "watchdog_enabled": true
+ },
+ "regression": {
+  "current": null,
+  "history": [],
+  "last": null,
+  "pending": null,
+  "release_plan": null
+ },
+ "review": {
+  "attempts": []
+ },
+ "root": "<root>",
+ "runtime": {
+  "agent_output": null,
+  "current_sessions": {
+   "architect": null,
+   "implementer": null,
+   "reviewer": null,
+   "supervisor": null
+  },
+  "operation": {
+   "assessment": "no operation telemetry reported by this session",
+   "attempt": null,
+   "availability": "unavailable",
+   "current": null,
+   "dependency_class": null,
+   "elapsed_seconds": null,
+   "history": [],
+   "last_success_at": null,
+   "late_telemetry": 0,
+   "protocol_warnings": 0,
+   "retry_count": 0,
+   "role": null,
+   "session_id": null,
+   "timeout_seconds": null
+  },
+  "replacements": []
+ },
+ "settings": {
+  "agents": {
+   "architect": "host",
+   "implementer": "auto",
+   "reviewer": "auto",
+   "supervisor": "auto"
+  },
+  "allowed_adapters": [
+   "auto",
+   "codex",
+   "claude"
+  ],
+  "allowed_adapters_by_role": {
+   "architect": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ],
+   "implementer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "reviewer": [
+    "auto",
+    "codex",
+    "claude"
+   ],
+   "supervisor": [
+    "auto",
+    "codex",
+    "claude",
+    "host"
+   ]
+  },
+  "availability": {
+   "claude": {
+    "available": true,
+    "executable": "<home>/.local/share/claude/versions/2.1.270"
+   },
+   "codex": {
+    "available": true,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js"
+   }
+  },
+  "availability_scope": "Executable discovery only; it does not prove authentication, account entitlement, network access, or model validity.",
+  "crew": {
+   "architect": {
+    "adapter": "host",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": false,
+    "budget_warning": null,
+    "executable": null,
+    "model": null,
+    "model_source": "explicit"
+   },
+   "implementer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "adapter_source": "explicit",
+    "availability_scope": "executable discovery only",
+    "available": true,
+    "budget_warning": null,
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "model": "default",
+    "model_source": "explicit"
+   }
+  },
+  "default_adapter": "codex",
+  "default_order": [
+   "codex",
+   "claude"
+  ],
+  "effective_profiles": {
+   "architect": {
+    "adapter": "host",
+    "model": null,
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "implementer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   },
+   "supervisor": {
+    "adapter": "codex",
+    "model": "default",
+    "source": {
+     "adapter": "explicit",
+     "model": "explicit"
+    }
+   }
+  },
+  "fallbacks": {
+   "architect": [],
+   "implementer": [],
+   "reviewer": [],
+   "supervisor": []
+  },
+  "features": {
+   "failing_first": {
+    "default": false,
+    "description": "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165).",
+    "enabled": false
+   },
+   "launch_rules": {
+    "default": true,
+    "description": "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167).",
+    "enabled": true
+   },
+   "report_posting": {
+    "default": false,
+    "description": "Phase 8 completion posts the ledger's report to each ticket and closes it; off, nothing leaves the machine unless run-close --post says so (#171).",
+    "enabled": false
+   },
+   "review_binds_rules": {
+    "default": true,
+    "description": "A review, design approval and deployment approval carry the hash of the rules set they ran under; a changed hook or config revokes them (#170).",
+    "enabled": true
+   },
+   "ticket_lock": {
+    "default": true,
+    "description": "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166).",
+    "enabled": true
+   },
+   "token_accounting": {
+    "default": true,
+    "description": "The usage each adapter prints is recorded on its session and summed by role, phase and ticket; nothing is estimated (#168).",
+    "enabled": true
+   }
+  },
+  "max_failovers_per_role": 2,
+  "max_fallback_profiles": 8,
+  "profile_sources": {
+   "architect": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "implementer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "reviewer": {
+    "adapter": "explicit",
+    "model": "explicit"
+   },
+   "supervisor": {
+    "adapter": "explicit",
+    "model": "explicit"
+   }
+  },
+  "profiles": {
+   "architect": {
+    "adapter": "host",
+    "model": null
+   },
+   "implementer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "reviewer": {
+    "adapter": "auto",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "auto",
+    "model": "default"
+   }
+  },
+  "providers": {
+   "claude": {
+    "executable": "<home>/.local/share/claude/versions/2.1.270",
+    "label": "Claude Code",
+    "state": "detected"
+   },
+   "codex": {
+    "executable": "<home>/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/bin/codex.js",
+    "label": "Codex CLI",
+    "state": "detected"
+   },
+   "grok": {
+    "credential_env_var": "XAI_API_KEY",
+    "label": "Grok",
+    "state": "requires_setup"
+   },
+   "ollama": {
+    "executable": "/opt/homebrew/Cellar/ollama/0.20.5/bin/ollama",
+    "label": "Ollama (local models)",
+    "models": [
+     "qwen3-coder:30b"
+    ],
+    "state": "detected"
+   },
+   "openai_compatible": {
+    "credential_env_var": "OPENAI_API_KEY",
+    "endpoint_env_var": "OPENAI_BASE_URL",
+    "label": "OpenAI-compatible endpoint",
+    "state": "requires_setup"
+   }
+  },
+  "providers_scope": "Detection only, shown for information: CLI providers are checked for an executable on PATH, credentialed providers for the presence of an environment variable name. Handsoff never reads, displays, or stores credential values -- you supply them yourself.",
+  "recommended_crew": {
+   "architect": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "implementer": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   },
+   "reviewer": {
+    "adapter": "codex",
+    "model": "default"
+   },
+   "supervisor": {
+    "adapter": "claude",
+    "model": "claude-opus-5"
+   }
+  },
+  "reviewer_followup": null
+ },
+ "status": {
+  "active_work_item": null,
+  "activity": {
+   "activity_note": null,
+   "asleep_seconds": 0.0,
+   "assessment": {
+    "assigned_role": "reviewer",
+    "lost_session_id": null,
+    "reason": "run_state",
+    "silent_minutes": null,
+    "state": "not_applicable",
+    "threshold_minutes": null
+   },
+   "process_signal": "none",
+   "seconds_since_activity": 0,
+   "stall_threshold_minutes": 10,
+   "stall_warning": null
+  },
+  "amendment": null,
+  "amendments": [],
+  "background_wait": null,
+  "consistency_errors": [],
+  "deployment_approved": null,
+  "design_approved": null,
+  "design_proposal": {
+   "approach": [
+    "Data shape: none"
+   ],
+   "architect": "host-architect",
+   "at": "2026-09-21T22:52:00.716237+00:00",
+   "based_on_review_attempt": 0,
+   "constraints": [],
+   "decisions": [
+    "d"
+   ],
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "proposal_hash": "32242a274301144a064dd07a74765d47c518cf1f2c0a18e46854fc230b02b5ae",
+   "provenance": {
+    "actor": "host-architect",
+    "executable": "<home>/Projects/project-handsoff-lane-o/bin/handsoff_supervisor.py",
+    "host_session_id": null,
+    "pid": 94421,
+    "recorded_at": "2026-09-21T22:52:00.716237+00:00"
+   },
+   "session_id": null,
+   "summary": "s",
+   "tradeoffs": [],
+   "verification": [
+    "v"
+   ]
+  },
+  "design_review": {
+   "architect": "test-architect",
+   "at": "2026-09-21T22:52:00.880482+00:00",
+   "attempt": 1,
+   "by": "test-design-reviewer",
+   "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
+   "decision": "approved",
+   "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+   "findings": [],
+   "head": null,
+   "proposal_hash": "32242a274301144a064dd07a74765d47c518cf1f2c0a18e46854fc230b02b5ae",
+   "reviewer_profile": {
+    "adapter": "codex",
+    "model": "default",
+    "reason": "first_review",
+    "tier": "primary"
+   },
+   "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
+   "structural_blocker": false,
+   "summary": "Test-fixture independent design review"
+  },
+  "design_review_attempts": 1,
+  "design_review_authorization": null,
+  "design_review_history": [
+   {
+    "attempt": 1,
+    "by": "test-design-reviewer",
+    "criteria_ids": [
+     "REQ-001"
+    ],
+    "criterion_hashes": {
+     "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+    },
+    "decision": "approved",
+    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
+    "findings": [],
+    "head": null,
+    "proposal_hash": "32242a274301144a064dd07a74765d47c518cf1f2c0a18e46854fc230b02b5ae",
+    "structural_blocker": false
+   }
+  ],
+  "design_round": 0,
+  "escalation": null,
+  "events": [],
+  "feature": "Snapshot contract",
+  "implemented_by": null,
+  "last_heartbeat_at": null,
+  "last_heartbeat_owner": null,
+  "legacy_review_round_offset": 0,
+  "live": {
+   "activity_source": "workflow",
+   "detail": "Get explicit human approval of the independently reviewed design.",
+   "ended_at": null,
+   "exit_code": null,
+   "last_activity_at": "2026-09-21T22:52:00.880482+00:00",
+   "process_signal": "none",
+   "role": null,
+   "seconds_since_activity": 0,
+   "session_id": null,
+   "state": "waiting"
+  },
+  "live_verification_id": null,
+  "next_action": "Get explicit human approval of the independently reviewed design.",
+  "original_symptom_evidence_id": null,
+  "pending_questions": [],
+  "phase": "Design debate",
+  "phase_number": 2,
+  "process_signal": "none",
+  "progress": 20,
+  "reassurance": "",
+  "recovery_attempts": [],
+  "recovery_lease": null,
+  "regression_requests": [],
+  "requirement_coverage": {
+   "blocked": 0,
+   "failing": 0,
+   "not_tested": 0,
+   "original_symptom_resolved": false,
+   "passing": 1
+  },
+  "requires_design_approval": true,
+  "requires_design_review": true,
+  "retry_count": 0,
+  "review": null,
+  "review_attempts": [],
+  "review_cap_overrides": [],
+  "review_round": 0,
+  "reviewed_by": null,
+  "reviewer_checklist": {
+   "all_criteria_verified": "no",
+   "evidence_attached": "no",
+   "symptom_reproduced": "not_verifiable",
+   "symptom_resolved": "not_verifiable"
+  },
+  "stall_warning": null,
+  "status": "blocked",
+  "summary": "",
+  "updated_at": "2026-09-21T22:52:00.880482+00:00",
+  "verification_head": "0c458bf09e76dd55f79ff5c675fed29faae3a7159c17c57d7a648a11c05cf3b3",
+  "verification_progress": 20,
+  "work_item_delivery": {
+   "issue-218": {
+    "baseline_head": null,
+    "confirmed_at": null,
+    "confirmed_by": null,
+    "escalation_reason": null,
+    "facts": null,
+    "implemented_by": null,
+    "lane": "full",
+    "requested_lane": "full",
+    "review_hash": null,
+    "reviewed_by": null
+   }
+  }
+ },
+ "supervisor": {
+  "attention": [
+   "Original symptom still needs a successful evidence record."
+  ],
+  "completed": [
+   "1 acceptance criterion verified"
+  ],
+  "headline": "Holding position. Awaiting your command, Pilot.",
+  "label": "Pilot approval needed",
+  "latest_event": {
+   "at": "2026-09-21T22:52:00.881405+00:00",
+   "kind": "design_review_approved",
+   "message": "Independent design review approved: Test-fixture independent design review"
+  },
+  "next_action": "Independent design review is approved. Authorize this exact design to open Phase 3.",
+  "reassurance": "Reactor core stable. Safety interlocks active. I will advance only when every required gate is satisfied.",
+  "summary": "Independent design review is approved. Authorize this exact design to open Phase 3.",
+  "tone": "critical"
+ },
+ "tickets": [],
+ "tranche": null,
+ "verification": {
+  "in_flight": [],
+  "latest": {
+   "REQ-001": {
+    "at": "2026-09-21T22:52:00.625553+00:00",
+    "ok": true,
+    "run_id": "vr-2e271f3c6059435fb98c5ead046174ab"
+   }
+  },
+  "live": {
+   "at": null,
+   "in_flight": null,
+   "last_failure": null,
+   "ok": null,
+   "run_id": null
+  }
+ },
+ "verifications": [
+  {
+   "acceptance_hash": null,
+   "at": "2026-09-21T22:52:00.625553+00:00",
+   "binding": {
+    "true": "8eb0d59612a47daed880a547b0a3216333933406c19ad1734410a61938896934"
+   },
+   "by": "test-implementer",
+   "commands": [
+    "true"
+   ],
+   "config_hash": "a5a4b1182748478f6bd0b57a10b4d889a9edb7fd3087f943c295fde158be0da4",
+   "criteria": [
+    "REQ-001"
+   ],
+   "criterion_hashes": {
+    "REQ-001": "01145416705a9d2b5c0fa4373e7d6f12ab1ddb304a5ee693f50b29090aef17c3"
+   },
+   "description": "",
+   "executed": true,
+   "feature_hash": "53fd842a1a4b118e71eb064b4f0bda17050818e8d52bf214a4cf887bb246bf4f",
+   "hash": "0c458bf09e76dd55f79ff5c675fed29faae3a7159c17c57d7a648a11c05cf3b3",
+   "kind": "checks",
+   "ok": true,
+   "prev_hash": "GENESIS",
+   "repository_digest": "0fabb7393190c70fb57084ece2784212a6ed31337f86369300d64946c8f9f761",
+   "results": [
+    {
+     "command": "true",
+     "duration_s": 0.0,
+     "exit_code": 0,
+     "output_bytes": 0,
+     "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "timed_out": false,
+     "truncated": false
+    }
+   ],
+   "reused_from": null,
+   "run_id": "vr-2e271f3c6059435fb98c5ead046174ab"
+  }
+ ],
+ "work_items": {
+  "aggregate": {
+   "counts": {
+    "awaiting_approval": 0,
+    "blocked": 1,
+    "done": 0,
+    "in_progress": 0,
+    "in_review": 0,
+    "not_started": 0,
+    "recovering": 0,
+    "unscoped": 0
+   },
+   "done": 0,
+   "progress": 15,
+   "total": 1
+  },
+  "items": [
+   {
+    "blocker": "Get explicit human approval of the independently reviewed design.",
+    "created_at": "2026-09-21T22:52:00.442134+00:00",
+    "criteria": [
+     "REQ-001"
+    ],
+    "discrepancy": null,
+    "github_checked_at": null,
+    "github_state": null,
+    "id": "issue-218",
+    "kind": "issue",
+    "lane": "full",
+    "lane_confirmed": false,
+    "lane_escalation": null,
+    "lane_facts": null,
+    "notes": "",
+    "number": 218,
+    "phase_or_next": "Get explicit human approval of the independently reviewed design.",
+    "progress": 15,
+    "required": true,
+    "status": "blocked",
+    "title": "Issue #218",
+    "updated_at": "2026-09-21T22:52:00.442134+00:00",
+    "url": ""
+   }
+  ],
+  "multi": false,
+  "registry": "persisted",
+  "tickets_config_deprecated": false,
+  "unattributed_criteria": []
+ }
+}

@@ -1,0 +1,421 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/monzta1/project-handsoff/schemas/snapshot.schema.json",
+  "title": "Handsoff run-page snapshot",
+  "description": "What build_snapshot emits for /api/dashboard (#218 step one). The top level is closed: every key the engine emits is listed and required; a new key is a contract change and a fixture regeneration. The enumerated objects below carry the values the pages switch on and are closed; runtime and metrics are the intentionally open objects, marked in their descriptions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "acceptance",
+    "activity",
+    "activity_note",
+    "actors",
+    "amendment",
+    "audit",
+    "ci",
+    "crew",
+    "design_evidence",
+    "design_review_packet",
+    "engine",
+    "escalation",
+    "events",
+    "generated_at",
+    "host",
+    "host_wait",
+    "initialized",
+    "input_required",
+    "live",
+    "metrics",
+    "operations",
+    "operator_actions",
+    "phases",
+    "policy",
+    "project",
+    "questions",
+    "recovery",
+    "regression",
+    "review",
+    "root",
+    "runtime",
+    "settings",
+    "status",
+    "supervisor",
+    "tickets",
+    "tranche",
+    "verification",
+    "verifications",
+    "work_items"
+  ],
+  "properties": {
+    "initialized": {
+      "type": "boolean"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "root": {
+      "type": "string"
+    },
+    "phases": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "upcoming",
+              "active",
+              "complete",
+              "closed"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "number",
+          "name",
+          "state"
+        ]
+      }
+    },
+    "input_required": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            null,
+            "amendment_approval",
+            "amendment_review",
+            "amendment_revision",
+            "blocked",
+            "decision",
+            "deployment_approval",
+            "design_approval",
+            "design_review_budget",
+            "escalation",
+            "evidence_drift",
+            "question",
+            "regression_approval"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "question_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "question_cards": {
+          "type": "array"
+        },
+        "turn": {
+          "enum": [
+            null,
+            "pilot",
+            "supervisor",
+            "architect",
+            "reviewer"
+          ]
+        },
+        "preauthorized": {
+          "type": [
+            "object",
+            "boolean",
+            "null"
+          ]
+        },
+        "amendment_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amendment_decision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amendment_round": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "kind",
+        "message",
+        "blockers",
+        "turn",
+        "preauthorized"
+      ]
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "in_flight": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "latest": {
+          "type": "object"
+        },
+        "live": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "in_flight": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "last_failure": {
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "ok",
+            "at",
+            "run_id",
+            "in_flight",
+            "last_failure"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "in_flight",
+        "latest",
+        "live"
+      ]
+    },
+    "supervisor": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "enum": [
+            "Initialize mission",
+            "Trajectory stable",
+            "Safety interlock",
+            "Background operation",
+            "Objectives unresolved",
+            "Telemetry interruption",
+            "Mission complete",
+            "Mission closed",
+            "Not planned",
+            "Waiting on the host",
+            "Pilot approval needed",
+            "Pre-authorized by pilot note",
+            "Architect revising",
+            "Supervisor working",
+            "Under independent review"
+          ]
+        },
+        "tone": {
+          "enum": [
+            "steady",
+            "warning",
+            "critical",
+            "success"
+          ]
+        },
+        "headline": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "next_action": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attention": {},
+        "completed": {},
+        "latest_event": {},
+        "reassurance": {}
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "tone",
+        "headline",
+        "summary"
+      ]
+    },
+    "engine": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "source_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "manifest_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compatibility": {}
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "source"
+      ]
+    },
+    "ci": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "host": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "host_wait": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "silent_seconds": {
+          "type": "number"
+        },
+        "since": {
+          "type": "string"
+        }
+      }
+    },
+    "live": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "the live process view: sessions, agent output, operations, replacements; grows with the runtime and is intentionally open"
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "counters the Metrics tab and the Fleet card read; intentionally open, a new counter is not a contract change"
+    },
+    "status": {
+      "type": "object"
+    },
+    "acceptance": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "activity": {},
+    "activity_note": {},
+    "actors": {},
+    "amendment": {},
+    "audit": {},
+    "crew": {},
+    "design_evidence": {},
+    "design_review_packet": {},
+    "escalation": {},
+    "events": {
+      "type": "array"
+    },
+    "operations": {},
+    "operator_actions": {},
+    "policy": {},
+    "project": {},
+    "questions": {},
+    "recovery": {
+      "type": "object"
+    },
+    "regression": {},
+    "review": {},
+    "settings": {},
+    "tickets": {},
+    "tranche": {},
+    "verifications": {},
+    "work_items": {}
+  }
+}

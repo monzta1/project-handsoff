@@ -11,8 +11,10 @@ const css = fs.readFileSync(path.join(root, "fleet/styles.css"), "utf8");
 // #150: ongoing runs are the main grid; completed and closed runs sit in a
 // collapsed section below with a count, remembered per browser.
 test("fleet splits ongoing and finished runs", () => {
-  assert.match(app, /const FINISHED_STATES = new Set\(\["complete", "closed", "idle", "orphaned"\]\)/);
-  assert.match(app, /idle: "NO RUN"/);
+  // #218: the set lives in the shared vocabulary the page loads first
+  const vocab = fs.readFileSync(path.join(__dirname, "..", "..", "dashboard", "lib", "run-vocabulary.js"), "utf8");
+  assert.match(vocab, /const FINISHED_STATES = new Set\(\["complete", "closed", "idle", "orphaned"\]\)/);
+  assert.match(vocab, /idle: "NO RUN"/);
   assert.match(app, /const ongoing = projects\.filter\(\(project\) => !FINISHED_STATES\.has\(project\.state\)\)/);
   assert.match(app, /const finished = projects\.filter\(\(project\) => FINISHED_STATES\.has\(project\.state\)\)/);
   assert.match(app, /\$\("projects"\)\.innerHTML = ongoing\.length \? ongoing\.map\(projectCard\)/);
