@@ -57,6 +57,12 @@ def normalize_fixture_config(path):
            for role in ("architect", "supervisor", "implementer", "reviewer")},
         ("checks", "commands"): "commands = []",
         ("checks", "live_commands"): "live_commands = []",
+        # The dogfood repo waives the Pilot's design and deployment clicks
+        # (6d721f9, 2026-09-19). Fixtures start from the engine defaults, or
+        # every test of those two gates reads the operator's preference
+        # instead of the engine (39 failures in the first CI run, #178).
+        ("workflow", "require_design_approval"): "require_design_approval = true",
+        ("workflow", "deployment_requires_explicit_approval"): "deployment_requires_explicit_approval = true",
     })
     # The dogfood repo gates its own full suites behind [[regressions]]
     # (#28). A fixture project must not inherit those groups: the fixture
@@ -177,8 +183,13 @@ class HandsoffTestCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-test-"))
         # #166: init registers the run and takes the ticket lock through the
         # fleet register; a fixture must never touch the operator's own.
+        # The register lives beside the root, never inside it: in production
+        # it is ~/.handsoff/projects.json, and a register inside the project
+        # is repository content to the digest, so every fixture that
+        # verified and then registered read as evidence drift (#178).
         self._registry_before = os.environ.get("HANDSOFF_FLEET_REGISTRY")
-        os.environ["HANDSOFF_FLEET_REGISTRY"] = str(self.tmp / ".fleet-registry.json")
+        self.registry_dir = Path(tempfile.mkdtemp(prefix="handsoff-registry-"))
+        os.environ["HANDSOFF_FLEET_REGISTRY"] = str(self.registry_dir / "projects.json")
         for name in ("handsoff.toml", "handsoff-runtime.json"):
             shutil.copy(ROOT / name, self.tmp / name)
         normalize_fixture_config(self.tmp / "handsoff.toml")
@@ -190,6 +201,7 @@ class HandsoffTestCase(unittest.TestCase):
             os.environ.pop("HANDSOFF_FLEET_REGISTRY", None)
         else:
             os.environ["HANDSOFF_FLEET_REGISTRY"] = self._registry_before
+        shutil.rmtree(self.registry_dir, ignore_errors=True)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def init(self, feature="Test feature"):
@@ -723,7 +735,7 @@ class TestEveMissionControl(HandsoffTestCase):
             "architect": "default", "supervisor": "opus",
             "implementer": "default", "reviewer": "default",
         })
-        with mock.patch.object(lib.shutil, "which", side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+        with mock.patch.object(lib.shutil, "which", side_effect=lambda name: "/usr/local/bin/codex" if name == "codex" else None):
             view = dashboard._settings_view(lib.load_config(self.tmp))
         self.assertTrue(view["availability"]["codex"]["available"])
         self.assertFalse(view["availability"]["claude"]["available"])
@@ -1015,7 +1027,7 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
         cfg = lib.load_config(self.tmp)
         self.assertTrue(all(profile["adapter"] == "auto" for profile in lib.agent_profiles(cfg).values()))
         with mock.patch.object(lib.shutil, "which",
-                               side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+                               side_effect=lambda name: "/usr/local/bin/codex" if name == "codex" else None):
             resolved = lib.resolved_agent_profiles(cfg, require_available=True)
         self.assertTrue(all(profile["adapter"] == "codex" for profile in resolved.values()))
 
@@ -1051,7 +1063,7 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
         import handsoff_lib as lib
 
         with mock.patch.object(lib.shutil, "which",
-                               side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+                               side_effect=lambda name: "/usr/local/bin/codex" if name == "codex" else None):
             view = dashboard._settings_view(lib.load_config(self.tmp))
         self.assertEqual(view["default_adapter"], "codex")
         self.assertEqual(view["default_order"], ["codex", "claude"])
@@ -1077,7 +1089,7 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
         legacy_path.write_text(legacy_path.read_text().replace('reviewer = "auto"',
                                                                'reviewer = "configure-me"'))
         with mock.patch.object(lib.shutil, "which",
-                               side_effect=lambda name: "/bin/codex" if name == "codex" else None):
+                               side_effect=lambda name: "/usr/local/bin/codex" if name == "codex" else None):
             legacy_view = dashboard._settings_view(lib.load_config(self.tmp))
         self.assertEqual(legacy_view["profiles"]["reviewer"]["adapter"], "codex")
         self.assertEqual(legacy_view["profile_sources"]["reviewer"]["adapter"], "recommended")
@@ -1229,6 +1241,10 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
 
     def test_missing_recommended_executable_is_reported_truthfully_and_never_launched(self):
         self._write_toml()
+        # This test is about executable discovery at Phase 1; the shipped
+        # reviewer-launch-phase-1 rule (#165) would refuse the launch first.
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text() + "\n[features]\nlaunch_rules = false\n")
         self.init("Recommended crew availability")
         claude_only = lambda name: "/usr/local/bin/claude" if name == "claude" else None
         cfg = self.lib.load_config(self.tmp)
@@ -1875,9 +1891,11 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
                 else:
                     self.assertIn("-p", spec.argv)
                     permission = spec.argv[spec.argv.index("--permission-mode") + 1]
-                    # Claude reviewers and supervisors run in the default
-                    # mode (plan mode cannot run tests); writers accept edits.
-                    self.assertEqual(permission, "default" if role in {"reviewer", "supervisor"} else "acceptEdits")
+                    # Claude reviewers, supervisors and architects run in the
+                    # default mode (plan mode cannot run tests; the architect's
+                    # criteria land through the host broker, #121); only the
+                    # implementer writes the tree and accepts edits.
+                    self.assertEqual(permission, "acceptEdits" if role == "implementer" else "default")
 
                 default_profiles = {item: {"adapter": adapter, "model": "default"}
                                     for item in lib.SELECTABLE_AGENT_ROLES}
@@ -1896,13 +1914,13 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
             runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: None)
         (self.tmp / "prompts" / "reviewer.md").unlink()
         with self.assertRaisesRegex(lib.HandsoffError, "prompts/reviewer.md"):
-            runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: "/bin/reviewer")
+            runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=lambda _name: "/usr/local/bin/reviewer")
 
         self.init("Managed agent runtime adapter")
         # Process plumbing is role-independent; the Implementer is the role
         # allowed to exit 0 without a protocol line (#87 refuses a silent
         # Reviewer, Architect or Supervisor).
-        spec = runtime.LaunchSpec("implementer", "codex", "default", ("/bin/codex", "exec", "-"),
+        spec = runtime.LaunchSpec("implementer", "codex", "default", ("/usr/local/bin/codex", "exec", "-"),
                                   str(self.tmp), "prompt and task")
         calls = []
 
@@ -2021,7 +2039,7 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
             "role": "reviewer", "task": "Inspect only", "timeout": 30,
         }
         launch_spec = runtime.LaunchSpec(
-            "reviewer", "codex", "default", ("/bin/codex", "exec", "-"), root_text, "prompt"
+            "reviewer", "codex", "default", ("/usr/local/bin/codex", "exec", "-"), root_text, "prompt"
         )
         launcher = mock.Mock(return_value=0)
         with mock.patch.object(broker.agent_runtime, "build_launch_spec", return_value=launch_spec) as build:
@@ -2075,7 +2093,7 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
                 self.stdout = io.StringIO(protocol)
 
         supervisor_spec = runtime.LaunchSpec(
-            "supervisor", "codex", "default", ("/bin/codex", "exec", "-"), root_text, "supervisor prompt"
+            "supervisor", "codex", "default", ("/usr/local/bin/codex", "exec", "-"), root_text, "supervisor prompt"
         )
         with mock.patch.object(broker, "dispatch_supervisor_request", return_value=0) as dispatch:
             self.assertEqual(runtime.execute_launch(
@@ -2133,7 +2151,7 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
 
     def _spec(self, role="implementer", model="default", adapter="codex", stdin="private task"):
         return self.runtime.LaunchSpec(
-            role, adapter, model, (f"/bin/{adapter}", "exec", "-"), str(self.tmp), stdin,
+            role, adapter, model, (f"/usr/local/bin/{adapter}", "exec", "-"), str(self.tmp), stdin,
             "configured",
         )
 
@@ -2171,7 +2189,9 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "running_at": session["running_at"], "ended_at": session["ended_at"],
             "state": "completed", "exit_code": 0,
             "packet_id": None, "design_hash": None, "tier": None, "phase_number": 1,
-            "host_session_id": None,
+            "host_session_id": None, "amendment_id": None,
+            # #168: usage per session; a fake process reports none.
+            "usage": {"source": "not reported", "tokens_in": None, "tokens_out": None, "tokens_total": None},
         })
         self.assertIsNotNone(session["running_at"])
         self.assertIsNotNone(session["ended_at"])
@@ -2424,7 +2444,7 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
         self.lib.update_agent_settings(self.tmp, payload)
         replacement = self.lib.reserve_agent_replacement(
             self.tmp, from_session_id=source["session_id"],
-            which=lambda adapter: f"/bin/{adapter}",
+            which=lambda adapter: f"/usr/local/bin/{adapter}",
             snapshotter=lambda root: {
                 "head": "a" * 40, "branch": "main", "dirty": False,
                 "status_sha256": "b" * 64,
@@ -2501,7 +2521,7 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             before, acceptance, cfg, verifications=verifications, verification_problems=problems,
         )
         self.runtime.build_launch_spec(
-            self.tmp, "architect", "inspect-only secret", which=lambda name: f"/bin/{name}",
+            self.tmp, "architect", "inspect-only secret", which=lambda name: f"/usr/local/bin/{name}",
         )
         self.assertEqual(self.read_status(), before)
 
@@ -8232,7 +8252,7 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         self.lib.transition_agent_session(self.tmp, self._sid(1), "failed", exit_code=1, failure=failure)
         record = self.lib.reserve_agent_replacement(
             self.tmp, from_session_id=self._sid(1),
-            which=lambda name: f"/bin/{name}",
+            which=lambda name: f"/usr/local/bin/{name}",
             snapshotter=lambda root: {"head": None, "branch": None, "dirty": False},
             session_id_factory=lambda: self._sid(2),
         )
@@ -8345,7 +8365,7 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         self.lib.record_design_proposal(self.tmp, None, {
             "summary": "budget fixture", "approach": ["one"], "tradeoffs": [], "decisions": ["one"],
             "constraints": [], "verification": ["one"]}, architect_actor="host-architect")
-        which = lambda name: f"/bin/{name}" if name == "codex" else None
+        which = lambda name: f"/usr/local/bin/{name}" if name == "codex" else None
         before = self._files_snapshot()
         with self.assertRaisesRegex(self.lib.HandsoffError, "design-review-authorize") as ctx:
             self.runtime.build_launch_spec(self.tmp, "reviewer", "Review the design", which=which)
@@ -8416,7 +8436,7 @@ class TestDesignReviewPacket(HandsoffTestCase):
         self.broker = handsoff_broker
         self.dashboard = handsoff_dashboard
         self.lib = handsoff_lib
-        self.which = lambda name: f"/bin/{name}" if name == "codex" else None
+        self.which = lambda name: f"/usr/local/bin/{name}" if name == "codex" else None
 
     def _git(self, *args):
         result = subprocess.run(["git", *args], cwd=self.tmp, capture_output=True, text=True, timeout=30)
@@ -9079,9 +9099,9 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         self.broker = handsoff_broker
         self.dashboard = handsoff_dashboard
         self.lib = handsoff_lib
-        self.both = lambda name: f"/bin/{name}" if name in ("codex", "claude") else None
-        self.codex_only = lambda name: "/bin/codex" if name == "codex" else None
-        self.claude_only = lambda name: "/bin/claude" if name == "claude" else None
+        self.both = lambda name: f"/usr/local/bin/{name}" if name in ("codex", "claude") else None
+        self.codex_only = lambda name: "/usr/local/bin/codex" if name == "codex" else None
+        self.claude_only = lambda name: "/usr/local/bin/claude" if name == "claude" else None
 
     def _write_toml(self, followup=FOLLOWUP, *, implementer=None, architect=None):
         """Explicit, distinct primary profiles (the recommended crew) plus
@@ -9288,7 +9308,7 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         spec = self.runtime.build_launch_spec(self.tmp, "reviewer", "Review the revision", which=self.both)
         self.assertEqual((spec.adapter, spec.model, spec.tier, spec.tier_reason, spec.resolution_source),
                          ("claude", "claude-haiku", "followup", "delta_check", "configured"))
-        self.assertEqual(spec.argv[0], "/bin/claude")
+        self.assertEqual(spec.argv[0], "/usr/local/bin/claude")
         self.assertEqual(spec.argv[spec.argv.index("--model") + 1], "claude-haiku")
         self.assertEqual(self._launch(spec, 2), 0)
         status = self.read_status()
@@ -10992,7 +11012,7 @@ class TestAgentReplacement(HandsoffTestCase):
     def _reserve(self, session_id, **kwargs):
         return self.lib.reserve_agent_replacement(
             self.tmp, from_session_id=session_id,
-            which=lambda adapter: f"/bin/{adapter}", snapshotter=lambda root: dict(self.repo),
+            which=lambda adapter: f"/usr/local/bin/{adapter}", snapshotter=lambda root: dict(self.repo),
             **kwargs,
         )
 
@@ -11022,7 +11042,7 @@ class TestAgentReplacement(HandsoffTestCase):
         self.assertEqual(record["selected_profile"], {"adapter": "claude", "model": "sonnet"})
         fallback = self.runtime.build_profile_launch_spec(
             self.tmp, "implementer", "trusted in-memory task", record["selected_profile"],
-            which=lambda adapter: f"/bin/{adapter}",
+            which=lambda adapter: f"/usr/local/bin/{adapter}",
         )
         claim_seen_before_spawn = []
         def popen_after_claim(*args, **kwargs):
@@ -11052,7 +11072,7 @@ class TestAgentReplacement(HandsoffTestCase):
     def test_active_stop_escalates_and_terminalizes_once(self):
         process = self._process(timeout=True)
         spec = self.runtime.LaunchSpec(
-            "implementer", "codex", "default", ("/bin/codex",), str(self.tmp), "private", "configured",
+            "implementer", "codex", "default", ("/usr/local/bin/codex",), str(self.tmp), "private", "configured",
         )
         with self.assertRaises(self.runtime.AgentLaunchError):
             self.runtime.execute_launch(spec, timeout=1, popen_factory=mock.Mock(return_value=process))
@@ -11071,7 +11091,7 @@ class TestAgentReplacement(HandsoffTestCase):
             {"adapter": "codex", "model": "second"},
         ], cap=2)
         spec = self.runtime.LaunchSpec(
-            "implementer", "codex", "primary", ("/bin/codex",), str(self.tmp), "secret task", "configured",
+            "implementer", "codex", "primary", ("/usr/local/bin/codex",), str(self.tmp), "secret task", "configured",
         )
         outcomes = [self._process(returncode=1), OSError("missing runner"), self._process()]
         def launch(*args, **kwargs):
@@ -11080,7 +11100,7 @@ class TestAgentReplacement(HandsoffTestCase):
                 raise outcome
             return outcome
         self.assertEqual(self.runtime.execute_with_recovery(
-            spec, popen_factory=launch, which=lambda adapter: f"/bin/{adapter}",
+            spec, popen_factory=launch, which=lambda adapter: f"/usr/local/bin/{adapter}",
             snapshotter=lambda root: dict(self.repo),
         ), 0)
         status = self.read_status()
@@ -11118,7 +11138,7 @@ class TestAgentReplacement(HandsoffTestCase):
         def broker_launcher(spec, **kwargs):
             self.assertIn((self.tmp / "prompts" / "implementer.md").read_text().strip(), spec.stdin)
             return self.runtime.execute_with_recovery(
-                spec, which=lambda adapter: f"/bin/{adapter}",
+                spec, which=lambda adapter: f"/usr/local/bin/{adapter}",
                 snapshotter=lambda root: dict(self.repo), **kwargs,
             )
         with self.assertRaisesRegex(self.lib.HandsoffError, "quality_boundary_not_reached"):
