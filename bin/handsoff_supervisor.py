@@ -697,17 +697,20 @@ MINER_INSTALL_HINT = (f"install the Miner {MINER_RELEASE}: gh release download {
 
 def _miner_argv() -> list[str] | None:
     """The installed Miner: HANDSOFF_MINER (an executable), else `miner` on
-    PATH, else `miner` beside this interpreter (where pip puts it in the
-    engine's own environment); None when there is none."""
+    PATH, else `miner` in this interpreter's environment (sys.prefix/bin,
+    where pip puts it in the engine's own venv); None when there is none."""
     override = os.environ.get("HANDSOFF_MINER")
     if override:
         return [override]
     found = shutil.which("miner")
     if found:
         return [found]
-    beside = Path(sys.executable).resolve().parent / "miner"
-    if beside.is_file() and os.access(beside, os.X_OK):
-        return [str(beside)]
+    # The engine's own environment: sys.prefix is the venv root (on macOS a
+    # framework build reports the framework binary as sys.executable, so
+    # the executable's directory is not where pip put the scripts).
+    for candidate in (Path(sys.prefix) / "bin" / "miner", Path(sys.executable).resolve().parent / "miner"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate)]
     return None
 
 

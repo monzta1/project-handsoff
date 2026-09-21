@@ -13290,6 +13290,27 @@ print(json.dumps(report))
         self.assertEqual(self.read_status()["status"], "complete")
         self.assertNotIn("archive_scan_completed", [e["kind"] for e in self._events()])
 
+    def test_the_lookup_reads_the_interpreters_environment_first(self):
+        """[#174] v0.3.63: sys.prefix/bin/miner, where pip puts it in the
+        engine's venv, before the executable's own directory."""
+        self._no_miner()
+        prefix = Path(tempfile.mkdtemp(prefix="handsoff-prefix-")).resolve()
+        try:
+            (prefix / "bin").mkdir()
+            fake = prefix / "bin" / "miner"
+            fake.write_text("#!/bin/sh\necho '{}'\n")
+            fake.chmod(0o755)
+            with mock.patch.object(self.supervisor.sys, "prefix", str(prefix)):
+                self.assertEqual(self.supervisor._miner_argv(), [str(fake)])
+            with mock.patch.object(self.supervisor.sys, "prefix", str(prefix / "nowhere")), \
+                    mock.patch.object(self.supervisor.sys, "executable", str(prefix / "bin" / "python3")):
+                self.assertEqual(self.supervisor._miner_argv(), [str(fake)])
+            with mock.patch.object(self.supervisor.sys, "prefix", str(prefix / "nowhere")), \
+                    mock.patch.object(self.supervisor.sys, "executable", "/usr/bin/python3"):
+                self.assertIsNone(self.supervisor._miner_argv())
+        finally:
+            shutil.rmtree(prefix, ignore_errors=True)
+
     def test_a_miner_that_cannot_start_is_named_not_a_traceback(self):
         os.environ["HANDSOFF_MINER"] = str(self.miner_dir / "no-such-miner")
         r = run(["analyze-archives", "--dry-run"], cwd=self.tmp)
