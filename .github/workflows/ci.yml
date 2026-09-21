@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+# The two [[regressions]] from handsoff.toml, as two jobs side by side so the
+# wall time is the slower one, not the sum. `tests` is the check main requires.
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the engine
+        run: python -m pip install --upgrade pip && python -m pip install .
+      - name: python-full
+        run: python3 tests/test_handsoff_supervisor.py
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: dashboard-full
+        run: node --test tests/dashboard/*.test.js
