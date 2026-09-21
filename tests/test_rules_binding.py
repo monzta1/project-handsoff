@@ -45,7 +45,9 @@ class RulesSetTests(HandsoffTestCase):
         self.assertIsNone(entries[".claude/settings.json"], "absent files hash as absent")
         self.assertIn("engine:prompts/reviewer.md", entries)
         self.assertIn("engine:reviewer-launch-phase-1.json", entries)
-        self.assertEqual(entries["engine:version"], "v0.3.48")
+        # the engine version lives in one file; the test reads it, never restates it (#179, Lane A)
+        manifest_version = json.loads((BIN.parent / "handsoff-runtime.json").read_text())["version"]
+        self.assertEqual(entries["engine:version"], manifest_version)
         self.assertFalse(any(".env" in key for key in entries))
         (self.tmp / ".env").write_text("SECRET=abc\n")
         before = lib.rules_set_hash(self.tmp)

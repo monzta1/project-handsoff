@@ -4,16 +4,16 @@
     "bin/handsoff_analyzer.py": "31495f7b0c481ee8a6a585f4c339e044439d7adca47608c9d9cdc607d03cc7e6",
     "bin/handsoff_broker.py": "99fea610e9b60dd4ba75e049c540ec41dd1f949379aeab5188cf3fd58f5110ce",
     "bin/handsoff_cli.py": "acd7be0385dda03ce0dac6db0ffee9f0f01bef64326a4cc14433cc1d91f39445",
-    "bin/handsoff_dashboard.py": "28b0817b022eacfe55bb0c374b78601378156bac76d5312d678e30b0ec6a3266",
+    "bin/handsoff_dashboard.py": "656e8a61ec54214dcdc0696d647d8434d059b1a418c7852dcff388f8979bdc6a",
     "bin/handsoff_fleet.py": "544722170d724b3d8c4c6819636e2c98409b9b80ef684c4466f36f8ca5cba144",
     "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
-    "bin/handsoff_lib.py": "973055e68e2f82093377eea25e831ae5bfa5ac4d618d21b9fa8910fba4d34653",
+    "bin/handsoff_lib.py": "015a7451ea85e80a416268cdc524464399cb8e84423908e9414141d22551570a",
     "bin/handsoff_manifest.py": "3882f86627004ded29c672a56f5cab377f80a3b1299a37be899d28bbb12e280f",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
-    "bin/handsoff_supervisor.py": "bbfc8a5545fd8efabd8dcf15f0ec9d5f1f2d0f240a4606c7cf1a3c3643226e20",
+    "bin/handsoff_supervisor.py": "30f6af865ea390dc53e34297126440fc410453a188e28a4c92c877ec92629fdd",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
-    "dashboard/app.js": "baa460a5c189ce393a77dbbab824034a1f97cdc990656a4c28353fac7e961b48",
+    "dashboard/app.js": "f4df1efb48f41f463f1aee65e47bc7d281ba5b435035abd1fe59c039e793fb1f",
     "dashboard/index.html": "ca988b77bee2e85b8064d80ee57e58c0844338294f79b643e31ab836f0b28c10",
     "dashboard/lib/dashboard-logic.js": "fd78761864c8c188f78dccc28eafe3cd9109d590ee060ba985d4dad28828ce13",
     "dashboard/logo.png": "6345128f357084469b84be31c2f6d6bc26bd08950c6a9d864ea4a8902de58e59",
@@ -38,5 +38,5 @@
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },
   "schema": 1,
-  "version": "v0.3.50"
+  "version": "v0.3.51"
 }

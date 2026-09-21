@@ -121,9 +121,25 @@ def _verification_view(root: Path, cfg: dict, records: list[dict]) -> dict:
     return {"in_flight": sorted(set(inflight)), "latest": latest, "live": live}
 
 
+UNKNOWN_ENGINE = {"version": "unknown", "source": "unknown", "source_root": None,
+                  "compatibility": None, "manifest_sha256": None}
+
+
+def _engine_identity(root: Path) -> tuple[dict, str | None]:
+    """#185: the engine identity for a read path. A missing or mismatched
+    version pin is one line of data (the badge reads UNKNOWN and the audit
+    strip carries the reason), never a failed snapshot: the pin is a side
+    file the operator owns, and a page that dies on it hides every other
+    fact about the run."""
+    try:
+        return lib.runtime_identity(root), None
+    except (lib.HandsoffError, OSError) as exc:
+        return {**UNKNOWN_ENGINE, "reason": str(exc)}, str(exc)
+
+
 def _engine_view(root: Path) -> dict:
     """Render safe CLI forms and catch preview failures as data."""
-    identity = lib.runtime_identity(root)
+    identity, engine_error = _engine_identity(root)
     version = identity["version"]
     root_text = str(root)
     commands = {
@@ -145,7 +161,7 @@ def _engine_view(root: Path) -> dict:
     except (lib.HandsoffError, OSError) as exc:
         migrate = {"error": str(exc)}
     return {**{key: identity.get(key) for key in ("version", "source", "source_root", "compatibility")},
-            "pin": identity.get("compatibility"), "commands": commands,
+            "pin": identity.get("compatibility"), "reason": engine_error, "commands": commands,
             "previews": {"upgrade": upgrade, "migrate": migrate},
             "execution": "unavailable",
             "execution_reason": "execution is not offered while a dashboard is serving this root"}
@@ -1058,6 +1074,7 @@ def build_snapshot(root: Path) -> dict:
         item["to_profile"] = session_view(sessions.get(replacement.get("to_session_id")))
         replacements.append(item)
     metrics = lib.build_run_metrics(status, events, verifications)
+    engine_identity, engine_error = _engine_identity(root)  # #185
     # #181: the CI row. ci_view refreshes through gh at most once a minute
     # and commits the terminal event once; a gh hiccup becomes the row's
     # note, never a failed snapshot.
@@ -1071,7 +1088,7 @@ def build_snapshot(root: Path) -> dict:
         "ci": ci,
         "generated_at": generated_at,
         "root": str(root),
-        "engine": lib.runtime_identity(root),
+        "engine": engine_identity,
         "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature")),
                     "logo_url": "/project-logo" if lib.project_logo(root, cfg) else None},
         "status": display_status,
@@ -1112,6 +1129,7 @@ def build_snapshot(root: Path) -> dict:
             "healthy": audit_healthy,
             "gate_errors": gate_errors,
             "chain_errors": audit_errors,
+            "engine_error": engine_error,
             "verification_runs": len(verifications),
             "event_count": len(events),
             "verification_head": status.get("verification_head"),

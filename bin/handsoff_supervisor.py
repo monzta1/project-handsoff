@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import uuid
 from copy import deepcopy
@@ -215,6 +216,26 @@ def _print_audit_block(problems: list[str]) -> int:
     return 1
 
 
+def _write_missing_pin(root) -> str | None:
+    """#185: a root served by the installed engine needs .handsoff-version,
+    and every read of the engine identity fails without it (a fresh git
+    worktree has no untracked files, so it has no pin). init is the one
+    command that can put it there: when the root is not a runtime drop-in
+    and no pin exists, write the running engine's compatible line. A root
+    with a pin, or one carrying its own engine, is untouched."""
+    pin_path = root / lib.VERSION_PIN_FILE
+    if pin_path.exists() or lib._looks_like_runtime_drop_in(root):
+        return None
+    version = lib.engine_manifest_version()
+    match = re.match(r"v?(\d+)\.(\d+)\.", version or "")
+    if not match:
+        return None
+    pin = f"{match.group(1)}.{match.group(2)}.*"
+    lib._atomic_write_text(pin_path, pin + "\n")
+    print(f"HANDSOFF_PIN_WRITTEN: {pin} ({pin_path.name} was missing; engine {version})")
+    return pin
+
+
 def cmd_init(args) -> int:
     if not args.feature or not args.feature.strip():
         print("SHIP_FEATURE_BLOCKED: feature must be a non-empty string")
@@ -236,6 +257,7 @@ def cmd_init(args) -> int:
                 print(f"HANDSOFF_INIT_SKIPPED: existing Handsoff artifacts at {root}: {', '.join(existing)}")
                 return 1
             print(f"HANDSOFF_RETIRED: {retired}")
+        pin_written = _write_missing_pin(root)  # #185
         acceptance = {
             "feature": args.feature,
             "criteria": [{
@@ -302,7 +324,8 @@ def cmd_init(args) -> int:
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="initialized", event_message=f"Handsoff initialized for '{args.feature}'",
                   extra_events=waived, project_root=str(root), engine=lib.ledger_engine_identity(root),
-                  ticket_lock="evaluated" if lib.feature_enabled(cfg, "ticket_lock") else "disabled")
+                  ticket_lock="evaluated" if lib.feature_enabled(cfg, "ticket_lock") else "disabled",
+                  pin_written=pin_written)
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
     for previous in adopted["adopted_from"]:
         print(f"WORK_ITEM_ADOPTED: #{', #'.join(str(n) for n in previous['numbers'])} from {previous['root']}")
@@ -2691,7 +2714,14 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
     reviewer re-binds the latest approved attempt to the new acceptance hash
     without opening an attempt or spending budget. Every review gate still
     runs, and a changed design hash (a real spec change) is refused."""
-    if status.get("review") is not None:
+    # #179 (Lane A): a current review whose rules binding went stale (the
+    # engine:version entry after a release install, the reviewer prompt or
+    # a rule file) is reaffirmed too: the same reviewer re-binds it to the
+    # current set and the ledger names what changed. A current review whose
+    # set is unchanged has nothing to reaffirm.
+    stale_rules = lib.rules_set_diff(root, (status.get("review") or {}).get("rules_entries")) \
+        if isinstance(status.get("review"), dict) and lib.rules_binding_errors(root, cfg, status.get("review"), "review gate") else []
+    if status.get("review") is not None and not stale_rules:
         print("SHIP_FEATURE_BLOCKED: review is current; nothing to reaffirm")
         return 1
     if lib.current_review_attempt(status) is not None:
@@ -2734,6 +2764,7 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
         "profiles_distinct": profiles_distinct,
         "reaffirmed_attempt": latest.get("attempt"),
         "reaffirmed_from_acceptance_hash": previous_hash,
+        **lib.rules_binding(root, cfg),  # #170: the reaffirmed review certifies the current set
         "checklist": {"symptom_reproduced": args.symptom_reproduced,
                       "symptom_resolved": "yes", "all_criteria_verified": "yes",
                       "evidence_attached": "yes"},
@@ -2754,12 +2785,15 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
     latest["reaffirmed_at"] = now
     status["updated_at"] = now
     status["next_action"] = REVIEW_APPROVED_NEXT_ACTION
+    reason = (f"after the rules set changed ({', '.join(stale_rules[:8])})" if stale_rules
+              else "after an evidence-only refresh")
     lib.commit(root, cfg, status=status, event_kind="review_reaffirmed",
-               event_message=f"Review attempt {latest.get('attempt')} reaffirmed after an evidence-only refresh",
+               event_message=f"Review attempt {latest.get('attempt')} reaffirmed {reason}",
                by=reviewer_id, attempt=latest.get("attempt"), attempt_id=latest.get("attempt_id"),
                acceptance_hash=preflight["review"]["acceptance_hash"], previous_acceptance_hash=previous_hash,
-               design_hash=current_design, reviewer_session_id=getattr(args, "session", None))
-    print("INDEPENDENT_REVIEW_REAFFIRMED")
+               design_hash=current_design, reviewer_session_id=getattr(args, "session", None),
+               rules_changed=stale_rules)
+    print(f"INDEPENDENT_REVIEW_REAFFIRMED{': rules set changed (' + ', '.join(stale_rules[:8]) + ')' if stale_rules else ''}")
     return 0
 
 

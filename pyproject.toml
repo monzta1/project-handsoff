@@ -4,12 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-handsoff"
-version = "0.3.50"
+version = "0.3.51"
 description = "A lean, auditable multi-agent software-delivery control plane"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Moncy Abraham"}]
+
+[project.optional-dependencies]
+# #190: the live checks drive headless Chrome over its DevTools socket
+# (tests/live_offline_smoke.py) and need websockets in the interpreter that
+# runs them; declared here so the dedicated environment carries it.
+live = ["websockets>=12"]
 
 [project.scripts]
 handsoff = "handsoff_cli:main"
