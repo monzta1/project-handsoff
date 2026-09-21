@@ -16,7 +16,9 @@ test("Mission Control surfaces truthful run economics without estimating tokens"
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(app, /function renderMetrics\(metrics\)/);
-  assert.match(app, /total == null \? "UNKNOWN"/);
+  // #184: the token cell folds into one line until a session reports usage; nothing is estimated
+  assert.match(app, /const reported = total != null;/);
+  assert.match(app, /tokens: not reported by/);
   assert.match(app, /metrics\.largest_sessions/);
   assert.match(server, /metrics = lib\.build_run_metrics/);
   assert.match(server, /"metrics": metrics/);
