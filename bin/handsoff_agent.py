@@ -209,6 +209,10 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
         text = f"{text}\n\n{answers}"
     if briefing:
         text = f"{briefing}\n\n{text}"
+    # #208: the engine's playbook rides ahead of the project's knowledge base
+    # on every launch, so a managed session on any machine carries the lane
+    # rules without configuration.
+    text = f"{lib.playbook_section(topic)}\n\n{text}"
     return text
 
 

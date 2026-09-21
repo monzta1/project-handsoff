@@ -196,6 +196,7 @@ commands = [
   "python3 -m unittest tests.test_lane_e_clocks_and_decline -v",
   "node --test tests/dashboard/lane_e_clocks.test.js",
   "python3 -m unittest tests.test_stale_manifest -v",
+  "python3 -m unittest tests.test_playbook -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
