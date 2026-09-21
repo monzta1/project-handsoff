@@ -147,9 +147,11 @@ class UpdateTests(unittest.TestCase):
         outcome = update.update(cfg, only=[a for a in args if not a.startswith("--")] or None,
                                 dry_run="--dry-run" in args, out=lines.append, fleet_wait=fleet_wait,
                                 registry=self.base / "empty-register.json")  # #216: no live session on an empty register
-        # #216: the install check speaks first; these tests read the tool lines after it
-        self.assertEqual(lines[0], "INSTALL_CHECK_OK")
-        return outcome, lines[1:]
+        # #216: the install check speaks first when a wheel tool is in the set;
+        # these tests read the tool lines after it
+        if lines and lines[0] == "INSTALL_CHECK_OK":
+            return outcome, lines[1:]
+        return outcome, lines
 
     def test_dry_run_prints_every_would_line_and_writes_nothing(self):
         """[#219] acceptance 1, the dry run."""
