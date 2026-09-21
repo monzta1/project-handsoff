@@ -265,3 +265,6 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .host-tag { margin-left: 8px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; font: 700 9px/1.4 var(--sans); letter-spacing: .08em; color: var(--faint); }
 .host-tag[data-family="claude"] { color: var(--emerald); border-color: rgba(70, 224, 161, .32); }
 .host-tag[data-family="codex"] { color: var(--amber); border-color: rgba(245, 194, 107, .32); }
+
+/* #194: the card names the host it waits on */
+.host-wait { color: var(--amber); font-weight: 700; letter-spacing: .06em; }

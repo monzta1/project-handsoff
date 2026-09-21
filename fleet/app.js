@@ -141,6 +141,15 @@ function hostTag(project) {
   return family ? ` <span class="host-tag" data-family="${esc(family)}">HOST ${esc(family.toUpperCase())}</span>` : "";
 }
 
+// #194: when the ball is with the host, the card says which host and how long.
+function hostWaitTag(project) {
+  const wait = project && project.host_wait;
+  if (!wait || typeof wait !== "object") return "";
+  const seconds = Number(wait.silent_seconds);
+  const words = !Number.isFinite(seconds) || seconds < 0 ? "" : seconds < 3600 ? `${Math.floor(seconds / 60)} min` : `${Math.floor(seconds / 3600)} h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")} m`;
+  return `<span class="host-wait">WAITING ON HOST ${esc(String(wait.family || "unknown").toUpperCase())}${words ? " " + esc(words) : ""}</span>`;
+}
+
 function projectCard(project) {
   const state = project.state || "quiet";
   const engine = engineMeta(project);
@@ -166,7 +175,7 @@ function projectCard(project) {
     ${Array.isArray(project.claimed_twice) && project.claimed_twice.length ? `<p class="claimed-twice">CLAIMED TWICE: ${esc(project.claimed_twice.map((n) => "#" + n).join(", "))} is also listed by another live run</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
     ${signalsStrip(project)}
-    <div class="project-meta"><span>${crew}</span><span>${ownerLabel}</span><span class="engine-meta">${engine.text}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
+    <div class="project-meta"><span>${crew}</span>${hostWaitTag(project)}<span>${ownerLabel}</span><span class="engine-meta">${engine.text}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
     <p class="root">${esc(project.root)}</p>
     <div class="project-actions">
       ${link}

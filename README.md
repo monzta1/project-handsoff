@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.54/project_handsoff-0.3.54-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.55/project_handsoff-0.3.55-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -541,6 +541,15 @@ not yet dispatch `HANDSOFF_DESIGN_DECLINE` from a managed Architect and the
 design reviewer does not yet review a decline. Filed on the way: #193, the
 clocks count the hours the Mac was asleep.
 
+### v0.3.55 field notes: the board says who it waits on (#194, #198, #199)
+
+Cause: a run whose host had stopped for eight hours after the Pilot
+authorized a review attempt read "telemetry stalled"; the CI row had a bar
+and no number; the crew chiclets named the family but not whether the
+station was the host or a managed session. Fix: the host-wait line and
+the Fleet tag, percent complete on the CI label, `host` or `managed` on
+every chiclet.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -805,6 +814,17 @@ filled by the host reads the family instead of "host"; a Fleet card
 carries the family beside the project name. Nothing guesses: a run with
 no family-prefixed actor anywhere reads unknown.
 
+When the ball is with the host and the host has gone quiet, the board
+says so (#194): `host_wait_view` reads the ledger's own newest write
+(`updated_at` or the last event; a heartbeat or a session's output is not
+the host writing), and past `stall_minutes` with no live managed session,
+no Pilot decision pending and no pause, the briefing reads "Waiting on the
+host (codex) since 03:03Z: launch design-review attempt 3 (8 h 04 m)",
+names the LAUNCH ROLE button when the action is a launch, and the Fleet
+card carries "WAITING ON HOST CODEX 8 h 04 m". Each crew chiclet also says
+whether its station is the host or a managed session: `SUPERVISOR claude ·
+host`, `IMPLEMENTER codex · managed` (#199).
+
 ### The console shows what can act (#183, #184)
 
 `engine-upgrade`, `engine-rollback` and `engine-migrate` are CLI commands
@@ -848,7 +868,10 @@ without history, "over the last run's time" once past it), one cell per
 check with its state and elapsed time linking to its job (a matrix
 workflow renders one cell per job: the six `python (shard i of 6)` from
 #180; a check that has not started reads "queued"), and the PR link. The
-elapsed time ticks every second on the page from the snapshot's anchor.
+label leads with percent complete (#198): time-based like the bar and
+capped at 99 until every check is done, the checks-done fraction when
+there is no estimate, 100 on passed; it ticks every second on the page
+from the snapshot's anchor with the elapsed time.
 The snapshot refreshes the checks through `gh pr checks` at most once a
 minute (the #158 conditional pattern); `--poll` forces one refresh and
 prints the view as JSON, in the state the ledger holds after the poll. The engine reads gh's

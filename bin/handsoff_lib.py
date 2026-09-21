@@ -10828,6 +10828,51 @@ def host_identity(status: dict, events: list[dict]) -> dict:
     return {"family": "unknown", "actor": None, "source": "none"}
 
 
+def host_wait_view(status: dict, events: list[dict], cfg: dict, *, now: datetime | None = None,
+                   pilot_input_required: bool = False) -> dict | None:
+    """#194: who the run is waiting on, when the ball is with the host.
+    None when the run is closed or complete, a managed session is
+    launching or running, the Pilot's own input is pending (a decision
+    card is on the page), or the ledger has been written to within the
+    stall threshold. Ledger silence is measured from the newest of
+    status.updated_at and the last event's `at` (design review F1.2): a
+    fresh heartbeat or managed-session output is not the host acting.
+    Otherwise the host family (an actor prefix, never a guess), when the
+    ledger was last written, how long since, and the action the host owes:
+    the authorized design-review attempt when one is unconsumed, else the
+    run's next_action. Computed at read time; nothing is written."""
+    if not isinstance(status, dict):
+        return None
+    if isinstance(status.get("run_closed"), dict) or status.get("status") == "complete" \
+            or int(status.get("phase_number", 0) or 0) >= 8:
+        return None
+    if pilot_input_required or isinstance(status.get("human_pause"), dict):
+        return None
+    sessions = status.get("agent_sessions") if isinstance(status.get("agent_sessions"), dict) else {}
+    if any(isinstance(s, dict) and s.get("state") in ("launching", "running") for s in sessions.values()):
+        return None
+    now = now or datetime.now(timezone.utc)
+    times = [e.get("at") for e in events if isinstance(e, dict) and isinstance(e.get("at"), str)]
+    if isinstance(status.get("updated_at"), str):
+        times.append(status["updated_at"])
+    since = max(times) if times else None
+    silent = _iso_seconds(since, now.isoformat()) if since else None
+    limit = float(cfg.get("stall_minutes", 10) or 10) * 60
+    if silent is None or silent < limit:
+        return None
+    host = host_identity(status, events)
+    authorization = status.get("design_review_authorization")
+    if isinstance(authorization, dict) and authorization.get("consumed_at") is None \
+            and authorization.get("attempt_permitted") is not None:
+        action = f"launch design-review attempt {authorization['attempt_permitted']}"
+        launch_role = "reviewer"
+    else:
+        action = str(status.get("next_action") or "the next step")
+        launch_role = None
+    return {"family": host["family"], "actor": host["actor"], "since": since,
+            "silent_seconds": silent, "action": action, "launch_role": launch_role}
+
+
 # --------------------------------------------------------------------------
 # #181: CI as a step of the run. Since #178 a lane lands through a pull
 # request and waits for the required check; `ci-watch` records what is

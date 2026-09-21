@@ -783,9 +783,18 @@ def _operation_binding(status: dict, input_request: dict) -> str:
     return hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
 
 
+def _duration_words(seconds) -> str:
+    if not isinstance(seconds, (int, float)) or seconds < 0:
+        return "unknown"
+    total = int(seconds)
+    if total < 3600:
+        return f"{total // 60} min"
+    return f"{total // 3600} h {(total % 3600) // 60:02d} m"
+
+
 def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
                          audit_errors: list[str], stall: str | None, activity: str | None,
-                         latest_event: dict | None, input_request: dict) -> dict:
+                         latest_event: dict | None, input_request: dict, host_wait: dict | None = None) -> dict:
     phase_number = int(status.get("phase_number", 1) or 1)
     phase = status.get("phase") or lib.PHASES.get(phase_number, "Unknown phase")
     progress = status.get("progress", 0)
@@ -817,6 +826,16 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
         headline = "Tactical advance suspended, Pilot."
         summary = (f"The feature is at Phase {phase_number}, {phase}, with {progress}% reported progress. "
                    f"I found {len(all_errors)} condition{'s' if len(all_errors) != 1 else ''} that must be resolved before advancement.")
+    elif host_wait:
+        # #194: the ball is with the host; say which host, what it owes,
+        # and for how long, and point the Pilot at the button that moves it.
+        tone = "warning"
+        label = "Waiting on the host"
+        since = str(host_wait.get("since") or "")[11:16]
+        headline = (f"Waiting on the host ({host_wait.get('family')}) since {since}Z: "
+                    f"{host_wait.get('action')} ({_duration_words(host_wait.get('silent_seconds'))})")
+        summary = (f"The host has written nothing to the ledger for {_duration_words(host_wait.get('silent_seconds'))}. "
+                   f"Work remains at Phase {phase_number}, {phase}, with {passing} of {total} acceptance criteria verified.")
     elif stall:
         tone = "warning"
         label = "Telemetry interruption"
@@ -877,7 +896,9 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
         "headline": headline,
         "summary": status.get("summary") or summary,
         "reassurance": status.get("reassurance") or "Reactor core stable. Safety interlocks active. I will advance only when every required gate is satisfied.",
-        "next_action": input_request["message"] or status.get("next_action") or lib.NEXT_ACTION_DEFAULTS.get(phase_number, "Review the current state."),
+        "next_action": (f"Launch the {host_wait['launch_role']} from the Pilot console (LAUNCH ROLE), or wait for the host"
+                        if host_wait and host_wait.get("launch_role") else
+                        input_request["message"] or status.get("next_action") or lib.NEXT_ACTION_DEFAULTS.get(phase_number, "Review the current state.")),
         "attention": attention,
         "completed": completed,
         "latest_event": ({"kind": latest_event.get("kind"), "message": latest_event.get("message"),
@@ -1074,6 +1095,7 @@ def build_snapshot(root: Path) -> dict:
     metrics = lib.build_run_metrics(status, events, verifications)
     engine_identity, engine_error = _engine_identity(root)  # #185
     host = lib.host_identity(status, events)  # #186
+    host_wait = lib.host_wait_view(status, events, cfg, pilot_input_required=bool(input_request.get("required")))  # #194
     # #181: the CI row. ci_view refreshes through gh at most once a minute
     # and commits the terminal event once; a gh hiccup becomes the row's
     # note, never a failed snapshot.
@@ -1189,7 +1211,8 @@ def build_snapshot(root: Path) -> dict:
         "activity": activity_view,
         "live": live,
         "supervisor": _supervisor_briefing(display_status, criteria, gate_errors, audit_errors, stall, activity,
-                                            latest_event, input_request),
+                                            latest_event, input_request, host_wait),
+        "host_wait": host_wait,
         "events": list(reversed(events[-12:])),
         # #43: every entry carries executed/reused_from, null on a legacy
         # record written before the verification cache existed.
