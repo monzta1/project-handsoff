@@ -7,8 +7,7 @@ Everything the landing [README](../README.md) points at: the workflow, what is e
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.68/project_handsoff-0.3.68-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.68/project_handsoff-0.3.68-py3-none-any.whl
+python3 -m pip install <the current release wheel, the line in the README>
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
