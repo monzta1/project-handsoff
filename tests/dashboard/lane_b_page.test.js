@@ -36,14 +36,14 @@ test("the host badge and title read the family from the snapshot, never a guess"
 test("a host-adapter station reads the family instead of the word host when it is known", () => {
   const snapshot = (family) => ({ status: {}, crew: [], host: { family, actor: null, source: "x" },
     settings: { crew: { supervisor: { adapter: "host" }, architect: { adapter: "host" }, implementer: { adapter: "codex" } } } });
-  assert.equal(logic.roleWord("supervisor", snapshot("claude")), "claude");
-  assert.equal(logic.roleWord("architect", snapshot("codex")), "codex");
+  assert.equal(logic.roleWord("supervisor", snapshot("claude")), "claude · host");
+  assert.equal(logic.roleWord("architect", snapshot("codex")), "codex · host");
   assert.equal(logic.roleWord("supervisor", snapshot("unknown")), "host", "unknown keeps the word host");
-  assert.equal(logic.roleWord("implementer", snapshot("claude")), "codex", "a non-host station is unchanged");
-  assert.equal(logic.roleTitle("supervisor", snapshot("claude")), "SUPERVISOR · claude");
+  assert.equal(logic.roleWord("implementer", snapshot("claude")), "codex", "a configured non-host station with no session reads the adapter alone");
+  assert.equal(logic.roleTitle("supervisor", snapshot("claude")), "SUPERVISOR · claude · host");
   // a recorded actor on the station still wins (#164)
   const recorded = { ...snapshot("codex"), crew: [{ key: "supervisor", actor: "claude-supervisor" }] };
-  assert.equal(logic.roleWord("supervisor", recorded), "claude");
+  assert.equal(logic.roleWord("supervisor", recorded), "claude · host");
 });
 
 test("the Fleet card carries a host tag for a known family and nothing for unknown", () => {

@@ -422,6 +422,7 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
         "logo_url": logo_url,
         "feature": snap.get("project", {}).get("feature"), "phase": status.get("phase"),
         "host": (snap.get("host") or {}).get("family") or "unknown",  # #186
+        "host_wait": snap.get("host_wait"),  # #194
         "phase_number": status.get("phase_number"), "progress": status.get("progress"), "state": state,
         "next_action": status.get("next_action"), "role": role,
         "started_at": (snap.get("metrics") or {}).get("started_at"),

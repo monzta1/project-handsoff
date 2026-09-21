@@ -55,9 +55,9 @@ test("the helpers read seconds, state, progress, cells and the note", () => {
   assert.equal(logic.ciStateLabel(running), "CI RUNNING");
   assert.equal(logic.ciStateLabel({ state: "passed" }), "CI PASSED");
   assert.equal(logic.ciStateLabel({ state: "failed" }), "CI FAILED");
-  assert.equal(logic.ciProgressLabel(running), "1m 02s of about 2m 04s");
-  assert.equal(logic.ciProgressLabel({ ...running, expected_seconds: null, progress: null }), "1m 02s elapsed");
-  assert.equal(logic.ciProgressLabel({ ...running, state: "passed", elapsed_seconds: 124 }), "passed in 2m 04s (last run 2m 04s)");
+  assert.equal(logic.ciProgressLabel(running), "50% · 4 of 8 checks done · 1m 02s of about 2m 04s");
+  assert.equal(logic.ciProgressLabel({ ...running, expected_seconds: null, progress: null }), "50% · 4 of 8 checks done · 1m 02s elapsed");
+  assert.equal(logic.ciProgressLabel({ ...running, state: "passed", elapsed_seconds: 124 }), "100% · passed in 2m 04s (last run 2m 04s)");
   assert.equal(logic.ciProgressLabel({ ...running, state: "failed", failed_check: "python (shard 4 of 6)", elapsed_seconds: 90 }), "python (shard 4 of 6) failed after 1m 30s");
   assert.equal(logic.ciBarPercent(running), 50);
   assert.equal(logic.ciBarPercent({ ...running, progress: null }), null);
@@ -65,8 +65,8 @@ test("the helpers read seconds, state, progress, cells and the note", () => {
   assert.equal(logic.ciBarPercent({ state: "failed" }), 100);
   assert.equal(logic.ciCellLabel(shards[0]), "python (shard 0 of 6) 1m 10s");
   assert.equal(logic.ciCellLabel({ name: "tests", elapsed_seconds: null }), "tests");
-  assert.equal(logic.ciNote(running), "4 of 8 checks done");
-  assert.equal(logic.ciNote({ ...running, note: "no previous run to compare" }), "no previous run to compare · 4 of 8 checks done");
+  assert.equal(logic.ciNote(running), "", "#198: the count moved into the label");
+  assert.equal(logic.ciNote({ ...running, note: "no previous run to compare" }), "no previous run to compare");
   assert.equal(logic.ciNote({ state: "passed", checks: [] }), "");
 });
 
@@ -81,8 +81,8 @@ test("renderCi hides the row without a watch and fills it with one", () => {
   assert.equal(byId.get("ci-state").textContent, "CI RUNNING");
   assert.equal(byId.get("ci-link").textContent, "PR #180");
   assert.equal(byId.get("ci-link").attrs.href, "https://github.com/monzta1/x/pull/180");
-  assert.equal(byId.get("ci-progress-label").textContent, "1m 02s of about 2m 04s");
-  assert.equal(byId.get("ci-note").textContent, "4 of 8 checks done");
+  assert.equal(byId.get("ci-progress-label").textContent, "50% · 4 of 8 checks done · 1m 02s of about 2m 04s");
+  assert.equal(byId.get("ci-note").textContent, "");
   assert.equal(byId.get("ci-bar-fill").style.width, "50%");
   assert.equal(byId.get("ci-bar").attrs["aria-valuenow"], "50");
   assert.ok(!byId.get("ci-bar").classes.has("is-indeterminate"));
@@ -98,7 +98,7 @@ test("no history means an indeterminate bar; terminal states fill it and colour 
   render({ ...running, expected_seconds: null, progress: null, note: "no previous run to compare" });
   assert.ok(byId.get("ci-bar").classes.has("is-indeterminate"));
   assert.equal(byId.get("ci-bar-fill").style.width, "");
-  assert.equal(byId.get("ci-note").textContent, "no previous run to compare · 4 of 8 checks done");
+  assert.equal(byId.get("ci-note").textContent, "no previous run to compare");
   render({ ...running, state: "passed", progress: 1, elapsed_seconds: 124 });
   assert.equal(byId.get("ci-status").dataset.state, "passed");
   assert.equal(byId.get("ci-bar-fill").style.width, "100%");
@@ -127,15 +127,15 @@ test("the page carries the row under the phase rail, app.js renders it from snap
 test("the label ticks between snapshots from the server's elapsed and freezes on a terminal watch (#181, Lane B)", () => {
   const { byId, render, tick } = page();
   render(running);
-  assert.equal(byId.get("ci-progress-label").textContent, "1m 02s of about 2m 04s");
+  assert.equal(byId.get("ci-progress-label").textContent, "50% · 4 of 8 checks done · 1m 02s of about 2m 04s");
   tick(5000);
-  assert.equal(byId.get("ci-progress-label").textContent, "1m 07s of about 2m 04s");
+  assert.equal(byId.get("ci-progress-label").textContent, "54% · 4 of 8 checks done · 1m 07s of about 2m 04s");
   assert.equal(byId.get("ci-bar-fill").style.width, "54%");
   tick(90000);
   assert.equal(byId.get("ci-bar-fill").style.width, "100%", "capped at the estimate; the note says over");
   render({ ...running, state: "passed", progress: 1, elapsed_seconds: 124 });
   tick(30000);
-  assert.equal(byId.get("ci-progress-label").textContent, "passed in 2m 04s (last run 2m 04s)", "a terminal watch does not tick");
+  assert.equal(byId.get("ci-progress-label").textContent, "100% · passed in 2m 04s (last run 2m 04s)", "a terminal watch does not tick");
   assert.deepEqual(logic.ciTicked({ state: "running", elapsed_seconds: 10, expected_seconds: null, progress: null }, 5), { state: "running", elapsed_seconds: 15, expected_seconds: null, progress: null });
   assert.equal(logic.ciCellLabel({ name: "tests", state: "QUEUED", queued: true, elapsed_seconds: null }), "tests queued");
 });

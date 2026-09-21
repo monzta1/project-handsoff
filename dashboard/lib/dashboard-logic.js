@@ -19,7 +19,7 @@ function roleStation(role, snapshot) {
   return crew.find((member) => member && member.key === key) || null;
 }
 
-function roleWord(role, snapshot) {
+function roleFamily(role, snapshot) {
   const actor = roleStation(role, snapshot)?.actor;
   if (typeof actor === "string") {
     const prefix = ROLE_WORD_PREFIXES.find((candidate) => actor.startsWith(candidate));
@@ -33,6 +33,25 @@ function roleWord(role, snapshot) {
     return typeof family === "string" && family && family !== "unknown" ? family : "host";
   }
   return typeof adapter === "string" && adapter.trim() ? adapter.trim() : null;
+}
+
+// #199: whether the station is the host at the keyboard or a managed
+// session the host launched. "host" when its configured adapter is host;
+// "managed" when it carries a recorded actor with a family prefix (the
+// name a managed session is given); null when neither is known.
+function roleStationKind(role, snapshot) {
+  if (snapshot?.settings?.crew?.[role]?.adapter === "host") return "host";
+  const actor = roleStation(role, snapshot)?.actor;
+  if (typeof actor === "string" && ROLE_WORD_PREFIXES.some((candidate) => actor.startsWith(candidate))) return "managed";
+  return null;
+}
+
+function roleWord(role, snapshot) {
+  const family = roleFamily(role, snapshot);
+  if (!family) return null;
+  const kind = roleStationKind(role, snapshot);
+  // an unknown host family already reads "host"; do not say it twice
+  return kind && family !== kind ? `${family} · ${kind}` : family;
 }
 
 // #186: the topbar badge text for the host that drives the run.
@@ -729,14 +748,41 @@ function ciStateLabel(ci) {
   return "CI RUNNING";
 }
 
+// the same finished set the engine uses (CI_CHECK_DONE in handsoff_lib.py)
+const CI_DONE_STATES = ["SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "NEUTRAL"];
+
+function ciChecksDone(ci) {
+  const checks = ci && Array.isArray(ci.checks) ? ci.checks : [];
+  return { done: checks.filter((c) => CI_DONE_STATES.includes(c.state)).length, total: checks.length };
+}
+
+// #198: the percent leads the label. Time-based like the bar when there is
+// an estimate, capped at 99 until every check is done; the checks-done
+// fraction without one; 100 on passed.
+function ciPercent(ci) {
+  if (!ci) return null;
+  if (ci.state === "passed") return 100;
+  const { done, total } = ciChecksDone(ci);
+  if (ci.state === "failed") return total ? Math.round((done / total) * 100) : null;
+  if (typeof ci.progress === "number" && Number.isFinite(ci.progress)) {
+    const timed = Math.max(0, Math.min(100, Math.round(ci.progress * 100)));
+    return total && done === total ? timed : Math.min(99, timed);
+  }
+  return total ? Math.min(99, Math.round((done / total) * 100)) : null;
+}
+
 function ciProgressLabel(ci) {
   if (!ci) return "";
   const elapsed = ciSeconds(ci.elapsed_seconds);
   const expected = ciSeconds(ci.expected_seconds);
-  if (ci.state === "passed") return `passed in ${elapsed || "?"}${expected ? ` (last run ${expected})` : ""}`;
+  const { done, total } = ciChecksDone(ci);
+  const percent = ciPercent(ci);
+  const lead = percent === null ? "" : `${percent}% · `;
+  const checks = total ? `${done} of ${total} checks done · ` : "";
+  if (ci.state === "passed") return `${lead}passed in ${elapsed || "?"}${expected ? ` (last run ${expected})` : ""}`;
   if (ci.state === "failed") return `${ci.failed_check || "a check"} failed after ${elapsed || "?"}`;
-  if (!expected) return `${elapsed || "0s"} elapsed`;
-  return `${elapsed || "0s"} of about ${expected}`;
+  if (!expected) return `${lead}${checks}${elapsed || "0s"} elapsed`;
+  return `${lead}${checks}${elapsed || "0s"} of about ${expected}`;
 }
 
 function ciBarPercent(ci) {
@@ -764,14 +810,9 @@ function ciCellLabel(check) {
 }
 
 function ciNote(ci) {
+  // #198: the checks-done count moved into the label; the note keeps the server's words
   if (!ci) return "";
-  const parts = [];
-  if (typeof ci.note === "string" && ci.note) parts.push(ci.note);
-  if (ci.state === "running" && Array.isArray(ci.checks) && ci.checks.length) {
-    const done = ci.checks.filter((c) => ["SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "TIMED_OUT", "NEUTRAL"].includes(c.state)).length;
-    parts.push(`${done} of ${ci.checks.length} checks done`);
-  }
-  return parts.join(" · ");
+  return typeof ci.note === "string" && ci.note ? ci.note : "";
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -847,6 +888,10 @@ if (typeof module !== "undefined" && module.exports) {
     verificationExecutionLabel,
     hostBadgeLabel,
     hostBadgeTitle,
+    roleFamily,
+    roleStationKind,
+    ciChecksDone,
+    ciPercent,
     ciSeconds,
     ciStateLabel,
     ciProgressLabel,
