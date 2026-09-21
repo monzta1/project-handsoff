@@ -75,3 +75,10 @@ twice becomes a refusal in the engine.
   whole build.
 - Versions are patch only, in every repository: 0.1.0 becomes 0.1.1, not
   0.2.0, whatever the lane added. A minor is Moncy's call.
+- Parallel lanes: `advance 3` and `advance 4` the moment the design is
+  approved, before the first line of code, or the Pilot watches five boards
+  read "Design approved" for half an hour. Every lane touches
+  `handsoff.toml [checks]` and the manifest, so each landing rebases with
+  the checks list as main's plus its own lines and the manifest regenerated.
+- After a fix mid-review, `verify` pulls the run back to Phase 4; `advance
+  5` again before the reviewer's result can dispatch, or adopt it after.
