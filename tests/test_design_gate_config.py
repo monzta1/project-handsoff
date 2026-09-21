@@ -9,6 +9,8 @@ import os
 import re
 import sys
 import unittest
+
+from tests.test_handsoff_supervisor import docs_text
 from pathlib import Path
 from unittest import mock
 
@@ -141,7 +143,7 @@ class DefaultGateTests(HandsoffTestCase):
 
 class DocsTests(unittest.TestCase):
     def test_readme_and_template_document_the_key(self):
-        readme = (ROOT / "README.md").read_text()
+        readme = docs_text()
         self.assertIn("require_design_approval", readme)
         template = (ROOT / "templates" / "handsoff.toml").read_text()
         self.assertRegex(template, r"(?m)^require_design_approval = true", "the template names the key at its default")
