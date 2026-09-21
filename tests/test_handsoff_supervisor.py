@@ -2270,7 +2270,10 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             def kill(self):
                 return None
 
-        with self.assertRaisesRegex(self.lib.HandsoffError, "BrokenPipeError"):
+        # #179: a child that closes its stdin before the task is written
+        # (EPIPE on the write) is judged by its exit status, never by the
+        # runner's pipe; this child exits 7.
+        with self.assertRaisesRegex(self.lib.HandsoffError, "exited with status 7"):
             self.runtime.execute_launch(
                 self._spec(role="supervisor"),
                 popen_factory=mock.Mock(return_value=SupervisorProcess(7, broken=True)),
@@ -5637,6 +5640,24 @@ class TestLiveSessionStatus(HandsoffTestCase):
             self.lib.live_beacon_path(self.tmp)))
         self.assertNotIn("private task text", persisted)
         self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
+
+    def test_a_child_that_exits_before_reading_its_task_reports_its_own_exit_not_a_broken_pipe(self):
+        # #179: the task is larger than a pipe buffer and the child never
+        # reads it, so the runner's write always gets EPIPE. Before the fix
+        # that surfaced as "agent runner I/O failed: BrokenPipeError" and
+        # hid the exit status; on CI the same race hit shard 2 three times.
+        spec = self.runtime.LaunchSpec(
+            "reviewer", "codex", "default", (sys.executable, "-c", "import sys; sys.exit(3)"), str(self.tmp),
+            "private task text " * 100000, "configured",
+        )
+        with self.assertRaisesRegex(self.lib.HandsoffError, "exited with status 3"):
+            self.runtime.execute_launch(spec, session_id_factory=lambda: self._sid(9), beacon_interval=0.05)
+        session = self.read_status()["agent_sessions"][self._sid(9)]
+        self.assertEqual((session["state"], session["exit_code"]), ("failed", 3))
+        beacon = json.loads(self.lib.live_beacon_path(self.tmp).read_text())
+        self.assertEqual((beacon["state"], beacon["exit_code"]), ("failed", 3))
+        kinds = [event["kind"] for event in self._events() if event.get("session_id") == self._sid(9)]
+        self.assertEqual(kinds, ["agent_session_launching", "agent_session_running", "agent_session_failed"])
 
     def test_fake_child_exiting_0_leaves_a_final_completed_beacon(self):
         self.assertEqual(self.runtime.execute_launch(

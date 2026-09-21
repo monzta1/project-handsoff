@@ -1029,8 +1029,20 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             ) from exc
     try:
         if reader or stderr_reader:
-            process.stdin.write(spec.stdin)
-            process.stdin.close()
+            # A child that exits (or closes its stdin) before the task is
+            # written raises EPIPE here. That is the child's outcome, not
+            # the runner's: swallow it, close our end, and wait for the
+            # real exit status, exactly as communicate() does on the other
+            # branch. Reported as "agent runner I/O failed: BrokenPipeError"
+            # it hid a fake child's exit 3 on three CI runs (#179).
+            try:
+                process.stdin.write(spec.stdin)
+            except BrokenPipeError:
+                pass
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
             process.wait(timeout=timeout)
         else:
             process.communicate(input=spec.stdin, timeout=timeout)

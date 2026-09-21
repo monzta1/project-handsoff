@@ -117,7 +117,10 @@ class MissionControlOpsTests(HandsoffTestCase):
         self.assertEqual(item["availability"], "actionable")
         self.assertEqual(item["launchable_roles"], ["implementer"])
         self.assertEqual(item["role"], "implementer")
-        self.assertIn("codex (default), budget 120000 tokens", item["consequence"])
+        # the consequence names the adapter that would launch; on a runner
+        # with neither codex nor claude installed it reads None, which is
+        # the truth there, so the assertion is on the shape (#179)
+        self.assertRegex(item["consequence"], r"launches a managed implementer: (codex|claude|None) \(default\), budget 120000 tokens")
 
     def test_live_implementer_makes_launch_unavailable(self):
         self.init(); self._phase(4)

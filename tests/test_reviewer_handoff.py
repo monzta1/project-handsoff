@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+from tests.test_handsoff_supervisor import normalize_fixture_config
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -22,6 +24,9 @@ class ReviewerHandoffTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="handsoff-reviewer-handoff-"))
         shutil.copy(ROOT / "handsoff.toml", self.root / "handsoff.toml")
+        # #179: a fixture starts from the engine defaults, not the dogfood
+        # repo's own preferences (the waived clicks, its [checks] and groups)
+        normalize_fixture_config(self.root / "handsoff.toml")
         shutil.copy(ROOT / "handsoff-runtime.json", self.root / "handsoff-runtime.json")
         shutil.copytree(ROOT / "schemas", self.root / "schemas")
         shutil.copytree(ROOT / "prompts", self.root / "prompts")
