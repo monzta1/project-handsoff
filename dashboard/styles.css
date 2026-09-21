@@ -690,3 +690,10 @@ a.settings-toggle { display: inline-flex; align-items: center; text-decoration: 
 .ci-cell[data-state="SUCCESS"]::before { background: var(--emerald); }
 .ci-cell[data-state="FAILURE"]::before, .ci-cell[data-state="CANCELLED"]::before, .ci-cell[data-state="TIMED_OUT"]::before { background: var(--red); }
 .ci-cell[data-state="SKIPPED"]::before { background: transparent; border: 1px solid var(--faint); }
+
+/* #186: the host badge sits beside the engine badge */
+.host-badge { margin-left: 6px; }
+.host-badge[data-family="claude"] { color: var(--emerald); border-color: rgba(70, 224, 161, .32); }
+.host-badge[data-family="codex"] { color: var(--amber); border-color: rgba(245, 194, 107, .32); }
+/* #184: one line about tokens until a session reports them */
+.metrics-note { margin: 6px 0 0; color: var(--faint); font: 11px/1.4 var(--mono); }

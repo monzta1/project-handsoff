@@ -141,6 +141,9 @@ def _engine_view(root: Path) -> dict:
     """Render safe CLI forms and catch preview failures as data."""
     identity, engine_error = _engine_identity(root)
     version = identity["version"]
+    # #184: the run page keeps the version line and the command list; the
+    # upgrade and migrate previews and the permanent "execution is not
+    # offered" line said nothing about the run.
     root_text = str(root)
     commands = {
         "install": f"handsoff init {root_text}",
@@ -152,17 +155,8 @@ def _engine_view(root: Path) -> dict:
         "migrate": f"handsoff migrate {root_text}",
         "doctor": f"handsoff doctor {root_text}",
     }
-    try:
-        upgrade = __import__("handsoff_cli").change_pin(root, version, dry_run=True, action="upgrade")
-    except (lib.HandsoffError, OSError) as exc:
-        upgrade = {"error": str(exc)}
-    try:
-        migrate = __import__("handsoff_cli").migrate_project(root, dry_run=True)
-    except (lib.HandsoffError, OSError) as exc:
-        migrate = {"error": str(exc)}
     return {**{key: identity.get(key) for key in ("version", "source", "source_root", "compatibility")},
             "pin": identity.get("compatibility"), "reason": engine_error, "commands": commands,
-            "previews": {"upgrade": upgrade, "migrate": migrate},
             "execution": "unavailable",
             "execution_reason": "execution is not offered while a dashboard is serving this root"}
 
@@ -1075,6 +1069,7 @@ def build_snapshot(root: Path) -> dict:
         replacements.append(item)
     metrics = lib.build_run_metrics(status, events, verifications)
     engine_identity, engine_error = _engine_identity(root)  # #185
+    host = lib.host_identity(status, events)  # #186
     # #181: the CI row. ci_view refreshes through gh at most once a minute
     # and commits the terminal event once; a gh hiccup becomes the row's
     # note, never a failed snapshot.
@@ -1089,6 +1084,7 @@ def build_snapshot(root: Path) -> dict:
         "generated_at": generated_at,
         "root": str(root),
         "engine": engine_identity,
+        "host": host,
         "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature")),
                     "logo_url": "/project-logo" if lib.project_logo(root, cfg) else None},
         "status": display_status,

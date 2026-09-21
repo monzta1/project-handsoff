@@ -29,6 +29,7 @@
       </div>
       <div class="topbar-meta">
         <span id="engine-badge" class="engine-badge" title="Engine this run uses">ENGINE UNKNOWN</span>
+        <span id="host-badge" class="engine-badge host-badge" title="Host driving this run">HOST UNKNOWN</span>
         <span class="connection"><i></i><span id="connection-status">LINK: CONNECTING</span></span>
         <span id="last-sync" class="last-sync">Acquiring telemetry…</span>
         <form id="pilot-note-form" class="pilot-note" autocomplete="off" aria-label="Pilot note for the archive analyzer">
@@ -150,7 +151,6 @@
               <div class="briefing-head"><span class="panel-label">E.V.E. BRIEFING</span><span class="briefing-state" id="briefing-state">SCANNING</span></div>
               <h3 id="supervisor-headline">Analyzing current trajectory, Pilot.</h3>
               <p id="supervisor-summary"></p>
-              <p class="reassurance" id="supervisor-reassurance"></p>
             </div>
           </article>
         </section>
@@ -258,7 +258,7 @@
               <div id="crew-list" class="crew-list"></div>
             </article>
 
-            <article class="panel replacement-panel">
+            <article id="replacement-panel" class="panel replacement-panel hidden">
               <div class="section-head"><div><p class="panel-label">FAILOVER</p><h2>Replacements and recoveries</h2></div><span id="replacement-count" class="section-meta">0 EVENTS</span></div>
               <div id="replacement-list" class="replacement-list"></div>
             </article>
@@ -272,8 +272,9 @@
                 <div><span>Review cycles</span><strong id="metrics-reviews">0 / 0</strong></div>
                 <div><span>Verification time</span><strong id="metrics-verification">n/a</strong></div>
                 <div><span>Pilot wait</span><strong id="metrics-pilot-wait">n/a</strong></div>
-                <div><span>Total tokens</span><strong id="metrics-tokens">UNKNOWN</strong></div>
+                <div id="metrics-tokens-cell"><span>Total tokens</span><strong id="metrics-tokens">UNKNOWN</strong></div>
               </div>
+              <p id="metrics-tokens-note" class="metrics-note hidden"></p>
               <div id="metrics-phase-list" class="metrics-phase-list"></div>
               <div id="metrics-session-list" class="metrics-phase-list"></div>
             </section>

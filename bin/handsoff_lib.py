@@ -5183,9 +5183,9 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
         ("launch_role", "launch-role", "Launch a selected managed role", "primary", False),
         ("verify_criterion", "verify", "Run focused criterion verification", "primary", False),
         ("verify_live", "verify-live", "Run live verification", "primary", False),
-        ("engine_upgrade", "engine-upgrade", "Preview an engine upgrade", "muted", False),
-        ("engine_rollback", "engine-rollback", "Preview an engine rollback", "muted", False),
-        ("engine_migrate", "engine-migrate", "Preview engine migration", "muted", False),
+        # #183: engine-upgrade, engine-rollback and engine-migrate are CLI
+        # commands; they were listed here as permanent READ ONLY rows that
+        # could never act from a served dashboard, so they are not listed.
     ]
     closed = isinstance(status.get("run_closed"), dict)
     complete = status.get("status") == "complete" or int(status.get("phase_number", 0) or 0) >= 8
@@ -5252,9 +5252,7 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     elif closed and not complete: actionable.add("run_reopen")
     result = []
     for kind, operation, consequence, tone, requires_reason in specs:
-        if kind in {"engine_upgrade", "engine_rollback", "engine_migrate"}:
-            availability, reason = "read_only", "execution is not offered while a dashboard is serving this root"
-        elif kind == "launch_role":
+        if kind == "launch_role":
             if launch_reason:
                 availability, reason = "unavailable", launch_reason
             else:
@@ -10675,6 +10673,49 @@ def record_pilot_note(root: Path, *, by: object, text: object) -> dict:
 
 
 # --------------------------------------------------------------------------
+# #186: which host drove the run. Two hosts (Claude, Codex) run lanes side
+# by side; the page said "host" for both. The family is read from an actor
+# prefix (the #164 rule), never inferred from anything else.
+# --------------------------------------------------------------------------
+
+ACTOR_FAMILY_PREFIXES = ("claude-", "codex-")
+#: events written by the host's own commands (never by a managed session)
+HOST_COMMAND_EVENT_KINDS = frozenset({
+    "criteria_transaction_applied", "criterion_added", "criterion_updated", "criterion_removed",
+    "design_proposal_recorded", "evidence_recorded", "review_attempt_opened", "symptom_resolved",
+    "ci_watch_started", "work_item_updated", "pilot_note", "run_closed",
+})
+
+
+def actor_family(actor: object) -> str | None:
+    """'claude' or 'codex' from an actor's prefix; None for anything else."""
+    if not isinstance(actor, str):
+        return None
+    for prefix in ACTOR_FAMILY_PREFIXES:
+        if actor.startswith(prefix):
+            return prefix[:-1]
+    return None
+
+
+def host_identity(status: dict, events: list[dict]) -> dict:
+    """{family, actor, source}: the actor `init --by` recorded on
+    `initialized` (source initialized); else the newest actor on a
+    host-side command event or status.implemented_by (source ledger);
+    else unknown with source none. A family is only ever an actor prefix."""
+    events = [e for e in events if isinstance(e, dict)]
+    for event in events:
+        if event.get("kind") == "initialized" and actor_family(event.get("by")):
+            return {"family": actor_family(event["by"]), "actor": event["by"], "source": "initialized"}
+    for event in reversed(events):
+        if event.get("kind") in HOST_COMMAND_EVENT_KINDS and actor_family(event.get("by")):
+            return {"family": actor_family(event["by"]), "actor": event["by"], "source": "ledger"}
+    implemented = status.get("implemented_by") if isinstance(status, dict) else None
+    if actor_family(implemented):
+        return {"family": actor_family(implemented), "actor": implemented, "source": "ledger"}
+    return {"family": "unknown", "actor": None, "source": "none"}
+
+
+# --------------------------------------------------------------------------
 # #181: CI as a step of the run. Since #178 a lane lands through a pull
 # request and waits for the required check; `ci-watch` records what is
 # being waited for, `ci_view` mirrors the PR's checks onto the snapshot at
@@ -10746,24 +10787,49 @@ def _iso_seconds(start: object, end: object) -> float | None:
     return seconds if seconds >= 0 else None
 
 
+CI_EXPECTED_SAMPLE = 5
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
 def ci_expected_seconds(root: Path, workflows: list[str], runner=None, which=None) -> tuple[float | None, str | None]:
-    """The time to expect for this PR's checks: for every workflow named on
-    them (sorted, so the choice is deterministic), the newest successful run
-    on main; the largest of those durations, since the wait is the slowest
-    workflow. (None, None) when no workflow has a completed run yet."""
+    """The time to expect for this PR's checks. Per workflow named on them
+    (sorted, so the choice is deterministic): the last CI_EXPECTED_SAMPLE
+    successful runs on main, each measured as its longest job's startedAt
+    to completedAt (the work; a run's createdAt to updatedAt would count
+    the minutes a job sat queued, which is what made one run read 6 min
+    for 1.5 min of work), the median of those. The largest workflow's
+    median wins, since the wait is the slowest workflow; expected_source
+    names the runs counted. (None, None) with no completed run yet."""
     best: tuple[float, str] | None = None
     for name in sorted({w for w in workflows if isinstance(w, str) and w.strip()}):
         runs = _gh_json(root, ["run", "list", "--workflow", name, "--branch", "main", "--status", "success",
-                               "--limit", "1", "--json", "createdAt,updatedAt,url"], runner, which)
+                               "--limit", str(CI_EXPECTED_SAMPLE), "--json", "databaseId,url"], runner, which)
+        samples: list[float] = []
+        urls: list[str] = []
         for run in runs if isinstance(runs, list) else []:
-            if not isinstance(run, dict):
+            if not isinstance(run, dict) or run.get("databaseId") is None:
                 continue
-            seconds = _iso_seconds(run.get("createdAt"), run.get("updatedAt"))
-            if seconds is None:
-                continue
-            url = run.get("url") if isinstance(run.get("url"), str) else None
-            if best is None or seconds > best[0]:
-                best = (seconds, url or "")
+            detail = _gh_json(root, ["run", "view", str(run["databaseId"]), "--json", "jobs"], runner, which)
+            jobs = detail.get("jobs") if isinstance(detail, dict) else None
+            longest = None
+            for job in jobs if isinstance(jobs, list) else []:
+                seconds = _iso_seconds(job.get("startedAt"), job.get("completedAt")) if isinstance(job, dict) else None
+                if seconds is not None and (longest is None or seconds > longest):
+                    longest = seconds
+            if longest is not None:
+                samples.append(longest)
+                if isinstance(run.get("url"), str):
+                    urls.append(run["url"])
+        median = _median(samples)
+        if median is not None and (best is None or median > best[0]):
+            best = (median, ", ".join(urls))
     if best is None:
         return None, None
     return best[0], best[1] or None
@@ -10855,7 +10921,9 @@ def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
     checks = list(side["checks"]) if side and side.get("head") == watch.get("head") else []
     fetched_at = side.get("fetched_at") if side and side.get("head") == watch.get("head") else None
     note = None
-    if watch.get("state") == "running":
+    # A red watch is refreshed too: a rerun of the failed job greens the
+    # same head without a new commit, and the row must see it (#181).
+    if watch.get("state") in ("running", "failed"):
         age = _iso_seconds(fetched_at, now.isoformat()) if fetched_at else None
         if force or age is None or age >= refresh_seconds:
             try:
@@ -10865,19 +10933,23 @@ def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
             except HandsoffError as exc:
                 note = str(exc)
         terminal, failing = _ci_terminal(checks)
-        if terminal:
+        # commit the terminal state once: running to passed or failed, and
+        # failed to passed after a rerun; never failed to failed again
+        if terminal and (watch.get("state") == "running" or terminal == "passed"):
             with project_lock(root):
                 current = load_unique_json(status_path(root, cfg))
                 live = current.get("ci") if isinstance(current.get("ci"), dict) else None
-                if live and live.get("head") == watch.get("head") and live.get("state") == "running":
+                if live and live.get("head") == watch.get("head") and live.get("state") in ("running", "failed") \
+                        and live.get("state") != terminal:
                     live["state"] = terminal
                     live["failed_check"] = failing
                     live["ended_at"] = now.isoformat()
                     current["ci"] = live
                     if terminal == "passed":
+                        rerun = watch.get("state") == "failed"
                         commit(root, cfg, status=current, event_kind="ci_passed",
-                               event_message=f"CI passed on PR #{live['pr']} ({len(checks)} checks)",
-                               pr=live["pr"], head=live["head"], checks=len(checks))
+                               event_message=f"CI passed on PR #{live['pr']} ({len(checks)} checks{', after a rerun' if rerun else ''})",
+                               pr=live["pr"], head=live["head"], checks=len(checks), after_rerun=rerun)
                     else:
                         commit(root, cfg, status=current, event_kind="ci_failed",
                                event_message=f"CI failed on PR #{live['pr']}: {failing}",
@@ -10901,6 +10973,7 @@ def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
         cell_elapsed = _iso_seconds(check.get("started_at"), check.get("completed_at") or now.isoformat()) \
             if check.get("started_at") else None
         cells.append({"name": check["name"], "state": check["state"], "elapsed_seconds": cell_elapsed,
+                      "queued": check.get("started_at") is None and check["state"] not in CI_CHECK_DONE,
                       "link": check.get("link"), "workflow": check.get("workflow")})
     return {
         "pr": watch.get("pr"), "head": watch.get("head"), "url": watch.get("url"),
@@ -10919,7 +10992,7 @@ def ci_gate_errors(status: dict) -> list[str]:
         return []
     check = watch.get("failed_check") or "a check"
     link = f" ({watch['url']})" if isinstance(watch.get("url"), str) else ""
-    return [f"CI: {check} failed on PR #{watch.get('pr')}{link}; fix, push, and run ci-watch on the new head"]
+    return [f"CI: {check} failed on PR #{watch.get('pr')}{link}; rerun or push, then ci-watch --pr {watch.get('pr')} again"]
 
 
 # --------------------------------------------------------------------------

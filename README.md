@@ -22,7 +22,7 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.51/project_handsoff-0.3.51-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.52/project_handsoff-0.3.52-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -518,6 +518,14 @@ engine's `live` extra; reaffirm re-binds a current review whose rules set
 changed and the ledger names what changed; the test reads the manifest.
 The landing order below is the order this release was landed by.
 
+### v0.3.52 field notes: the page says what matters (#186, #183, #184, #181)
+
+Cause: two hosts ran lanes side by side and the page said "host" for both;
+the console listed 21 rows that could not act; fixed copy, an empty card
+and a grid of token dashes filled the rest; and the new CI row showed one
+run's queue time as the estimate, a timer that jumped once a poll, and a
+red watch a rerun could not clear. Fix: the three sections above.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -715,6 +723,34 @@ which. Fleet therefore classifies such a run by its other rules, never as
 FAILED. `session-result-adopt` rewrites a beacon naming that session with
 state `adopted`. The failure itself stays in the ledger.
 
+### The page names the host (#186)
+
+Two hosts run lanes side by side, and the page used to say "host" for
+both. `init --by ACTOR` records the actor driving the run on
+`initialized`; the snapshot's `host` block is `{family, actor, source}`
+where the family is read from the actor's prefix (`claude-`, `codex-`,
+the #164 rule) and from nothing else: `initialized.by` first, else the
+newest actor on a host-side command in the ledger (criteria, proposals,
+evidence, notes, the CI watch, work items) or `status.implemented_by`,
+else `unknown`. Mission Control shows `HOST CLAUDE`, `HOST CODEX` or
+`HOST UNKNOWN` beside the engine badge; a supervisor or architect station
+filled by the host reads the family instead of "host"; a Fleet card
+carries the family beside the project name. Nothing guesses: a run with
+no family-prefixed actor anywhere reads unknown.
+
+### The console shows what can act (#183, #184)
+
+`engine-upgrade`, `engine-rollback` and `engine-migrate` are CLI commands
+and are no longer listed in the Mission Control inventory, where they sat
+as three permanent READ ONLY rows. The engine pane keeps the version line
+and the command list behind its disclosure and drops the upgrade and
+migrate previews and the "execution is not offered" line. The briefing's
+fixed reassurance copy is gone and its label shows only when the tone is
+not steady. The FAILOVER card appears once it has a replacement or a
+recovery. The token cell is one line, "tokens: not reported by <adapter>",
+until a session reports usage. The API keeps every field it had except
+the three engine rows and the previews.
+
 ### CI is a step of the run (#181)
 
 Since #178 a lane in a repository with a protected `main` lands through a
@@ -729,10 +765,13 @@ python3 bin/handsoff_supervisor.py ci-watch --poll
 `ci-watch --pr N`, run right after `gh pr create`, records a
 `ci_watch_started` event with the PR number and URL, its head commit, the
 names of its checks, and the time to expect: for every workflow named on
-the checks (sorted, so the choice is deterministic), the newest successful
-run on `main`, the largest of those durations, and that run's URL as
-`expected_source`. No history means `expected_seconds` null and the note
-"no previous run to compare". `status.ci` holds the watch; the checks
+the checks (sorted, so the choice is deterministic), the last five
+successful runs on `main`, each measured as its longest job's start to
+completion (the work; a run's own clock would count the minutes a job sat
+queued, which once made a 1.5 minute run read 6), the median of those, the
+largest workflow's median, and the runs counted as `expected_source`. No
+history means `expected_seconds` null and the note "no previous run to
+compare". `status.ci` holds the watch; the checks
 themselves live in the `.handsoff-ci.json` side file, Handsoff state the
 digest never counts.
 
@@ -741,9 +780,11 @@ RUNNING, PASSED, FAILED), a bar of elapsed over expected (indeterminate
 without history, "over the last run's time" once past it), one cell per
 check with its state and elapsed time linking to its job (a matrix
 workflow renders one cell per job: the six `python (shard i of 6)` from
-#180), and the PR link. The snapshot refreshes the checks through `gh pr
-checks` at most once a minute (the #158 conditional pattern); `--poll`
-forces one refresh and prints the view as JSON. The engine reads gh's
+#180; a check that has not started reads "queued"), and the PR link. The
+elapsed time ticks every second on the page from the snapshot's anchor.
+The snapshot refreshes the checks through `gh pr checks` at most once a
+minute (the #158 conditional pattern); `--poll` forces one refresh and
+prints the view as JSON, in the state the ledger holds after the poll. The engine reads gh's
 output and never merges: merging stays `gh pr merge --auto`. Nothing from
 gh's environment is read or stored; only the check fields named in
 `CI_CHECK_FIELDS` ever reach the ledger or the side file.
@@ -751,9 +792,11 @@ gh's environment is read or stored; only the check fields named in
 The first time every check has completed, one terminal event is recorded:
 `ci_passed`, or `ci_failed` naming the first red check. While the watched
 head has a failed check, `compute_errors` adds one line, `CI: <check>
-failed on PR #N (<url>); fix, push, and run ci-watch on the new head`,
-which refuses the Phase 6 to 7 transition; a watch on a new head replaces
-the failed one and clears it. A passed watch adds nothing. A terminal
+failed on PR #N (<url>); rerun or push, then ci-watch --pr N again`, which
+refuses the Phase 6 to 7 transition. A red watch keeps refreshing: a rerun
+of the failed job on the same head that comes back green records
+`ci_passed` (once, marked `after_rerun`) and clears the line; a new head
+watched with `ci-watch` replaces the watch outright. A passed watch adds nothing. A terminal
 watch is served from the side file and never asks gh again.
 
 ## Review attempts and the convergence cap

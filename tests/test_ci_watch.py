@@ -56,7 +56,11 @@ class FakeGh:
             result.stdout = json.dumps(self.checks)
         elif sub == ("run", "list"):
             name = argv[argv.index("--workflow") + 1]
-            result.stdout = json.dumps(self.runs.get(name, []))
+            result.stdout = json.dumps([{"databaseId": r["id"], "url": r["url"]} for r in self.runs.get(name, [])])
+        elif sub == ("run", "view"):
+            run_id = int(argv[3])
+            found = next((r for runs in self.runs.values() for r in runs if r["id"] == run_id), None)
+            result.stdout = json.dumps({"jobs": found["jobs"]} if found else {})
         else:
             result.returncode = 1
             result.stderr = "unknown gh call"
@@ -83,8 +87,17 @@ def shard_checks(done=0, failed=None):
     return checks
 
 
-PREVIOUS_RUN = {"CI": [{"createdAt": "2026-09-21T01:16:07Z", "updatedAt": "2026-09-21T01:18:11Z",
-                        "url": "https://github.com/monzta1/x/actions/runs/35550347105"}]}
+def _run(run_id, url, *job_seconds, queued=0):
+    """A successful run whose jobs took the given seconds of work; `queued`
+    seconds sit between the run's creation and the jobs' start, which the
+    estimate must ignore."""
+    jobs = [{"name": f"job {i}", "startedAt": _iso(T0 + timedelta(seconds=queued)),
+             "completedAt": _iso(T0 + timedelta(seconds=queued + sec))} for i, sec in enumerate(job_seconds)]
+    return {"id": run_id, "url": url, "jobs": jobs}
+
+
+# the newest successful run took 124 s of work (its longest job)
+PREVIOUS_RUN = {"CI": [_run(35550347105, "https://github.com/monzta1/x/actions/runs/35550347105", 124, 6)]}
 
 
 class CiWatchTests(HandsoffTestCase):
@@ -144,8 +157,7 @@ class CiWatchTests(HandsoffTestCase):
     def test_expected_is_the_slowest_of_several_workflows_sorted(self):
         checks = [_check("tests", "IN_PROGRESS", workflow="CI"), _check("bundle", "IN_PROGRESS", workflow="Bundle")]
         runs = {"CI": PREVIOUS_RUN["CI"],
-                "Bundle": [{"createdAt": "2026-09-21T01:00:00Z", "updatedAt": "2026-09-21T01:09:30Z",
-                            "url": "https://github.com/monzta1/x/actions/runs/2"}]}
+                "Bundle": [_run(2, "https://github.com/monzta1/x/actions/runs/2", 570)]}
         gh = FakeGh(checks, runs=runs)
         watch = self._start(gh)
         self.assertEqual(watch["expected_seconds"], 570.0)

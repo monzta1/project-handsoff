@@ -26,7 +26,24 @@ function roleWord(role, snapshot) {
     if (prefix) return prefix.slice(0, -1);
   }
   const adapter = snapshot?.settings?.crew?.[role]?.adapter;
+  // #186: a station filled by the host reads the host's family (claude,
+  // codex) when the snapshot knows it, never the word "host".
+  if (adapter === "host") {
+    const family = snapshot?.host?.family;
+    return typeof family === "string" && family && family !== "unknown" ? family : "host";
+  }
   return typeof adapter === "string" && adapter.trim() ? adapter.trim() : null;
+}
+
+// #186: the topbar badge text for the host that drives the run.
+function hostBadgeLabel(host) {
+  const family = host && typeof host.family === "string" ? host.family : "unknown";
+  return `HOST ${family === "claude" || family === "codex" ? family.toUpperCase() : "UNKNOWN"}`;
+}
+
+function hostBadgeTitle(host) {
+  if (!host || !host.actor) return "Host driving this run: not recorded (init --by)";
+  return `Host driving this run: ${host.actor} (${host.source})`;
 }
 
 function roleTitle(role, snapshot) {
@@ -729,7 +746,18 @@ function ciBarPercent(ci) {
   return Math.max(0, Math.min(100, Math.round(ci.progress * 100)));
 }
 
+// #181: the snapshot's ci block advanced by `seconds` of wall time: elapsed
+// and progress move while the watch runs; a terminal watch is frozen.
+function ciTicked(ci, seconds) {
+  if (!ci || ci.state !== "running" || typeof ci.elapsed_seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return ci;
+  const elapsed = ci.elapsed_seconds + seconds;
+  const expected = ci.expected_seconds;
+  const progress = typeof expected === "number" && expected > 0 ? Math.min(elapsed / expected, 1) : ci.progress;
+  return { ...ci, elapsed_seconds: elapsed, progress };
+}
+
 function ciCellLabel(check) {
+  if (check && check.queued && typeof check.name === "string") return `${check.name} queued`;
   if (!check || typeof check.name !== "string") return "";
   const elapsed = ciSeconds(check.elapsed_seconds);
   return elapsed ? `${check.name} ${elapsed}` : check.name;
@@ -817,11 +845,14 @@ if (typeof module !== "undefined" && module.exports) {
     amendmentReasonsView,
     verificationExecutionState,
     verificationExecutionLabel,
+    hostBadgeLabel,
+    hostBadgeTitle,
     ciSeconds,
     ciStateLabel,
     ciProgressLabel,
     ciBarPercent,
     ciCellLabel,
+    ciTicked,
     ciNote,
   };
 }

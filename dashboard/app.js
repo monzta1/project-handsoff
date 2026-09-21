@@ -635,12 +635,13 @@ function renderConsoleForms(inventory, operations, actions) {
   $("verify-status").textContent = inFlight.length ? `CHECKS IN FLIGHT: ${inFlight.join(", ")}` : "";
   $("verification-latest").innerHTML = Object.entries(operations.verification?.latest || {}).map(([criterion, result]) => `<tr><td>${escapeHtml(criterion)}</td><td>${result.ok ? "YES" : "NO"}</td><td>${escapeHtml(result.at)}</td></tr>`).join("");
   const engine = operations.engine || {};
-  // The engine pane leads with one identity line; the copyable commands and
-  // the raw upgrade/migrate previews sit behind closed disclosures so they
-  // never push mission state off the screen.
+  // The engine pane is one identity line plus the copyable commands behind
+  // a closed disclosure. #184: the upgrade and migrate previews and the
+  // permanent "execution is not offered" line are gone; they said nothing
+  // about the run. A reason (#185: the pin could not be read) shows once.
   const commandRows = Object.entries(engine.commands || {}).map(([name, command]) => `<div><code>${escapeHtml(command)}</code><button type="button" data-copy-command="${escapeHtml(command)}">COPY</button></div>`).join("");
-  const previewRows = Object.entries(engine.previews || {}).map(([name, preview]) => `<span><strong>${escapeHtml(name)}</strong> ${escapeHtml(typeof preview === "string" ? preview : JSON.stringify(preview))}</span>`).join("");
-  $("engine-panel").innerHTML = `<p class="engine-summary">${escapeHtml(engine.version)} <span>${escapeHtml(engine.source)} · pin ${escapeHtml(engine.pin)} · ${escapeHtml(engine.compatibility)}</span></p><p class="engine-reason">${escapeHtml(engine.execution_reason)}</p>${commandRows ? `<details class="engine-details"><summary>${Object.keys(engine.commands || {}).length} COMMANDS</summary><div class="engine-commands">${commandRows}</div></details>` : ""}${previewRows ? `<details class="engine-details"><summary>PREVIEWS</summary><div class="engine-previews">${previewRows}</div></details>` : ""}`;
+  const engineReason = typeof engine.reason === "string" && engine.reason ? `<p class="engine-reason">${escapeHtml(engine.reason)}</p>` : "";
+  $("engine-panel").innerHTML = `<p class="engine-summary">${escapeHtml(engine.version)} <span>${escapeHtml(engine.source)} · pin ${escapeHtml(engine.pin)} · ${escapeHtml(engine.compatibility)}</span></p>${engineReason}${commandRows ? `<details class="engine-details"><summary>${Object.keys(engine.commands || {}).length} COMMANDS</summary><div class="engine-commands">${commandRows}</div></details>` : ""}`;
   $("engine-panel").querySelectorAll("[data-copy-command]").forEach((button) => button.onclick = () => navigator.clipboard.writeText(button.dataset.copyCommand));
   const ROUTINE = new Set(["pause", "resume", "run_close", "run_reopen"]);
   const decisions = actions.filter((action) => !ROUTINE.has(action.kind));
@@ -1145,6 +1146,7 @@ function renderCi(ci) {
   const strip = $("ci-status");
   if (!strip) return;
   if (!ci || typeof ci !== "object") {
+    state.ci = null;
     strip.classList.add("hidden");
     return;
   }
@@ -1154,18 +1156,29 @@ function renderCi(ci) {
   const link = $("ci-link");
   link.textContent = ci.pr ? `PR #${ci.pr}` : "PR";
   if (typeof ci.url === "string" && ci.url) link.setAttribute("href", ci.url); else link.removeAttribute("href");
-  $("ci-progress-label").textContent = ciProgressLabel(ci);
+  // #181: the server's elapsed is the anchor; the label ticks from it
+  // between snapshots (renderCiClock) instead of jumping once per poll.
+  state.ci = { snapshot: ci, receivedAt: Date.now() };
+  renderCiClock();
   $("ci-note").textContent = ciNote(ci);
-  const percent = ciBarPercent(ci);
-  const bar = $("ci-bar");
-  bar.classList.toggle("is-indeterminate", percent === null);
-  bar.setAttribute("aria-valuenow", String(percent === null ? 0 : percent));
-  $("ci-bar-fill").style.width = percent === null ? "" : `${percent}%`;
   const cells = Array.isArray(ci.checks) ? ci.checks : [];
   $("ci-cells").innerHTML = cells.map((check) => {
     const href = typeof check.link === "string" && check.link ? ` href="${escapeHtml(check.link)}" target="_blank" rel="noopener"` : "";
     return `<a class="ci-cell" data-state="${escapeHtml(check.state || "PENDING")}" title="${escapeHtml(check.state || "PENDING")}"${href}>${escapeHtml(ciCellLabel(check))}</a>`;
   }).join("");
+}
+
+// #181: every second while the watch is running, the elapsed shown is the
+// server's elapsed plus the wall time since that snapshot arrived.
+function renderCiClock(now = Date.now()) {
+  if (!state.ci || !state.ci.snapshot) return;
+  const ci = ciTicked(state.ci.snapshot, (now - state.ci.receivedAt) / 1000);
+  $("ci-progress-label").textContent = ciProgressLabel(ci);
+  const percent = ciBarPercent(ci);
+  const bar = $("ci-bar");
+  bar.classList.toggle("is-indeterminate", percent === null);
+  bar.setAttribute("aria-valuenow", String(percent === null ? 0 : percent));
+  $("ci-bar-fill").style.width = percent === null ? "" : `${percent}%`;
 }
 
 function renderLiveAge() {
@@ -1289,10 +1302,21 @@ function renderMetrics(metrics) {
   $("metrics-verification").textContent = metricDuration(metrics.verification_seconds);
   $("metrics-pilot-wait").textContent = metricDuration(metrics.pilot_wait_seconds);
   const total = metrics.tokens?.total;
-  $("metrics-tokens").textContent = total == null ? "UNKNOWN" : Number(total).toLocaleString();
-  $("metrics-token-state").textContent = total == null
-    ? `TOKENS UNKNOWN · ${metrics.tokens?.coverage || "0/0 sessions"}`
-    : `TOKEN SIGNAL · ${metrics.tokens?.coverage || ""}`;
+  // #184: until a session reports usage the token cell is one quiet line
+  // naming who did not report, not a grid of UNKNOWN.
+  const reported = total != null;
+  const adapters = [...new Set((metrics.sessions || []).map((session) => session.adapter).filter(Boolean))];
+  $("metrics-tokens").textContent = reported ? Number(total).toLocaleString() : "";
+  const tokensCell = $("metrics-tokens-cell");
+  if (tokensCell) tokensCell.classList.toggle("hidden", !reported);
+  const note = $("metrics-tokens-note");
+  if (note) {
+    note.classList.toggle("hidden", reported);
+    note.textContent = reported ? "" : `tokens: not reported by ${adapters.length ? adapters.join(", ") : "any session yet"}`;
+  }
+  $("metrics-token-state").textContent = reported
+    ? `TOKEN SIGNAL · ${metrics.tokens?.coverage || ""}`
+    : `TOKENS NOT REPORTED · ${metrics.tokens?.coverage || "0/0 sessions"}`;
   $("metrics-phase-list").innerHTML = Object.entries(metrics.phase_seconds || {})
     .filter(([, seconds]) => Number(seconds) > 0)
     .map(([phase, seconds]) => `<span>PHASE ${escapeHtml(phase)} <strong>${escapeHtml(metricDuration(seconds))}</strong></span>`)
@@ -1332,6 +1356,9 @@ function renderCrew(crew) {
 
 function renderReplacements(replacements, recoveries = []) {
   const total = replacements.length + recoveries.length;
+  // #184: the card exists once there is something in it.
+  const panel = $("replacement-panel");
+  if (panel) panel.classList.toggle("hidden", total === 0);
   $("replacement-count").textContent = `${total} EVENT${total === 1 ? "" : "S"}`;
   const recoveryRows = recoveries.slice().reverse().map((item) => `
     <div class="replacement-item recovery-item" data-recovery-id="${escapeHtml(item.recovery_id)}">
@@ -1421,6 +1448,7 @@ function render(snapshot) {
   }
   if (!snapshot.initialized) {
     renderLive(null);
+    state.ci = null;
     renderCi(null);
     renderAgentOutput(null);
     renderOperation(null);
@@ -1478,6 +1506,13 @@ function render(snapshot) {
     badge.textContent = `ENGINE ${version && version !== "unknown" ? version : "UNKNOWN"}`;
     badge.title = snapshot.engine?.source ? `Engine this run uses (${snapshot.engine.source})` : "Engine this run uses";
   }
+  // #186: which host drives the run, from an actor prefix, never a guess.
+  const hostBadge = $("host-badge");
+  if (hostBadge) {
+    hostBadge.textContent = hostBadgeLabel(snapshot.host);
+    hostBadge.title = hostBadgeTitle(snapshot.host);
+    hostBadge.dataset.family = snapshot.host?.family || "unknown";
+  }
   $("mission-state").textContent = String(status.status || "unknown").replaceAll("_", " ").toUpperCase();
   const complete = progress >= 100;
   $("progress-value").textContent = Math.round(progress);
@@ -1504,7 +1539,9 @@ function render(snapshot) {
   $("supervisor-headline").textContent = verificationHeadline || supervisor.headline;
   $("supervisor-summary").textContent = supervisor.summary;
   $("supervisor-next").textContent = supervisor.next_action;
-  $("supervisor-reassurance").textContent = supervisor.reassurance;
+  // #184: the fixed reassurance copy is gone, and the label only shows
+  // when it says something ("Trajectory stable" on a steady run does not).
+  $("briefing-state").classList.toggle("hidden", supervisor.tone === "steady");
 
   $("acceptance-score").textContent = `${acceptance.passing} / ${acceptance.total}`;
   stateClass($("acceptance-score"), acceptance.passing === acceptance.total && acceptance.total ? "is-good" : acceptance.failing || acceptance.blocked ? "is-bad" : "is-warning");
@@ -1710,6 +1747,7 @@ window.setInterval(() => {
   if (state.lastGenerated) $("last-sync").textContent = `SYNCED ${relativeTime(state.lastGenerated).toUpperCase()}`;
 }, 1000);
 window.setInterval(renderLiveAge, 1000);
+window.setInterval(renderCiClock, 1000);
 window.setInterval(renderClocks, 1000);
 window.setInterval(() => {
   if (!state.inputRequired) return;
