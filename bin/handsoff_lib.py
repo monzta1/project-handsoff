@@ -9015,14 +9015,22 @@ def mark_beacon_adopted(root: Path, session_id: str) -> bool:
 
 def failed_session_superseded(status: dict, session: dict) -> str | None:
     """#172: why a failed session no longer speaks for the run: its persisted
-    result was adopted, or the run advanced past the phase the session ran
-    in. None when neither holds (a genuinely failed run stays failed)."""
+    result was adopted, its adopted failure record was followed by a newer
+    status update, or the run advanced past the phase the session ran in.
+    None when neither holds (a genuinely failed run stays failed)."""
     result = session.get("result") if isinstance(session, dict) else None
     if isinstance(result, dict) and result.get("adopted_at"):
         return f"verdict adopted at {result['adopted_at']} by {result.get('adopted_by') or 'the host'}"
     failures = status.get("agent_failures") if isinstance(status.get("agent_failures"), dict) else {}
     record = failures.get(session.get("session_id")) if isinstance(session, dict) else None
     if isinstance(record, dict) and record.get("adopted") is True:
+        try:
+            ended = datetime.fromisoformat(str(session.get("ended_at")))
+            updated = datetime.fromisoformat(str(status.get("updated_at")))
+            if updated > ended:
+                return f"verdict adopted by the host; status updated at {status['updated_at']}"
+        except (TypeError, ValueError):
+            pass
         return "verdict adopted by the host"
     try:
         session_phase = int(session.get("phase_number") or 0)

@@ -72,6 +72,21 @@ class FailedSessionSupersededTests(HandsoffTestCase):
         self.assertNotEqual(card["state"], "failed")
         self.assertIn(card["state"], {"running", "quiet", "waiting", "idle"})
 
+    def test_an_adopted_failure_with_a_later_status_update_never_reads_failed(self):
+        sid = self._failed_reviewer()
+        status = self.read_status()
+        status["agent_sessions"][sid]["result"] = {}
+        status["agent_failures"][sid]["adopted"] = True
+        status["agent_sessions"][sid]["ended_at"] = "2026-09-20T22:11:43+00:00"
+        status["updated_at"] = "2026-09-20T22:12:31+00:00"
+        lib.commit(self.tmp, lib.load_config(self.tmp), status=status, event_kind="fixture_adopt",
+                   event_message="fixture", actor="test")
+        live, card = self._states()
+        self.assertEqual(live["state"], "stopped")
+        self.assertIn("status updated at 2026-09-20T22:12:31+00:00", live["detail"])
+        self.assertNotEqual(card["state"], "failed")
+        self.assertIn(card["state"], {"running", "quiet", "waiting", "idle"})
+
     def test_a_run_that_advanced_past_the_session_reads_stopped(self):
         sid = self._failed_reviewer(phase=4)
         status = self.read_status()
