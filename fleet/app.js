@@ -133,6 +133,14 @@ function engineMeta(project) {
   return { text: `ENGINE ${esc(own)}${drift ? ` (fleet ${esc(fleetVersion)})` : ""}`, drift };
 }
 
+// #186: which host drives the run, beside the project name; only from an
+// actor prefix the engine recorded, so two lanes from two hosts are told
+// apart at a glance and an unrecorded host reads nothing rather than a guess.
+function hostTag(project) {
+  const family = project && (project.host === "claude" || project.host === "codex") ? project.host : null;
+  return family ? ` <span class="host-tag" data-family="${esc(family)}">HOST ${esc(family.toUpperCase())}</span>` : "";
+}
+
 function projectCard(project) {
   const state = project.state || "quiet";
   const engine = engineMeta(project);
@@ -151,7 +159,7 @@ function projectCard(project) {
       <span class="progress">${esc(project.progress ?? 0)}%</span>
     </div>
     <div class="project-title">${project.logo_url ? `<img class="project-logo" src="${esc(project.logo_url)}" alt="" width="44" height="44">` : ""}<div><h3>${esc(title)}</h3>
-    <p class="project-name">${esc(project.name)}</p></div></div>
+    <p class="project-name">${esc(project.name)}${hostTag(project)}</p></div></div>
     ${phaseRail(project)}
     <p class="phase">${phase}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}

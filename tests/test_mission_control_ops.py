@@ -20,7 +20,7 @@ KINDS = ["design_approve", "design_reject", "deployment_approve", "deployment_re
          "design_review_authorize", "design_review_escalate", "review_cap_override",
          "recovery_acknowledge", "recover", "pause", "resume", "run_close", "run_reopen",
          "regression_accept", "regression_decline", "regression_cancel", "launch_role",
-         "verify_criterion", "verify_live", "engine_upgrade", "engine_rollback", "engine_migrate"]
+         "verify_criterion", "verify_live"]
 
 
 class MissionControlOpsTests(HandsoffTestCase):
@@ -36,7 +36,7 @@ class MissionControlOpsTests(HandsoffTestCase):
         self.init()
         items = self.inventory()
         self.assertEqual([x["kind"] for x in items], KINDS)
-        self.assertEqual({x["availability"] for x in items}, {"actionable", "unavailable", "read_only"})
+        self.assertEqual({x["availability"] for x in items}, {"actionable", "unavailable"})  # #183: no read_only rows
         self.assertIn("design review", next(x["reason"] for x in items if x["kind"] == "design_approve"))
 
     def test_reviewed_design_has_bound_action(self):
@@ -60,12 +60,13 @@ class MissionControlOpsTests(HandsoffTestCase):
         lib.commit(self.tmp, lib.load_config(self.tmp), status=status, acceptance=self.read_acceptance(), event_kind="fixture", event_message="complete", actor="test")
         self.assertFalse([x for x in self.inventory() if x["availability"] == "actionable"])
 
-    def test_engine_operations_are_read_only(self):
+    def test_engine_operations_are_not_in_the_inventory(self):
+        # #183: they are CLI commands and could never act from a served
+        # dashboard; three permanent READ ONLY rows said nothing about the run.
         self.init()
-        for kind in ("engine_upgrade", "engine_rollback", "engine_migrate"):
-            item = next(x for x in self.inventory() if x["kind"] == kind)
-            self.assertEqual(item["availability"], "read_only")
-            self.assertIn("execution is not offered", item["reason"])
+        kinds = {x["kind"] for x in self.inventory()}
+        self.assertFalse(kinds & {"engine_upgrade", "engine_rollback", "engine_migrate"}, kinds)
+        self.assertFalse([x for x in self.inventory() if x["availability"] == "read_only"])
 
     def test_dashboard_http_contains_inventory_and_legacy_list(self):
         self.init()
@@ -219,11 +220,14 @@ class MissionControlOpsTests(HandsoffTestCase):
                                                      "rollback", "migrate_preview", "migrate", "doctor"})
         self.assertTrue(all(str(self.tmp) in command for command in engine["commands"].values()))
 
-    def test_engine_execution_is_unavailable(self):
+    def test_engine_execution_is_unavailable_and_the_run_page_carries_no_previews(self):
         self.init()
         engine = dashboard.build_snapshot(self.tmp)["operations"]["engine"]
         self.assertEqual(engine["execution"], "unavailable")
         self.assertIn("dashboard is serving this root", engine["execution_reason"])
+        # #184: the version line and the command list stay; the previews went
+        self.assertNotIn("previews", engine)
+        self.assertEqual(len(engine["commands"]), 8)
 
 
 class LaunchRoleHttpTests(HandsoffTestCase):

@@ -187,6 +187,8 @@ commands = [
   "python3 -m unittest tests.test_ci_watch -v",
   "node --test tests/dashboard/ci_row.test.js",
   "python3 -m unittest tests.test_lane_a_floor -v",
+  "python3 -m unittest tests.test_lane_b_page -v",
+  "node --test tests/dashboard/lane_b_page.test.js",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

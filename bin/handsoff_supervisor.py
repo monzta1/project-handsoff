@@ -325,7 +325,7 @@ def cmd_init(args) -> int:
                   event_kind="initialized", event_message=f"Handsoff initialized for '{args.feature}'",
                   extra_events=waived, project_root=str(root), engine=lib.ledger_engine_identity(root),
                   ticket_lock="evaluated" if lib.feature_enabled(cfg, "ticket_lock") else "disabled",
-                  pin_written=pin_written)
+                  pin_written=pin_written, by=(args.by.strip() if isinstance(args.by, str) and args.by.strip() else None))
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
     for previous in adopted["adopted_from"]:
         print(f"WORK_ITEM_ADOPTED: #{', #'.join(str(n) for n in previous['numbers'])} from {previous['root']}")
@@ -742,6 +742,11 @@ def cmd_ci_watch(args) -> int:
             if view is None:
                 print("CI_WATCH_NONE: no watch is recorded on this run")
                 return 1
+            # the state printed is the one the ledger holds after the poll
+            with lib.project_lock(root):
+                after = lib.load_unique_json(lib.status_path(root, cfg)).get("ci") or {}
+            view = {**view, "state": after.get("state", view["state"]), "failed_check": after.get("failed_check"),
+                    "ended_at": after.get("ended_at")}
             print(json.dumps(view, indent=1, sort_keys=True))
     except lib.HandsoffError as exc:
         print(f"CI_WATCH_BLOCKED: {exc}")
@@ -4286,6 +4291,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--adopt", action="store_true",
                       help="#166: take over a ticket whose registered owner is dead or closed; a live owner is never adopted")
     init.add_argument("feature")
+    init.add_argument("--by", default=None, help="#186: the host actor driving this run (claude-host, codex-implementer); "
+                      "recorded on initialized so the page can name the host family")
     init.add_argument("--item", action="append", default=[],
                       help="declare one issue (#31 or #31 Title) or plain ask; repeat for multiple items")
     init.add_argument("--lane", choices=("full", "small-fix"), default="full",

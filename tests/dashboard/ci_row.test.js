@@ -34,15 +34,17 @@ function page() {
   for (const id of ["ci-status", "ci-state", "ci-link", "ci-progress-label", "ci-note", "ci-bar", "ci-bar-fill", "ci-cells"]) element(id);
   const start = app.indexOf("function renderCi(");
   const end = app.indexOf("\nfunction renderLiveAge(");
-  assert.ok(start > 0 && end > start, "renderCi is defined before renderLiveAge in app.js");
+  assert.ok(start > 0 && end > start, "renderCi and renderCiClock are defined before renderLiveAge in app.js");
   const escapeStart = app.indexOf("function escapeHtml(");
   const escapeEnd = app.indexOf("\n}", escapeStart) + 2;
-  const context = { $: (id) => byId.get(id) || null, Array, String, Number, Math,
+  // #181 Lane B: the row ticks from state.ci between snapshots; the clock is injectable
+  const context = { $: (id) => byId.get(id) || null, Array, String, Number, Math, Date, state: { ci: null },
     ciStateLabel: logic.ciStateLabel, ciProgressLabel: logic.ciProgressLabel, ciBarPercent: logic.ciBarPercent,
-    ciCellLabel: logic.ciCellLabel, ciNote: logic.ciNote };
+    ciCellLabel: logic.ciCellLabel, ciNote: logic.ciNote, ciTicked: logic.ciTicked };
   vm.createContext(context);
   vm.runInContext(`${app.slice(escapeStart, escapeEnd)}\n${app.slice(start, end)}`, context);
-  return { byId, render: (ci) => vm.runInContext(`renderCi(${JSON.stringify(ci)});`, context) };
+  return { byId, context, render: (ci) => vm.runInContext(`renderCi(${JSON.stringify(ci)});`, context),
+    tick: (ms) => vm.runInContext(`renderCiClock(state.ci.receivedAt + ${ms});`, context) };
 }
 
 test("the helpers read seconds, state, progress, cells and the note", () => {
@@ -115,8 +117,25 @@ test("the page carries the row under the phase rail, app.js renders it from snap
   assert.ok(rail > 0 && row > rail, "the CI row sits after the phase rail");
   for (const id of ["ci-state", "ci-link", "ci-progress-label", "ci-note", "ci-bar", "ci-bar-fill", "ci-cells"]) assert.ok(html.includes(`id="${id}"`), id);
   assert.match(app, /renderCi\(snapshot\.ci \|\| null\);/);
-  assert.match(app, /if \(!snapshot\.initialized\) \{\n    renderLive\(null\);\n    renderCi\(null\);/);
+  assert.match(app, /if \(!snapshot\.initialized\) \{\n    renderLive\(null\);\n    state\.ci = null;\n    renderCi\(null\);/);
+  assert.match(app, /window\.setInterval\(renderCiClock, 1000\);/);
   for (const state of ["running", "passed", "failed"]) assert.match(css, new RegExp(`\\.ci-status\\[data-state="${state}"\\] \\.ci-pill`));
   assert.match(css, /\.ci-bar\.is-indeterminate \.ci-bar-fill/);
   assert.match(css, /\.ci-cell\[data-state="IN_PROGRESS"\]::before/);
+});
+
+test("the label ticks between snapshots from the server's elapsed and freezes on a terminal watch (#181, Lane B)", () => {
+  const { byId, render, tick } = page();
+  render(running);
+  assert.equal(byId.get("ci-progress-label").textContent, "1m 02s of about 2m 04s");
+  tick(5000);
+  assert.equal(byId.get("ci-progress-label").textContent, "1m 07s of about 2m 04s");
+  assert.equal(byId.get("ci-bar-fill").style.width, "54%");
+  tick(90000);
+  assert.equal(byId.get("ci-bar-fill").style.width, "100%", "capped at the estimate; the note says over");
+  render({ ...running, state: "passed", progress: 1, elapsed_seconds: 124 });
+  tick(30000);
+  assert.equal(byId.get("ci-progress-label").textContent, "passed in 2m 04s (last run 2m 04s)", "a terminal watch does not tick");
+  assert.deepEqual(logic.ciTicked({ state: "running", elapsed_seconds: 10, expected_seconds: null, progress: null }, 5), { state: "running", elapsed_seconds: 15, expected_seconds: null, progress: null });
+  assert.equal(logic.ciCellLabel({ name: "tests", state: "QUEUED", queued: true, elapsed_seconds: null }), "tests queued");
 });
