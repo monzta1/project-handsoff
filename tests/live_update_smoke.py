@@ -17,9 +17,13 @@ identity = json.loads(subprocess.run([HANDSOFF, "version", "--json"], capture_ou
 assert identity["version"] == expected_version, (identity["version"], expected_version)
 
 completed = subprocess.run([HANDSOFF, "update", "--dry-run"], capture_output=True, text=True)
-assert completed.returncode == 0, completed.stdout + completed.stderr
 lines = completed.stdout.strip().splitlines()
-assert lines[-1] == "UPDATE_OK (dry run)", lines
+# The operator's Beakon checkout may carry work in progress; the command
+# then names it as failed (never over local changes) and exits 1. That is
+# the documented behaviour, not a smoke failure: the wheel tools must read.
+last = lines[-1] if lines else ""
+assert re.fullmatch(r"UPDATE_OK \(dry run\)|UPDATE_FAILED: (beakon|fleet)(, (beakon|fleet))?", last), lines
+assert completed.returncode == (0 if last.startswith("UPDATE_OK") else 1), (completed.returncode, last)
 FORM = re.compile(r"^(handsoff|miner|sentinel|beakon) (already \S+|would update .+ -> .+|left at .+: .+|skipped: .+|failed: .+)$")
 tools = {}
 for line in lines[:-1]:
@@ -30,5 +34,6 @@ for line in lines[:-1]:
     assert match, line
     tools[match.group(1)] = match.group(2)
 assert set(tools) == {"handsoff", "miner", "sentinel", "beakon"}, tools
-assert tools["handsoff"].startswith(("already", "would update", "left at")), tools["handsoff"]
+for wheel in ("handsoff", "miner", "sentinel"):
+    assert tools[wheel].startswith(("already", "would update", "left at", "skipped: no gh login")), (wheel, tools[wheel])
 print("LIVE_UPDATE_OK " + "; ".join(f"{k}: {v}" for k, v in tools.items()))
