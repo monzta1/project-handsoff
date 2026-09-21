@@ -64,7 +64,7 @@ test("the fixed copy is gone, the label hides on a steady run, FAILOVER hides at
   assert.ok(!app.includes("supervisor.reassurance"), "no reassurance rendering");
   assert.match(app, /\$\("briefing-state"\)\.classList\.toggle\("hidden", supervisor\.tone === "steady"\);/);
   assert.match(html, /<article id="replacement-panel" class="panel replacement-panel hidden">/);
-  assert.match(app, /panel\.classList\.toggle\("hidden", total === 0\);/);
+  assert.match(app, /panel\.classList\.toggle\("hidden", total === 0 && !implementerProgress\);/);  // #215 adds the progress row
   assert.match(html, /<div id="metrics-tokens-cell">/);
   assert.match(html, /<p id="metrics-tokens-note" class="metrics-note hidden"><\/p>/);
   assert.match(app, /tokensCell\.classList\.toggle\("hidden", !reported\);/);

@@ -403,7 +403,12 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # `tier` the same way: null unless a Phase-2 reviewer was launched through
 # the tiered selection, otherwise exactly "primary" or "followup".
 AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id", "usage",
-                                 "amendment_id"}
+                                 "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
+#: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
+PROGRESS_STATES = ("done", "partial", "untouched")
+PROGRESS_CRITERION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MAX_PROGRESS_RECORDS = 64
+MAX_PROGRESS_NOTE = 200
 AGENT_SESSION_FIELDS = {
     "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
     "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
@@ -3159,7 +3164,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 
 
 def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted"} \
+    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted", "progress_summary"} \
             or not {"category", "reason", "tail_sha256"} <= set(value):
         raise HandsoffError("agent failure classification is invalid")
     category = value.get("category")
@@ -3180,6 +3185,13 @@ def _validate_failure_classification(value: object) -> dict:
         if not isinstance(value["changed_paths"], list) or len(value["changed_paths"]) > 64 or not all(isinstance(item, str) for item in value["changed_paths"]):
             raise HandsoffError("agent failure changed paths are invalid")
         result["changed_paths"] = list(value["changed_paths"])
+    if "progress_summary" in value:
+        # #215: what the Implementer said it finished before the session ended
+        summary = value["progress_summary"]
+        if not isinstance(summary, dict) or set(summary) != {"done", "partial", "untouched"} \
+                or not all(isinstance(summary[k], list) and all(isinstance(c, str) for c in summary[k]) for k in summary):
+            raise HandsoffError("agent failure progress summary is invalid")
+        result["progress_summary"] = {k: list(summary[k]) for k in ("done", "partial", "untouched")}
     if "changes" in value:
         # #203: what the tree looked like when the reviewer was blamed
         changes = value["changes"]
@@ -3402,6 +3414,13 @@ def transition_agent_session(root: Path, session_id: str, state: str,
                 replacement["handoff"]["ended_at"] = now
             if failure is not None:
                 failures = proposed.setdefault("agent_failures", {})
+                if role == "implementer" and "progress_summary" not in failure:
+                    # #215: the account of what was finished, from the ledger
+                    try:
+                        acceptance = load_unique_json(acceptance_path(root, cfg))
+                    except (HandsoffError, OSError, ValueError):
+                        acceptance = {}
+                    failure = {**failure, "progress_summary": progress_summary(updated.get("progress"), acceptance)}
                 failures[session_id] = {"session_id": session_id, **failure, "at": now}
             if role == "reviewer":
                 warnings = proposed.setdefault("warnings", [])
@@ -4935,6 +4954,14 @@ def validate_status_schema(status: dict) -> list[str]:
                                               or value not in PHASES):
                         errors.append(f"{label}.phase_number must be null or an integer from 1 through 8")
                     continue
+                if optional_field == "progress":
+                    # #215: the Implementer's per-criterion claims, validated one by one
+                    if value is not None and (not isinstance(value, list) or len(value) > MAX_PROGRESS_RECORDS or not all(
+                            isinstance(item, dict) and set(item) == {"criterion", "state", "test", "note", "at"}
+                            and validate_progress_line({k: item[k] for k in ("criterion", "state", "test", "note")}) is not None
+                            and isinstance(item["at"], str) for item in value)):
+                        errors.append(f"{label}.progress must be a list of validated progress records")
+                    continue
                 if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 64):
                     errors.append(f"{label}.{optional_field} must be null or a non-empty string")
                 elif optional_field == "tier" and value is not None and value not in DESIGN_REVIEWER_TIERS:
@@ -5025,14 +5052,15 @@ def validate_status_schema(status: dict) -> list[str]:
                     continue
                 try:
                     normalized = _validate_failure_classification({
-                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes")
+                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes", "progress_summary")
                         if isinstance(failure, dict) and key in failure
                     }) if isinstance(failure, dict) else None
                 except HandsoffError as exc:
                     errors.append(f"status: agent failure {session_id!r}: {exc}")
                     normalized = None
                 allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
-                                  "changes", "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged"}
+                                  "changes", "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged",
+                                  "progress_summary"}
                 if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
                     errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
@@ -8729,6 +8757,88 @@ def _read_agent_output_store(root: Path) -> dict:
 def operations_path(root: Path) -> Path:
     """Return the bounded, telemetry-only operation journal for ROOT."""
     return Path(root) / OPERATIONS_FILE
+
+
+def validate_progress_line(payload: object) -> dict | None:
+    """#215: {criterion, state, test, note}; the criterion id pattern, the
+    state enum, strings bounded; anything else is None (a protocol warning)."""
+    if not isinstance(payload, dict) or set(payload) - {"criterion", "state", "test", "note"} \
+            or not {"criterion", "state"} <= set(payload):
+        return None
+    criterion = payload.get("criterion")
+    if not isinstance(criterion, str) or not PROGRESS_CRITERION_PATTERN.fullmatch(criterion):
+        return None
+    if payload.get("state") not in PROGRESS_STATES:
+        return None
+    test = payload.get("test", "")
+    note = payload.get("note", "")
+    if not isinstance(test, str) or not isinstance(note, str) or len(test) > 512 or len(note) > MAX_PROGRESS_NOTE:
+        return None
+    return {"criterion": criterion, "state": payload["state"], "test": test, "note": note}
+
+
+def record_session_progress(root: Path, session_id: str, record: dict) -> list[dict]:
+    """#215: append one validated progress record to the session, under
+    the project lock; the list is bounded and the last state per criterion
+    wins when the summary is computed. Returns the session's list."""
+    root = Path(root).resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        session = (status.get("agent_sessions") or {}).get(session_id)
+        if not isinstance(session, dict):
+            raise HandsoffError("agent session was not found")
+        proposed = deepcopy(status)
+        progress = proposed["agent_sessions"][session_id].setdefault("progress", [])
+        progress.append({**record, "at": datetime.now(timezone.utc).isoformat()})
+        del progress[:-MAX_PROGRESS_RECORDS]
+        errors = validate_status_schema(proposed)
+        if errors:
+            raise HandsoffError(errors[0])
+        commit(root, cfg, status=proposed, event_kind="implementer_progress",
+               event_message=f"Implementer progress: {record['criterion']} {record['state']}",
+               session_id=session_id, criterion=record["criterion"], progress_state=record["state"])
+        return deepcopy(progress)
+
+
+def progress_summary(progress: list | None, acceptance: dict | None) -> dict:
+    """#215: {done, partial, untouched} from a session's progress list and
+    the acceptance registry: the last state per reported criterion wins;
+    every automated criterion never reported is untouched. Computed from
+    the ledger, never trusted from the child."""
+    last: dict[str, str] = {}
+    for item in progress or []:
+        if isinstance(item, dict) and isinstance(item.get("criterion"), str) and item.get("state") in PROGRESS_STATES:
+            last[item["criterion"]] = item["state"]
+    automated = [c["id"] for c in (acceptance or {}).get("criteria") or []
+                 if isinstance(c, dict) and c.get("verification") == "automated" and isinstance(c.get("id"), str)]
+    order = list(dict.fromkeys(automated + sorted(last)))
+    out = {"done": [], "partial": [], "untouched": []}
+    for criterion in order:
+        out[last.get(criterion, "untouched")].append(criterion)
+    return out
+
+
+def latest_failed_implementer_progress(status: dict) -> dict | None:
+    """#215: the progress summary of the most recent failed Implementer
+    session of this run, with the tests it named for done criteria, for a
+    relaunch's context; None when there is none."""
+    sessions = status.get("agent_sessions") if isinstance(status, dict) else None
+    failures = status.get("agent_failures") if isinstance(status, dict) else None
+    if not isinstance(sessions, dict) or not isinstance(failures, dict):
+        return None
+    candidates = [(s.get("ended_at") or "", sid, s) for sid, s in sessions.items()
+                  if isinstance(s, dict) and s.get("role") == "implementer" and sid in failures
+                  and isinstance(failures[sid], dict) and isinstance(failures[sid].get("progress_summary"), dict)]
+    if not candidates:
+        return None
+    _, sid, session = max(candidates)
+    tests = {}
+    for item in session.get("progress") or []:
+        if isinstance(item, dict) and item.get("state") == "done" and item.get("test"):
+            tests[item["criterion"]] = item["test"]
+    return {"session_id": sid, "summary": failures[sid]["progress_summary"], "tests": tests,
+            "changed_paths": list(failures[sid].get("changed_paths") or [])}
 
 
 def validate_operation_line(payload: object) -> dict | None:

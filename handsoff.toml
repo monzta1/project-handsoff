@@ -204,6 +204,8 @@ commands = [
   "python3 -m unittest tests.test_packaging -v",
   "python3 -m unittest tests.test_update -v",
   "python3 -m unittest tests.test_landing_page -v",
+  "python3 -m unittest tests.test_implementer_progress -v",
+  "node --test tests/dashboard/implementer_progress.test.js",
   "python3 -m unittest tests.test_governance_docs tests.test_config_governance tests.test_design_gate_config -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
