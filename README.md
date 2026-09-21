@@ -22,8 +22,8 @@ obsolete release-specific environment.
 Install one versioned engine, then initialize a thin project. Product repositories keep only `handsoff.toml`, `.handsoff-version`, generated run state, and optional hash-declared prompt overrides; they no longer copy the engine, dashboard, prompts, or schemas:
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.59/project_handsoff-0.3.59-py3-none-any.whl
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.59/project_handsoff-0.3.59-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.60/project_handsoff-0.3.60-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.60/project_handsoff-0.3.60-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -587,6 +587,13 @@ the badge reads ENGINE UNKNOWN with the reason (#185) and Fleet reads
 unknown; the test now covers both. Lesson, in the knowledge base: a claim
 of "every reader" needs a test per reader, named in the criterion.
 
+### v0.3.60 field note: the playbook ships with the engine (#208)
+
+Cause: the rules for running a lane lived in one project's local,
+gitignored knowledge base on one machine; a host on the Studio would start
+without them. Fix: `playbook/` in the wheel, `handsoff playbook`, and the
+briefing carrying it on every launch.
+
 ### Cutting a release
 
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
@@ -797,6 +804,22 @@ run has since advanced past the phase the session ran in; the detail says
 which. Fleet therefore classifies such a run by its other rules, never as
 FAILED. `session-result-adopt` rewrites a beacon naming that session with
 state `adopted`. The failure itself stays in the ledger.
+
+### The playbook ships with the engine (#208)
+
+How to run a lane is engine knowledge, not any one project's: it lives in
+`playbook/` (`INDEX.md`, `lanes.md`, `landing.md`, `reviewers.md`,
+`lessons.md`), listed in the runtime manifest and shipped in the wheel, so
+every machine that installs Handsoff has the same rules. `handsoff
+playbook` prints the index and `handsoff playbook <topic>` one topic. A
+host reads `lanes.md` before `init`, `landing.md` before `advance 6` and
+`lessons.md` once per session; every managed launch carries the index and
+`lanes.md` ahead of the project's own `[briefing]` knowledge base (#175),
+with no configuration, and `--topic lessons` rides like a project topic.
+Project knowledge (a device's quirks, a repository's audits, accounts)
+stays in the project's knowledge base, declared in `handsoff.toml
+[briefing]`, and never in the engine. A lesson that cost a round goes into
+`lessons.md` in the same session; a bullet broken twice becomes a refusal.
 
 ### The clocks know the Mac slept (#193)
 

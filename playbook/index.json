@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "topics": {
+    "lanes": "running a lane",
+    "landing": "landing and releasing",
+    "reviewers": "managed reviewers",
+    "lessons": "rules that cost a round"
+  },
+  "always_load": [
+    "INDEX.md",
+    "lanes.md"
+  ],
+  "files": [
+    {
+      "file": "INDEX.md",
+      "topics": []
+    },
+    {
+      "file": "lanes.md",
+      "topics": [
+        "lanes"
+      ]
+    },
+    {
+      "file": "landing.md",
+      "topics": [
+        "landing"
+      ]
+    },
+    {
+      "file": "reviewers.md",
+      "topics": [
+        "reviewers"
+      ]
+    },
+    {
+      "file": "lessons.md",
+      "topics": [
+        "lessons"
+      ]
+    }
+  ]
+}

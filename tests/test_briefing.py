@@ -45,7 +45,9 @@ class BriefingTests(unittest.TestCase):
         self.assertNotIn("HARDWARE.md", section)
         with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
             text = agent.build_role_input(self.tmp, "implementer", "do the task", "ui")
-        self.assertTrue(text.startswith("# Knowledge base briefing"))
+        # #208: the engine's playbook rides ahead of the project's knowledge base
+        self.assertTrue(text.startswith("# Handsoff playbook\n\n## playbook/INDEX.md"))
+        self.assertLess(text.index("# Handsoff playbook"), text.index("# Knowledge base briefing"))
         self.assertIn("# Assigned task\n\ndo the task", text)
 
     def test_missing_selected_file_refuses_before_prompt_assembly(self):
@@ -76,6 +78,7 @@ class BriefingTests(unittest.TestCase):
         with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
             text = agent.build_role_input(self.tmp, "architect", "do the task")
         self.assertNotIn("# Knowledge base briefing", text)
+        self.assertIn("# Handsoff playbook", text, "#208: the playbook needs no [briefing] block")
         self.assertIn("ROLE PROMPT\n\n# Assigned task\n\ndo the task", text)
         self.assertIsNone(cfg["briefing"])
         self.assertEqual((self.tmp / "handsoff.toml").read_bytes() if (self.tmp / "handsoff.toml").exists() else None,

@@ -193,7 +193,7 @@ class HandsoffTestCase(unittest.TestCase):
         for name in ("handsoff.toml", "handsoff-runtime.json"):
             shutil.copy(ROOT / name, self.tmp / name)
         normalize_fixture_config(self.tmp / "handsoff.toml")
-        for directory in ("schemas", "dashboard", "fleet", "templates", "bin", "rules"):
+        for directory in ("schemas", "dashboard", "fleet", "templates", "bin", "rules", "playbook"):
             shutil.copytree(ROOT / directory, self.tmp / directory)
 
     def tearDown(self):
@@ -1659,7 +1659,10 @@ class TestDesignEvidenceCache(HandsoffTestCase):
         text = self.runtime.build_role_input(self.tmp, "architect", "Design it")
         # #121: the Architect's input opens with the read-only sandbox note,
         # then the legacy prompt + task form, byte for byte.
-        self.assertTrue(text.startswith("# Sandbox\n\n"), text[:80])
+        # #208: the engine's playbook rides first; the sandbox note follows it
+        self.assertTrue(text.startswith("# Handsoff playbook\n\n"), text[:80])
+        self.assertIn("\n\n# Sandbox\n\n", text)
+        self.assertLess(text.index("# Handsoff playbook"), text.index("# Sandbox"))
         self.assertTrue(text.endswith(f"{prompt}\n\n# Assigned task\n\nDesign it"))
 
     def test_event_log_carries_hashes_only(self):
@@ -8878,8 +8881,10 @@ class TestDesignReviewPacket(HandsoffTestCase):
         spec = self.runtime.build_launch_spec(self.tmp, "reviewer", "Review the revision", which=self.which)
         self.assertEqual(spec.packet_id, packet["packet_id"])
         self.assertEqual(spec.design_hash, packet["design_hash"])
-        self.assertTrue(spec.stdin.startswith(self.PACKET_HEADING + "\n\n"))
-        heading, _, rest = spec.stdin.partition("\n\n")
+        # #208: the playbook rides ahead of the packet
+        self.assertTrue(spec.stdin.startswith("# Handsoff playbook\n\n"))
+        self.assertIn("\n\n" + self.PACKET_HEADING + "\n\n", spec.stdin)
+        _, _, rest = spec.stdin.partition("\n\n" + self.PACKET_HEADING + "\n\n")
         packet_json, _, rest = rest.partition("\n\n")
         self.assertEqual(json.loads(packet_json), packet)
         prompt = (self.tmp / "prompts" / "reviewer.md").read_text().rstrip()

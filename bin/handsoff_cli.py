@@ -451,6 +451,8 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--docs-only", action="store_true", help="run only the documentation audit")
     check.add_argument("--skip-preflight", action="store_true")
     sub.add_parser("commands", help="print the argparse command reference")
+    playbook = sub.add_parser("playbook", help="#208: print the engine's lane playbook (the index, or one topic)")
+    playbook.add_argument("topic", nargs="?", default=None, help="lanes, landing, reviewers, lessons")
     upgrade = sub.add_parser("upgrade")
     upgrade.add_argument("root", nargs="?", default=".")
     upgrade.add_argument("--to", required=True)
@@ -526,6 +528,9 @@ def main() -> int:
             result = doctor(root, skip_preflight=args.skip_preflight)
         elif args.command == "commands":
             print(_commands_reference(), end="")
+            return 0
+        elif args.command == "playbook":
+            print(lib.playbook_text(args.topic), end="")
             return 0
         elif args.command == "upgrade":
             result = change_pin(_root(args.root), args.to, dry_run=args.dry_run, action="upgrade")

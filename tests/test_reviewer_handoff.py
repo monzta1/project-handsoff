@@ -32,6 +32,10 @@ class ReviewerHandoffTests(unittest.TestCase):
         shutil.copytree(ROOT / "prompts", self.root / "prompts")
         shutil.copytree(ROOT / "bin", self.root / "bin")
         shutil.copytree(ROOT / "dashboard", self.root / "dashboard")
+        # a drop-in carries every directory the manifest lists (#208: playbook too)
+        for directory in ("fleet", "rules", "templates", "playbook"):
+            if (ROOT / directory).is_dir() and not (self.root / directory).exists():
+                shutil.copytree(ROOT / directory, self.root / directory)
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.name", "Fixture"], cwd=self.root, check=True)
