@@ -9,7 +9,7 @@
     "bin/handsoff_lib.py": "a41ce6646b7733c7db2e7ef92c1a75cb2997b99620933e50d92ba0b011b6ed51",
     "bin/handsoff_manifest.py": "231fa6cb370fe744fdeba764250b0c18e0be0e365b33885a271fe5cc1989345f",
     "bin/handsoff_regress.py": "5f658fcfa666c60000edcd4f7242ea91c74a39460ba040d377bfa149fbf942a3",
-    "bin/handsoff_supervisor.py": "16999dc8ea356dbe0143448a11082ac2c30a8011287974327f0616e0f80058f8",
+    "bin/handsoff_supervisor.py": "f57809ac3128f30337f1cd609c16c7ac5b0b54d60675fc748cf1f855ae864f0f",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/handsoff_update.py": "ff1c1a40c650e2f1781e2eaa213473ca055b162a2624d259f1481efce3506b73",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
@@ -44,5 +44,5 @@
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },
   "schema": 1,
-  "version": "v0.3.66"
+  "version": "v0.3.67"
 }

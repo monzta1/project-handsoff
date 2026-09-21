@@ -689,7 +689,7 @@ def advance_approved_design(root: Path) -> bool:
 # #174: the archive scan is the Miner's (monzta1/miner), installed beside
 # the engine. Handsoff keeps the trigger, the ledger record and the command
 # as a shim for one release; the rules, the drafts and the filing live there.
-MINER_RELEASE = "v0.1.0"
+MINER_RELEASE = "v0.2.0"
 MINER_INSTALL_HINT = (f"install the Miner {MINER_RELEASE}: gh release download {MINER_RELEASE} --repo monzta1/miner "
                       f"--pattern 'miner-*.whl' --dir /tmp && python3 -m pip install /tmp/miner-*.whl "
                       "(into the engine's own environment), or set HANDSOFF_MINER to its executable")
