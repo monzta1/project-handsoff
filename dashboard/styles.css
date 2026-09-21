@@ -697,3 +697,8 @@ a.settings-toggle { display: inline-flex; align-items: center; text-decoration: 
 .host-badge[data-family="codex"] { color: var(--amber); border-color: rgba(245, 194, 107, .32); }
 /* #184: one line about tokens until a session reports them */
 .metrics-note { margin: 6px 0 0; color: var(--faint); font: 11px/1.4 var(--mono); }
+
+/* #193: how long the machine slept, beside a clock that counts awake time */
+.clock-asleep { display: block; margin-top: 2px; color: var(--faint); font: 10px/1.3 var(--mono); letter-spacing: .04em; }
+.clock-asleep:empty { display: none; }
+.metrics-phase-list small { color: var(--faint); font-size: 10px; }

@@ -268,3 +268,5 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 
 /* #194: the card names the host it waits on */
 .host-wait { color: var(--amber); font-weight: 700; letter-spacing: .06em; }
+/* #193: sleep beside the phase age */
+.asleep { color: var(--faint); font-size: 10px; letter-spacing: .04em; }

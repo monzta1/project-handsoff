@@ -126,44 +126,70 @@ class DeclineTests(HandsoffTestCase):
         events = [json.loads(l) for l in (self.tmp / "handsoff-events.jsonl").read_text().splitlines() if l.strip()]
         return [e for e in events if kind is None or e["kind"] == kind]
 
-    def test_a_decline_at_phase_2_closes_the_run_as_not_planned_everywhere(self):
+    def test_a_decline_at_phase_2_is_pending_until_the_reviewer_approves_it_then_closes_not_planned(self):
+        # Lane E (#177): a decline is reviewed like a proposal
         r = run(["advance", "2", "20"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout)
         r = run(["design-decline", "--by", "claude-architect", "--reason", "the Phase 8 gate already refuses an item without implemented_by",
                  "--evidence", "lane A refused issue-179 at advance 8 on 2026-09-21", "--evidence", "compute_errors line 5767",
                  "--alternative", "fill every required item at Phase 5 and keep the gate"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("DESIGN_DECLINED: run closed as not_planned by claude-architect", r.stdout)
-        self.assertIn("Not planned: the Phase 8 gate already refuses", r.stdout)
-        self.assertIn("- lane A refused issue-179", r.stdout)
-        self.assertIn("Instead: fill every required item", r.stdout)
+        self.assertIn("DESIGN_DECLINED: pending the independent reviewer's word (by claude-architect)", r.stdout)
         status = self.read_status()
         declined = status["design_declined"]
-        self.assertEqual(declined["by"], "claude-architect")
-        self.assertEqual(len(declined["evidence"]), 2)
+        self.assertEqual((declined["by"], declined["decision"], len(declined["evidence"])), ("claude-architect", "pending", 2))
         self.assertEqual(declined["design_hash"], lib.design_hash(self.read_acceptance()["criteria"]))
-        self.assertEqual(status["run_closed"]["outcome"], "not_planned")
-        self.assertEqual(status["run_closed"]["reason"], declined["reason"])
-        event = self._events("design_declined")[0]
-        self.assertEqual((event["by"], event["alternative"][:4]), ("claude-architect", "fill"))
-        self.assertEqual(self._events("run_closed")[0]["outcome"], "not_planned")
-        # one write-ahead unit: the decline event sits right before the closure
-        kinds = [e["kind"] for e in self._events()]
-        self.assertEqual(kinds[kinds.index("design_declined") + 1], "run_closed")
-        # advance 3 is refused on the closed run
+        self.assertIsNone(status.get("run_closed"), "nothing closes until the reviewer speaks")
+        self.assertEqual(self._events("design_declined")[0]["by"], "claude-architect")
+        # Phase 3 is refused while the decline is pending; a second decline too
         r = run(["advance", "3", "30"], cwd=self.tmp)
         self.assertEqual(r.returncode, 1)
-        # the page and Fleet read it as closed, not failed
+        self.assertIn("a decline is pending the independent reviewer's word", r.stdout)
+        r = run(["design-decline", "--by", "claude-architect", "--reason", "again"], cwd=self.tmp)
+        self.assertIn("a decline is already pending", r.stdout)
+        # the reviewer packet carries the decline
+        context = lib.managed_design_context(self.tmp, "reviewer")
+        self.assertEqual(context["design_decline"]["reason"], declined["reason"])
+        # the architect cannot approve its own decline; the reviewer can
+        r = run(["record-design-review", "--by", "claude-architect", "--architect", "claude-architect", "--approve", "--summary", "self"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        r = run(["record-design-review", "--by", "codex-reviewer", "--architect", "claude-architect", "--approve",
+                 "--summary", "the gate exists; the evidence is the ledger"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("DESIGN_DECLINE_APPROVED: run closed as not_planned", r.stdout)
+        status = self.read_status()
+        self.assertEqual(status["design_declined"]["decision"], "approved")
+        self.assertEqual(status["design_declined"]["reviewed_by"], "codex-reviewer")
+        self.assertEqual(status["run_closed"]["outcome"], "not_planned")
+        kinds = [e["kind"] for e in self._events()]
+        self.assertEqual(kinds[kinds.index("design_decline_approved") + 1], "run_closed", "one write-ahead unit")
         snapshot = dashboard.build_snapshot(self.tmp)
         self.assertEqual(snapshot["supervisor"]["label"], "Not planned")
-        self.assertTrue(snapshot["supervisor"]["headline"].startswith("Not planned, declined by claude-architect:"))
+        self.assertTrue(snapshot["supervisor"]["headline"].startswith("Not planned, declined by codex-reviewer:"))
         fleet.register_project(self.tmp, self.registry)
         card = next(p for p in fleet.build_fleet(self.registry)["projects"] if p["root"] == str(self.tmp.resolve()))
         self.assertEqual(card["state"], "closed")
         self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
-        # declining a closed run refuses
-        r = run(["design-decline", "--by", "claude-architect", "--reason", "again"], cwd=self.tmp)
-        self.assertIn("DESIGN_DECLINE_BLOCKED: design-decline: the run is already closed", r.stdout)
+
+    def test_the_reviewer_can_send_a_decline_back(self):
+        r = run(["advance", "2", "20"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        r = run(["design-decline", "--by", "claude-architect", "--reason", "not needed"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        r = run(["record-design-review", "--by", "codex-reviewer", "--architect", "claude-architect", "--request-changes",
+                 "--summary", "the harm is real", "--finding", "the ledger in .handsoff-archive shows the gate not firing on 2026-09-20"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("DESIGN_DECLINE_CHANGES_REQUESTED", r.stdout)
+        status = self.read_status()
+        self.assertEqual(status["design_declined"]["decision"], "changes_requested")
+        self.assertEqual(len(status["design_declined"]["findings"]), 1)
+        self.assertIsNone(status.get("run_closed"))
+        self.assertEqual(status["phase_number"], 2)
+        self.assertIsNone(lib.pending_design_decline(status))
+        self.assertEqual(self._events("design_decline_changes_requested")[0]["findings"], 1)
+        # the Architect may now decline again or propose
+        r = run(["design-decline", "--by", "claude-architect", "--reason", "with the evidence this time", "--evidence", "e1"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_a_decline_refuses_at_phase_3_and_after_an_approval_and_with_bad_fields(self):
         r = run(["design-decline", "--by", "claude-architect", "--reason", "x" * 513], cwd=self.tmp)
@@ -175,7 +201,7 @@ class DeclineTests(HandsoffTestCase):
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
         r = run(["design-decline", "--by", "claude-architect", "--reason", "too late"], cwd=self.tmp)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("only at Phase 1 or 2 (the run is at Phase 3)", r.stdout)
+        self.assertIn("only at Phase 2, the design debate (the run is at Phase 3)", r.stdout)
         # a live managed session refuses the decline before anything is written (F1.1)
         status = self.read_status()
         status["phase_number"], status["phase"], status["design_approved"], status["design_review"] = 2, lib.PHASES[2], None, None
@@ -186,6 +212,13 @@ class DeclineTests(HandsoffTestCase):
         self.assertIn("a managed session is live", r.stdout)
         self.assertNotIn("design_declined", self.read_status())
         self.assertEqual(self._events("design_declined"), [])
+        # and at Phase 1 the decline waits for the debate
+        fresh = self.read_status()
+        fresh["phase_number"], fresh["phase"], fresh["progress"] = 1, lib.PHASES[1], 10
+        fresh["agent_sessions"] = {}
+        lib.commit(self.tmp, lib.load_config(self.tmp), status=fresh, event_kind="fixture", event_message="back to 1")
+        r = run(["design-decline", "--by", "claude-architect", "--reason", "early"], cwd=self.tmp)
+        self.assertIn("only at Phase 2", r.stdout)
         self.assertNotIn("design_declined", self.read_status())
         self.assertIsNone(self.read_status().get("run_closed"))
         prompt = (ROOT / "prompts" / "architect.md").read_text()

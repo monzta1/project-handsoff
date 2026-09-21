@@ -43,7 +43,7 @@ import urllib.request
 import uuid
 from copy import deepcopy
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _OUTPUT_TOKEN_PATTERNS = (
@@ -5896,6 +5896,8 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         else:
             errors.extend(rules_binding_errors(root, cfg, approval, "deployment gate"))  # #170
 
+    if phase >= 3 and pending_design_decline(status):
+        errors.append("design gate: a decline is pending the independent reviewer's word; approve closes the run as not planned, changes send it back")  # #177
     if phase >= 7:
         errors.extend(ci_gate_errors(status))  # #181
 
@@ -6243,6 +6245,9 @@ def managed_design_context(root: Path, role: str) -> dict | None:
         "criteria": [{key: item.get(key) for key in ("id", "type", "requirement", "verification", "tests")}
                      for item in acceptance.get("criteria", [])[:64] if isinstance(item, dict)],
         "design_proposal": status.get("design_proposal"),
+        # #177: a pending decline is reviewed in place of a proposal, for its
+        # evidence, not for the effort it saves
+        "design_decline": pending_design_decline(status),
         "instructions": ("Use this packet first. Do not list or search the whole repository. "
                          "Inspect only files needed to resolve a named finding. "
                          "Judge only prior findings the revision leaves unanswered; a finding "
@@ -8488,6 +8493,14 @@ def liveness_view(status: dict, root: Path, cfg: dict,
     if not candidates and updated_seconds is not None:
         candidates = [updated_seconds]
     seconds = max(int(min(candidates)), 0) if candidates else None
+    # #193: a closed lid is not silence. The freshest signal's age is
+    # measured in awake time; the sleep inside it is reported beside it.
+    asleep = 0.0
+    if seconds is not None:
+        sleep = machine_sleep_intervals(now=now)
+        since = now - timedelta(seconds=seconds)
+        asleep = asleep_seconds(since, now, sleep)
+        seconds = max(int(seconds - asleep), 0)
     threshold = int(float(cfg.get("stall_minutes", 10) or 10) * 60)
     warning = None
     if status.get("status") == "in_progress" and seconds is not None and seconds >= threshold \
@@ -8496,7 +8509,7 @@ def liveness_view(status: dict, root: Path, cfg: dict,
     note = activity_note(status, cfg, now=now, output_liveness=read_output_liveness(root))
     assessment = recovery_assessment(status, cfg, read_session_liveness(root),
                                      read_events(root, cfg), now, root=root)
-    return {"seconds_since_activity": seconds, "process_signal": signal,
+    return {"seconds_since_activity": seconds, "asleep_seconds": round(asleep, 3), "process_signal": signal,
             "stall_warning": warning, "stall_threshold_minutes": int(threshold / 60),
             "activity_note": note, "assessment": assessment}
 
@@ -10585,7 +10598,7 @@ def _sum_known(values) -> int | None:
 
 
 def build_run_metrics(status: dict, events: list[dict], verifications: list[dict], *,
-                      now: datetime | None = None) -> dict:
+                      now: datetime | None = None, sleep: list | None = None) -> dict:
     """Derive content-free delivery metrics from already-audited records.
 
     Token fields stay null unless an adapter eventually supplies structured,
@@ -10606,11 +10619,15 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
     start = parsed(ordered_events[0]["at"]) if ordered_events else parsed(status.get("updated_at"))
     complete = status.get("status") == "complete"
     end = parsed(status.get("updated_at")) if complete else now
-    elapsed = max((end - start).total_seconds(), 0) if start and end else None
+    # #193: every duration is awake time; the sleep beside it is reported
+    sleep = machine_sleep_intervals(now=now) if sleep is None else sleep
+    elapsed = awake_seconds(start, end, sleep) if start and end else None
+    run_asleep = asleep_seconds(start, end, sleep) if start and end else 0.0
 
     phase_cursor = start
     phase_number = int(status.get("phase_number", 1) or 1) if not ordered_events else 1
     phase_seconds = {str(number): 0.0 for number in PHASES}
+    phase_asleep = {str(number): 0.0 for number in PHASES}
     for event in ordered_events:
         if event.get("kind") == "initialized" and isinstance(event.get("phase_number"), int):
             phase_number = event["phase_number"]
@@ -10620,11 +10637,13 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
             continue
         at = parsed(event.get("at"))
         if phase_cursor and at and at >= phase_cursor:
-            phase_seconds[str(phase_number)] += (at - phase_cursor).total_seconds()
+            phase_seconds[str(phase_number)] += awake_seconds(phase_cursor, at, sleep) or 0.0
+            phase_asleep[str(phase_number)] += asleep_seconds(phase_cursor, at, sleep)
         phase_number = event["phase_number"]
         phase_cursor = at or phase_cursor
     if phase_cursor and end and end >= phase_cursor:
-        phase_seconds[str(phase_number)] += (end - phase_cursor).total_seconds()
+        phase_seconds[str(phase_number)] += awake_seconds(phase_cursor, end, sleep) or 0.0
+        phase_asleep[str(phase_number)] += asleep_seconds(phase_cursor, end, sleep)
 
     sessions = []
     for item in (status.get("agent_sessions") or {}).values():
@@ -10632,7 +10651,7 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
             continue
         began = parsed(item.get("running_at") or item.get("started_at"))
         ended = parsed(item.get("ended_at")) or (now if item.get("state") in AGENT_SESSION_LIVE_STATES else None)
-        duration = max((ended - began).total_seconds(), 0) if began and ended else None
+        duration = awake_seconds(began, ended, sleep) if began and ended else None
         sessions.append({
             "session_id": item.get("session_id"), "role": item.get("role"),
             "adapter": item.get("adapter"),
@@ -10673,7 +10692,7 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
         if opening:
             open_waits[key] = at
         elif open_waits[key] and at and at >= open_waits[key]:
-            seconds = (at - open_waits[key]).total_seconds()
+            seconds = awake_seconds(open_waits[key], at, sleep) or 0.0
             if key == "human":
                 pilot_wait_seconds += seconds
             else:
@@ -10682,9 +10701,9 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
     for key, began in open_waits.items():
         if began and end and end >= began:
             if key == "human":
-                pilot_wait_seconds += (end - began).total_seconds()
+                pilot_wait_seconds += awake_seconds(began, end, sleep) or 0.0
             else:
-                background_wait_seconds += (end - began).total_seconds()
+                background_wait_seconds += awake_seconds(began, end, sleep) or 0.0
     known_usage = [item for item in sessions if item["total_tokens"] is not None]
     largest_sessions = sorted(
         sessions, key=lambda item: item["duration_seconds"] if item["duration_seconds"] is not None else -1,
@@ -10693,6 +10712,8 @@ def build_run_metrics(status: dict, events: list[dict], verifications: list[dict
     return {
         "generated_at": now.isoformat(),
         "elapsed_seconds": round(elapsed, 3) if elapsed is not None else None,
+        "asleep_seconds": round(run_asleep, 3),  # #193
+        "phase_asleep_seconds": {k: round(v, 3) for k, v in phase_asleep.items()},
         # Mission clock anchors: the page ticks from started_at itself and
         # freezes at ended_at once the run is complete.
         "started_at": start.isoformat() if start else None,
@@ -10783,6 +10804,104 @@ def record_pilot_note(root: Path, *, by: object, text: object) -> dict:
         commit(root, cfg, event_kind="pilot_note", event_message=f"Pilot note from {by.strip()}",
                by=by.strip(), text=clean)
     return {"by": by.strip(), "text": clean}
+
+
+# --------------------------------------------------------------------------
+# #193: the machine's sleep. Two runs read "design debate for 7 hours" while
+# the Mac had been asleep for most of it. macOS logs every transition with a
+# timestamp and its own UTC offset; every duration the board shows is wall
+# clock minus the overlap with those intervals, and says how long it slept.
+# Nothing in the ledger changes; sleep is subtracted at read time.
+# --------------------------------------------------------------------------
+
+SLEEP_LOG_CACHE_SECONDS = 60
+_SLEEP_LOG_CACHE: dict = {"at": None, "intervals": []}
+_SLEEP_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ([+-]\d{4}) (Sleep|Wake|DarkWake)\b")
+
+
+def _read_pmset_log() -> str | None:
+    """`pmset -g log` on macOS; None where it does not exist or fails."""
+    if shutil.which("pmset") is None:
+        return None
+    try:
+        result = subprocess.run(["pmset", "-g", "log"], capture_output=True, text=True, timeout=20, shell=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def parse_sleep_log(text: str, *, now: datetime) -> list[tuple[datetime, datetime]]:
+    """[(slept_at, woke_at)] in UTC from pmset's log. Each line carries its
+    own offset ('2026-09-21 06:36:06 -0400 Sleep'), parsed arithmetically,
+    never through a zone name, so a DST change is two lines with different
+    offsets and nothing is ambiguous. 'Sleep' opens an interval; only 'Wake'
+    closes it; 'DarkWake' (maintenance) leaves it open; an open interval
+    closes at now. Overlapping or touching intervals merge."""
+    intervals: list[tuple[datetime, datetime]] = []
+    open_at: datetime | None = None
+    for line in text.splitlines():
+        match = _SLEEP_LINE.match(line)
+        if not match:
+            continue
+        try:
+            stamp = datetime.strptime(match.group(1) + match.group(2), "%Y-%m-%d %H:%M:%S%z").astimezone(timezone.utc)
+        except ValueError:
+            continue
+        kind = match.group(3)
+        if kind == "Sleep":
+            if open_at is None or stamp < open_at:
+                open_at = stamp if open_at is None else open_at
+        elif kind == "Wake" and open_at is not None:
+            if stamp > open_at:
+                intervals.append((open_at, stamp))
+            open_at = None
+    if open_at is not None and now > open_at:
+        intervals.append((open_at, now))
+    intervals.sort()
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def machine_sleep_intervals(*, now: datetime | None = None, log_reader=None) -> list[tuple[datetime, datetime]]:
+    """The machine's sleep intervals, cached for SLEEP_LOG_CACHE_SECONDS per
+    process. An injected log_reader (tests) bypasses the cache and pmset."""
+    now = now or datetime.now(timezone.utc)
+    if log_reader is not None:
+        text = log_reader()
+        return parse_sleep_log(text, now=now) if isinstance(text, str) else []
+    cached_at = _SLEEP_LOG_CACHE["at"]
+    if cached_at is not None and (now - cached_at).total_seconds() < SLEEP_LOG_CACHE_SECONDS:
+        return list(_SLEEP_LOG_CACHE["intervals"])
+    text = _read_pmset_log()
+    intervals = parse_sleep_log(text, now=now) if isinstance(text, str) else []
+    _SLEEP_LOG_CACHE["at"] = now
+    _SLEEP_LOG_CACHE["intervals"] = intervals
+    return list(intervals)
+
+
+def asleep_seconds(start: datetime | None, end: datetime | None, intervals: list[tuple[datetime, datetime]]) -> float:
+    """How much of [start, end] the machine spent asleep; never negative."""
+    if start is None or end is None or end <= start:
+        return 0.0
+    total = 0.0
+    for slept, woke in intervals:
+        overlap = (min(end, woke) - max(start, slept)).total_seconds()
+        if overlap > 0:
+            total += overlap
+    return min(total, (end - start).total_seconds())
+
+
+def awake_seconds(start: datetime | None, end: datetime | None, intervals: list[tuple[datetime, datetime]]) -> float | None:
+    """Wall clock minus sleep; None without both ends; never negative."""
+    if start is None or end is None:
+        return None
+    wall = max((end - start).total_seconds(), 0.0)
+    return max(wall - asleep_seconds(start, end, intervals), 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -11116,6 +11235,16 @@ def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
     started = watch.get("started_at")
     ended = watch.get("ended_at")
     elapsed = _iso_seconds(started, ended or now.isoformat()) if started else None
+    # #193: the row's elapsed is awake time; the sleep inside it is reported
+    ci_asleep = 0.0
+    if elapsed is not None:
+        try:
+            began = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+            finished = datetime.fromisoformat(str(ended).replace("Z", "+00:00")) if ended else now
+            ci_asleep = asleep_seconds(began, finished, machine_sleep_intervals(now=now))
+            elapsed = max(elapsed - ci_asleep, 0.0)
+        except (TypeError, ValueError):
+            ci_asleep = 0.0
     expected = watch.get("expected_seconds")
     progress = None
     if isinstance(expected, (int, float)) and expected > 0 and elapsed is not None:
@@ -11136,7 +11265,8 @@ def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
     return {
         "pr": watch.get("pr"), "head": watch.get("head"), "url": watch.get("url"),
         "state": watch.get("state"), "started_at": started, "ended_at": ended,
-        "elapsed_seconds": elapsed, "expected_seconds": expected, "expected_source": watch.get("expected_source"),
+        "elapsed_seconds": elapsed, "asleep_seconds": round(ci_asleep, 3),
+        "expected_seconds": expected, "expected_source": watch.get("expected_source"),
         "progress": progress, "failed_check": watch.get("failed_check"), "watched_by": watch.get("watched_by"),
         "fetched_at": fetched_at, "checks": cells, "note": note,
     }
@@ -11164,7 +11294,12 @@ MAX_DECLINE_EVIDENCE = 8
 
 
 def record_design_decline(root: Path, cfg: dict, *, by: object, reason: object, evidence: object = None,
-                          alternative: object = None) -> dict:
+                          alternative: object = None, except_session_id: str | None = None) -> dict:
+    """Record the Architect's decline as a PENDING state the design
+    reviewer resolves (#177, Lane E): approve closes the run as
+    not_planned; request-changes sends it back. Only at Phase 2 with no
+    approved design, no live managed session and an open run; bounded
+    like a proposal; hash-bound to the criteria. Nothing closes here."""
     if not isinstance(by, str) or not by.strip():
         raise HandsoffError("design-decline: --by must be a non-empty string")
     if not isinstance(reason, str) or not 1 <= len(" ".join(reason.split())) <= 512:
@@ -11175,24 +11310,24 @@ def record_design_decline(root: Path, cfg: dict, *, by: object, reason: object, 
     if alternative is not None and (not isinstance(alternative, str) or not 1 <= len(alternative.strip()) <= 512):
         raise HandsoffError("design-decline: --alternative must be 1 to 512 characters when given")
     root = Path(root).resolve()
-    # Preflight under the lock, then one write: the decline event, the
-    # status record and the not_planned closure land in a single commit
-    # (close_run carries them as status_patch and extra_events), so a
-    # closure that cannot happen leaves no decline behind (design review
-    # F1.1). A live managed session is refused up front for the same
-    # reason: cancelling it is the Pilot's run-close, not a decline's.
     with project_lock(root):
         status = load_unique_json(status_path(root, cfg))
         acceptance = load_unique_json(acceptance_path(root, cfg))
         phase = int(status.get("phase_number", 0) or 0)
-        if phase not in (1, 2):
-            raise HandsoffError(f"design-decline: only at Phase 1 or 2 (the run is at Phase {phase}); a declined change has no approved design")
+        if phase != 2:
+            raise HandsoffError(f"design-decline: only at Phase 2, the design debate (the run is at Phase {phase})")
         if isinstance(status.get("design_approved"), dict) or (status.get("design_review") or {}).get("decision") == "approved":
             raise HandsoffError("design-decline: the design is already approved; a change of mind after approval is an amendment or a run-close, not a decline")
         if isinstance(status.get("run_closed"), dict):
             raise HandsoffError("design-decline: the run is already closed")
+        pending = status.get("design_declined")
+        if isinstance(pending, dict) and pending.get("decision") == "pending":
+            raise HandsoffError("design-decline: a decline is already pending the reviewer's word")
+        # the Architect session dispatching its own decline is still live
+        # at this point, like the proposal path; it is not "another session"
         live = [sid for sid, session in (status.get("agent_sessions") or {}).items()
-                if isinstance(session, dict) and session.get("state") in ("launching", "running")]
+                if isinstance(session, dict) and session.get("state") in ("launching", "running")
+                and sid != except_session_id]
         if live:
             raise HandsoffError(f"design-decline: a managed session is live ({', '.join(live)}); let it finish or run-close first")
         record = {
@@ -11201,16 +11336,25 @@ def record_design_decline(root: Path, cfg: dict, *, by: object, reason: object, 
             "alternative": alternative.strip() if isinstance(alternative, str) else None,
             "design_hash": design_hash(acceptance.get("criteria", [])),
             "acceptance_hash": acceptance_hash(acceptance.get("criteria", [])),
+            "session_id": except_session_id,
+            "decision": "pending", "reviewed_by": None, "reviewed_at": None, "findings": [],
         }
-        expected_updated_at = status.get("updated_at")
-    declined_event = {"kind": "design_declined", "message": f"Architect declined the change: {record['reason']}",
-                      "by": record["by"], "reason": record["reason"], "evidence": record["evidence"],
-                      "alternative": record["alternative"], "design_hash": record["design_hash"],
-                      "acceptance_hash": record["acceptance_hash"]}
-    close_run(root, by=record["by"], reason=record["reason"], outcome="not_planned",
-              expected_updated_at=expected_updated_at,
-              status_patch={"design_declined": record}, extra_events=[declined_event])
+        status["design_declined"] = record
+        status["status"] = "in_progress"
+        status["next_action"] = "Independent reviewer judges the decline: approve closes the run as not planned, changes send it back."
+        commit(root, cfg, status=status, event_kind="design_declined",
+               event_message=f"Architect declined the change, pending review: {record['reason']}",
+               by=record["by"], reason=record["reason"], evidence=record["evidence"],
+               alternative=record["alternative"], design_hash=record["design_hash"],
+               acceptance_hash=record["acceptance_hash"])
     return record
+
+
+def pending_design_decline(status: dict) -> dict | None:
+    declined = status.get("design_declined") if isinstance(status, dict) else None
+    return declined if isinstance(declined, dict) and declined.get("decision") == "pending" else None
+
+
 
 
 # --------------------------------------------------------------------------

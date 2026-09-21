@@ -426,6 +426,8 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
         "phase_number": status.get("phase_number"), "progress": status.get("progress"), "state": state,
         "next_action": status.get("next_action"), "role": role,
         "started_at": (snap.get("metrics") or {}).get("started_at"),
+        "asleep_seconds": (snap.get("metrics") or {}).get("asleep_seconds"),  # #193
+        "phase_asleep_seconds": ((snap.get("metrics") or {}).get("phase_asleep_seconds") or {}).get(str(status.get("phase_number"))),
         "ended_at": (snap.get("metrics") or {}).get("ended_at"), "adapter": session.get("adapter") if session else None,
         "model": (session.get("reported_model") or session.get("requested_model")) if session else None,
         "last_activity": (snap.get("live") or {}).get("last_activity_at") or status.get("updated_at"),

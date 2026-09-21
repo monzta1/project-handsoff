@@ -747,8 +747,8 @@ def cmd_design_decline(args) -> int:
     except lib.HandsoffError as exc:
         print(f"DESIGN_DECLINE_BLOCKED: {exc}")
         return 1
-    print(f"DESIGN_DECLINED: run closed as not_planned by {record['by']}")
-    print(f"Not planned: {record['reason']}")
+    print(f"DESIGN_DECLINED: pending the independent reviewer's word (by {record['by']})")
+    print(f"Not planned, proposed: {record['reason']}")
     for item in record["evidence"]:
         print(f"- {item}")
     if record["alternative"]:
@@ -2040,6 +2040,76 @@ def _reviewer_session_error(status: dict, session_id: str | None, reviewer: str)
     return None
 
 
+def _review_pending_decline(root, cfg, args) -> int | None:
+    """#177: when the Architect's decline is pending, record-design-review
+    judges the decline. Approve closes the run as not_planned (close_run
+    takes its own lock, so the decision is made under a short lock and the
+    closure happens outside it); request-changes sends it back with the
+    findings. None when no decline is pending."""
+    decision = "approved" if args.approve else "changes_requested"
+    with lib.project_lock(root):
+        try:
+            status, acceptance, records, problems = _load_all(root, cfg)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        pending = lib.pending_design_decline(status)
+        if pending is None:
+            return None
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if status.get("phase_number") != 2:
+            print("SHIP_FEATURE_BLOCKED: a decline is reviewed in Phase 2")
+            return 1
+        if args.by.strip().casefold() == str(pending.get("by") or "").casefold():
+            print("SHIP_FEATURE_BLOCKED: the decline's reviewer must differ from the architect who declined")
+            return 1
+        criteria = acceptance.get("criteria", [])
+        if pending.get("design_hash") != lib.design_hash(criteria):
+            print("SHIP_FEATURE_BLOCKED: the criteria changed since the decline was recorded; decline again")
+            return 1
+        session_error = _reviewer_session_error(status, getattr(args, "session", None), args.by) \
+            or _adoption_error(status, args)
+        if session_error:
+            print(f"SHIP_FEATURE_BLOCKED: {session_error}")
+            return 1
+        try:
+            findings = lib.validate_design_review_findings(args.finding, 1)
+        except lib.HandsoffError as e:
+            print(f"SHIP_FEATURE_BLOCKED: {e}")
+            return 1
+        now_iso = datetime.now(timezone.utc).isoformat()
+        resolved = {**pending, "decision": decision, "reviewed_by": args.by.strip(), "reviewed_at": now_iso,
+                    "findings": [f["text"] if isinstance(f, dict) else str(f) for f in findings]}
+        if decision != "approved":
+            status["design_declined"] = resolved
+            status["status"] = "in_progress"
+            status["next_action"] = "Architect answers the reviewer's findings with a new proposal or a new decline."
+            lib.commit(root, cfg, status=status, event_kind="design_decline_changes_requested",
+                       event_message=f"Independent reviewer sent the decline back: {args.summary.strip()}",
+                       by=args.by.strip(), architect=pending.get("by"),
+                       design_hash=pending.get("design_hash"), findings=len(findings),
+                       reviewer_session_id=getattr(args, "session", None))
+            print("DESIGN_DECLINE_CHANGES_REQUESTED")
+            return 0
+        expected_updated_at = status.get("updated_at")
+    decline_event = {"kind": "design_decline_approved",
+                     "message": f"Independent reviewer approved the decline: {args.summary.strip()}",
+                     "by": args.by.strip(), "architect": pending.get("by"),
+                     "design_hash": pending.get("design_hash"), "reason": pending.get("reason"),
+                     "reviewer_session_id": getattr(args, "session", None)}
+    try:
+        lib.close_run(root, by=args.by.strip(), reason=pending["reason"], outcome="not_planned",
+                      expected_updated_at=expected_updated_at,
+                      status_patch={"design_declined": resolved}, extra_events=[decline_event])
+    except lib.HandsoffError as e:
+        print(f"SHIP_FEATURE_BLOCKED: {e}")
+        return 1
+    print("DESIGN_DECLINE_APPROVED: run closed as not_planned")
+    return 0
+
+
 def cmd_record_design_review(args) -> int:
     """Record an independent Phase-2 critique of the current design.
 
@@ -2067,6 +2137,9 @@ def cmd_record_design_review(args) -> int:
 
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
+    decline_outcome = _review_pending_decline(root, cfg, args)
+    if decline_outcome is not None:
+        return decline_outcome
     with lib.project_lock(root):
         try:
             status, acceptance, records, problems = _load_all(root, cfg)

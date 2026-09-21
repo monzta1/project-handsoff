@@ -732,6 +732,14 @@ function featuresPayload(rows, checked) {
 }
 
 
+// #193: "asleep 7 h 03 m" beside a clock, or "" when the machine did not sleep.
+function asleepLabel(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 60) return "";
+  const total = Math.round(seconds);
+  if (total < 3600) return `asleep ${Math.floor(total / 60)} min`;
+  return `asleep ${Math.floor(total / 3600)} h ${String(Math.floor((total % 3600) / 60)).padStart(2, "0")} m`;
+}
+
 // #181: text for the CI row. Pure, so tests/dashboard/ci_row.test.js
 // exercises them without a DOM.
 function ciSeconds(value) {
@@ -892,6 +900,7 @@ if (typeof module !== "undefined" && module.exports) {
     roleStationKind,
     ciChecksDone,
     ciPercent,
+    asleepLabel,
     ciSeconds,
     ciStateLabel,
     ciProgressLabel,

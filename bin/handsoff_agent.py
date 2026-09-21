@@ -51,6 +51,8 @@ class LaunchSpec:
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
 REVIEW_RESULT_PREFIX = "HANDSOFF_REVIEW_RESULT:"
 DESIGN_RESULT_PREFIX = "HANDSOFF_DESIGN_PROPOSAL:"
+#: #177: the Architect's third outcome; recorded as a pending decline the reviewer resolves
+DECLINE_RESULT_PREFIX = "HANDSOFF_DESIGN_DECLINE:"
 MANAGED_ROLE_ENV = "HANDSOFF_MANAGED_SESSION_ROLE"
 MANAGED_SESSION_ENV = "HANDSOFF_MANAGED_SESSION_ID"
 MAX_AGENT_TASK_BYTES = 16 * 1024
@@ -861,6 +863,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     reviewer_results: list[dict] = []
     recovered_results: list[dict] = []  # #167: packets refused by a rule, adoptable
     architect_results: list[dict] = []
+    architect_declines: list[dict] = []
     architect_requests: list[dict] = []
     protocol_errors: list[str] = []
     question_errors: list[str] = []
@@ -957,6 +960,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         if spec.role == "architect":
                             _parse_architect_request_line(line, architect_requests, protocol_errors)
                             _parse_architect_line(line, architect_results, protocol_errors)
+                            _parse_architect_decline_line(line, architect_declines, protocol_errors)
                             persist_new(architect_results, "design")
                     if len(pending.encode("utf-8")) > 65536:
                         if pending.startswith(SUPERVISOR_REQUEST_PREFIX):
@@ -977,6 +981,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     if spec.role == "architect":
                         _parse_architect_request_line(pending, architect_requests, protocol_errors)
                         _parse_architect_line(pending, architect_results, protocol_errors)
+                        _parse_architect_decline_line(pending, architect_declines, protocol_errors)
                         persist_new(architect_results, "design")
             except BaseException as exc:
                 reader_errors.append(exc)
@@ -1132,7 +1137,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         # #114: on a budget error Codex can route the final message to
         # stderr. A complete protocol line there is still the result, so
         # scan the tail once before classifying the failure.
-        if spec.role in {"reviewer", "architect"} and not reviewer_results and not architect_results:
+        if spec.role in {"reviewer", "architect"} and not reviewer_results and not architect_results and not architect_declines:
             for line in stderr_tail[0].splitlines():
                 if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX):
                     _parse_reviewer_line(line, reviewer_results, protocol_errors, recovered_results, root)
@@ -1140,6 +1145,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 elif spec.role == "architect" and line.startswith(DESIGN_RESULT_PREFIX):
                     _parse_architect_line(line, architect_results, protocol_errors)
                     persist_new(architect_results, "design")
+                elif spec.role == "architect" and line.startswith(DECLINE_RESULT_PREFIX):
+                    _parse_architect_decline_line(line, architect_declines, protocol_errors)
         if beacon is not None and beacon.operation_terminated:
             operation = lib.current_operation(root, session_id) or {}
             failure = {"category": "external_timeout",
@@ -1154,7 +1161,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             exit_code=process.returncode, stderr_tail=stderr_tail[0], stdout_tail=stdout_tail[0],
         )
         complete_protocol = not protocol_errors and (
-            (spec.role == "architect" and len(architect_results) == 1)
+            (spec.role == "architect" and len(architect_results) + len(architect_declines) == 1)
             or (spec.role == "reviewer" and len(reviewer_results) == 1)
             or (capture_supervisor and bool(supervisor_requests))
             or question_lines[0] > 0
@@ -1200,13 +1207,13 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         raise AgentLaunchError(
             "Supervisor exited without a broker request or Pilot question", session_id,
         )
-    if len(architect_results) > 1:
+    if len(architect_results) > 1 or len(architect_declines) > 1 or (architect_results and architect_declines):
         end_session(
             "failed", exit_code=1,
             failure=lib.classify_runtime_failure(orchestration_noop=True),
         )
-        raise AgentLaunchError("Architect emitted more than one structured design proposal", session_id)
-    if spec.role == "architect" and not architect_results and question_lines[0] == 0:
+        raise AgentLaunchError("Architect emitted more than one structured outcome (proposal or decline)", session_id)
+    if spec.role == "architect" and not architect_results and not architect_declines and question_lines[0] == 0:
         end_session(
             "failed", exit_code=1,
             failure=lib.classify_runtime_failure(orchestration_noop=True),
@@ -1227,6 +1234,20 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 end_session("failed", exit_code=1,
                                             failure=lib.classify_runtime_failure(orchestration_noop=True))
                 raise AgentLaunchError("Architect criteria transaction was refused by criteria-apply", session_id)
+    if architect_declines:
+        # #177: the decline is recorded as a pending state the design
+        # reviewer resolves; the session's actor is the architect of record.
+        try:
+            decline = architect_declines[0]
+            cfg_now = lib.load_config(root)
+            with lib.project_lock(root):
+                record = (lib.load_unique_json(lib.status_path(root, cfg_now)).get("agent_sessions") or {}).get(session_id) or {}
+            lib.record_design_decline(root, cfg_now, by=record.get("actor") or lib.default_agent_actor(spec.adapter, spec.role),
+                                      reason=decline["reason"], evidence=decline.get("evidence"),
+                                      alternative=decline.get("alternative"), except_session_id=session_id)
+        except Exception as exc:
+            end_session("failed", exit_code=1, failure=lib.classify_runtime_failure(exit_code=1))
+            raise AgentLaunchError(f"Architect decline dispatch failed: {type(exc).__name__}: {str(exc)[:160]}", session_id) from exc
     if architect_results:
         try:
             lib.record_design_proposal(root, session_id, architect_results[0])
@@ -1310,7 +1331,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                          "tail_sha256": hashlib.sha256(b"").hexdigest()},
             )
             raise AgentLaunchError(str(exc)[:200], session_id) from exc
-    if spec.role in {"reviewer", "architect", "supervisor"} and not reviewer_results and not architect_results and not supervisor_requests and question_lines[0] == 0:
+    if spec.role in {"reviewer", "architect", "supervisor"} and not reviewer_results and not architect_results \
+            and not architect_declines and not supervisor_requests and question_lines[0] == 0:
         failure = {"category": "no_artifact", "reason": "process exited 0 without a protocol result",
                    "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
         end_session("failed", exit_code=0, failure=failure)
@@ -1507,6 +1529,35 @@ def _parse_architect_request_line(line: str, requests: list[dict], errors: list[
         requests.append(__import__("handsoff_broker").parse_architect_request(payload))
     except lib.HandsoffError as exc:
         errors.append(str(exc))
+
+
+def _parse_architect_decline_line(line: str, results: list[dict], errors: list[str]) -> None:
+    """#177: HANDSOFF_DESIGN_DECLINE: {"reason": ..., "evidence": [...], "alternative": ...|null}."""
+    if not line.startswith(DECLINE_RESULT_PREFIX):
+        for logical in _claude_logical_lines(line):
+            if logical != line:
+                _parse_architect_decline_line(logical, results, errors)
+        return
+    payload = line[len(DECLINE_RESULT_PREFIX):].strip()
+    try:
+        value = json.loads(payload)
+    except ValueError as exc:
+        errors.append(f"invalid Architect decline: {exc}")
+        return
+    if not isinstance(value, dict) or not isinstance(value.get("reason"), str) or not 1 <= len(value["reason"].strip()) <= 512:
+        errors.append("invalid Architect decline: reason must be 1 to 512 characters")
+        return
+    evidence = value.get("evidence") or []
+    if not isinstance(evidence, list) or len(evidence) > lib.MAX_DECLINE_EVIDENCE \
+            or any(not isinstance(e, str) or not 1 <= len(e.strip()) <= 512 for e in evidence):
+        errors.append(f"invalid Architect decline: evidence is at most {lib.MAX_DECLINE_EVIDENCE} items of 1 to 512 characters")
+        return
+    alternative = value.get("alternative")
+    if alternative is not None and (not isinstance(alternative, str) or not 1 <= len(alternative.strip()) <= 512):
+        errors.append("invalid Architect decline: alternative must be 1 to 512 characters or null")
+        return
+    results.append({"reason": value["reason"].strip(), "evidence": [e.strip() for e in evidence],
+                    "alternative": alternative.strip() if isinstance(alternative, str) else None})
 
 
 def _parse_architect_line(line: str, results: list[dict], errors: list[str]) -> None:
