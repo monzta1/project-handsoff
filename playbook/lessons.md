@@ -121,3 +121,14 @@ twice becomes a refusal in the engine.
 - Follow the value to where a person sees it. Twice this run a criterion was
   verified on a green suite plus an existing mechanism, and twice the value
   stopped before the page.
+- A command that prints SHIP_FEATURE_BLOCKED can still exit 0. Never gate a
+  check on `cmd >/dev/null && echo OK`: read the output, or compare the
+  digests yourself. A stale manifest passed that way and was one push from
+  main, where every engine command would have refused.
+- Commit the regenerated manifest WITH the bin/ change that made it stale,
+  in the same commit. Regenerating after the commit leaves main carrying a
+  digest that matches neither the old file nor the new one.
+- Size a delta review task to the delta. A re-review of a two-file fix given
+  the full-feature task and three test commands burned an 80k budget with no
+  verdict; the same review scoped to `git diff A..B` and one command answered
+  in 12k. A budget-exhausted reviewer spends an attempt and returns nothing.
