@@ -30,6 +30,7 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
         self.assertEqual(snapshot["selections"], [{
             "session_id": session["session_id"], "role": "implementer", "actor": "configured-implementer",
             "purpose": "Build and verification", "phase_number": 1, "adaptive": False,
+            "started_at": session["started_at"], "ended_at": None,
             "tier": None, "adapter": "codex", "model": "configured-model",
             "requested_model": "configured-model", "model_source": "exact_request",
             "model_consistency": "not_applicable",
@@ -51,12 +52,14 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
         )
         snapshot = dashboard.build_snapshot(self.tmp)
         route_view = snapshot["adaptive_routing"]
+        completed = self.read_status()["agent_sessions"][session["session_id"]]
         self.assertTrue(route_view["used"])
         self.assertEqual(route_view["estimated_cost"], 0.0035)
         self.assertEqual(route_view["token_usage"]["total"], 1500)
         self.assertEqual(route_view["selections"], [{
             "session_id": session["session_id"], "role": "implementer", "actor": "codex-implementer",
             "purpose": "Build and verification", "phase_number": 1, "adaptive": True,
+            "started_at": completed["started_at"], "ended_at": completed["ended_at"],
             "tier": "FAST", "adapter": "claude", "model": "claude-haiku-4-5-20251001",
             "requested_model": "claude-haiku-4-5-20251001", "model_source": "adaptive_selection",
             "model_consistency": "pending_verification",

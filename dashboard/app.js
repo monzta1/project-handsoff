@@ -110,6 +110,24 @@ const ROUTING_PHASE_PURPOSES = {
   8: "LIVE VERIFICATION",
 };
 
+function routingJourneyTime(value) {
+  if (typeof value !== "string" || !value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : `${parsed.toISOString().slice(11, 19)}Z`;
+}
+
+function routingHandoff(previous, current) {
+  const fromAdapter = String(previous?.adapter || "unknown").toUpperCase();
+  const toAdapter = String(current?.adapter || "unknown").toUpperCase();
+  if (fromAdapter !== toAdapter) return { kind: "handoff", label: "PROVIDER HANDOFF", detail: `${fromAdapter} → ${toAdapter}` };
+  if (previous?.model && current?.model && previous.model !== current.model) {
+    return { kind: "handoff", label: "MODEL SHIFT", detail: `${previous.model} → ${current.model}` };
+  }
+  if (!previous?.model && current?.model) return { kind: "resolved", label: "MODEL RESOLVED", detail: current.model };
+  if (previous?.model && previous.model === current?.model) return { kind: "continued", label: "MODEL CONTINUES", detail: current.model };
+  return { kind: "continued", label: "NEXT MISSION LEG", detail: toAdapter };
+}
+
 function renderAdaptiveRouting(routing) {
   const panel = $("adaptive-routing-panel");
   if (!panel) return;
@@ -132,9 +150,65 @@ function renderAdaptiveRouting(routing) {
   const selections = $("routing-selections");
   if (selections) {
     selections.replaceChildren();
-    for (const item of view.selections) {
+    const journeyMap = $("routing-journey-map");
+    journeyMap?.replaceChildren();
+    journeyMap?.style.setProperty("--journey-legs", String(view.selections.length));
+    const providers = new Set(view.selections.map((item) => item.adapter).filter(Boolean));
+    const transfers = view.selections.slice(1).filter((item, index) => {
+      const previous = view.selections[index];
+      return previous.adapter !== item.adapter || (previous.model && item.model && previous.model !== item.model);
+    }).length;
+    set("routing-journey-summary", `${view.selections.length} LEGS · ${providers.size} PROVIDER${providers.size === 1 ? "" : "S"} · ${transfers} HANDOFF${transfers === 1 ? "" : "S"}`);
+    for (const [index, item] of view.selections.entries()) {
+      if (journeyMap) {
+        const mapStop = document.createElement("div");
+        const mapTransfer = index > 0 ? routingHandoff(view.selections[index - 1], item) : null;
+        mapStop.className = `routing-map-stop adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}${mapTransfer?.kind === "handoff" ? " is-handoff" : ""}`;
+        mapStop.setAttribute("aria-label", `Leg ${item.journey_index}, ${item.actor || item.role}, ${item.purpose}, ${item.model || "model not reported"}`);
+        mapStop.title = `${item.actor || item.role} · ${item.purpose} · ${item.model || "Not reported by provider"}`;
+        const mapLeg = document.createElement("span");
+        mapLeg.className = "routing-map-leg";
+        mapLeg.textContent = String(item.journey_index).padStart(2, "0");
+        const orbit = document.createElement("span");
+        orbit.className = "routing-map-orbit";
+        const core = document.createElement("span");
+        core.className = "routing-map-core";
+        core.textContent = String(item.adapter || "?").slice(0, 1).toUpperCase();
+        orbit.append(core);
+        const mapProvider = document.createElement("strong");
+        mapProvider.textContent = String(item.adapter || "unknown").toUpperCase();
+        const mapModel = document.createElement("small");
+        mapModel.textContent = item.model || "UNREPORTED";
+        if (mapTransfer?.kind === "handoff") {
+          const marker = document.createElement("span");
+          marker.className = "routing-map-transfer";
+          marker.textContent = mapTransfer.label === "PROVIDER HANDOFF" ? `${String(view.selections[index - 1].adapter).toUpperCase()} → ${String(item.adapter).toUpperCase()}` : "MODEL SHIFT";
+          mapStop.append(marker);
+        }
+        mapStop.append(mapLeg, orbit, mapProvider, mapModel);
+        journeyMap.append(mapStop);
+      }
+      if (index > 0) {
+        const transfer = routingHandoff(view.selections[index - 1], item);
+        const connector = document.createElement("div");
+        connector.className = `routing-handoff is-${transfer.kind}`;
+        connector.setAttribute("aria-label", `${transfer.label}: ${transfer.detail}`);
+        const track = document.createElement("span");
+        track.className = "routing-handoff-track";
+        track.setAttribute("aria-hidden", "true");
+        const copy = document.createElement("span");
+        copy.className = "routing-handoff-copy";
+        const label = document.createElement("strong");
+        label.textContent = transfer.label;
+        const detail = document.createElement("small");
+        detail.textContent = transfer.detail;
+        copy.append(label, detail);
+        connector.append(track, copy);
+        selections.append(connector);
+      }
       const row = document.createElement("article");
-      row.className = "routing-selection";
+      row.className = `routing-selection adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}`;
+      row.setAttribute("aria-label", `Journey leg ${item.journey_index}: ${item.actor || item.role}, ${item.purpose}, ${item.model || "model not reported"}, ${item.state}`);
       const node = (className, label) => {
         const element = document.createElement("div");
         element.className = `routing-selection-node ${className}`;
@@ -144,6 +218,18 @@ function renderAdaptiveRouting(routing) {
         element.append(eyebrow);
         return element;
       };
+      const top = document.createElement("div");
+      top.className = "routing-selection-top";
+      const leg = document.createElement("span");
+      leg.className = "routing-leg-number";
+      leg.textContent = `LEG ${String(item.journey_index).padStart(2, "0")}`;
+      const attempt = document.createElement("span");
+      attempt.className = "routing-attempt";
+      attempt.textContent = `PHASE ${item.phase_number || "—"} · ATTEMPT ${item.journey_attempt}`;
+      const state = document.createElement("strong");
+      state.className = `routing-selection-state state-${String(item.state || "unknown").replaceAll("_", "-")}`;
+      state.textContent = String(item.state || "unknown").replaceAll("_", " ").toUpperCase();
+      top.append(leg, attempt, state);
       const identity = document.createElement("div");
       identity.className = "routing-selection-agent";
       const avatar = document.createElement("span");
@@ -182,22 +268,19 @@ function renderAdaptiveRouting(routing) {
         model.classList.add("is-mismatch");
       }
       model.append(modelName, modelDetail);
-      const outcome = node("routing-selection-outcome", "OUTCOME");
-      const state = document.createElement("strong");
-      state.className = `routing-selection-state state-${String(item.state || "unknown").replaceAll("_", "-")}`;
-      state.textContent = String(item.state || "unknown").replaceAll("_", " ").toUpperCase();
+      const footer = document.createElement("div");
+      footer.className = "routing-selection-footer";
       const tier = document.createElement("small");
       tier.className = `routing-selection-tier tier-${String(item.tier || "configured").toLowerCase()}`;
       tier.textContent = item.adaptive ? (item.tier || "—") : "CONFIGURED";
-      outcome.append(state, tier);
-      const arrows = ["AGENT TO MISSION", "MISSION TO MODEL"].map((label) => {
-        const arrow = document.createElement("span");
-        arrow.className = "routing-selection-arrow";
-        arrow.setAttribute("aria-label", label);
-        arrow.textContent = "→";
-        return arrow;
-      });
-      row.append(identity, arrows[0], purpose, arrows[1], model, outcome);
+      const time = document.createElement("span");
+      time.className = "routing-selection-time";
+      const started = routingJourneyTime(item.started_at);
+      const ended = routingJourneyTime(item.ended_at);
+      time.textContent = `${started || "TIME UNAVAILABLE"} → ${ended || (item.state === "running" || item.state === "launching" ? "IN FLIGHT" : "END UNRECORDED")}`;
+      if (item.started_at || item.ended_at) time.title = `${item.started_at || "unknown start"} → ${item.ended_at || "in flight"}`;
+      footer.append(tier, time);
+      row.append(top, identity, purpose, model, footer);
       selections.append(row);
     }
   }

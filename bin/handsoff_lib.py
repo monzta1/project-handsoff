@@ -2197,6 +2197,7 @@ def _agent_assignment(session: dict) -> dict:
     return {
         "session_id": session.get("session_id"), "role": role,
         "actor": session.get("actor"), "purpose": purpose, "phase_number": phase,
+        "started_at": session.get("started_at"), "ended_at": session.get("ended_at"),
         "adaptive": route is not None, "tier": (route or {}).get("tier"),
         "adapter": (route or {}).get("adapter", session.get("adapter")),
         "model": model, "requested_model": requested_model,

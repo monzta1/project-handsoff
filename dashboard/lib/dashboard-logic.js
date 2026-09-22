@@ -388,6 +388,27 @@ function resolveAgentSelectValue(storedAdapter) {
 // absent/legacy value is explicitly NOT USED, never healthy-looking zeroes.
 const ADAPTIVE_ROUTING_TIERS = ["FAST", "STANDARD", "PREMIUM"];
 
+function adaptiveJourneySelections(selections) {
+  const ordered = (Array.isArray(selections) ? selections : [])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({ ...item }))
+    .sort((left, right) => {
+      const leftStarted = typeof left.started_at === "string" && left.started_at ? left.started_at : null;
+      const rightStarted = typeof right.started_at === "string" && right.started_at ? right.started_at : null;
+      if (leftStarted === null && rightStarted !== null) return 1;
+      if (leftStarted !== null && rightStarted === null) return -1;
+      const byStart = leftStarted === rightStarted ? 0 : String(leftStarted).localeCompare(String(rightStarted));
+      return byStart || String(left.session_id || "").localeCompare(String(right.session_id || ""));
+    });
+  const attempts = new Map();
+  return ordered.map((item, index) => {
+    const attemptKey = `${item.role || "agent"}:${item.phase_number ?? "unknown"}`;
+    const attempt = (attempts.get(attemptKey) || 0) + 1;
+    attempts.set(attemptKey, attempt);
+    return { ...item, journey_index: index + 1, journey_attempt: attempt };
+  });
+}
+
 function adaptiveRoutingView(routing) {
   const source = routing && typeof routing === "object" ? routing : {};
   const usage = source.token_usage && typeof source.token_usage === "object" ? source.token_usage : {};
@@ -410,7 +431,7 @@ function adaptiveRoutingView(routing) {
     active_premium_scope: source.active_premium_scope || null,
     outcome: source.outcome || null,
     calls_by_tier: Object.fromEntries(ADAPTIVE_ROUTING_TIERS.map((tier) => [tier, Number(calls[tier]) || 0])),
-    selections: Array.isArray(source.selections) ? source.selections.filter((item) => item && typeof item === "object") : [],
+    selections: adaptiveJourneySelections(source.selections),
     pause: pause ? { state: "paused", reason: pause.reason || "unavailable", scope: pause.scope || null } : null,
   };
 }
@@ -965,5 +986,7 @@ if (typeof module !== "undefined" && module.exports) {
     ciTicked,
     ciNote,
     progressSummaryLabel,
+    adaptiveRoutingView,
+    adaptiveJourneySelections,
   };
 }
