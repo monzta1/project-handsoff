@@ -23,13 +23,14 @@ class AdaptiveRoutingProfileTests(unittest.TestCase):
             outputs.append(profile["limits"]["output_tokens"])
         self.assertEqual(contexts, sorted(contexts))
         self.assertEqual(outputs, sorted(outputs))
-        result = lib.route_adaptive_profile(required_capabilities=["tool_use"])
+        result = lib.route_adaptive_profile(required_capabilities=["tool_use"],
+                                            deterministic_checks_complete=True)
         self.assertEqual(result["state"], "selected")
         self.assertEqual(result["tier"], "FAST")
 
     def test_fast_and_premium_route_to_different_model_ids(self):
-        fast = lib.route_adaptive_profile(risk_class="routine")
-        premium = lib.route_adaptive_profile(risk_class="irreversible")
+        fast = lib.route_adaptive_profile(risk_class="routine", deterministic_checks_complete=True)
+        premium = lib.route_adaptive_profile(risk_class="irreversible", deterministic_checks_complete=True)
         self.assertEqual((fast["tier"], premium["tier"]), ("FAST", "PREMIUM"))
         self.assertNotEqual(fast["profile"]["model"], premium["profile"]["model"])
 
@@ -39,14 +40,21 @@ class AdaptiveRoutingProfileTests(unittest.TestCase):
                 "FAST": {"adapter": "claude", "model": "default", "capabilities": ["tool_use"]},
             })
 
+    def test_tier_names_are_bound_to_their_documented_cost_models(self):
+        with self.assertRaisesRegex(lib.HandsoffError, "cost-bound"):
+            lib.validate_adaptive_routing_profiles({
+                "FAST": dict(lib.ADAPTIVE_DEFAULT_PROFILES["PREMIUM"]),
+            })
+
     def test_unavailable_requirement_pauses_with_auditable_reason(self):
-        result = lib.route_adaptive_profile(required_capabilities=["extended_thinking"], available_tiers=["FAST"])
+        result = lib.route_adaptive_profile(required_capabilities=["extended_thinking"], available_tiers=["FAST"],
+                                            deterministic_checks_complete=True)
         self.assertEqual(result["state"], "paused")
         self.assertEqual(result["reason"], "required_capability_unavailable")
         self.assertIsNone(result["profile"])
 
     def test_explicitly_empty_available_tiers_pauses_without_selecting(self):
-        result = lib.route_adaptive_profile(available_tiers=[])
+        result = lib.route_adaptive_profile(available_tiers=[], deterministic_checks_complete=True)
         self.assertEqual(result["state"], "paused")
         self.assertEqual(result["reason"], "required_capability_unavailable")
         self.assertIsNone(result["tier"])
@@ -54,7 +62,8 @@ class AdaptiveRoutingProfileTests(unittest.TestCase):
 
     def test_unavailable_required_tier_never_uses_lower_unqualified_profile(self):
         result = lib.route_adaptive_profile(required_capabilities=["text"], minimum_tier="PREMIUM",
-                                            available_tiers=["FAST", "STANDARD"])
+                                            available_tiers=["FAST", "STANDARD"],
+                                            deterministic_checks_complete=True)
         self.assertEqual(result["state"], "paused")
         self.assertEqual(result["reason"], "required_tier_unavailable")
         self.assertIsNone(result["tier"])

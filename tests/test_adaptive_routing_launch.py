@@ -13,7 +13,7 @@ import handsoff_lib as lib  # noqa: E402
 
 
 def routing_record(risk_class="routine"):
-    selected = lib.route_adaptive_profile(risk_class=risk_class)
+    selected = lib.route_adaptive_profile(risk_class=risk_class, deterministic_checks_complete=True)
     profile = selected["profile"]
     return {
         "risk_class": risk_class, "tier": selected["tier"],
@@ -119,6 +119,34 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
         self.assertEqual((spec.adapter, spec.model, spec.resolution_source),
                          ("codex", "reserved-model", "fallback"))
         self.assertIsNone(spec.adaptive_routing)
+
+    def test_phase_five_reviewer_can_launch_when_routing_selects_the_same_profile(self):
+        result = run(["init", "Review", "--risk-class", "routine"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self._phase_four()
+        route = routing_record()
+        implementation = lib.create_agent_session(
+            self.tmp, role="implementer", actor="codex-implementer", adapter=route["adapter"],
+            requested_model=route["model"], resolution_source="adaptive", adaptive_routing=route,
+        )
+        lib.transition_agent_session(self.tmp, implementation["session_id"], "running")
+        lib.transition_agent_session(self.tmp, implementation["session_id"], "completed", exit_code=0)
+        status = self.read_status()
+        status.update(phase_number=5, phase=lib.PHASES[5], progress=60,
+                      original_symptom_evidence_id="vr-" + "a" * 32)
+        with lib.project_lock(self.tmp):
+            lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
+                       event_kind="test_setup", event_message="phase five")
+        with mock.patch.object(agent.lib, "validate_runtime_integrity"), \
+                mock.patch.object(agent, "build_role_input", return_value="task"), \
+                mock.patch.object(agent, "applicable_design_review_packet", return_value=None), \
+                mock.patch.object(agent.lib, "reviewer_launch_evidence_gaps", return_value=[]):
+            review = agent.build_launch_spec(
+                self.tmp, "reviewer", "task", which=lambda name: f"/opt/test/{name}",
+                skip_preflight=True,
+            )
+        self.assertEqual((review.adapter, review.model), (route["adapter"], route["model"]))
+        self.assertEqual(review.resolution_source, "adaptive")
 
 
 if __name__ == "__main__":

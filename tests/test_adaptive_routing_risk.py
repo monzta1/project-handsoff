@@ -20,12 +20,13 @@ class AdaptiveRoutingRiskTests(unittest.TestCase):
         })
 
     def test_risk_floor_selects_and_records_native_phase_obligations(self):
-        result = lib.route_adaptive_profile(risk_class="elevated")
+        result = lib.route_adaptive_profile(risk_class="elevated", deterministic_checks_complete=True)
         self.assertEqual(result["tier"], "STANDARD")
         self.assertTrue(result["reviewer_required"])
         self.assertFalse(result["human_gate_required"])
         result = lib.route_adaptive_profile(risk_class="security_sensitive",
-                                             available_tiers=["STANDARD", "PREMIUM"])
+                                             available_tiers=["STANDARD", "PREMIUM"],
+                                             deterministic_checks_complete=True)
         self.assertEqual(result["tier"], "PREMIUM")
         self.assertTrue(result["human_gate_required"])
 

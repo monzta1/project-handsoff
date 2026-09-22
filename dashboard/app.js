@@ -175,6 +175,12 @@ function renderAdaptiveRouting(routing) {
         not_reported: `requested ${item.requested_model || "provider default"}`,
       };
       modelDetail.textContent = sourceLabels[item.model_source] || String(item.reason || "selected").replaceAll("_", " ");
+      if (item.model_consistency === "matched") modelDetail.textContent += " · matches route";
+      if (item.model_consistency === "pending_verification") modelDetail.textContent += " · awaiting provider confirmation";
+      if (item.model_consistency === "mismatch") {
+        modelDetail.textContent += ` · differs from routed ${item.requested_model}`;
+        model.classList.add("is-mismatch");
+      }
       model.append(modelName, modelDetail);
       const outcome = node("routing-selection-outcome", "OUTCOME");
       const state = document.createElement("strong");

@@ -419,16 +419,14 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             available_adapters=available_adapters, risk_class=run_status["risk_class"],
             mission_usage=lib.adaptive_usage(run_status),
             fleet_usage=lib.adaptive_fleet_usage(root, current_status=run_status),
+            # Deterministic-check draining gates repair/escalation
+            # continuation, not an initial managed launch.
+            deterministic_checks_complete=True,
         )
         if routed.get("state") != "selected":
             raise lib.HandsoffError(f"adaptive routing paused: {routed.get('reason')}")
         profile = routed["profile"]
         adapter, model, resolution_source = profile["adapter"], profile["model"], "adaptive"
-        if role == "reviewer":
-            implementer = next((session for session in reversed(list((run_status.get("agent_sessions") or {}).values()))
-                                if isinstance(session, dict) and session.get("role") == "implementer"), None)
-            if implementer and (adapter, model) == (implementer.get("adapter"), implementer.get("requested_model")):
-                raise lib.HandsoffError("adaptive reviewer selection must remain independent from the implementer profile")
         adaptive_routing = {
             "risk_class": routed["risk_class"], "tier": routed["tier"],
             "adapter": adapter, "model": model, "profile": profile,

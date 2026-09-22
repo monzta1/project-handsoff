@@ -37,6 +37,10 @@ class AdaptiveRoutingBudgetTests(unittest.TestCase):
             mission_usage={"premium_calls": 0}, deterministic_checks_complete=False)
         self.assertEqual(result["reason"], "deterministic_checks_in_flight")
 
+    def test_checks_default_to_in_flight_for_safe_callers(self):
+        self.assertEqual(lib.evaluate_adaptive_budget()["reason"], "deterministic_checks_in_flight")
+        self.assertEqual(lib.route_adaptive_profile()["reason"], "deterministic_checks_in_flight")
+
     def test_route_returns_distinct_safe_pause(self):
         result = lib.route_adaptive_profile(
             self.cfg(per_mission={"total_calls": 1}),
@@ -50,7 +54,8 @@ class AdaptiveRoutingBudgetTests(unittest.TestCase):
             lib.validate_adaptive_routing_budgets({"per_mission": {"premium_calls": -1}})
 
     def test_mission_and_fleet_counters_are_derived_from_committed_session_ledgers(self):
-        profile = lib.route_adaptive_profile(risk_class="irreversible")["profile"]
+        profile = lib.route_adaptive_profile(
+            risk_class="irreversible", deterministic_checks_complete=True)["profile"]
         route = {"risk_class": "irreversible", "tier": "PREMIUM", "adapter": profile["adapter"],
                  "model": profile["model"], "profile": profile, "reason": "qualified_profile",
                  "reviewer_required": True, "human_gate_required": True}

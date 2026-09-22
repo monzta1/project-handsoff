@@ -1889,6 +1889,11 @@ def validate_adaptive_routing_profiles(value: object) -> dict:
             result[tier] = {"adapter": adapter, "model": model, "capabilities": [],
                             "limits": {}, "pricing": {}, "source": None}
             continue
+        expected_model = ADAPTIVE_DEFAULT_PROFILES[tier]["model"]
+        if model != expected_model:
+            raise HandsoffError(
+                f"routing_profiles.{tier}.model must be {expected_model}; adaptive tiers are cost-bound"
+            )
         documented = catalog.get(model)
         if documented is None or documented["adapter"] != adapter:
             raise HandsoffError(f"routing_profiles.{tier} must name a documented adapter/model pair")
@@ -1951,7 +1956,7 @@ def adaptive_routing_budgets(cfg: dict | None = None) -> dict:
 
 
 def evaluate_adaptive_budget(cfg: dict | None = None, *, mission_usage=None, fleet_usage=None,
-                             deterministic_checks_complete=True) -> dict:
+                             deterministic_checks_complete=False) -> dict:
     """Return a safe continuation decision after deterministic checks drain.
 
     The first exhausted dimension is reported distinctly; no PREMIUM call is
@@ -2005,7 +2010,7 @@ def classify_adaptive_risk(risk_class: str) -> str:
 def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(), minimum_tier=None,
                            available_tiers=None, available_adapters=None, risk_class="routine",
                            mission_usage=None, fleet_usage=None,
-                           deterministic_checks_complete=True) -> dict:
+                           deterministic_checks_complete=False) -> dict:
     """Select the lowest qualified tier, or return an auditable pause.
 
     Review and human approvals are obligations on their native workflow
@@ -2058,6 +2063,35 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
             **routing_metadata}
 
 
+def _canonical_provider_model(model: object) -> str | None:
+    """Normalize provider decorations without pretending an alias was reported."""
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return model.strip().split("[", 1)[0]
+
+
+def _adaptive_model_reconciliation(session: dict) -> dict:
+    """Reconcile the immutable routed choice with provider-reported reality."""
+    route = session.get("adaptive_routing") if isinstance(session.get("adaptive_routing"), dict) else None
+    if route is None:
+        return {"consistency": "not_applicable", "effective_tier": None, "effective_profile": None}
+    selected_model = route.get("model")
+    reported_model = _canonical_provider_model(session.get("reported_model"))
+    if reported_model is None:
+        return {"consistency": "pending_verification", "effective_tier": route.get("tier"),
+                "effective_profile": route.get("profile")}
+    if reported_model == selected_model:
+        return {"consistency": "matched", "effective_tier": route.get("tier"),
+                "effective_profile": route.get("profile")}
+    for tier, profile in ADAPTIVE_DEFAULT_PROFILES.items():
+        if profile["model"] == reported_model and profile["adapter"] == session.get("adapter"):
+            return {"consistency": "mismatch", "effective_tier": tier,
+                    "effective_profile": deepcopy(profile)}
+    # Unknown provider models count as PREMIUM so a mismatch can never
+    # bypass the strongest safety budget.
+    return {"consistency": "mismatch", "effective_tier": "PREMIUM", "effective_profile": None}
+
+
 def adaptive_usage(status: dict) -> dict:
     """Derive budget counters only from the run's committed ledgers."""
     sessions = (status or {}).get("agent_sessions") or {}
@@ -2066,12 +2100,13 @@ def adaptive_usage(status: dict) -> dict:
     repairs = sum(1 for attempt in ((status or {}).get("review_attempts") or [])
                   if isinstance(attempt, dict) and attempt.get("disposition") == "changes_requested")
     return {
-        "premium_calls": sum(session["adaptive_routing"].get("tier") == "PREMIUM" for session in routed),
+        "premium_calls": sum(_adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM"
+                             for session in routed),
         "repair_rounds": repairs,
         "total_calls": len(routed),
         "concurrent_premium_agents": sum(
             session.get("state") in AGENT_SESSION_LIVE_STATES
-            and session["adaptive_routing"].get("tier") == "PREMIUM" for session in routed
+            and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in routed
         ),
     }
 
@@ -2146,6 +2181,7 @@ def _agent_assignment(session: dict) -> dict:
         model, model_source = None, "not_reported"
     role = session.get("role")
     phase = session.get("phase_number")
+    reconciliation = _adaptive_model_reconciliation(session)
     if role == "reviewer" and phase in {1, 2}:
         purpose = "Design challenge"
     elif role == "reviewer" and phase == 5:
@@ -2164,7 +2200,7 @@ def _agent_assignment(session: dict) -> dict:
         "adaptive": route is not None, "tier": (route or {}).get("tier"),
         "adapter": (route or {}).get("adapter", session.get("adapter")),
         "model": model, "requested_model": requested_model,
-        "model_source": model_source,
+        "model_source": model_source, "model_consistency": reconciliation["consistency"],
         "reason": (route or {}).get("reason", session.get("resolution_source")),
         "state": session.get("state"),
     }
@@ -2191,7 +2227,8 @@ def adaptive_routing_snapshot(status: dict) -> dict:
             tokens_in += token_in
             tokens_out += token_out
             tokens_total += usage.get("tokens_total") if isinstance(usage.get("tokens_total"), int) else token_in + token_out
-            pricing = route.get("profile", {}).get("pricing", {})
+            effective_profile = _adaptive_model_reconciliation(session)["effective_profile"]
+            pricing = (effective_profile or {}).get("pricing", {})
             if isinstance(pricing.get("input_per_mtok"), (int, float)) and isinstance(pricing.get("output_per_mtok"), (int, float)):
                 known_cost += token_in * pricing["input_per_mtok"] / 1_000_000
                 known_cost += token_out * pricing["output_per_mtok"] / 1_000_000
@@ -2217,7 +2254,7 @@ def adaptive_routing_snapshot(status: dict) -> dict:
         "review_rounds": len(status.get("review_attempts") or []),
         "active_premium_scope": "mission" if any(
             session.get("state") in AGENT_SESSION_LIVE_STATES
-            and session["adaptive_routing"].get("tier") == "PREMIUM" for session in routed) else None,
+            and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in routed) else None,
         "outcome": escalation.get("outcome"), "calls_by_tier": calls,
         "selections": [_agent_assignment(session) for session in sessions.values()
                        if isinstance(session, dict)],
@@ -3593,6 +3630,9 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                 available_adapters=[adaptive_routing["adapter"]],
                 mission_usage=adaptive_usage(status),
                 fleet_usage=adaptive_fleet_usage(root, current_status=status),
+                # Initial launches are outside the repair/escalation drain;
+                # this lock-protected call exists to recheck usage budgets.
+                deterministic_checks_complete=True,
             )
             if refreshed.get("state") != "selected":
                 raise HandsoffError(f"adaptive launch refused before mutation: {refreshed.get('reason')}")
