@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Deployed-engine check for external operation telemetry (#67, #68).
 
-Runs the installed `handsoff` command against a fresh thin project with a
-fake `codex` on PATH that emits HANDSOFF_OPERATION lines around a design
+Runs the installed `handsoff` command against a fresh thin project with fake
+adapter executables on PATH that emit HANDSOFF_OPERATION lines around a design
 proposal. Proves the installed runner persists the telemetry, the installed
 dashboard exposes it as runtime.operation with a terminal assessment, and
 the shipped prompts carry a parseable example.
@@ -23,7 +23,7 @@ ROOT = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_outp
 HANDSOFF = str(Path.home() / ".local" / "bin" / "handsoff")
 expected_version = json.loads((ROOT / "handsoff-runtime.json").read_text(encoding="utf-8"))["version"]
 
-FAKE_CODEX = """#!/bin/sh
+FAKE_ADAPTER = """#!/bin/sh
 cat >/dev/null
 echo 'HANDSOFF_OPERATION: {"operation_id":"op-gh01","dependency":"github_api","operation":"create_issue_comment","state":"started","attempt":1,"timeout_seconds":60}'
 echo 'HANDSOFF_OPERATION: {"operation_id":"op-gh01","dependency":"github_api","operation":"create_issue_comment","state":"succeeded","attempt":1,"timeout_seconds":60}'
@@ -45,8 +45,12 @@ os.environ["HANDSOFF_FLEET_REGISTRY"] = os.path.join(tempfile.mkdtemp(prefix="ha
 with tempfile.TemporaryDirectory(prefix="handsoff-live-ops-") as tmp:
     shim = Path(tmp) / "shim"
     shim.mkdir()
-    (shim / "codex").write_text(FAKE_CODEX, encoding="utf-8")
-    (shim / "codex").chmod(0o755)
+    # The operation smoke is adapter-neutral. Routine risk routing may select
+    # either vendor, so make both configured adapters deterministic instead of
+    # accidentally testing whichever real executable happens to be installed.
+    for adapter in ("codex", "claude"):
+        (shim / adapter).write_text(FAKE_ADAPTER, encoding="utf-8")
+        (shim / adapter).chmod(0o755)
     env = dict(os.environ, PATH=f"{shim}:{os.environ.get('PATH', '')}")
 
     project = Path(tmp) / "thin-project"
