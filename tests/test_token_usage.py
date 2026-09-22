@@ -39,9 +39,13 @@ class UsageWatcherTests(unittest.TestCase):
 
     def test_claude_stream_json_usage_in_and_out(self):
         w = lib.UsageWatcher("claude")
+        w.feed(json.dumps({"type": "system", "subtype": "init", "model": "claude-opus-5[1m]"}))
+        self.assertEqual(w.reported_model, "claude-opus-5[1m]")
         w.feed(json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 100, "output_tokens": 20}}}))
-        w.feed(json.dumps({"type": "result", "usage": {"input_tokens": 1500, "output_tokens": 300, "cache_read_input_tokens": 9}}))
+        w.feed(json.dumps({"type": "result", "usage": {"input_tokens": 1500, "output_tokens": 300, "cache_read_input_tokens": 9},
+                           "modelUsage": {"claude-opus-5": {}}}))
         self.assertEqual(w.result(), {"tokens_in": 1500, "tokens_out": 300, "tokens_total": 1800, "source": "adapter"})
+        self.assertEqual(w.reported_model, "claude-opus-5")
         w.feed("{not json")
         self.assertEqual(w.result()["tokens_total"], 1800)
 

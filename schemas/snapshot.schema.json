@@ -83,12 +83,14 @@
           "type": "array",
           "items": {
             "type": "object", "additionalProperties": false,
-            "required": ["session_id", "role", "actor", "phase_number", "adaptive", "tier", "adapter", "model", "reason", "state"],
+            "required": ["session_id", "role", "actor", "purpose", "phase_number", "adaptive", "tier", "adapter", "model", "requested_model", "model_source", "reason", "state"],
             "properties": {
               "session_id": {"type": "string"}, "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
-              "actor": {"type": "string"}, "phase_number": {"type": "integer", "minimum": 1, "maximum": 8},
+              "actor": {"type": "string"}, "purpose": {"type": "string"}, "phase_number": {"type": "integer", "minimum": 1, "maximum": 8},
               "adaptive": {"type": "boolean"}, "tier": {"enum": [null, "FAST", "STANDARD", "PREMIUM"]}, "adapter": {"enum": ["codex", "claude"]},
-              "model": {"type": "string"}, "reason": {"type": "string"},
+              "model": {"type": ["string", "null"]}, "requested_model": {"type": "string"},
+              "model_source": {"enum": ["adapter_reported", "adaptive_selection", "exact_request", "not_reported"]},
+              "reason": {"type": "string"},
               "state": {"enum": ["launching", "running", "completed", "failed", "timed_out", "cancelled", "failed_to_start"]}
             }
           }

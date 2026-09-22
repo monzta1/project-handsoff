@@ -2132,6 +2132,44 @@ def adaptive_deployment_approval_required(status: dict, cfg: dict) -> bool:
     return bool(cfg.get("deployment_requires_explicit_approval", True) or adaptive)
 
 
+def _agent_assignment(session: dict) -> dict:
+    route = session.get("adaptive_routing") if isinstance(session.get("adaptive_routing"), dict) else None
+    requested_model = route.get("model") if route else session.get("requested_model")
+    reported_model = session.get("reported_model")
+    if reported_model:
+        model, model_source = reported_model, "adapter_reported"
+    elif route:
+        model, model_source = requested_model, "adaptive_selection"
+    elif requested_model and requested_model != DEFAULT_AGENT_MODEL:
+        model, model_source = requested_model, "exact_request"
+    else:
+        model, model_source = None, "not_reported"
+    role = session.get("role")
+    phase = session.get("phase_number")
+    if role == "reviewer" and phase in {1, 2}:
+        purpose = "Design challenge"
+    elif role == "reviewer" and phase == 5:
+        purpose = "Implementation audit"
+    elif role == "architect":
+        purpose = "Solution architecture"
+    elif role == "implementer":
+        purpose = "Build and verification"
+    elif role == "supervisor":
+        purpose = "Mission supervision"
+    else:
+        purpose = PHASES.get(phase, "Managed task")
+    return {
+        "session_id": session.get("session_id"), "role": role,
+        "actor": session.get("actor"), "purpose": purpose, "phase_number": phase,
+        "adaptive": route is not None, "tier": (route or {}).get("tier"),
+        "adapter": (route or {}).get("adapter", session.get("adapter")),
+        "model": model, "requested_model": requested_model,
+        "model_source": model_source,
+        "reason": (route or {}).get("reason", session.get("resolution_source")),
+        "state": session.get("state"),
+    }
+
+
 def adaptive_routing_snapshot(status: dict) -> dict:
     """Build the total dashboard shape from recorded routing/session facts."""
     sessions = (status or {}).get("agent_sessions") or {}
@@ -2181,16 +2219,8 @@ def adaptive_routing_snapshot(status: dict) -> dict:
             session.get("state") in AGENT_SESSION_LIVE_STATES
             and session["adaptive_routing"].get("tier") == "PREMIUM" for session in routed) else None,
         "outcome": escalation.get("outcome"), "calls_by_tier": calls,
-        "selections": [{
-            "session_id": session.get("session_id"), "role": session.get("role"),
-            "actor": session.get("actor"), "phase_number": session.get("phase_number"),
-            "adaptive": isinstance(session.get("adaptive_routing"), dict),
-            "tier": (session.get("adaptive_routing") or {}).get("tier"),
-            "adapter": (session.get("adaptive_routing") or {}).get("adapter", session.get("adapter")),
-            "model": (session.get("adaptive_routing") or {}).get("model", session.get("requested_model")),
-            "reason": (session.get("adaptive_routing") or {}).get("reason", session.get("resolution_source")),
-            "state": session.get("state"),
-        } for session in sessions.values() if isinstance(session, dict)],
+        "selections": [_agent_assignment(session) for session in sessions.values()
+                       if isinstance(session, dict)],
         "pause": ({"reason": escalation.get("reason"), "scope": "mission"}
                   if escalation.get("outcome") == "human_pause" else None),
     }
@@ -3820,6 +3850,7 @@ class UsageWatcher:
     def __init__(self, adapter: str | None = None):
         self.adapter = adapter
         self.usage: dict | None = None
+        self.reported_model: str | None = None
         self._awaiting_number = False
 
     def feed(self, line: str) -> None:
@@ -3845,6 +3876,9 @@ class UsageWatcher:
             usage = _find_usage(event)
             if usage:
                 self._set(tokens_in=usage.get("input_tokens"), tokens_out=usage.get("output_tokens"))
+            model = _find_reported_model(event, self.adapter)
+            if model:
+                self.reported_model = model
 
     def _set(self, *, total: int | None = None, tokens_in: int | None = None, tokens_out: int | None = None) -> None:
         if total is None and tokens_in is None and tokens_out is None:
@@ -3878,6 +3912,33 @@ def _find_usage(value) -> dict | None:
             if nested:
                 found = nested
     return found
+
+
+def _find_reported_model(event: object, adapter: str | None) -> str | None:
+    """Return only a model identity explicitly reported by the adapter.
+
+    Claude stream-json names the resolved model in the init event and, on a
+    completed call, as the key of modelUsage.  The latter wins because it is
+    the provider's final accounting identity.  We intentionally do not walk
+    arbitrary nested `model` keys: task payloads may contain model names that
+    were discussed but never used.
+    """
+    if adapter != "claude" or not isinstance(event, dict):
+        return None
+    usage = event.get("modelUsage")
+    if isinstance(usage, dict):
+        models = [key for key in usage if isinstance(key, str) and key.strip()]
+        if len(models) == 1:
+            try:
+                return validate_agent_model(models[0])
+            except HandsoffError:
+                return None
+    if event.get("type") == "system" and event.get("subtype") == "init":
+        try:
+            return validate_agent_model(event.get("model"))
+        except HandsoffError:
+            return None
+    return None
 
 
 def validate_usage(value: object) -> dict:
@@ -3918,7 +3979,8 @@ def usage_totals(status: dict) -> dict:
 
 def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
-                             failure: dict | None = None, usage: dict | None = None) -> dict:
+                             failure: dict | None = None, usage: dict | None = None,
+                             reported_model: str | None = None) -> dict:
     """Apply a session-ID-matched lifecycle-only update under the lock."""
     if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
         raise HandsoffError("agent session id is invalid")
@@ -3937,6 +3999,10 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         usage = validate_usage(usage)
         if not terminal:
             raise HandsoffError("session usage is recorded on the terminal transition only")
+    if reported_model is not None:
+        reported_model = validate_agent_model(reported_model)
+        if not terminal:
+            raise HandsoffError("reported model is recorded on the terminal transition only")
     with project_lock(root.resolve()):
         root = root.resolve()
         cfg = load_config(root)
@@ -3986,6 +4052,8 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         else:
             updated["ended_at"] = now
             updated["exit_code"] = exit_code
+            if reported_model is not None:
+                updated["reported_model"] = reported_model
             if usage is not None:
                 updated["usage"] = usage  # #168
             if replacement is not None:
@@ -4023,6 +4091,7 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             replacement_id=replacement.get("replacement_id") if replacement else None,
             replacement_state=replacement.get("state") if replacement else None,
             usage=usage,
+            reported_model=reported_model,
         )
         result = deepcopy(updated)
     if terminal:

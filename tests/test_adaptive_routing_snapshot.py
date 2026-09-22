@@ -29,8 +29,10 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
         self.assertEqual(snapshot["calls_by_tier"], {"FAST": 0, "STANDARD": 0, "PREMIUM": 0})
         self.assertEqual(snapshot["selections"], [{
             "session_id": session["session_id"], "role": "implementer", "actor": "configured-implementer",
-            "phase_number": 1, "adaptive": False, "tier": None, "adapter": "codex",
-            "model": "configured-model", "reason": "configured", "state": "launching",
+            "purpose": "Build and verification", "phase_number": 1, "adaptive": False,
+            "tier": None, "adapter": "codex", "model": "configured-model",
+            "requested_model": "configured-model", "model_source": "exact_request",
+            "reason": "configured", "state": "launching",
         }])
 
     def test_snapshot_names_which_agent_used_which_model_for_which_phase(self):
@@ -53,11 +55,31 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
         self.assertEqual(route_view["token_usage"]["total"], 1500)
         self.assertEqual(route_view["selections"], [{
             "session_id": session["session_id"], "role": "implementer", "actor": "codex-implementer",
-            "phase_number": 1, "adaptive": True, "tier": "FAST", "adapter": "claude",
-            "model": "claude-haiku-4-5-20251001", "reason": "qualified_profile", "state": "completed",
+            "purpose": "Build and verification", "phase_number": 1, "adaptive": True,
+            "tier": "FAST", "adapter": "claude", "model": "claude-haiku-4-5-20251001",
+            "requested_model": "claude-haiku-4-5-20251001", "model_source": "adaptive_selection",
+            "reason": "qualified_profile", "state": "completed",
         }])
         schema = json.loads((ROOT / "schemas" / "snapshot.schema.json").read_text())
         self.assertEqual(validate(snapshot, schema), [])
+
+    def test_provider_default_is_not_presented_as_an_exact_model(self):
+        self.init("Resolved model telemetry")
+        session = lib.create_agent_session(
+            self.tmp, role="implementer", actor="claude-implementer", adapter="claude",
+            requested_model="default", resolution_source="configured",
+        )
+        unresolved = dashboard.build_snapshot(self.tmp)["adaptive_routing"]["selections"][0]
+        self.assertIsNone(unresolved["model"])
+        self.assertEqual(unresolved["model_source"], "not_reported")
+        lib.transition_agent_session(self.tmp, session["session_id"], "running")
+        lib.transition_agent_session(
+            self.tmp, session["session_id"], "completed", exit_code=0,
+            reported_model="claude-opus-5",
+        )
+        resolved = dashboard.build_snapshot(self.tmp)["adaptive_routing"]["selections"][0]
+        self.assertEqual(resolved["model"], "claude-opus-5")
+        self.assertEqual(resolved["model_source"], "adapter_reported")
 
 
 if __name__ == "__main__":

@@ -991,7 +991,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         # far (read at call time: after the streams drained, or as far as
         # they got when the child was stopped)
         return lib.transition_agent_session(root, session_id, state,
-                                            usage=usage_watcher.result(usage_enabled), **kw)
+                                            usage=usage_watcher.result(usage_enabled),
+                                            reported_model=usage_watcher.reported_model,
+                                            **kw)
 
     def persist_new(items, kind):
         if items:

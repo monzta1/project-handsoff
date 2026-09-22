@@ -31,8 +31,10 @@ test("Mission Control exposes assignments and explicit not-used state without a 
   assert.doesNotMatch(app, /snapshot\.routing/);
   assert.match(logic, /NOT USED/);
   assert.match(app, /AGENT|routing-selection-agent/);
-  assert.match(app, /DESIGN REVIEW/);
-  assert.match(app, /IMPLEMENTATION REVIEW/);
+  assert.match(app, /DESIGN CHALLENGE/);
+  assert.match(app, /IMPLEMENTATION AUDIT/);
+  assert.match(app, /Not reported by provider/);
+  assert.match(app, /adapter_reported/);
   assert.match(logic, /PAUSED/);
   assert.match(app, /Routing is paused/);
 });

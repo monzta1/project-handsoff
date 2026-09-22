@@ -101,10 +101,10 @@ function renderProviderStatus(providers) {
 
 const ROUTING_PHASE_PURPOSES = {
   1: "ORIENTATION",
-  2: "DESIGN REVIEW",
+  2: "DESIGN CHALLENGE",
   3: "DESIGN APPROVAL",
   4: "IMPLEMENTATION",
-  5: "IMPLEMENTATION REVIEW",
+  5: "IMPLEMENTATION AUDIT",
   6: "CHECKS & DOCUMENTATION",
   7: "DEPLOYMENT",
   8: "LIVE VERIFICATION",
@@ -135,28 +135,63 @@ function renderAdaptiveRouting(routing) {
     for (const item of view.selections) {
       const row = document.createElement("article");
       row.className = "routing-selection";
+      const node = (className, label) => {
+        const element = document.createElement("div");
+        element.className = `routing-selection-node ${className}`;
+        const eyebrow = document.createElement("span");
+        eyebrow.className = "routing-selection-eyebrow";
+        eyebrow.textContent = label;
+        element.append(eyebrow);
+        return element;
+      };
       const identity = document.createElement("div");
       identity.className = "routing-selection-agent";
+      const avatar = document.createElement("span");
+      avatar.className = `routing-agent-avatar adapter-${String(item.adapter || "unknown").toLowerCase()}`;
+      avatar.textContent = String(item.adapter || "?").slice(0, 1).toUpperCase();
+      const identityCopy = node("routing-selection-identity", "AGENT");
       const actor = document.createElement("strong");
       actor.textContent = item.actor || item.role || "Agent";
-      const purpose = document.createElement("small");
+      const adapterName = document.createElement("small");
+      adapterName.textContent = String(item.adapter || "unknown").toUpperCase();
+      identityCopy.append(actor, adapterName);
+      identity.append(avatar, identityCopy);
+      const purpose = node("routing-selection-purpose", "MISSION");
       const phasePurpose = ROUTING_PHASE_PURPOSES[Number(item.phase_number)] || `PHASE ${item.phase_number || "—"}`;
-      purpose.textContent = `${String(item.role || "worker").toUpperCase()} · ${phasePurpose}`;
-      identity.append(actor, purpose);
-      const tier = document.createElement("span");
-      tier.className = `routing-selection-tier tier-${String(item.tier || "configured").toLowerCase()}`;
-      tier.textContent = item.adaptive ? (item.tier || "—") : "CONFIG";
-      const model = document.createElement("div");
-      model.className = "routing-selection-model";
+      const purposeName = document.createElement("strong");
+      purposeName.textContent = item.purpose || phasePurpose;
+      const phase = document.createElement("small");
+      phase.textContent = `PHASE ${item.phase_number || "—"}`;
+      purpose.append(purposeName, phase);
+      const model = node("routing-selection-model", "EXACT MODEL");
       const modelName = document.createElement("strong");
-      modelName.textContent = item.model || "—";
-      const adapter = document.createElement("small");
-      adapter.textContent = `${item.adapter || "unknown"} · ${String(item.reason || "selected").replaceAll("_", " ")}`;
-      model.append(modelName, adapter);
-      const state = document.createElement("span");
+      modelName.textContent = item.model || "Not reported by provider";
+      modelName.classList.toggle("is-unknown", !item.model);
+      const modelDetail = document.createElement("small");
+      const sourceLabels = {
+        adapter_reported: "verified from runner telemetry",
+        adaptive_selection: "exact adaptive selection",
+        exact_request: "exact requested model",
+        not_reported: `requested ${item.requested_model || "provider default"}`,
+      };
+      modelDetail.textContent = sourceLabels[item.model_source] || String(item.reason || "selected").replaceAll("_", " ");
+      model.append(modelName, modelDetail);
+      const outcome = node("routing-selection-outcome", "OUTCOME");
+      const state = document.createElement("strong");
       state.className = `routing-selection-state state-${String(item.state || "unknown").replaceAll("_", "-")}`;
       state.textContent = String(item.state || "unknown").replaceAll("_", " ").toUpperCase();
-      row.append(identity, tier, model, state);
+      const tier = document.createElement("small");
+      tier.className = `routing-selection-tier tier-${String(item.tier || "configured").toLowerCase()}`;
+      tier.textContent = item.adaptive ? (item.tier || "—") : "CONFIGURED";
+      outcome.append(state, tier);
+      const arrows = ["AGENT TO MISSION", "MISSION TO MODEL"].map((label) => {
+        const arrow = document.createElement("span");
+        arrow.className = "routing-selection-arrow";
+        arrow.setAttribute("aria-label", label);
+        arrow.textContent = "→";
+        return arrow;
+      });
+      row.append(identity, arrows[0], purpose, arrows[1], model, outcome);
       selections.append(row);
     }
   }
