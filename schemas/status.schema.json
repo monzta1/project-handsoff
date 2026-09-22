@@ -16,6 +16,20 @@
     "feature": {
       "type": "string"
     },
+    "lane": {
+      "type": "string",
+      "enum": ["full", "design", "review"]
+    },
+    "phases_run": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1, "maximum": 8}
+    },
+    "phases_waived": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1, "maximum": 8}
+    },
     "phase_number": {
       "type": "integer",
       "minimum": 1,

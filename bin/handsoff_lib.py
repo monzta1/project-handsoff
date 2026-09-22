@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import fnmatch
+import html
 import json
 import math
 import os
@@ -93,6 +94,20 @@ PHASES = {
     7: "Awaiting deployment approval",
     8: "Live verified",
 }
+
+RUN_LANES = {"full", "design", "review"}
+
+
+def lane_gate_refusal(status: dict, action: str) -> str | None:
+    """Return the refusal for an action unavailable to a design-lane run."""
+    lane = status.get("lane")
+    if lane == "design" and action in {"advance_4", "record-review", "deployment-gate", "verify-live"}:
+        return f"design lane refuses {action}"
+    if lane == "review" and action in {"advance_4", "deployment-gate", "verify-live"}:
+        return f"review lane refuses {action}"
+    if lane == "review" and action == "advance_1":
+        return "review lane refuses advance_1"
+    return None
 
 #: Default next_action per phase, used whenever `advance` (or `init`) isn't
 #: given an explicit --next-action. Without this, next_action was set once
@@ -1077,7 +1092,7 @@ REQUIRED_COVERAGE_FIELDS = (
     "passing", "failing", "not_tested", "blocked", "original_symptom_resolved",
 )
 
-STATUS_VALUES = {"in_progress", "blocked", "ready_to_deploy", "awaiting_approval", "complete"}
+STATUS_VALUES = {"in_progress", "blocked", "ready_to_deploy", "awaiting_approval", "complete", "design_complete", "review_complete"}
 #: "baseline" (#165): a criterion's own commands run BEFORE the feature,
 #: recorded as ok=True when every one of them failed (a valid red) and
 #: ok=False when any passed (baseline_invalid). It never satisfies the
@@ -1602,6 +1617,34 @@ def _atomic_write_text(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def render_review_report(status: dict, acceptance: dict) -> str:
+    """Render the stable human-readable report for a completed review lane."""
+    review = status.get("review") if isinstance(status.get("review"), dict) else {}
+    adopted = status.get("implementation_adopted") if isinstance(status.get("implementation_adopted"), dict) else {}
+    verdict = review.get("verdict") or review.get("decision") or "approved"
+    lines = ["# Review report", "", f"- Verdict: {verdict}",
+             f"- Reviewer: {review.get('by') or status.get('reviewed_by') or 'unknown'}",
+             f"- Adopted commit: {adopted.get('sha') or 'unknown'}",
+             f"- Tests executed: {review.get('tests_executed') or 'not recorded'}", "", "## Criteria", ""]
+    for criterion in acceptance.get("criteria", []):
+        if not isinstance(criterion, dict):
+            continue
+        evidence = criterion.get("evidence")
+        evidence_text = json.dumps(evidence, sort_keys=True) if evidence is not None else "none"
+        lines.append(f"- `{criterion.get('id', 'unknown')}` — state: {criterion.get('state', 'unknown')}; evidence: {evidence_text}")
+    lines.extend(["", "## Findings", ""])
+    findings = []
+    for attempt in status.get("review_attempts", []):
+        if isinstance(attempt, dict):
+            findings.extend(item for item in (attempt.get("findings") or []) if isinstance(item, dict))
+    if not findings:
+        lines.append("- None")
+    else:
+        for finding in findings:
+            lines.append(f"- `{finding.get('code', 'UNKNOWN')}` — {finding.get('summary') or finding.get('text', '')}")
+    return "\n".join(lines) + "\n"
 
 
 def _validate_analysis_config(analysis: dict) -> dict:
@@ -3506,7 +3549,16 @@ def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
         if merged.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{40,64}", merged.stdout.strip()):
             base = merged.stdout.strip().lower()
             break
+    remote = ""
+    try:
+        remote_result = runner(["git", "remote", "get-url", "origin"], cwd=str(root.resolve()),
+                               shell=False, text=True, capture_output=True, timeout=3, check=False)
+        if remote_result.returncode == 0:
+            remote = remote_result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
     return {
+        "remote": remote,
         "path": str(root.resolve()), "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
         "status_sha256": hashlib.sha256(porcelain.encode("utf-8", "replace")).hexdigest(),
         "content_sha256": hashlib.sha256(content).hexdigest(),
@@ -3862,6 +3914,57 @@ def current_agent_sessions(status: dict) -> dict:
 
 def _canonical(record: dict) -> str:
     return json.dumps(record, sort_keys=True, separators=(",", ":"))
+
+
+def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict) -> str:
+    """Build the deterministic, self-contained design-lane terminal document."""
+    review = deepcopy(status.get("design_review"))
+    try:
+        repository = repository_snapshot(root)
+    except HandsoffError:
+        repository = {"remote": "", "head": ""}
+    block = {
+        "schema": 1,
+        "criteria": deepcopy(acceptance.get("criteria", [])),
+        "design_hash": review.get("design_hash") if isinstance(review, dict) else design_hash(acceptance.get("criteria", [])),
+        "criterion_hashes": {c.get("id"): criterion_spec_hash(c)
+                            for c in acceptance.get("criteria", []) if isinstance(c, dict)},
+        "design_review": review,
+        "repository": {"remote": repository.get("remote", ""), "head": repository.get("head", "")},
+        "items": deepcopy(acceptance.get("work_items", [])),
+        "lane": status.get("lane"),
+        "phases_run": deepcopy(status.get("phases_run", [])),
+        "phases_waived": deepcopy(status.get("phases_waived", [])),
+        "engine": runtime_identity(root),
+    }
+    if status.get("design_approved") is not None:
+        block["design_approved"] = deepcopy(status["design_approved"])
+    proposal = status.get("design_proposal") or {}
+    if proposal:
+        block["design_proposal"] = deepcopy(proposal)
+    payload = _canonical(block)
+    # A JSON script block must not contain a literal closing-tag opener.  These
+    # escapes are valid JSON and therefore preserve the value after parsing.
+    script_payload = payload.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    def esc(value):
+        return html.escape(str(value), quote=True)
+    rows = []
+    for criterion in block["criteria"]:
+        rows.append("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+            esc(criterion.get("id", "")), esc(criterion.get("requirement", "")),
+            esc(criterion.get("verification", "")), esc(criterion.get("work_item", criterion.get("work_item_tag", "")))))
+    findings = review.get("findings", []) if isinstance(review, dict) else []
+    findings_html = "".join(f"<li>{esc(item)}</li>" for item in findings)
+    sections = f"<h2>summary</h2><p>{esc(proposal.get('summary', ''))}</p>"
+    for key in ("approach", "tradeoffs", "decisions", "constraints", "verification"):
+        items = proposal.get(key, [])
+        sections += f"<h2>{esc(key)}</h2><ul>{''.join(f'<li>{esc(item)}</li>' for item in items)}</ul>"
+    readable = (f"<h1>Design lane</h1>{sections}<h2>Criteria</h2><table><tr><th>ID</th><th>Requirement</th>"
+                f"<th>Verification policy</th><th>Work item tag</th></tr>{''.join(rows)}</table>"
+                f"<h2>Design review</h2><p>Decision: {esc(review.get('decision', '') if isinstance(review, dict) else '')}</p>"
+                f"<p>Reviewer: {esc(review.get('by', '') if isinstance(review, dict) else '')}</p><ul>{findings_html}</ul>")
+    return "<!doctype html><html><head><meta charset=\"utf-8\"><title>Design lane</title></head><body>" \
+        + readable + f'<script type="application/json" id="handsoff-design">{script_payload}</script></body></html>\n'
 
 
 def _file_sha256(path: Path) -> str | None:
@@ -4426,6 +4529,19 @@ def validate_status_schema(status: dict) -> list[str]:
     if not isinstance(status, dict):
         return ["status: top-level value must be an object"]
     errors = [f"status: missing required field '{f}'" for f in REQUIRED_STATUS_FIELDS if f not in status]
+    if "lane" in status:
+        if status["lane"] not in RUN_LANES:
+            errors.append("status: 'lane' must be one of full, design, review")
+        for field in ("phases_run", "phases_waived"):
+            values = status.get(field)
+            if not isinstance(values, list) or any(not isinstance(value, int) or isinstance(value, bool)
+                                                   or value not in PHASES for value in values):
+                errors.append(f"status: '{field}' must be a sorted list of phase numbers")
+            elif values != sorted(set(values)):
+                errors.append(f"status: '{field}' must be sorted and unique")
+        if isinstance(status.get("phases_run"), list) and isinstance(status.get("phases_waived"), list) \
+                and set(status["phases_run"]) & set(status["phases_waived"]):
+            errors.append("status: phases_run and phases_waived must be disjoint")
     coverage = status.get("requirement_coverage", {})
     if not isinstance(coverage, dict):
         errors.append("status: 'requirement_coverage' must be an object")
@@ -5433,6 +5549,13 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict, root: Path | None 
     if reviewer and implementer \
             and reviewer.strip().casefold() == implementer.strip().casefold():
         errors.append("review gate: reviewer must differ from implementer, no self-approval")
+    adopted = status.get("implementation_adopted")
+    if isinstance(adopted, dict):
+        for field, label in (("commit_author", "adopted commit author"),
+                             ("adopting_actor", "adopting actor")):
+            identity = adopted.get(field)
+            if identity and reviewer and reviewer.strip().casefold() == str(identity).strip().casefold():
+                errors.append(f"review gate: reviewer must differ from {label}")
     checklist = review.get("checklist", {})
     for field, allowed in CHECKLIST_VALUES.items():
         if checklist.get(field) not in allowed:
@@ -6014,16 +6137,16 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     # opened at, forward and back, until it is approved or escalated.
     errors.extend(amendment_freeze_errors(status))
 
-    if phase >= 6 and (not green or not resolved or not symptom_record or evidence_errors):
+    if phase >= 6 and status.get("lane") != "review" and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("phase gate: every criterion and the original symptom must have verified evidence before Phase 6+")
         if resolved and not symptom_record:
             errors.append("symptom gate: resolved original symptom must reference a successful verification run")
         errors.extend(evidence_errors)
-    if progress >= 95 and (not green or not resolved or not symptom_record or evidence_errors):
+    if progress >= 95 and status.get("lane") != "review" and (not green or not resolved or not symptom_record or evidence_errors):
         errors.append("progress gate: 95%+ requires verified acceptance and a resolved original symptom")
         if phase < 6:
             errors.extend(evidence_errors)  # name the baseline gaps here too (#165)
-    if "work_items" in acceptance and progress >= 95:
+    if "work_items" in acceptance and progress >= 95 and status.get("lane") != "review":
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
                       if item.get("required") and item.get("status") != "done"]
         for item in unfinished:
@@ -7476,6 +7599,8 @@ def overall_item_progress(status: dict, acceptance: dict, cfg: dict) -> int:
 
 
 def full_design_required(status: dict, acceptance: dict, cfg: dict) -> bool:
+    if status.get("lane") == "review":
+        return False
     items, _ = effective_work_items(acceptance, cfg)
     for item in items:
         if not item.get("required", True):

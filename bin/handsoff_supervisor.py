@@ -251,6 +251,47 @@ def cmd_init(args) -> int:
         return 1
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
+    review_adoption = None
+    if getattr(args, "lane", "full") == "review":
+        ref = args.adopt if isinstance(args.adopt, str) else None
+        if not ref:
+            print("SHIP_FEATURE_BLOCKED: review lane requires --adopt REF")
+            return 1
+        acceptance_file = lib.acceptance_path(root, cfg)
+        try:
+            existing_acceptance = lib.load_unique_json(acceptance_file)
+        except lib.HandsoffError:
+            print("SHIP_FEATURE_BLOCKED: review lane requires criteria already on file")
+            return 1
+        if not existing_acceptance.get("criteria"):
+            print("SHIP_FEATURE_BLOCKED: review lane requires criteria already on file")
+            return 1
+        try:
+            resolved = subprocess.run(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                                     cwd=str(root), text=True, capture_output=True, check=False)
+            if resolved.returncode != 0 or not resolved.stdout.strip():
+                raise ValueError("ref does not resolve to a commit")
+            sha = resolved.stdout.strip()
+            author = subprocess.run(["git", "show", "-s", "--format=%an <%ae>", sha],
+                                    cwd=str(root), text=True, capture_output=True, check=False)
+            commit_author = author.stdout.strip() if author.returncode == 0 else ""
+            if not commit_author or commit_author == "<>" or not re.search(r"\S", commit_author):
+                raise ValueError("commit has no usable author identity")
+        except (OSError, ValueError) as exc:
+            print(f"SHIP_FEATURE_BLOCKED: review lane adoption refused: {exc}")
+            return 1
+        review_adoption = {"ref": ref, "sha": sha, "commit_author": commit_author,
+                           "adopting_actor": (args.by or "").strip()}
+        if not review_adoption["adopting_actor"]:
+            print("SHIP_FEATURE_BLOCKED: review lane adoption requires --by")
+            return 1
+    source_design = None
+    if getattr(args, "from_design", None):
+        try:
+            source_design = _read_design_take_up(Path(args.from_design).resolve())
+        except lib.HandsoffError as exc:
+            print(f"SHIP_FEATURE_BLOCKED: {exc}")
+            return 1
     sp, ap = lib.status_path(root, cfg), lib.acceptance_path(root, cfg)
     now = datetime.now(timezone.utc).isoformat()
     # Locked for the same reason advance/deployment-gate are: init writes
@@ -260,6 +301,8 @@ def cmd_init(args) -> int:
         artifacts = (sp, ap, lib.event_log_path(root, cfg), lib.verification_log_path(root, cfg),
                      lib.event_head_path(root))
         existing = [path.name for path in artifacts if path.exists()]
+        if review_adoption and existing == [lib.acceptance_path(root, cfg).name]:
+            existing = []
         if existing:
             retired = lib.retire_finished_run(root, cfg)
             if retired is None:
@@ -267,16 +310,25 @@ def cmd_init(args) -> int:
                 return 1
             print(f"HANDSOFF_RETIRED: {retired}")
         pin_written = _write_missing_pin(root)  # #185
-        acceptance = {
+        acceptance = (deepcopy(existing_acceptance) if review_adoption else {
             "feature": args.feature,
             "criteria": [{
                 "id": "REQ-001", "type": "primary_fix", "requirement": lib.PLACEHOLDER_REQUIREMENT,
                 "verification": "automated", "tests": list(lib.PLACEHOLDER_TESTS), "evidence": [], "state": "failing",
             }],
-        }
-        acceptance["work_items"] = lib.derive_work_item_registry(
-            acceptance, cfg, now=now, explicit_items=args.item,
-        )
+        })
+        if review_adoption:
+            acceptance["feature"] = args.feature
+        if source_design is not None:
+            acceptance["criteria"] = source_design["criteria"]
+            if source_design.get("items") is not None:
+                acceptance["work_items"] = source_design["items"]
+        # A carried review stays valid only while the policy and scope it was bound to still hold;
+        # a take-up that changes either earns a new review rather than inheriting the old one.
+        if source_design is None or args.item or not acceptance.get("work_items"):
+            acceptance["work_items"] = lib.derive_work_item_registry(
+                acceptance, cfg, now=now, explicit_items=args.item,
+            )
         numbers = {item["number"] for item in acceptance["work_items"]
                    if item.get("kind") == "issue" and isinstance(item.get("number"), int)}
         adopted = {"adopted_from": []}
@@ -316,15 +368,53 @@ def cmd_init(args) -> int:
                                    "all_criteria_verified": "no", "evidence_attached": "no"},
             "events": [],
         }
+        if source_design is not None:
+            status["design_review"] = source_design.get("design_review")
+            status["design_approved"] = source_design.get("design_approved")
+            status["design_proposal"] = source_design.get("design_proposal")
+            # A take-up is a new run: its --lane (defaulting to full) owns
+            # execution.  The source lane's waiver is provenance only; it
+            # must never make the new run unable to build the design.
+            inherited_waived = source_design.get("phases_waived", [])
+            if not isinstance(inherited_waived, list) or any(
+                    not isinstance(phase, int) for phase in inherited_waived):
+                inherited_waived = []
+            phase3 = not lib._design_review_errors(status, acceptance, cfg) \
+                and not lib._design_errors(status, acceptance, cfg, root)
+            phase = 3 if phase3 else 2
+            status.update(phase_number=phase, phase=lib.PHASES[phase],
+                          progress=30 if phase3 else 20,
+                          design_document=Path(args.from_design).name,
+                          next_action=lib.NEXT_ACTION_DEFAULTS[phase],
+                          taken_up_from={
+                              "path": str(Path(args.from_design).resolve()),
+                              "sha256": lib._file_sha256(Path(args.from_design).resolve()),
+                              "source_design_hash": source_design["design_hash"],
+                              "inherited_waived": sorted(inherited_waived),
+                          })
+        if args.lane == "design":
+            status.update(lane="design", phases_run=[1, 2, 3], phases_waived=[4, 5, 6, 7, 8])
+        if review_adoption:
+            status.update(lane="review", phase_number=5, phase=lib.PHASES[5], progress=50,
+                          phases_run=[5, 6], phases_waived=[1, 2, 3, 4, 7, 8],
+                          implemented_by=review_adoption["commit_author"],
+                          implementation_adopted=review_adoption)
         status["work_item_delivery"] = lib.new_work_item_delivery(
-            acceptance["work_items"], getattr(args, "lane", "full"),
+            acceptance["work_items"], "small-fix" if getattr(args, "lane", "full") == "small-fix" else "full",
         )
         waived = [] if status["requires_design_approval"] else [{
             "kind": "design_approval_waived",
             "message": "Pilot design approval waived by handsoff.toml [workflow] require_design_approval = false; "
                        "the independent design review remains required",
-            "config_key": "require_design_approval",
+                       "config_key": "require_design_approval",
         }]
+        if args.lane == "design":
+            lane_actor = args.by.strip() if args.by and args.by.strip() else "unknown"
+            waived.append({"kind": "lane_selected", "message": "Design lane selected",
+                           "lane": "design", "actor": lane_actor, "by": lane_actor})
+        if review_adoption:
+            waived.append({"kind": "implementation_adopted", "message": "Implementation adopted for review lane",
+                           **review_adoption})
         for previous in adopted["adopted_from"]:
             waived.append({"kind": "work_item_adopted",
                            "message": f"Adopted #{', #'.join(str(n) for n in previous['numbers'])} from a dead run at {previous['root']}",
@@ -332,13 +422,58 @@ def cmd_init(args) -> int:
                            "previous_phase": previous.get("phase")})
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="initialized", event_message=f"Handsoff initialized for '{args.feature}'",
-                  extra_events=waived, project_root=str(root), engine=lib.ledger_engine_identity(root),
+                  extra_events=waived + ([{"kind": "design_taken_up",
+                                          "message": "Design document taken up",
+                                          **status["taken_up_from"]}] if source_design is not None else []),
+                  project_root=str(root), engine=lib.ledger_engine_identity(root),
                   ticket_lock="evaluated" if lib.feature_enabled(cfg, "ticket_lock") else "disabled",
                   pin_written=pin_written, by=(args.by.strip() if isinstance(args.by, str) and args.by.strip() else None))
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
     for previous in adopted["adopted_from"]:
         print(f"WORK_ITEM_ADOPTED: #{', #'.join(str(n) for n in previous['numbers'])} from {previous['root']}")
     return 0
+
+
+def _read_design_take_up(path: Path) -> dict:
+    """Read exactly one bounded JSON design block, never page prose."""
+    if not path.is_file():
+        raise lib.HandsoffError("--from-design file does not exist")
+    if path.stat().st_size > 256 * 1024:
+        raise lib.HandsoffError("design document exceeds 256 KiB")
+    raw = path.read_bytes()
+    marker = b'<script type="application/json" id="handsoff-design">'
+    starts = [i for i in range(len(raw)) if raw.startswith(marker, i)]
+    if not starts:
+        raise lib.HandsoffError("design document has no handsoff-design block")
+    if len(starts) > 1:
+        raise lib.HandsoffError("design document has more than one handsoff-design block")
+    begin = starts[0] + len(marker)
+    finish = raw.find(b"</script>", begin)
+    if finish < 0:
+        raise lib.HandsoffError("handsoff-design block is not closed")
+    try:
+        block = json.loads(raw[begin:finish].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise lib.HandsoffError(f"handsoff-design block has invalid JSON: {exc}") from exc
+    if not isinstance(block, dict):
+        raise lib.HandsoffError("handsoff-design block must be a JSON object")
+    if block.get("schema") != 1:
+        raise lib.HandsoffError("handsoff-design block has unknown schema version")
+    candidate = {"feature": "taken-up design", "criteria": block.get("criteria")}
+    if block.get("items"):
+        candidate["work_items"] = block["items"]
+    errors = lib.validate_acceptance_schema(candidate)
+    if errors:
+        raise lib.HandsoffError("design criteria fail acceptance schema: " + "; ".join(errors))
+    actual = lib.design_hash(block["criteria"])
+    if not isinstance(block.get("design_hash"), str) or block["design_hash"] != actual:
+        hashes = block.get("criterion_hashes")
+        ids = [c["id"] for c in block["criteria"]
+               if isinstance(hashes, dict) and hashes.get(c.get("id")) != lib.criterion_spec_hash(c)]
+        if not ids:
+            ids = [c["id"] for c in block["criteria"]]
+        raise lib.HandsoffError("design_hash mismatch for criteria: " + ", ".join(ids))
+    return block
 
 
 def cmd_status(args) -> int:
@@ -449,6 +584,11 @@ def cmd_advance(args) -> int:
         if audit_errors:
             return _print_audit_block(audit_errors)
         lib.ensure_no_launched_regression(status)
+
+        refusal = lib.lane_gate_refusal(status, f"advance_{args.phase}")
+        if refusal:
+            print(f"SHIP_FEATURE_BLOCKED: {refusal}")
+            return 1
 
         if args.phase not in lib.PHASES:
             print(f"invalid phase {args.phase}, must be one of {sorted(lib.PHASES)}")
@@ -575,6 +715,13 @@ def cmd_advance(args) -> int:
             proposed["progress"] = progress
         proposed["_preserve_progress"] = True
 
+        design_document = None
+        if args.phase == 3 and status.get("lane") == "design":
+            proposed["status"] = "design_complete"
+            proposed["design_document"] = "design.html"
+        if args.phase == 6 and proposed.get("lane") == "review":
+            proposed["status"] = "review_complete"
+
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems, root=root)
         if errors:
@@ -596,10 +743,17 @@ def cmd_advance(args) -> int:
             print("SHIP_FEATURE_BLOCKED")
             print("\n".join(f"- {x}" for x in errors))
             return 1
+        if args.phase == 3 and status.get("lane") == "design":
+            design_document = lib.render_design_document(root, cfg, proposed, acceptance)
         if args.dry_run:
             print("SHIP_FEATURE_ADVANCE_WOULD_SUCCEED")
             return 0
         progress_was_clamped = args.progress is not None and args.progress < current_progress
+
+        review_report = None
+        if args.phase == 6 and proposed.get("lane") == "review":
+            proposed["review_report"] = "review_report.md"
+            review_report = lib.render_review_report(proposed, acceptance)
 
         if new_design_round_event is not None:
             reason = new_design_round_event["reason"]
@@ -622,6 +776,10 @@ def cmd_advance(args) -> int:
             lib.commit(root, cfg, status=proposed,
                       event_kind="phase_advanced", event_message=f"Advanced to {lib.PHASES[args.phase]}",
                       phase_number=args.phase, progress=progress)
+        if review_report is not None:
+            lib._atomic_write_text(root / proposed["review_report"], review_report)
+        if design_document is not None:
+            lib._atomic_write_text(root / "design.html", design_document)
 
         archived = False
         if args.phase == 8 and proposed.get("status") == "complete":
@@ -741,6 +899,16 @@ def _miner_run(subcommand: str, root, *, archive_dir=None, dry_run: bool = False
         raise lib.HandsoffError("the Miner's reply was not JSON") from exc
     if not isinstance(report, dict):
         raise lib.HandsoffError("the Miner's reply was not a report")
+    if subcommand == "scan" and not dry_run:
+        # Engine-owned lane guard: the installed Miner remains the source of
+        # existing rules, while this small report-only check supplies the
+        # review-lane gate that older Miners do not know about.
+        try:
+            import handsoff_analyzer
+            local_findings = handsoff_analyzer.scan(Path(archive_dir) if archive_dir else lib.archive_dir())
+            report.setdefault("findings", []).extend(local_findings)
+        except (OSError, ValueError, TypeError):
+            pass
     return report
 
 
@@ -917,6 +1085,10 @@ def cmd_deployment_gate(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        refusal = lib.lane_gate_refusal(status, "deployment-gate")
+        if refusal:
+            print(f"DEPLOYMENT_BLOCKED\n- {refusal}")
+            return 1
         if getattr(args, "revoke", False):
             phase = int(status.get("phase_number", 0) or 0)
             if not isinstance(status.get("deployment_approved"), dict):
@@ -2781,6 +2953,10 @@ def cmd_record_review(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, records, problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        refusal = lib.lane_gate_refusal(status, "record-review")
+        if refusal:
+            print(f"SHIP_FEATURE_BLOCKED: {refusal}")
+            return 1
         if _refuse_if_amendment_open(status, action="independent review"):
             return 1
         if getattr(args, "item", None):
@@ -3119,14 +3295,18 @@ def cmd_verify_live(args) -> int:
         print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
         return 1
     commands = cfg.get("live_check_commands", [])
-    if not commands:
-        print("SHIP_FEATURE_NO_LIVE_CHECKS_CONFIGURED: set [checks].live_commands in handsoff.toml")
-        return 1
     with lib.project_lock(root):
         status, acceptance, records, verification_problems = _load_all(root, cfg)
         audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        refusal = lib.lane_gate_refusal(status, "verify-live")
+        if refusal:
+            print(f"SHIP_FEATURE_BLOCKED: {refusal}")
+            return 1
+        if not commands:
+            print("SHIP_FEATURE_NO_LIVE_CHECKS_CONFIGURED: set [checks].live_commands in handsoff.toml")
+            return 1
         if _refuse_if_amendment_open(status, action="live verification"):
             return 1
         approval_required = cfg.get("deployment_requires_explicit_approval", True)
@@ -4491,15 +4671,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init")
-    init.add_argument("--adopt", action="store_true",
+    init.add_argument("--adopt", nargs="?", const=True, default=False,
                       help="#166: take over a ticket whose registered owner is dead or closed; a live owner is never adopted")
     init.add_argument("feature")
     init.add_argument("--by", default=None, help="#186: the host actor driving this run (claude-host, codex-implementer); "
                       "recorded on initialized so the page can name the host family")
     init.add_argument("--item", action="append", default=[],
                       help="declare one issue (#31 or #31 Title) or plain ask; repeat for multiple items")
-    init.add_argument("--lane", choices=("full", "small-fix"), default="full",
-                      help="initial delivery lane; small-fix still requires explicit Pilot confirmation")
+    init.add_argument("--lane", choices=("full", "design", "review", "small-fix"), default="full",
+                      help="initial run or delivery lane")
+    init.add_argument("--from-design", default=None, metavar="PATH",
+                      help="take up a completed design.html document")
 
     sub.add_parser("status", help="print run state as JSON, including the requested crew per role "
                                   "with its source (explicit or recommended) and adapter availability")

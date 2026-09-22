@@ -97,48 +97,49 @@
    "session": null
   }
  ],
+ "design_document": null,
  "design_evidence": [],
  "design_review_packet": null,
  "engine": {
-  "compatibility": "v0.3.69",
-  "manifest_sha256": "b3fabcb7a79b6f9f87457a4529f659905a88b51f6b49bf08c0a094f68d08b3b8",
+  "compatibility": "v0.3.72",
+  "manifest_sha256": "a44d75efd967064429ca061f28039393c90cf50d614484eb8f44627200f8dc95",
   "source": "project-drop-in",
   "source_root": "<root>",
-  "version": "v0.3.69"
+  "version": "v0.3.72"
  },
  "escalation": null,
  "events": [
   {
-   "acceptance_sha256": "01194be29ef2238cece981379aa9f3d16f510955ec30b8f3ee640d483ebad78a",
-   "at": "2026-09-21T22:51:56.798343+00:00",
-   "hash": "55cda40c839062816f9c923ba9c99829fafafeff18bb41d5b4ebfbb3e662eb01",
+   "acceptance_sha256": "4e6adc11323c7a723013f5d1db499043cecac5f7838c971df99f28e77a7d2c56",
+   "at": "2026-09-22T12:29:59.638681+00:00",
+   "hash": "fc35b0d06e0f4b7149bc379e83aef68b7067e85d58f65c62c67b54a214615d9c",
    "kind": "phase_advanced",
    "message": "Advanced to Design debate",
    "phase_number": 2,
-   "prev_hash": "91f8f5930c69989e6a64f99384099a60fe586225b9f99f7dc1ed4dd1adb80b52",
+   "prev_hash": "fb06c27d1d03d785f0620af314a3cde59aefe2f4ecf94a7d267be08ebd3fe032",
    "progress": 20,
-   "status_sha256": "88ab5dff2d784fa4cf235fe312637b08de07f272dc973d23596db65611f9a680"
+   "status_sha256": "98bf33871e2b31e425a49fe5e7e12cef5a2f9fd7ae1febb5d84cc63172a75c8e"
   },
   {
-   "acceptance_sha256": "01194be29ef2238cece981379aa9f3d16f510955ec30b8f3ee640d483ebad78a",
-   "at": "2026-09-21T22:51:56.728336+00:00",
+   "acceptance_sha256": "4e6adc11323c7a723013f5d1db499043cecac5f7838c971df99f28e77a7d2c56",
+   "at": "2026-09-22T12:29:59.489102+00:00",
    "by": null,
    "engine": {
-    "manifest_sha256": "b3fabcb7a79b6f9f87457a4529f659905a88b51f6b49bf08c0a094f68d08b3b8",
+    "manifest_sha256": "a44d75efd967064429ca061f28039393c90cf50d614484eb8f44627200f8dc95",
     "source": "project-drop-in",
-    "version": "v0.3.69"
+    "version": "v0.3.72"
    },
-   "hash": "91f8f5930c69989e6a64f99384099a60fe586225b9f99f7dc1ed4dd1adb80b52",
+   "hash": "fb06c27d1d03d785f0620af314a3cde59aefe2f4ecf94a7d267be08ebd3fe032",
    "kind": "initialized",
    "message": "Handsoff initialized for 'Snapshot contract'",
    "pin_written": null,
    "prev_hash": "GENESIS",
    "project_root": "<root>",
-   "status_sha256": "9c77e79e2edf0fe992bc5f66fc3800f8e83fa34dec44bd4b3e453d9afa1736af",
+   "status_sha256": "8b9850ab614049c161e29548ac48f3226a2fa9323826752f762dc1cba09fd5cb",
    "ticket_lock": "evaluated"
   }
  ],
- "generated_at": "2026-09-21T22:51:56.804297+00:00",
+ "generated_at": "2026-09-22T12:29:59.652050+00:00",
  "host": {
   "actor": null,
   "family": "unknown",
@@ -160,12 +161,13 @@
   "required": false,
   "turn": null
  },
+ "lane": null,
  "live": {
   "activity_source": "workflow",
   "detail": "no managed process is running",
   "ended_at": null,
   "exit_code": null,
-  "last_activity_at": "2026-09-21T22:51:56.797722+00:00",
+  "last_activity_at": "2026-09-22T12:29:59.637826+00:00",
   "process_signal": "none",
   "role": null,
   "seconds_since_activity": 0,
@@ -181,10 +183,10 @@
    "state": "unavailable"
   },
   "design_review_attempts": 0,
-  "elapsed_seconds": 0.109,
+  "elapsed_seconds": 0.224,
   "ended_at": null,
   "failed_sessions": 0,
-  "generated_at": "2026-09-21T22:51:56.837099+00:00",
+  "generated_at": "2026-09-22T12:29:59.713256+00:00",
   "implementation_review_attempts": 0,
   "largest_sessions": [],
   "managed_sessions": 0,
@@ -199,8 +201,8 @@
    "8": 0.0
   },
   "phase_seconds": {
-   "1": 0.07,
-   "2": 0.039,
+   "1": 0.15,
+   "2": 0.075,
    "3": 0.0,
    "4": 0.0,
    "5": 0.0,
@@ -208,12 +210,12 @@
    "7": 0.0,
    "8": 0.0
   },
-  "phase_started_at": "2026-09-21T22:51:56.798343+00:00",
+  "phase_started_at": "2026-09-22T12:29:59.638681+00:00",
   "pilot_wait_seconds": 0.0,
   "recovery_attempts": 0,
   "replacement_count": 0,
   "sessions": [],
-  "started_at": "2026-09-21T22:51:56.728336+00:00",
+  "started_at": "2026-09-22T12:29:59.489102+00:00",
   "tokens": {
    "cached": null,
    "coverage": "0/0 sessions",
@@ -233,17 +235,17 @@
     "migrate_preview": "handsoff migrate <root> --dry-run",
     "rollback": "handsoff rollback <root>",
     "rollback_preview": "handsoff rollback <root> --dry-run",
-    "upgrade": "handsoff upgrade <root> --to v0.3.69",
-    "upgrade_preview": "handsoff upgrade <root> --to v0.3.69 --dry-run"
+    "upgrade": "handsoff upgrade <root> --to v0.3.72",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.72 --dry-run"
    },
-   "compatibility": "v0.3.69",
+   "compatibility": "v0.3.72",
    "execution": "unavailable",
    "execution_reason": "execution is not offered while a dashboard is serving this root",
-   "pin": "v0.3.69",
+   "pin": "v0.3.72",
    "reason": null,
    "source": "project-drop-in",
    "source_root": "<root>",
-   "version": "v0.3.69"
+   "version": "v0.3.72"
   },
   "inventory": [
    {
@@ -347,7 +349,7 @@
     "tone": "primary"
    },
    {
-    "action_id": "pause:1fcb72fe36caee8b",
+    "action_id": "pause:66c025e6aaed99e6",
     "availability": "actionable",
     "consequence": "Pause the mission",
     "kind": "pause",
@@ -367,7 +369,7 @@
     "tone": "primary"
    },
    {
-    "action_id": "run_close:1fcb72fe36caee8b",
+    "action_id": "run_close:66c025e6aaed99e6",
     "availability": "actionable",
     "consequence": "Close the run and release resources",
     "kind": "run_close",
@@ -464,10 +466,10 @@
  },
  "operator_actions": [
   {
-   "action_id": "pause:1fcb72fe36caee8b",
-   "binding": "1fcb72fe36caee8b",
+   "action_id": "pause:66c025e6aaed99e6",
+   "binding": "66c025e6aaed99e6",
    "consequence": "Records an explicit Pilot pause",
-   "created_at": "2026-09-21T22:51:56.797722+00:00",
+   "created_at": "2026-09-22T12:29:59.637826+00:00",
    "kind": "pause",
    "label": "Pause mission",
    "operation": "human-pause-start",
@@ -480,10 +482,10 @@
    "type": "pause"
   },
   {
-   "action_id": "run_close:1fcb72fe36caee8b",
-   "binding": "1fcb72fe36caee8b",
+   "action_id": "run_close:66c025e6aaed99e6",
+   "binding": "66c025e6aaed99e6",
    "consequence": "Records closure and releases run-owned resources",
-   "created_at": "2026-09-21T22:51:56.797722+00:00",
+   "created_at": "2026-09-22T12:29:59.637826+00:00",
    "kind": "run_close",
    "label": "Cleanly close run",
    "operation": "run-close",
@@ -498,46 +500,56 @@
  ],
  "phases": [
   {
+   "lane_status": "run",
    "name": "Orient",
    "number": 1,
    "state": "complete"
   },
   {
+   "lane_status": "run",
    "name": "Design debate",
    "number": 2,
    "state": "active"
   },
   {
+   "lane_status": "run",
    "name": "Design approved",
    "number": 3,
    "state": "upcoming"
   },
   {
+   "lane_status": "run",
    "name": "Implementation",
    "number": 4,
    "state": "upcoming"
   },
   {
+   "lane_status": "run",
    "name": "Independent review",
    "number": 5,
    "state": "upcoming"
   },
   {
+   "lane_status": "run",
    "name": "Checks & documentation",
    "number": 6,
    "state": "upcoming"
   },
   {
+   "lane_status": "run",
    "name": "Awaiting deployment approval",
    "number": 7,
    "state": "upcoming"
   },
   {
+   "lane_status": "run",
    "name": "Live verified",
    "number": 8,
    "state": "upcoming"
   }
  ],
+ "phases_run": [],
+ "phases_waived": [],
  "policy": {
   "configured_checks": 0,
   "configured_live_checks": 0,
@@ -568,7 +580,7 @@
  "project": {
   "feature": "Snapshot contract",
   "logo_url": null,
-  "name": "handsoff-test-y7rar2el"
+  "name": "handsoff-test-yfralb03"
  },
  "questions": {
   "answered": [],
@@ -588,6 +600,7 @@
   },
   "attempts": [],
   "cap": 3,
+  "implementer_progress": null,
   "lease": null,
   "watchdog_enabled": true
  },
@@ -924,7 +937,7 @@
    "detail": "no managed process is running",
    "ended_at": null,
    "exit_code": null,
-   "last_activity_at": "2026-09-21T22:51:56.797722+00:00",
+   "last_activity_at": "2026-09-22T12:29:59.637826+00:00",
    "process_signal": "none",
    "role": null,
    "seconds_since_activity": 0,
@@ -967,7 +980,7 @@
   "stall_warning": null,
   "status": "in_progress",
   "summary": "",
-  "updated_at": "2026-09-21T22:51:56.797722+00:00",
+  "updated_at": "2026-09-22T12:29:59.637826+00:00",
   "verification_head": "GENESIS",
   "verification_progress": 20,
   "work_item_delivery": {
@@ -993,7 +1006,7 @@
   "headline": "Holding trajectory until Mission Objectives are verified, Pilot.",
   "label": "Objectives unresolved",
   "latest_event": {
-   "at": "2026-09-21T22:51:56.798343+00:00",
+   "at": "2026-09-22T12:29:59.638681+00:00",
    "kind": "phase_advanced",
    "message": "Advanced to Design debate"
   },
@@ -1035,7 +1048,7 @@
   "items": [
    {
     "blocker": "",
-    "created_at": "2026-09-21T22:51:56.723474+00:00",
+    "created_at": "2026-09-22T12:29:59.478469+00:00",
     "criteria": [
      "REQ-001"
     ],
@@ -1055,7 +1068,7 @@
     "required": true,
     "status": "not_started",
     "title": "Issue #218",
-    "updated_at": "2026-09-21T22:51:56.723474+00:00",
+    "updated_at": "2026-09-22T12:29:59.478469+00:00",
     "url": ""
    }
   ],

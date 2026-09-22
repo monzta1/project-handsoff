@@ -861,7 +861,7 @@ function renderPhases(phases, verification = null) {
   // already names the current phase that way in phases[].name, so the rail
   // only adds the failing command's detail card below it.
   $("phase-rail").innerHTML = phases.map((phase) => `
-    <div class="phase-node ${escapeHtml(phase.state)}">
+    <div class="phase-node ${escapeHtml(phase.state)} lane-${escapeHtml(phase.lane_status)}">
       <strong>0${escapeHtml(phase.number)}</strong>
       <span>${escapeHtml(phase.name)}</span>
     </div>`).join("");
@@ -876,6 +876,16 @@ function renderPhases(phases, verification = null) {
     const tail = document.createElement("pre");
     tail.textContent = failure.output_tail || "(no output captured)";
     card.append(head, tail);
+  }
+}
+
+function renderDesignDocument(snapshot) {
+  const link = $("design-document-link");
+  const document = snapshot?.design_document;
+  link.classList.toggle("hidden", !document);
+  if (document) {
+    link.href = document;
+    link.textContent = "OPEN DESIGN DOCUMENT";
   }
 }
 
@@ -1549,6 +1559,7 @@ function render(snapshot) {
   $("evidence-runs").textContent = snapshot.audit.verification_runs;
 
   renderPhases(snapshot.phases, snapshot.verification);
+  renderDesignDocument(snapshot);
 
   $("supervisor-panel").className = `briefing ${supervisor.tone}`;
   $("briefing-state").textContent = supervisor.label.toUpperCase();

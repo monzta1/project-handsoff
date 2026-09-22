@@ -98,3 +98,26 @@ twice becomes a refusal in the engine.
   one release. Five separate runs for five tickets on 2026-09-21 cost five
   of everything; a separate run is for a ticket that must land or release
   on its own.
+
+- Regenerate the runtime manifest between IMPLEMENTER launches, not only
+  before a reviewer: the previous launch's edits to bin/ or schemas/ make it
+  stale, and the next managed launch is refused outright and does no work.
+- A managed implementer reports a criterion done having covered its first
+  clause only. Read the criterion text against the tests before `verify`, or
+  the ledger records something untrue: four criteria came back this way in one
+  run, each a round.
+- "Add no command to [checks]" reads as "remove the ones there". Say "do not
+  edit handsoff.toml at all"; a removed command fails `verify` with
+  "criterion tests must exactly match configured check commands".
+- A test that zeroes a field to make a count come out proves a state the
+  engine cannot produce: `phases_waived = []` never happens on a design lane,
+  and the real union kept all eight phases while the suite stayed green.
+- A schema keyword the in-repo validator does not implement enforces nothing.
+  `allOf`/`if`/`then` in snapshot.schema.json read as a tighter constraint and
+  silently replaced `minItems: 8`; a full run truncated to one phase validated
+  clean. Extend the validator or keep the constraint in the test.
+- Assert the consumer, not the producer. `lane_status` was emitted, asserted,
+  and never read by renderPhases, so the strip was identical on the page.
+- Follow the value to where a person sees it. Twice this run a criterion was
+  verified on a green suite plus an existing mechanism, and twice the value
+  stopped before the page.
