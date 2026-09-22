@@ -266,3 +266,8 @@ playbook: five parallel lanes all touch `handsoff.toml [checks]` and the
 manifest, so each landing rebases with the checks list as main's plus its
 own lines, and a lane's Phase 4 advance is the first thing after the design
 click, not the last thing before the reviewer.
+
+### v0.3.70 field note: the first docs-only pull request (#227)
+
+This entry is the proof: a Markdown-only pull request that ran the `docs`
+job alone and merged without a version bump, a release or a live run.
