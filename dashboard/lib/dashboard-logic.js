@@ -384,9 +384,8 @@ function resolveAgentSelectValue(storedAdapter) {
   return ALLOWED_ADAPTERS.includes(value) ? value : null;
 }
 
-// REQ-007/008: the server's adaptive_routing object is the canonical source
-// for both the audit record and Mission Control. Keep the UI tolerant of an
-// older snapshot while never inventing routing activity.
+// The server's adaptive_routing object is the one canonical source. An
+// absent/legacy value is explicitly NOT USED, never healthy-looking zeroes.
 const ADAPTIVE_ROUTING_TIERS = ["FAST", "STANDARD", "PREMIUM"];
 
 function adaptiveRoutingView(routing) {
@@ -395,6 +394,7 @@ function adaptiveRoutingView(routing) {
   const calls = source.calls_by_tier && typeof source.calls_by_tier === "object" ? source.calls_by_tier : {};
   const pause = source.pause && typeof source.pause === "object" ? source.pause : null;
   return {
+    used: source.used === true,
     tier: source.tier || null,
     model: source.model || null,
     token_usage: {
@@ -410,13 +410,15 @@ function adaptiveRoutingView(routing) {
     active_premium_scope: source.active_premium_scope || null,
     outcome: source.outcome || null,
     calls_by_tier: Object.fromEntries(ADAPTIVE_ROUTING_TIERS.map((tier) => [tier, Number(calls[tier]) || 0])),
+    selections: Array.isArray(source.selections) ? source.selections.filter((item) => item && typeof item === "object") : [],
     pause: pause ? { state: "paused", reason: pause.reason || "unavailable", scope: pause.scope || null } : null,
   };
 }
 
 function adaptiveRoutingPauseLabel(routing) {
   const view = adaptiveRoutingView(routing);
-  return view.pause ? `PAUSED · ${String(view.pause.reason).replaceAll("_", " ")}` : "AVAILABLE";
+  if (!view.used) return "NOT USED";
+  return view.pause ? `PAUSED · ${String(view.pause.reason).replaceAll("_", " ")}` : "ACTIVE";
 }
 
 // REQ-007: pure, boundary-safe manipulation of a per-role fallback list.

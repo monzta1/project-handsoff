@@ -955,6 +955,16 @@ For a measured low-risk item, initialize with `--lane small-fix` or run `lane-re
 
 Recovery replaces only a managed role with authenticated `agent_session_*` history. A manual/external run with no managed session returns `not_applicable / no_managed_session`, writes nothing, launches nothing, and cannot consume recovery attempts or raise a false recovery hold.
 
+## Adaptive model routing
+
+Adaptive routing is opt-in per run. Pass `init "Mission" --risk-class routine|elevated|security_sensitive|persistence_migration|shared_infrastructure|irreversible`; omitting the option preserves the configured `[agents]`/`[models]` launch path and writes no adaptive session field. A classified normal launch selects the lowest qualified tier and records its risk class, tier, adapter, model, documented profile, selection reason, and review/deployment obligations on the session before the process starts. Phase-2 reviewer selection and a reserved recovery launch take precedence and are never rerouted.
+
+The built-in FAST, STANDARD, and PREMIUM catalog uses Claude Haiku 4.5, Sonnet 5, and Opus 5 metadata from the [Anthropic model overview](https://platform.claude.com/docs/en/models/overview). Profiles are closed and validated: a `default` deferral may name only its adapter and model and cannot claim limits, capabilities, or pricing. A project may replace the complete `[routing_profiles]`, `[routing_budgets.per_mission]`, `[routing_budgets.fleet]`, and six-row `[risk_policy]` tables; malformed or undocumented profile metadata is refused when configuration loads.
+
+Review and human approval are native-phase obligations, not launch-time booleans. A classified worker can start; `reviewer_required` is satisfied by the existing independent-review gate and `human_gate_required` makes the Phase-7 deployment approval mandatory even when ordinary project policy waives it. Budget counters come from committed adaptive sessions and review attempts in the run ledger, plus every run ledger named by the Fleet registry. `create_agent_session` re-reads those counters under the project lock and refuses an exhausted budget before writing a session, event, acceptance, or verification record.
+
+`snapshot.adaptive_routing` is total and closed. Legacy/unclassified runs emit `used: false`; classified runs aggregate recorded calls, token usage, derived cost, timing, rounds, and escalation. Its `selections` roster identifies the actor, role, phase, adaptive-or-configured mode, tier, adapter/model, reason, and state for every managed session, so an unclassified run still says which configured model did what. Mission Control renders `NOT USED` separately from an active zero-usage route.
+
 ## Known limitations
 
 - **The advisory file lock is best-effort and POSIX-only.** `project_lock()` uses `fcntl.flock` around the whole read-validate-write; on a platform without `fcntl` it is a silent no-op, and multiple writers on such a platform can still race. Enforce single-writer discipline at the process level (only the Supervisor writes `handsoff-status.json`) if you need this on Windows.

@@ -221,6 +221,8 @@ commands = [
   "python3 -m unittest tests.test_adaptive_routing_risk -v",
   "python3 -m unittest tests.test_adaptive_routing_escalation -v",
   "python3 -m unittest tests.test_adaptive_routing_budget -v",
+  "python3 -m unittest tests.test_adaptive_routing_launch -v",
+  "python3 -m unittest tests.test_adaptive_routing_snapshot -v",
   "node --test tests/dashboard/adaptive_routing.test.js",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these

@@ -507,7 +507,7 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     phase = int(status.get("phase_number", 1) or 1)
     next_action = str(status.get("next_action") or "Pilot authorization is required before the mission can continue.")
     approval_missing = (
-        cfg.get("deployment_requires_explicit_approval", True)
+        lib.adaptive_deployment_approval_required(status, cfg)
         and phase == 7
         and not status.get("deployment_approved")
         and not isinstance(status.get("human_pause"), dict)
@@ -1165,6 +1165,7 @@ def build_snapshot(root: Path) -> dict:
             "operation": operation,
         },
         "metrics": metrics,
+        "adaptive_routing": lib.adaptive_routing_snapshot(status),
         "audit": {
             "healthy": audit_healthy,
             "gate_errors": gate_errors,
@@ -1187,7 +1188,7 @@ def build_snapshot(root: Path) -> dict:
             "design_review_authorization": status.get("design_review_authorization"),
             "design_reviewer_selection": design_reviewer_selection,
             "design_reviewer_escalation": status.get("design_reviewer_escalation"),
-            "explicit_approval": cfg.get("deployment_requires_explicit_approval", True),
+            "explicit_approval": lib.adaptive_deployment_approval_required(status, cfg),
             "live_verification": cfg.get("require_live_verification", True),
             "configured_checks": len(cfg.get("check_commands", [])),
             "configured_live_checks": len(cfg.get("live_check_commands", [])),

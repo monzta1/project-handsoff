@@ -46,6 +46,8 @@ class LaunchSpec:
     token_budget: int | None = None
     env_overrides: dict[str, str] | None = None
     project_root: str | None = None
+    # Opt-in adaptive selection, committed atomically with the session.
+    adaptive_routing: dict | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -350,9 +352,11 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     # adapter is resolved or a session reserved: a refusal costs nothing.
     status_file = lib.status_path(root, cfg)
     phase = None
+    run_status = None
     if status_file.is_file():
         try:
-            phase = int(lib.load_unique_json(status_file).get("phase_number") or 0) or None
+            run_status = lib.load_unique_json(status_file)
+            phase = int(run_status.get("phase_number") or 0) or None
         except (ValueError, TypeError):
             phase = None
     rule = lib.evaluate_launch_rules(root, cfg, role=role, phase=phase, amendment=amendment)
@@ -406,6 +410,32 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             resolution_source = "recommended"
         else:
             resolution_source = "configured"
+    adaptive_routing = None
+    if selection is None and isinstance(run_status, dict) and run_status.get("risk_class"):
+        available_adapters = [candidate for candidate in lib.SELECTABLE_AGENT_ADAPTERS
+                              if cfg.get("adapters", {}).get(candidate) or which(candidate)]
+        routed = lib.route_adaptive_profile(
+            cfg, required_capabilities=("text", "tool_use"),
+            available_adapters=available_adapters, risk_class=run_status["risk_class"],
+            mission_usage=lib.adaptive_usage(run_status),
+            fleet_usage=lib.adaptive_fleet_usage(root, current_status=run_status),
+        )
+        if routed.get("state") != "selected":
+            raise lib.HandsoffError(f"adaptive routing paused: {routed.get('reason')}")
+        profile = routed["profile"]
+        adapter, model, resolution_source = profile["adapter"], profile["model"], "adaptive"
+        if role == "reviewer":
+            implementer = next((session for session in reversed(list((run_status.get("agent_sessions") or {}).values()))
+                                if isinstance(session, dict) and session.get("role") == "implementer"), None)
+            if implementer and (adapter, model) == (implementer.get("adapter"), implementer.get("requested_model")):
+                raise lib.HandsoffError("adaptive reviewer selection must remain independent from the implementer profile")
+        adaptive_routing = {
+            "risk_class": routed["risk_class"], "tier": routed["tier"],
+            "adapter": adapter, "model": model, "profile": profile,
+            "reason": routed["reason"],
+            "reviewer_required": routed["reviewer_required"],
+            "human_gate_required": routed["human_gate_required"],
+        }
     stdin = build_role_input(root, role, task, topic)
     packet = applicable_design_review_packet(root, cfg, role)
     executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
@@ -446,6 +476,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         token_budget=token_budget,
         env_overrides={"TMPDIR": str(scratch)} if scratch else None,
         project_root=str(root),
+        adaptive_routing=adaptive_routing,
     )
 
 
@@ -871,6 +902,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             requested_model=spec.model, resolution_source=spec.resolution_source,
             id_factory=session_id_factory, packet_id=spec.packet_id, design_hash=spec.design_hash,
             tier=spec.tier, tier_reason=spec.tier_reason, amendment_id=spec.amendment_id,
+            adaptive_routing=spec.adaptive_routing,
         )
     else:
         session = lib.claim_precreated_agent_session(

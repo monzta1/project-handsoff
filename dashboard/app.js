@@ -99,25 +99,71 @@ function renderProviderStatus(providers) {
   }
 }
 
+const ROUTING_PHASE_PURPOSES = {
+  1: "ORIENTATION",
+  2: "DESIGN REVIEW",
+  3: "DESIGN APPROVAL",
+  4: "IMPLEMENTATION",
+  5: "IMPLEMENTATION REVIEW",
+  6: "CHECKS & DOCUMENTATION",
+  7: "DEPLOYMENT",
+  8: "LIVE VERIFICATION",
+};
+
 function renderAdaptiveRouting(routing) {
   const panel = $("adaptive-routing-panel");
   if (!panel) return;
   const view = adaptiveRoutingView(routing);
+  panel.classList.toggle("is-unused", !view.used);
+  $("routing-not-used")?.classList.toggle("hidden", view.used);
+  $("routing-details")?.classList.toggle("hidden", !view.used);
+  $("routing-assignments")?.classList.toggle("hidden", view.selections.length === 0);
   const set = (id, value) => { const element = $(id); if (element) element.textContent = value; };
   set("routing-tier", view.tier || "—");
   set("routing-model", view.model || "—");
   set("routing-tokens", view.token_usage.total.toLocaleString());
   set("routing-cost", view.estimated_cost == null ? "—" : `$${Number(view.estimated_cost).toFixed(4)}`);
   set("routing-duration", view.duration_ms == null ? "—" : `${view.duration_ms} ms`);
-  set("routing-escalation", view.escalation_reason || "None");
+  set("routing-escalation", view.escalation_reason || "No escalation");
   set("routing-rounds", `${view.repair_rounds} repair · ${view.review_rounds} review`);
   set("routing-premium-scope", view.active_premium_scope || "None");
-  set("routing-outcome", view.outcome || "—");
+  set("routing-outcome", view.outcome || "Pending");
   for (const tier of ADAPTIVE_ROUTING_TIERS) set(`routing-calls-${tier.toLowerCase()}`, String(view.calls_by_tier[tier]));
+  const selections = $("routing-selections");
+  if (selections) {
+    selections.replaceChildren();
+    for (const item of view.selections) {
+      const row = document.createElement("article");
+      row.className = "routing-selection";
+      const identity = document.createElement("div");
+      identity.className = "routing-selection-agent";
+      const actor = document.createElement("strong");
+      actor.textContent = item.actor || item.role || "Agent";
+      const purpose = document.createElement("small");
+      const phasePurpose = ROUTING_PHASE_PURPOSES[Number(item.phase_number)] || `PHASE ${item.phase_number || "—"}`;
+      purpose.textContent = `${String(item.role || "worker").toUpperCase()} · ${phasePurpose}`;
+      identity.append(actor, purpose);
+      const tier = document.createElement("span");
+      tier.className = `routing-selection-tier tier-${String(item.tier || "configured").toLowerCase()}`;
+      tier.textContent = item.adaptive ? (item.tier || "—") : "CONFIG";
+      const model = document.createElement("div");
+      model.className = "routing-selection-model";
+      const modelName = document.createElement("strong");
+      modelName.textContent = item.model || "—";
+      const adapter = document.createElement("small");
+      adapter.textContent = `${item.adapter || "unknown"} · ${String(item.reason || "selected").replaceAll("_", " ")}`;
+      model.append(modelName, adapter);
+      const state = document.createElement("span");
+      state.className = `routing-selection-state state-${String(item.state || "unknown").replaceAll("_", "-")}`;
+      state.textContent = String(item.state || "unknown").replaceAll("_", " ").toUpperCase();
+      row.append(identity, tier, model, state);
+      selections.append(row);
+    }
+  }
   const state = $("routing-state");
   if (state) {
     state.textContent = adaptiveRoutingPauseLabel(routing);
-    state.className = `section-meta adaptive-routing-state ${view.pause ? "is-warning" : ""}`;
+    state.className = `adaptive-routing-state ${view.pause ? "is-warning" : view.used ? "is-active" : "is-unused"}`;
   }
   const detail = $("routing-pause-detail");
   if (detail) {
@@ -1531,7 +1577,7 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
-  renderAdaptiveRouting(snapshot.adaptive_routing || snapshot.routing || null);
+  renderAdaptiveRouting(snapshot.adaptive_routing || null);
   renderCi(snapshot.ci || null);
   const consistency = snapshot.status?.consistency_errors || [];
   $("consistency-fault").classList.toggle("hidden", !consistency.length);
