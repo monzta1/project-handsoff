@@ -81,16 +81,34 @@
         <section id="consistency-fault" class="consistency-fault hidden" role="alert" aria-live="polite"><strong>CONSISTENCY FAULT</strong><span id="consistency-fault-message"></span></section>
 
         <section id="adaptive-routing-panel" class="panel adaptive-routing-panel" aria-label="Adaptive model routing telemetry">
-          <div class="section-head"><div><p class="panel-label">MODEL ROUTING</p><h2>Adaptive mission route</h2></div><span id="routing-state" class="section-meta adaptive-routing-state">AVAILABLE</span></div>
+          <div class="routing-head">
+            <div class="routing-title"><span class="routing-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><p class="panel-label">MODEL ROUTING</p><h2>Adaptive route</h2></div></div>
+            <span id="routing-state" class="adaptive-routing-state">NOT USED</span>
+          </div>
           <p id="routing-pause-detail" class="routing-pause-detail hidden" role="status"></p>
-          <dl class="routing-facts">
-            <div><dt>Current tier</dt><dd id="routing-tier">—</dd></div><div><dt>Model</dt><dd id="routing-model">—</dd></div>
-            <div><dt>Calls · FAST / STANDARD / PREMIUM</dt><dd><span id="routing-calls-fast">0</span> / <span id="routing-calls-standard">0</span> / <span id="routing-calls-premium">0</span></dd></div>
-            <div><dt>Tokens</dt><dd id="routing-tokens">0</dd></div><div><dt>Estimated cost</dt><dd id="routing-cost">—</dd></div>
-            <div><dt>Duration</dt><dd id="routing-duration">—</dd></div><div><dt>Escalation</dt><dd id="routing-escalation">None</dd></div>
-            <div><dt>Repair / review rounds</dt><dd id="routing-rounds">0 repair · 0 review</dd></div><div><dt>Active PREMIUM scope</dt><dd id="routing-premium-scope">None</dd></div>
-            <div><dt>Outcome</dt><dd id="routing-outcome">—</dd></div>
-          </dl>
+          <div id="routing-not-used" class="routing-empty">
+            <strong>Configured profiles are in control</strong>
+            <span>This mission did not opt into risk-class routing. No adaptive calls were made.</span>
+          </div>
+          <div id="routing-details" class="routing-details hidden">
+            <div class="routing-route"><span id="routing-tier" class="routing-tier">—</span><div><small>SELECTED MODEL</small><strong id="routing-model">—</strong></div></div>
+            <dl class="routing-facts">
+              <div class="routing-fact routing-calls"><dt>CALLS</dt><dd><span><b id="routing-calls-fast">0</b> FAST</span><span><b id="routing-calls-standard">0</b> STANDARD</span><span><b id="routing-calls-premium">0</b> PREMIUM</span></dd></div>
+              <div class="routing-fact"><dt>USAGE</dt><dd><b id="routing-tokens">0</b><small>TOKENS</small></dd></div>
+              <div class="routing-fact"><dt>COST</dt><dd><b id="routing-cost">—</b><small>ESTIMATED</small></dd></div>
+              <div class="routing-fact"><dt>TIME</dt><dd><b id="routing-duration">—</b><small>DURATION</small></dd></div>
+              <div class="routing-fact routing-guardrails"><dt>GUARDRAILS</dt><dd><span id="routing-rounds">0 repair · 0 review</span><span id="routing-escalation">No escalation</span></dd></div>
+              <div class="routing-fact"><dt>PREMIUM</dt><dd><b id="routing-premium-scope">None</b><small>ACTIVE SCOPE</small></dd></div>
+              <div class="routing-fact"><dt>OUTCOME</dt><dd><b id="routing-outcome">Pending</b><small>ROUTE STATE</small></dd></div>
+            </dl>
+          </div>
+          <section id="routing-assignments" class="routing-assignments hidden" aria-label="Agent model assignments">
+            <div class="routing-assignments-head"><div><span>MODEL HANDOFF JOURNEY</span><small>CHRONOLOGICAL · LEDGER VERIFIED</small></div><strong id="routing-journey-summary">0 LEGS</strong></div>
+            <div id="routing-journey-map" class="routing-journey-map" aria-label="Complete model handoff route">
+              <div id="routing-journey-track" class="routing-journey-track"></div>
+            </div>
+            <div id="routing-selections" class="routing-selection-list"></div>
+          </section>
         </section>
 
         <section class="bridge" aria-label="Mission bridge">

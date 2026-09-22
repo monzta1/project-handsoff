@@ -251,6 +251,11 @@ def cmd_init(args) -> int:
         return 1
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
+    try:
+        risk_class = lib.classify_adaptive_risk(args.risk_class) if args.risk_class is not None else None
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
     review_adoption = None
     if getattr(args, "lane", "full") == "review":
         ref = args.adopt if isinstance(args.adopt, str) else None
@@ -368,6 +373,8 @@ def cmd_init(args) -> int:
                                    "all_criteria_verified": "no", "evidence_attached": "no"},
             "events": [],
         }
+        if risk_class is not None:
+            status["risk_class"] = risk_class
         if source_design is not None:
             status["design_review"] = source_design.get("design_review")
             status["design_approved"] = source_design.get("design_approved")
@@ -625,7 +632,11 @@ def cmd_advance(args) -> int:
         if args.status:
             proposed["status"] = args.status
         elif args.phase == 7:
-            proposed["status"] = "awaiting_approval"
+            proposed["status"] = (
+                "awaiting_approval"
+                if lib.adaptive_deployment_approval_required(proposed, cfg)
+                else "ready_to_deploy"
+            )
         elif args.phase == 8:
             proposed["status"] = "complete"
         implemented_by = args.implemented_by
@@ -2880,6 +2891,12 @@ def cmd_record_review_findings(args) -> int:
             extra = None
         proposed["review"] = None
         proposed["reviewed_by"] = None
+        if proposed.get("risk_class"):
+            repairs = sum(1 for item in proposed.get("review_attempts", [])
+                          if item.get("disposition") == "changes_requested")
+            proposed["adaptive_escalation"] = lib.bound_adaptive_escalation(
+                disagreement_rounds=repairs, repair_rounds=repairs,
+            )
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=records,
                                     verification_problems=problems)
         if errors:
@@ -3069,6 +3086,12 @@ def cmd_record_review(args) -> int:
         status["review"] = preflight["review"]
         status["reviewed_by"] = reviewer_id
         status["reviewer_checklist"] = preflight["review"]["checklist"]
+        if status.get("risk_class"):
+            repairs = sum(1 for item in status.get("review_attempts", [])
+                          if item.get("disposition") == "changes_requested")
+            status["adaptive_escalation"] = lib.bound_adaptive_escalation(
+                disagreement_rounds=repairs, repair_rounds=repairs, human_decision="accepted",
+            )
         attempt["reviewer"] = reviewer_id
         attempt["disposition"] = "approved"
         attempt["closed_at"] = datetime.now(timezone.utc).isoformat()
@@ -3309,7 +3332,7 @@ def cmd_verify_live(args) -> int:
             return 1
         if _refuse_if_amendment_open(status, action="live verification"):
             return 1
-        approval_required = cfg.get("deployment_requires_explicit_approval", True)
+        approval_required = lib.adaptive_deployment_approval_required(status, cfg)
         if status.get("phase_number") != 7 or (approval_required and not status.get("deployment_approved")):
             print("SHIP_FEATURE_BLOCKED: live verification requires Phase 7"
                   + (" and deployment approval" if approval_required else ""))
@@ -4682,6 +4705,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="initial run or delivery lane")
     init.add_argument("--from-design", default=None, metavar="PATH",
                       help="take up a completed design.html document")
+    init.add_argument("--risk-class", choices=lib.ADAPTIVE_RISK_CLASSES, default=None,
+                      help="opt this run into adaptive model routing with an explicit risk class")
 
     sub.add_parser("status", help="print run state as JSON, including the requested crew per role "
                                   "with its source (explicit or recommended) and adapter availability")

@@ -1,5 +1,8 @@
 """REQ-006: adaptive PREMIUM and escalation budgets pause safely."""
 import sys
+import json
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -34,6 +37,10 @@ class AdaptiveRoutingBudgetTests(unittest.TestCase):
             mission_usage={"premium_calls": 0}, deterministic_checks_complete=False)
         self.assertEqual(result["reason"], "deterministic_checks_in_flight")
 
+    def test_checks_default_to_in_flight_for_safe_callers(self):
+        self.assertEqual(lib.evaluate_adaptive_budget()["reason"], "deterministic_checks_in_flight")
+        self.assertEqual(lib.route_adaptive_profile()["reason"], "deterministic_checks_in_flight")
+
     def test_route_returns_distinct_safe_pause(self):
         result = lib.route_adaptive_profile(
             self.cfg(per_mission={"total_calls": 1}),
@@ -45,6 +52,33 @@ class AdaptiveRoutingBudgetTests(unittest.TestCase):
     def test_invalid_budget_is_refused(self):
         with self.assertRaises(lib.HandsoffError):
             lib.validate_adaptive_routing_budgets({"per_mission": {"premium_calls": -1}})
+
+    def test_mission_and_fleet_counters_are_derived_from_committed_session_ledgers(self):
+        profile = lib.route_adaptive_profile(
+            risk_class="irreversible", deterministic_checks_complete=True)["profile"]
+        route = {"risk_class": "irreversible", "tier": "PREMIUM", "adapter": profile["adapter"],
+                 "model": profile["model"], "profile": profile, "reason": "qualified_profile",
+                 "reviewer_required": True, "human_gate_required": True}
+        status = {"agent_sessions": {
+            "hs-" + "1" * 32: {"state": "running", "adaptive_routing": route},
+        }, "review_attempts": [{"disposition": "changes_requested"}]}
+        self.assertEqual(lib.adaptive_usage(status), {
+            "premium_calls": 1, "repair_rounds": 1, "total_calls": 1,
+            "concurrent_premium_agents": 1,
+        })
+        base = Path(tempfile.mkdtemp(prefix="handsoff-fleet-budget-"))
+        try:
+            root = base / "run"
+            root.mkdir()
+            (root / "handsoff.toml").write_text("")
+            (root / "handsoff-status.json").write_text(json.dumps(status))
+            registry = base / "projects.json"
+            registry.write_text(json.dumps({"schema": 1, "projects": [
+                {"root": str(root), "registered_at": "2026-01-01T00:00:00+00:00"},
+            ]}))
+            self.assertEqual(lib.adaptive_fleet_usage(root, registry=registry)["premium_calls"], 1)
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ fixture that copied it from the checkout root passed on a machine where a
 run had been initialised there and failed with FileNotFoundError on a fresh
 clone. Every fixture writes the pin itself, and this guard keeps it so."""
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -20,6 +21,15 @@ FORBIDDEN = (
 
 
 class FixtureHygieneTests(unittest.TestCase):
+    def test_runtime_pin_and_all_handsoff_runtime_artifacts_are_untracked(self):
+        tracked = subprocess.run(
+            ["git", "ls-files", ".handsoff-*"], cwd=ROOT, text=True,
+            capture_output=True, check=True,
+        ).stdout.splitlines()
+        self.assertEqual(tracked, [], "runtime artifacts must be ignored and untracked")
+        ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn(".handsoff-version", ignore)
+
     def test_no_test_reads_the_pin_from_the_repository_root(self):
         offenders = []
         for path in sorted((ROOT / "tests").glob("*.py")):

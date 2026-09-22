@@ -132,3 +132,5 @@ twice becomes a refusal in the engine.
   the full-feature task and three test commands burned an 80k budget with no
   verdict; the same review scoped to `git diff A..B` and one command answered
   in 12k. A budget-exhausted reviewer spends an attempt and returns nothing.
+- Provider quota changes the vendor, not the role: route to another vendor and
+  record `provider_quota`. A per-session token ceiling pauses without fallback.

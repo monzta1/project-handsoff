@@ -27,6 +27,19 @@ class GovernanceDocumentationTests(unittest.TestCase):
         for path in sorted((ROOT / "prompts").glob("*.md")):
             self.assertIn(required, path.read_text(), path.name)
 
+    def test_playbook_makes_provider_quota_cross_vendor_supervisor_discretion(self):
+        lanes = (ROOT / "playbook" / "lanes.md").read_text()
+        reviewers = (ROOT / "playbook" / "reviewers.md").read_text()
+        lessons = (ROOT / "playbook" / "lessons.md").read_text()
+        supervisor = (ROOT / "prompts" / "supervisor.md").read_text()
+        for text in (lanes, reviewers, lessons, supervisor):
+            normalized = " ".join(text.split())
+            self.assertIn("another vendor", normalized)
+            self.assertIn("per-session token", normalized)
+        self.assertIn("Supervisor discretion", lanes)
+        self.assertIn("equivalent-or-stronger", reviewers)
+        self.assertIn("provider_quota", supervisor)
+
     def test_schemas_document_new_structured_state(self):
         status = json.loads((ROOT / "schemas" / "status.schema.json").read_text())
         acceptance = json.loads((ROOT / "schemas" / "acceptance.schema.json").read_text())

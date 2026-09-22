@@ -16,6 +16,31 @@
     "feature": {
       "type": "string"
     },
+    "risk_class": {
+      "enum": ["routine", "elevated", "security_sensitive", "persistence_migration", "shared_infrastructure", "irreversible"]
+    },
+    "adaptive_escalation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "outcome",
+        "reason",
+        "disagreement_rounds",
+        "repair_rounds",
+        "max_disagreement_rounds",
+        "max_repair_rounds"
+      ],
+      "properties": {
+        "state": {"enum": ["active", "terminal"]},
+        "outcome": {"enum": [null, "accepted", "rejected", "human_pause"]},
+        "reason": {"enum": ["continue", "human_decision", "disagreement_limit", "repair_limit"]},
+        "disagreement_rounds": {"type": "integer", "minimum": 0},
+        "repair_rounds": {"type": "integer", "minimum": 0},
+        "max_disagreement_rounds": {"type": "integer", "minimum": 1},
+        "max_repair_rounds": {"type": "integer", "minimum": 1}
+      }
+    },
     "lane": {
       "type": "string",
       "enum": ["full", "design", "review"]
@@ -935,7 +960,8 @@
                 "recommended",
                 "auto_detected",
                 "legacy_auto_detected",
-                "fallback"
+                "fallback",
+                "adaptive"
               ]
             },
             "started_at": {
@@ -1010,6 +1036,41 @@
                 "null"
               ],
               "maxLength": 64
+            },
+            "adaptive_routing": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["risk_class", "tier", "adapter", "model", "profile", "reason", "reviewer_required", "human_gate_required"],
+              "properties": {
+                "risk_class": {"enum": ["routine", "elevated", "security_sensitive", "persistence_migration", "shared_infrastructure", "irreversible"]},
+                "tier": {"enum": ["FAST", "STANDARD", "PREMIUM"]},
+                "adapter": {"enum": ["codex", "claude"]},
+                "model": {"type": "string", "minLength": 1},
+                "reason": {"type": "string", "minLength": 1},
+                "reviewer_required": {"type": "boolean"},
+                "human_gate_required": {"type": "boolean"},
+                "profile": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["adapter", "model", "capabilities", "limits", "pricing", "source"],
+                  "properties": {
+                    "adapter": {"enum": ["codex", "claude"]},
+                    "model": {"type": "string", "minLength": 1},
+                    "capabilities": {"type": "array", "items": {"type": "string"}},
+                    "limits": {
+                      "type": "object", "additionalProperties": false,
+                      "required": ["context_tokens", "output_tokens"],
+                      "properties": {"context_tokens": {"type": "integer", "minimum": 0}, "output_tokens": {"type": "integer", "minimum": 0}}
+                    },
+                    "pricing": {
+                      "type": "object", "additionalProperties": false,
+                      "required": ["input_per_mtok", "output_per_mtok"],
+                      "properties": {"input_per_mtok": {"type": "number", "minimum": 0}, "output_per_mtok": {"type": "number", "minimum": 0}}
+                    },
+                    "source": {"type": ["string", "null"]}
+                  }
+                }
+              }
             }
           }
         }

@@ -384,10 +384,30 @@ function resolveAgentSelectValue(storedAdapter) {
   return ALLOWED_ADAPTERS.includes(value) ? value : null;
 }
 
-// REQ-007/008: the server's adaptive_routing object is the canonical source
-// for both the audit record and Mission Control. Keep the UI tolerant of an
-// older snapshot while never inventing routing activity.
+// The server's adaptive_routing object is the one canonical source. An
+// absent/legacy value is explicitly NOT USED, never healthy-looking zeroes.
 const ADAPTIVE_ROUTING_TIERS = ["FAST", "STANDARD", "PREMIUM"];
+
+function adaptiveJourneySelections(selections) {
+  const ordered = (Array.isArray(selections) ? selections : [])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({ ...item }))
+    .sort((left, right) => {
+      const leftStarted = typeof left.started_at === "string" && left.started_at ? left.started_at : null;
+      const rightStarted = typeof right.started_at === "string" && right.started_at ? right.started_at : null;
+      if (leftStarted === null && rightStarted !== null) return 1;
+      if (leftStarted !== null && rightStarted === null) return -1;
+      const byStart = leftStarted === rightStarted ? 0 : String(leftStarted).localeCompare(String(rightStarted));
+      return byStart || String(left.session_id || "").localeCompare(String(right.session_id || ""));
+    });
+  const attempts = new Map();
+  return ordered.map((item, index) => {
+    const attemptKey = `${item.role || "agent"}:${item.phase_number ?? "unknown"}`;
+    const attempt = (attempts.get(attemptKey) || 0) + 1;
+    attempts.set(attemptKey, attempt);
+    return { ...item, journey_index: index + 1, journey_attempt: attempt };
+  });
+}
 
 function adaptiveRoutingView(routing) {
   const source = routing && typeof routing === "object" ? routing : {};
@@ -395,6 +415,7 @@ function adaptiveRoutingView(routing) {
   const calls = source.calls_by_tier && typeof source.calls_by_tier === "object" ? source.calls_by_tier : {};
   const pause = source.pause && typeof source.pause === "object" ? source.pause : null;
   return {
+    used: source.used === true,
     tier: source.tier || null,
     model: source.model || null,
     token_usage: {
@@ -410,13 +431,15 @@ function adaptiveRoutingView(routing) {
     active_premium_scope: source.active_premium_scope || null,
     outcome: source.outcome || null,
     calls_by_tier: Object.fromEntries(ADAPTIVE_ROUTING_TIERS.map((tier) => [tier, Number(calls[tier]) || 0])),
+    selections: adaptiveJourneySelections(source.selections),
     pause: pause ? { state: "paused", reason: pause.reason || "unavailable", scope: pause.scope || null } : null,
   };
 }
 
 function adaptiveRoutingPauseLabel(routing) {
   const view = adaptiveRoutingView(routing);
-  return view.pause ? `PAUSED · ${String(view.pause.reason).replaceAll("_", " ")}` : "AVAILABLE";
+  if (!view.used) return "NOT USED";
+  return view.pause ? `PAUSED · ${String(view.pause.reason).replaceAll("_", " ")}` : "ACTIVE";
 }
 
 // REQ-007: pure, boundary-safe manipulation of a per-role fallback list.
@@ -963,5 +986,7 @@ if (typeof module !== "undefined" && module.exports) {
     ciTicked,
     ciNote,
     progressSummaryLabel,
+    adaptiveRoutingView,
+    adaptiveJourneySelections,
   };
 }

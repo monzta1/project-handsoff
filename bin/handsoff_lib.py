@@ -301,9 +301,9 @@ DEFAULT_SMALL_FIX_MAX_CRITERIA = 3
 DEFAULT_SMALL_FIX_MAX_CHANGED_LINES = 200
 DEFAULT_SMALL_FIX_MAX_FILES = 6
 
-# Adaptive routing is intentionally expressed in capability terms.  Provider
-# and model identifiers remain adapter concerns; they are not used to decide
-# whether a mission is eligible for a profile.
+# Adaptive routing is intentionally expressed in capability terms. Model
+# metadata is closed over a cited provider catalog so a placeholder cannot
+# claim capabilities, limits, or prices that the runner never guaranteed.
 ADAPTIVE_ROUTING_TIERS = ("FAST", "STANDARD", "PREMIUM")
 ADAPTIVE_RISK_CLASSES = (
     "routine", "elevated", "security_sensitive", "persistence_migration",
@@ -323,7 +323,8 @@ ADAPTIVE_DEFAULT_RISK_POLICY = {
     "irreversible": {"min_tier": "PREMIUM", "reviewer_required": True,
                       "human_gate_required": True, "irreversible": True},
 }
-ADAPTIVE_PROFILE_FIELDS = ("model", "capabilities", "limits", "latency_ms", "estimated_cost")
+ADAPTIVE_MODEL_CATALOG_SOURCE = "https://platform.claude.com/docs/en/models/overview"
+ADAPTIVE_PROFILE_FIELDS = ("adapter", "model", "capabilities", "limits", "pricing", "source")
 ADAPTIVE_ESCALATION_TERMINAL_OUTCOMES = ("accepted", "rejected", "human_pause")
 ADAPTIVE_ESCALATION_QUESTION_STATES = ("open", "resolved", "withdrawn")
 ADAPTIVE_ESCALATION_CLAIM_DECISIONS = ("accept", "reject", "repair")
@@ -335,31 +336,32 @@ ADAPTIVE_DEFAULT_BUDGETS = {
 }
 ADAPTIVE_DEFAULT_PROFILES = {
     "FAST": {
-        "model": "default",
-        "capabilities": ["text", "code", "structured_output"],
-        "limits": {"context_tokens": 32768, "output_tokens": 4096},
-        "latency_ms": 1500,
-        "estimated_cost": 0.001,
+        "adapter": "claude", "model": "claude-haiku-4-5-20251001",
+        "capabilities": ["text", "vision", "multilingual", "tool_use"],
+        "limits": {"context_tokens": 200000, "output_tokens": 64000},
+        "pricing": {"input_per_mtok": 1.0, "output_per_mtok": 5.0},
+        "source": ADAPTIVE_MODEL_CATALOG_SOURCE,
     },
     "STANDARD": {
-        "model": "default",
-        "capabilities": ["text", "code", "structured_output", "tool_use", "analysis"],
-        "limits": {"context_tokens": 131072, "output_tokens": 16384},
-        "latency_ms": 4000,
-        "estimated_cost": 0.01,
+        "adapter": "claude", "model": "claude-sonnet-5",
+        "capabilities": ["text", "vision", "multilingual", "tool_use", "extended_thinking"],
+        "limits": {"context_tokens": 1000000, "output_tokens": 128000},
+        "pricing": {"input_per_mtok": 2.0, "output_per_mtok": 10.0},
+        "source": ADAPTIVE_MODEL_CATALOG_SOURCE,
     },
     "PREMIUM": {
-        "model": "default",
-        "capabilities": ["text", "code", "structured_output", "tool_use", "analysis", "deep_reasoning"],
-        "limits": {"context_tokens": 262144, "output_tokens": 32768},
-        "latency_ms": 10000,
-        "estimated_cost": 0.1,
+        "adapter": "claude", "model": "claude-opus-5",
+        "capabilities": ["text", "vision", "multilingual", "tool_use", "extended_thinking"],
+        "limits": {"context_tokens": 1000000, "output_tokens": 128000},
+        "pricing": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+        "source": ADAPTIVE_MODEL_CATALOG_SOURCE,
     },
 }
 
 DEFAULT_CONFIG = {
-    "adaptive_routing_profiles": deepcopy(ADAPTIVE_DEFAULT_PROFILES) if "deepcopy" in globals() else ADAPTIVE_DEFAULT_PROFILES,
-    "adaptive_routing_budgets": deepcopy(ADAPTIVE_DEFAULT_BUDGETS) if "deepcopy" in globals() else ADAPTIVE_DEFAULT_BUDGETS,
+    "adaptive_routing_profiles": deepcopy(ADAPTIVE_DEFAULT_PROFILES),
+    "adaptive_routing_budgets": deepcopy(ADAPTIVE_DEFAULT_BUDGETS),
+    "risk_policy": deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY),
     "logo": None,
     "status_file": "handsoff-status.json",
     "acceptance_file": "handsoff-acceptance.json",
@@ -467,7 +469,7 @@ AGENT_SESSION_TERMINAL_STATES = {
 }
 AGENT_SESSION_STATES = AGENT_SESSION_LIVE_STATES | AGENT_SESSION_TERMINAL_STATES
 AGENT_SESSION_RESOLUTION_SOURCES = {
-    "configured", "recommended", "auto_detected", "legacy_auto_detected", "fallback",
+    "configured", "recommended", "auto_detected", "legacy_auto_detected", "fallback", "adaptive",
 }
 # #36: packet_id and design_hash are written on every new session (null
 # unless a Phase-2 reviewer was launched with a delta packet) but stay
@@ -476,6 +478,7 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # `tier` the same way: null unless a Phase-2 reviewer was launched through
 # the tiered selection, otherwise exactly "primary" or "followup".
 AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id", "usage",
+                                 "adaptive_routing",
                                  "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
 #: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
 PROGRESS_STATES = ("done", "partial", "untouched")
@@ -1207,6 +1210,7 @@ def load_config(root: Path) -> dict:
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
     cfg["adaptive_routing_profiles"] = deepcopy(ADAPTIVE_DEFAULT_PROFILES)
     cfg["adaptive_routing_budgets"] = deepcopy(ADAPTIVE_DEFAULT_BUDGETS)
+    cfg["risk_policy"] = deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY)
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
     cfg["agent_token_budgets"] = dict(DEFAULT_AGENT_TOKEN_BUDGETS)
     cfg["adapters"] = {}
@@ -1245,18 +1249,20 @@ def load_config(root: Path) -> dict:
     analysis = raw.get("analysis", {})
     routing_profiles = raw.get("routing_profiles", {})
     routing_budgets = raw.get("routing_budgets", {})
+    risk_policy = raw.get("risk_policy", {})
     digest = raw.get("digest", {})
     briefing = raw.get("briefing")
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
     if not isinstance(digest, dict):
         raise HandsoffError("handsoff.toml: digest must be a table")
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, and analysis must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, and risk_policy must be tables"
         )
     cfg["adaptive_routing_profiles"] = validate_adaptive_routing_profiles(routing_profiles or ADAPTIVE_DEFAULT_PROFILES)
     cfg["adaptive_routing_budgets"] = validate_adaptive_routing_budgets(routing_budgets or ADAPTIVE_DEFAULT_BUDGETS)
+    cfg["risk_policy"] = validate_adaptive_risk_policy(risk_policy or ADAPTIVE_DEFAULT_RISK_POLICY)
     if briefing is not None:
         if not isinstance(briefing, dict):
             raise HandsoffError("handsoff.toml: briefing must be a table")
@@ -1854,43 +1860,63 @@ def agent_profiles(cfg: dict) -> dict:
 
 
 def validate_adaptive_routing_profiles(value: object) -> dict:
-    """Validate the capability-based routing catalog and return a copy.
-
-    The catalog is deliberately independent of adapter names.  A profile may
-    name the runner model it uses, but selection only examines capabilities,
-    limits, and policy requirements.
-    """
+    """Validate a closed, source-cited routing catalog and return a copy."""
     if not isinstance(value, dict):
         raise HandsoffError("routing_profiles must be a table")
     unknown = set(value) - set(ADAPTIVE_ROUTING_TIERS)
     if unknown:
         raise HandsoffError("routing_profiles has unknown tier(s): " + ", ".join(sorted(unknown)))
-    result = deepcopy(ADAPTIVE_DEFAULT_PROFILES)
+    catalog = {profile["model"]: profile for profile in ADAPTIVE_DEFAULT_PROFILES.values()}
+    result = {}
     for tier in ADAPTIVE_ROUTING_TIERS:
-        raw = value.get(tier, result[tier])
+        raw = value.get(tier, ADAPTIVE_DEFAULT_PROFILES[tier])
         if not isinstance(raw, dict):
             raise HandsoffError(f"routing_profiles.{tier} must be a table")
-        profile = dict(result[tier])
-        profile.update(raw)
-        if not isinstance(profile.get("model"), str) or not profile["model"].strip():
+        extra = set(raw) - set(ADAPTIVE_PROFILE_FIELDS)
+        if extra:
+            raise HandsoffError(f"routing_profiles.{tier} has unknown fields: {', '.join(sorted(extra))}")
+        adapter, model = raw.get("adapter"), raw.get("model")
+        if adapter not in SELECTABLE_AGENT_ADAPTERS:
+            raise HandsoffError(f"routing_profiles.{tier}.adapter must be codex or claude")
+        if not isinstance(model, str) or not model.strip():
             raise HandsoffError(f"routing_profiles.{tier}.model must be a non-empty string")
+        model = model.strip()
+        if model == DEFAULT_AGENT_MODEL:
+            if set(raw) - {"adapter", "model"}:
+                raise HandsoffError(
+                    f"routing_profiles.{tier} default deferral cannot claim capabilities, limits, pricing, or source"
+                )
+            result[tier] = {"adapter": adapter, "model": model, "capabilities": [],
+                            "limits": {}, "pricing": {}, "source": None}
+            continue
+        expected_model = ADAPTIVE_DEFAULT_PROFILES[tier]["model"]
+        if model != expected_model:
+            raise HandsoffError(
+                f"routing_profiles.{tier}.model must be {expected_model}; adaptive tiers are cost-bound"
+            )
+        documented = catalog.get(model)
+        if documented is None or documented["adapter"] != adapter:
+            raise HandsoffError(f"routing_profiles.{tier} must name a documented adapter/model pair")
+        profile = deepcopy(documented)
+        profile.update(raw)
         capabilities = profile.get("capabilities")
         if not isinstance(capabilities, list) or not capabilities or not all(isinstance(x, str) and x.strip() for x in capabilities):
             raise HandsoffError(f"routing_profiles.{tier}.capabilities must be a non-empty array of strings")
         limits = profile.get("limits")
         if not isinstance(limits, dict) or not limits or any(not isinstance(k, str) or not isinstance(v, int) or isinstance(v, bool) or v < 0 for k, v in limits.items()):
             raise HandsoffError(f"routing_profiles.{tier}.limits must map names to non-negative integers")
-        for field in ("latency_ms", "estimated_cost"):
-            number = profile.get(field)
-            if not isinstance(number, (int, float)) or isinstance(number, bool) or number < 0:
-                raise HandsoffError(f"routing_profiles.{tier}.{field} must be a non-negative number")
-        result[tier] = {
-            "model": profile["model"].strip(),
-            "capabilities": sorted(set(x.strip() for x in capabilities)),
-            "limits": dict(limits),
-            "latency_ms": profile["latency_ms"],
-            "estimated_cost": profile["estimated_cost"],
-        }
+        pricing = profile.get("pricing")
+        if not isinstance(pricing, dict) or set(pricing) != {"input_per_mtok", "output_per_mtok"} \
+                or any(not isinstance(number, (int, float)) or isinstance(number, bool) or number < 0
+                       for number in pricing.values()):
+            raise HandsoffError(f"routing_profiles.{tier}.pricing must contain non-negative input_per_mtok and output_per_mtok")
+        normalized = {"adapter": adapter, "model": model,
+                      "capabilities": sorted(set(x.strip() for x in capabilities)),
+                      "limits": dict(limits), "pricing": dict(pricing), "source": profile.get("source")}
+        expected = {**documented, "capabilities": sorted(documented["capabilities"])}
+        if normalized != expected:
+            raise HandsoffError(f"routing_profiles.{tier} metadata does not match {ADAPTIVE_MODEL_CATALOG_SOURCE}")
+        result[tier] = normalized
     return result
 
 
@@ -1982,14 +2008,13 @@ def classify_adaptive_risk(risk_class: str) -> str:
 
 
 def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(), minimum_tier=None,
-                           available_tiers=None, risk_class="routine",
-                           reviewer_approved=False, human_gate_approved=False,
+                           available_tiers=None, available_adapters=None, risk_class="routine",
                            mission_usage=None, fleet_usage=None,
-                           deterministic_checks_complete=True) -> dict:
-    """Select the least expensive qualified tier, or return an auditable pause.
+                           deterministic_checks_complete=False) -> dict:
+    """Select the lowest qualified tier, or return an auditable pause.
 
-    ``available_tiers`` models runtime capability availability and is kept
-    separate from configuration.  No unqualified profile is ever returned.
+    Review and human approvals are obligations on their native workflow
+    phases, not prerequisites for launching the worker that performs the job.
     """
     profiles = adaptive_routing_profiles(cfg)
     risk_class = classify_adaptive_risk(risk_class)
@@ -2008,31 +2033,27 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     if minimum_tier is not None and minimum_tier not in ADAPTIVE_ROUTING_TIERS:
         raise HandsoffError(f"minimum_tier must be one of {', '.join(ADAPTIVE_ROUTING_TIERS)}")
     allowed = set(ADAPTIVE_ROUTING_TIERS if available_tiers is None else available_tiers)
+    adapters = set(SELECTABLE_AGENT_ADAPTERS if available_adapters is None else available_adapters)
     start = ADAPTIVE_ROUTING_TIERS.index(minimum_tier) if minimum_tier else 0
     candidates = []
     for tier in ADAPTIVE_ROUTING_TIERS[start:]:
         profile = profiles[tier]
         missing = sorted(set(required) - set(profile["capabilities"]))
-        if tier in allowed and not missing:
-            candidates.append((profile["estimated_cost"], ADAPTIVE_ROUTING_TIERS.index(tier), tier, profile))
+        if tier in allowed and profile["adapter"] in adapters and profile["model"] != DEFAULT_AGENT_MODEL and not missing:
+            candidates.append((ADAPTIVE_ROUTING_TIERS.index(tier), tier, profile))
     routing_metadata = {"risk_class": risk_class, "risk_policy": deepcopy(risk),
-                        "reviewer_approved": bool(reviewer_approved),
-                        "human_gate_approved": bool(human_gate_approved)}
-    if risk["reviewer_required"] and not reviewer_approved:
-        return {"state": "paused", "tier": None, "profile": None,
-                "required_capabilities": required, "reason": "reviewer_required", **routing_metadata}
-    if risk["human_gate_required"] and not human_gate_approved:
-        return {"state": "paused", "tier": None, "profile": None,
-                "required_capabilities": required, "reason": "human_gate_required", **routing_metadata}
+                        "reviewer_required": risk["reviewer_required"],
+                        "human_gate_required": risk["human_gate_required"]}
     if budget["state"] != "allowed":
         return {"state": "paused", "tier": None, "profile": None,
                 "required_capabilities": required, "reason": budget["reason"],
                 "budget": budget, **routing_metadata}
     if candidates:
-        _, _, tier, profile = min(candidates)
+        _, tier, profile = min(candidates)
         return {"state": "selected", "tier": tier, "profile": deepcopy(profile),
                 "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
-    available = [tier for tier in ADAPTIVE_ROUTING_TIERS if tier in allowed]
+    available = [tier for tier in ADAPTIVE_ROUTING_TIERS
+                 if tier in allowed and profiles[tier]["adapter"] in adapters]
     reason_kind = "required_capability_unavailable" if not any(
         not (set(required) - set(profiles[tier]["capabilities"])) for tier in available
     ) else "required_tier_unavailable"
@@ -2040,6 +2061,207 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
             "required_capabilities": required, "reason": reason_kind,
             "detail": "No available configured profile satisfies the required policy",
             **routing_metadata}
+
+
+def _canonical_provider_model(model: object) -> str | None:
+    """Normalize provider decorations without pretending an alias was reported."""
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return model.strip().split("[", 1)[0]
+
+
+def _adaptive_model_reconciliation(session: dict) -> dict:
+    """Reconcile the immutable routed choice with provider-reported reality."""
+    route = session.get("adaptive_routing") if isinstance(session.get("adaptive_routing"), dict) else None
+    if route is None:
+        return {"consistency": "not_applicable", "effective_tier": None, "effective_profile": None}
+    selected_model = route.get("model")
+    reported_model = _canonical_provider_model(session.get("reported_model"))
+    if reported_model is None:
+        return {"consistency": "pending_verification", "effective_tier": route.get("tier"),
+                "effective_profile": route.get("profile")}
+    if reported_model == selected_model:
+        return {"consistency": "matched", "effective_tier": route.get("tier"),
+                "effective_profile": route.get("profile")}
+    for tier, profile in ADAPTIVE_DEFAULT_PROFILES.items():
+        if profile["model"] == reported_model and profile["adapter"] == session.get("adapter"):
+            return {"consistency": "mismatch", "effective_tier": tier,
+                    "effective_profile": deepcopy(profile)}
+    # Unknown provider models count as PREMIUM so a mismatch can never
+    # bypass the strongest safety budget.
+    return {"consistency": "mismatch", "effective_tier": "PREMIUM", "effective_profile": None}
+
+
+def adaptive_usage(status: dict) -> dict:
+    """Derive budget counters only from the run's committed ledgers."""
+    sessions = (status or {}).get("agent_sessions") or {}
+    routed = [session for session in sessions.values()
+              if isinstance(session, dict) and isinstance(session.get("adaptive_routing"), dict)]
+    repairs = sum(1 for attempt in ((status or {}).get("review_attempts") or [])
+                  if isinstance(attempt, dict) and attempt.get("disposition") == "changes_requested")
+    return {
+        "premium_calls": sum(_adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM"
+                             for session in routed),
+        "repair_rounds": repairs,
+        "total_calls": len(routed),
+        "concurrent_premium_agents": sum(
+            session.get("state") in AGENT_SESSION_LIVE_STATES
+            and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in routed
+        ),
+    }
+
+
+def adaptive_fleet_usage(root: Path, *, current_status: dict | None = None,
+                         registry: Path | None = None) -> dict:
+    """Sum adaptive counters from every run registered with Fleet.
+
+    The registry selects roots; each root's status ledger remains the source
+    of truth. Unreadable or vanished roots are skipped conservatively.
+    """
+    registry = registry or Path(os.environ.get("HANDSOFF_FLEET_REGISTRY", "~/.handsoff/projects.json")).expanduser()
+    try:
+        payload = json.loads(registry.read_text(encoding="utf-8"))
+        projects = payload.get("projects", []) if isinstance(payload, dict) else []
+    except (OSError, ValueError):
+        projects = []
+    roots = {str(Path(item.get("root", "")).expanduser().resolve()) for item in projects
+             if isinstance(item, dict) and isinstance(item.get("root"), str) and item.get("root")}
+    roots.add(str(root.resolve()))
+    total = {field: 0 for field in ADAPTIVE_BUDGET_FIELDS}
+    for registered in sorted(roots):
+        candidate = Path(registered)
+        try:
+            status = current_status if candidate == root.resolve() and current_status is not None else \
+                load_unique_json(status_path(candidate, load_config(candidate)))
+            usage = adaptive_usage(status)
+        except (HandsoffError, OSError, ValueError):
+            continue
+        for field in ADAPTIVE_BUDGET_FIELDS:
+            total[field] += usage[field]
+    return total
+
+
+def validate_session_adaptive_routing(value: object) -> dict:
+    required = {"risk_class", "tier", "adapter", "model", "profile", "reason",
+                "reviewer_required", "human_gate_required"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise HandsoffError("session adaptive_routing has invalid fields")
+    risk_class = classify_adaptive_risk(value.get("risk_class"))
+    tier = value.get("tier")
+    if tier not in ADAPTIVE_ROUTING_TIERS:
+        raise HandsoffError("session adaptive_routing tier is invalid")
+    profiles = validate_adaptive_routing_profiles({tier: value.get("profile")})
+    profile = profiles[tier]
+    if value.get("adapter") != profile["adapter"] or value.get("model") != profile["model"]:
+        raise HandsoffError("session adaptive_routing pair does not match its profile")
+    if not isinstance(value.get("reason"), str) or not value["reason"].strip():
+        raise HandsoffError("session adaptive_routing reason must be non-empty")
+    if any(not isinstance(value.get(field), bool) for field in ("reviewer_required", "human_gate_required")):
+        raise HandsoffError("session adaptive_routing obligations must be booleans")
+    return {**deepcopy(value), "risk_class": risk_class, "profile": profile}
+
+
+def adaptive_deployment_approval_required(status: dict, cfg: dict) -> bool:
+    risk_class = status.get("risk_class") if isinstance(status, dict) else None
+    adaptive = bool(risk_class and adaptive_risk_policy(cfg)[classify_adaptive_risk(risk_class)]["human_gate_required"])
+    return bool(cfg.get("deployment_requires_explicit_approval", True) or adaptive)
+
+
+def _agent_assignment(session: dict) -> dict:
+    route = session.get("adaptive_routing") if isinstance(session.get("adaptive_routing"), dict) else None
+    requested_model = route.get("model") if route else session.get("requested_model")
+    reported_model = session.get("reported_model")
+    if reported_model:
+        model, model_source = reported_model, "adapter_reported"
+    elif route:
+        model, model_source = requested_model, "adaptive_selection"
+    elif requested_model and requested_model != DEFAULT_AGENT_MODEL:
+        model, model_source = requested_model, "exact_request"
+    else:
+        model, model_source = None, "not_reported"
+    role = session.get("role")
+    phase = session.get("phase_number")
+    reconciliation = _adaptive_model_reconciliation(session)
+    if role == "reviewer" and phase in {1, 2}:
+        purpose = "Design challenge"
+    elif role == "reviewer" and phase == 5:
+        purpose = "Implementation audit"
+    elif role == "architect":
+        purpose = "Solution architecture"
+    elif role == "implementer":
+        purpose = "Build and verification"
+    elif role == "supervisor":
+        purpose = "Mission supervision"
+    else:
+        purpose = PHASES.get(phase, "Managed task")
+    return {
+        "session_id": session.get("session_id"), "role": role,
+        "actor": session.get("actor"), "purpose": purpose, "phase_number": phase,
+        "started_at": session.get("started_at"), "ended_at": session.get("ended_at"),
+        "adaptive": route is not None, "tier": (route or {}).get("tier"),
+        "adapter": (route or {}).get("adapter", session.get("adapter")),
+        "model": model, "requested_model": requested_model,
+        "model_source": model_source, "model_consistency": reconciliation["consistency"],
+        "reason": (route or {}).get("reason", session.get("resolution_source")),
+        "state": session.get("state"),
+    }
+
+
+def adaptive_routing_snapshot(status: dict) -> dict:
+    """Build the total dashboard shape from recorded routing/session facts."""
+    sessions = (status or {}).get("agent_sessions") or {}
+    routed = [session for session in sessions.values()
+              if isinstance(session, dict) and isinstance(session.get("adaptive_routing"), dict)]
+    calls = {tier: 0 for tier in ADAPTIVE_ROUTING_TIERS}
+    tokens_in = tokens_out = tokens_total = 0
+    known_cost = 0.0
+    cost_reported = False
+    duration_ms = 0
+    duration_reported = False
+    for session in routed:
+        route = session["adaptive_routing"]
+        calls[route["tier"]] += 1
+        usage = session.get("usage") or {}
+        if usage.get("source") == "adapter":
+            token_in = usage.get("tokens_in") if isinstance(usage.get("tokens_in"), int) else 0
+            token_out = usage.get("tokens_out") if isinstance(usage.get("tokens_out"), int) else 0
+            tokens_in += token_in
+            tokens_out += token_out
+            tokens_total += usage.get("tokens_total") if isinstance(usage.get("tokens_total"), int) else token_in + token_out
+            effective_profile = _adaptive_model_reconciliation(session)["effective_profile"]
+            pricing = (effective_profile or {}).get("pricing", {})
+            if isinstance(pricing.get("input_per_mtok"), (int, float)) and isinstance(pricing.get("output_per_mtok"), (int, float)):
+                known_cost += token_in * pricing["input_per_mtok"] / 1_000_000
+                known_cost += token_out * pricing["output_per_mtok"] / 1_000_000
+                cost_reported = True
+        try:
+            start = datetime.fromisoformat(session.get("running_at") or session["started_at"])
+            end = datetime.fromisoformat(session["ended_at"])
+            duration_ms += max(0, round((end - start).total_seconds() * 1000))
+            duration_reported = True
+        except (KeyError, TypeError, ValueError):
+            pass
+    latest = routed[-1]["adaptive_routing"] if routed else {}
+    escalation = status.get("adaptive_escalation") if isinstance(status.get("adaptive_escalation"), dict) else {}
+    repairs = sum(1 for attempt in (status.get("review_attempts") or [])
+                  if isinstance(attempt, dict) and attempt.get("disposition") == "changes_requested")
+    return {
+        "used": bool(routed), "risk_class": status.get("risk_class"),
+        "tier": latest.get("tier"), "adapter": latest.get("adapter"), "model": latest.get("model"),
+        "token_usage": {"input": tokens_in, "output": tokens_out, "total": tokens_total},
+        "estimated_cost": round(known_cost, 6) if cost_reported else None,
+        "duration_ms": duration_ms if duration_reported else None,
+        "escalation_reason": escalation.get("reason"), "repair_rounds": repairs,
+        "review_rounds": len(status.get("review_attempts") or []),
+        "active_premium_scope": "mission" if any(
+            session.get("state") in AGENT_SESSION_LIVE_STATES
+            and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in routed) else None,
+        "outcome": escalation.get("outcome"), "calls_by_tier": calls,
+        "selections": [_agent_assignment(session) for session in sessions.values()
+                       if isinstance(session, dict)],
+        "pause": ({"reason": escalation.get("reason"), "scope": "mission"}
+                  if escalation.get("outcome") == "human_pause" else None),
+    }
 
 
 def _adaptive_required_text(value, field, maximum=512):
@@ -3358,7 +3580,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          id_factory=None, packet_id: str | None = None,
                          design_hash: str | None = None, tier: str | None = None,
                          tier_reason: str | None = None,
-                         amendment_id: str | None = None) -> dict:
+                         amendment_id: str | None = None,
+                         adaptive_routing: dict | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
@@ -3378,6 +3601,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
     requested_model = validate_agent_model(requested_model)
     if resolution_source not in AGENT_SESSION_RESOLUTION_SOURCES:
         raise HandsoffError("agent session resolution source is invalid")
+    adaptive_routing = (validate_session_adaptive_routing(adaptive_routing)
+                        if adaptive_routing is not None else None)
     packet_id = _validate_session_reference(packet_id, "packet_id")
     design_hash = _validate_session_reference(design_hash, "design_hash")
     if tier is not None and tier not in DESIGN_REVIEWER_TIERS:
@@ -3397,6 +3622,25 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         if schema_errors:
             raise HandsoffError(schema_errors[0])
         _assert_agent_telemetry_integrity(root, cfg, status)
+        if adaptive_routing is not None:
+            if status.get("risk_class") != adaptive_routing["risk_class"]:
+                raise HandsoffError("adaptive routing selection is stale for the run risk class")
+            refreshed = route_adaptive_profile(
+                cfg, risk_class=adaptive_routing["risk_class"],
+                available_tiers=[adaptive_routing["tier"]],
+                available_adapters=[adaptive_routing["adapter"]],
+                mission_usage=adaptive_usage(status),
+                fleet_usage=adaptive_fleet_usage(root, current_status=status),
+                # Initial launches are outside the repair/escalation drain;
+                # this lock-protected call exists to recheck usage budgets.
+                deterministic_checks_complete=True,
+            )
+            if refreshed.get("state") != "selected":
+                raise HandsoffError(f"adaptive launch refused before mutation: {refreshed.get('reason')}")
+            pair = (refreshed["tier"], refreshed["profile"]["adapter"], refreshed["profile"]["model"])
+            expected = (adaptive_routing["tier"], adaptive_routing["adapter"], adaptive_routing["model"])
+            if pair != expected:
+                raise HandsoffError("adaptive routing selection changed before session commit; rebuild the launch spec")
         # #35: the sole authorization decision for a managed Phase-2
         # reviewer launch, taken here on the status re-read inside the
         # lock (build_launch_spec's pre-check is advisory only). At or
@@ -3485,6 +3729,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             "phase_number": int(status.get("phase_number", 1) or 1),
             "host_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_COMPANION_SESSION_ID"),
         }
+        if adaptive_routing is not None:
+            session["adaptive_routing"] = deepcopy(adaptive_routing)
         sessions[session_id] = session
         current[role] = session_id
         accepted_regression = active_regression_request(proposed)
@@ -3645,6 +3891,7 @@ class UsageWatcher:
     def __init__(self, adapter: str | None = None):
         self.adapter = adapter
         self.usage: dict | None = None
+        self.reported_model: str | None = None
         self._awaiting_number = False
 
     def feed(self, line: str) -> None:
@@ -3670,6 +3917,9 @@ class UsageWatcher:
             usage = _find_usage(event)
             if usage:
                 self._set(tokens_in=usage.get("input_tokens"), tokens_out=usage.get("output_tokens"))
+            model = _find_reported_model(event, self.adapter)
+            if model:
+                self.reported_model = model
 
     def _set(self, *, total: int | None = None, tokens_in: int | None = None, tokens_out: int | None = None) -> None:
         if total is None and tokens_in is None and tokens_out is None:
@@ -3703,6 +3953,33 @@ def _find_usage(value) -> dict | None:
             if nested:
                 found = nested
     return found
+
+
+def _find_reported_model(event: object, adapter: str | None) -> str | None:
+    """Return only a model identity explicitly reported by the adapter.
+
+    Claude stream-json names the resolved model in the init event and, on a
+    completed call, as the key of modelUsage.  The latter wins because it is
+    the provider's final accounting identity.  We intentionally do not walk
+    arbitrary nested `model` keys: task payloads may contain model names that
+    were discussed but never used.
+    """
+    if adapter != "claude" or not isinstance(event, dict):
+        return None
+    usage = event.get("modelUsage")
+    if isinstance(usage, dict):
+        models = [key for key in usage if isinstance(key, str) and key.strip()]
+        if len(models) == 1:
+            try:
+                return validate_agent_model(models[0])
+            except HandsoffError:
+                return None
+    if event.get("type") == "system" and event.get("subtype") == "init":
+        try:
+            return validate_agent_model(event.get("model"))
+        except HandsoffError:
+            return None
+    return None
 
 
 def validate_usage(value: object) -> dict:
@@ -3743,7 +4020,8 @@ def usage_totals(status: dict) -> dict:
 
 def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
-                             failure: dict | None = None, usage: dict | None = None) -> dict:
+                             failure: dict | None = None, usage: dict | None = None,
+                             reported_model: str | None = None) -> dict:
     """Apply a session-ID-matched lifecycle-only update under the lock."""
     if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
         raise HandsoffError("agent session id is invalid")
@@ -3762,6 +4040,10 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         usage = validate_usage(usage)
         if not terminal:
             raise HandsoffError("session usage is recorded on the terminal transition only")
+    if reported_model is not None:
+        reported_model = validate_agent_model(reported_model)
+        if not terminal:
+            raise HandsoffError("reported model is recorded on the terminal transition only")
     with project_lock(root.resolve()):
         root = root.resolve()
         cfg = load_config(root)
@@ -3811,6 +4093,8 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         else:
             updated["ended_at"] = now
             updated["exit_code"] = exit_code
+            if reported_model is not None:
+                updated["reported_model"] = reported_model
             if usage is not None:
                 updated["usage"] = usage  # #168
             if replacement is not None:
@@ -3848,6 +4132,7 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             replacement_id=replacement.get("replacement_id") if replacement else None,
             replacement_state=replacement.get("state") if replacement else None,
             usage=usage,
+            reported_model=reported_model,
         )
         result = deepcopy(updated)
     if terminal:
@@ -4893,6 +5178,11 @@ def validate_status_schema(status: dict) -> list[str]:
     if not isinstance(status, dict):
         return ["status: top-level value must be an object"]
     errors = [f"status: missing required field '{f}'" for f in REQUIRED_STATUS_FIELDS if f not in status]
+    if "risk_class" in status:
+        try:
+            classify_adaptive_risk(status["risk_class"])
+        except HandsoffError as exc:
+            errors.append(f"status: {exc}")
     if "lane" in status:
         if status["lane"] not in RUN_LANES:
             errors.append("status: 'lane' must be one of full, design, review")
@@ -5428,6 +5718,13 @@ def validate_status_schema(status: dict) -> list[str]:
                             validate_usage(value)
                         except HandsoffError as exc:
                             errors.append(f"{label}.usage: {exc}")
+                    continue
+                if optional_field == "adaptive_routing":
+                    if value is not None:
+                        try:
+                            validate_session_adaptive_routing(value)
+                        except HandsoffError as exc:
+                            errors.append(f"{label}.adaptive_routing: {exc}")
                     continue
                 if optional_field == "phase_number":
                     if value is not None and (not isinstance(value, int) or isinstance(value, bool)
@@ -5967,7 +6264,8 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     review = status.get("design_review") or {}
     review_ready = review.get("decision") == "approved"
     design_pending = bool(status.get("requires_design_approval")) and review_ready and not status.get("design_approved")
-    deployment_pending = phase == 7 and not status.get("deployment_approved")
+    deployment_pending = (phase == 7 and adaptive_deployment_approval_required(status, cfg)
+                          and not status.get("deployment_approved"))
     deployment_revoke = phase in {7, 8} and isinstance(status.get("deployment_approved"), dict) and not status.get("live_verification_id")
     budget = design_review_budget(status, cfg)
     regression = active_regression_request(status)
@@ -6571,7 +6869,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
             errors.append("review gate: Phase 6+ requires 'implemented_by' to be recorded")
         errors.extend(_review_errors(status, acceptance, cfg, root))
 
-    if cfg.get("deployment_requires_explicit_approval", True) and phase >= 8:
+    if adaptive_deployment_approval_required(status, cfg) and phase >= 8:
         approval = status.get("deployment_approved")
         if not approval or not approval.get("at"):
             errors.append("deployment gate: Phase 8 requires a recorded deployment approval")
@@ -7937,7 +8235,7 @@ def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> di
     if global_review.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])):
         reviewed = True
     approval = status.get("deployment_approved") or {}
-    deployed = (not cfg.get("deployment_requires_explicit_approval", True)
+    deployed = (not adaptive_deployment_approval_required(status, cfg)
                 or approval.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])))
     live = not cfg.get("require_live_verification", True) or bool(status.get("live_verification_id"))
     gates = {"lane": lane_gate, "implemented": implemented, "reviewed": reviewed,
@@ -9856,7 +10154,7 @@ def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = N
     session_state = session.get("state") if session else None
     phase = int(status.get("phase_number", 1) or 1)
     awaiting_deployment = (
-        cfg.get("deployment_requires_explicit_approval", True)
+        adaptive_deployment_approval_required(status, cfg)
         and phase == 7 and not status.get("deployment_approved")
         and status.get("status") == "in_progress"
     )

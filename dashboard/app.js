@@ -99,25 +99,195 @@ function renderProviderStatus(providers) {
   }
 }
 
+const ROUTING_PHASE_PURPOSES = {
+  1: "ORIENTATION",
+  2: "DESIGN CHALLENGE",
+  3: "DESIGN APPROVAL",
+  4: "IMPLEMENTATION",
+  5: "IMPLEMENTATION AUDIT",
+  6: "CHECKS & DOCUMENTATION",
+  7: "DEPLOYMENT",
+  8: "LIVE VERIFICATION",
+};
+
+function routingJourneyTime(value) {
+  if (typeof value !== "string" || !value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : `${parsed.toISOString().slice(11, 19)}Z`;
+}
+
+function routingHandoff(previous, current) {
+  const fromAdapter = String(previous?.adapter || "unknown").toUpperCase();
+  const toAdapter = String(current?.adapter || "unknown").toUpperCase();
+  if (fromAdapter !== toAdapter) return { kind: "handoff", label: "PROVIDER HANDOFF", detail: `${fromAdapter} → ${toAdapter}` };
+  if (previous?.model && current?.model && previous.model !== current.model) {
+    return { kind: "handoff", label: "MODEL SHIFT", detail: `${previous.model} → ${current.model}` };
+  }
+  if (!previous?.model && current?.model) return { kind: "resolved", label: "MODEL RESOLVED", detail: current.model };
+  if (previous?.model && previous.model === current?.model) return { kind: "continued", label: "MODEL CONTINUES", detail: current.model };
+  return { kind: "continued", label: "NEXT MISSION LEG", detail: toAdapter };
+}
+
 function renderAdaptiveRouting(routing) {
   const panel = $("adaptive-routing-panel");
   if (!panel) return;
   const view = adaptiveRoutingView(routing);
+  panel.classList.toggle("is-unused", !view.used);
+  $("routing-not-used")?.classList.toggle("hidden", view.used);
+  $("routing-details")?.classList.toggle("hidden", !view.used);
+  $("routing-assignments")?.classList.toggle("hidden", view.selections.length === 0);
   const set = (id, value) => { const element = $(id); if (element) element.textContent = value; };
   set("routing-tier", view.tier || "—");
   set("routing-model", view.model || "—");
   set("routing-tokens", view.token_usage.total.toLocaleString());
   set("routing-cost", view.estimated_cost == null ? "—" : `$${Number(view.estimated_cost).toFixed(4)}`);
   set("routing-duration", view.duration_ms == null ? "—" : `${view.duration_ms} ms`);
-  set("routing-escalation", view.escalation_reason || "None");
+  set("routing-escalation", view.escalation_reason || "No escalation");
   set("routing-rounds", `${view.repair_rounds} repair · ${view.review_rounds} review`);
   set("routing-premium-scope", view.active_premium_scope || "None");
-  set("routing-outcome", view.outcome || "—");
+  set("routing-outcome", view.outcome || "Pending");
   for (const tier of ADAPTIVE_ROUTING_TIERS) set(`routing-calls-${tier.toLowerCase()}`, String(view.calls_by_tier[tier]));
+  const selections = $("routing-selections");
+  if (selections) {
+    selections.replaceChildren();
+    const journeyTrack = $("routing-journey-track");
+    journeyTrack?.replaceChildren();
+    journeyTrack?.style.setProperty("--journey-legs", String(view.selections.length));
+    const providers = new Set(view.selections.map((item) => item.adapter).filter(Boolean));
+    const transfers = view.selections.slice(1).filter((item, index) => {
+      const previous = view.selections[index];
+      return previous.adapter !== item.adapter || (previous.model && item.model && previous.model !== item.model);
+    }).length;
+    set("routing-journey-summary", `${view.selections.length} LEGS · ${providers.size} PROVIDER${providers.size === 1 ? "" : "S"} · ${transfers} HANDOFF${transfers === 1 ? "" : "S"}`);
+    for (const [index, item] of view.selections.entries()) {
+      if (journeyTrack) {
+        const mapStop = document.createElement("div");
+        const mapTransfer = index > 0 ? routingHandoff(view.selections[index - 1], item) : null;
+        mapStop.className = `routing-map-stop adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}${mapTransfer?.kind === "handoff" ? " is-handoff" : ""}`;
+        mapStop.setAttribute("aria-label", `Leg ${item.journey_index}, ${item.actor || item.role}, ${item.purpose}, ${item.model || "model not reported"}`);
+        mapStop.title = `${item.actor || item.role} · ${item.purpose} · ${item.model || "Not reported by provider"}`;
+        const mapLeg = document.createElement("span");
+        mapLeg.className = "routing-map-leg";
+        mapLeg.textContent = String(item.journey_index).padStart(2, "0");
+        const orbit = document.createElement("span");
+        orbit.className = "routing-map-orbit";
+        const core = document.createElement("span");
+        core.className = "routing-map-core";
+        core.textContent = String(item.adapter || "?").slice(0, 1).toUpperCase();
+        orbit.append(core);
+        const mapProvider = document.createElement("strong");
+        mapProvider.textContent = String(item.adapter || "unknown").toUpperCase();
+        const mapModel = document.createElement("small");
+        mapModel.textContent = item.model || "UNREPORTED";
+        if (mapTransfer?.kind === "handoff") {
+          const marker = document.createElement("span");
+          marker.className = "routing-map-transfer";
+          marker.textContent = mapTransfer.label === "PROVIDER HANDOFF" ? `${String(view.selections[index - 1].adapter).toUpperCase()} → ${String(item.adapter).toUpperCase()}` : "MODEL SHIFT";
+          mapStop.append(marker);
+        }
+        mapStop.append(mapLeg, orbit, mapProvider, mapModel);
+        journeyTrack.append(mapStop);
+      }
+      if (index > 0) {
+        const transfer = routingHandoff(view.selections[index - 1], item);
+        const connector = document.createElement("div");
+        connector.className = `routing-handoff is-${transfer.kind}`;
+        connector.setAttribute("aria-label", `${transfer.label}: ${transfer.detail}`);
+        const track = document.createElement("span");
+        track.className = "routing-handoff-track";
+        track.setAttribute("aria-hidden", "true");
+        const copy = document.createElement("span");
+        copy.className = "routing-handoff-copy";
+        const label = document.createElement("strong");
+        label.textContent = transfer.label;
+        const detail = document.createElement("small");
+        detail.textContent = transfer.detail;
+        copy.append(label, detail);
+        connector.append(track, copy);
+        selections.append(connector);
+      }
+      const row = document.createElement("article");
+      row.className = `routing-selection adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}`;
+      row.setAttribute("aria-label", `Journey leg ${item.journey_index}: ${item.actor || item.role}, ${item.purpose}, ${item.model || "model not reported"}, ${item.state}`);
+      const node = (className, label) => {
+        const element = document.createElement("div");
+        element.className = `routing-selection-node ${className}`;
+        const eyebrow = document.createElement("span");
+        eyebrow.className = "routing-selection-eyebrow";
+        eyebrow.textContent = label;
+        element.append(eyebrow);
+        return element;
+      };
+      const top = document.createElement("div");
+      top.className = "routing-selection-top";
+      const leg = document.createElement("span");
+      leg.className = "routing-leg-number";
+      leg.textContent = `LEG ${String(item.journey_index).padStart(2, "0")}`;
+      const attempt = document.createElement("span");
+      attempt.className = "routing-attempt";
+      attempt.textContent = `PHASE ${item.phase_number || "—"} · ATTEMPT ${item.journey_attempt}`;
+      const state = document.createElement("strong");
+      state.className = `routing-selection-state state-${String(item.state || "unknown").replaceAll("_", "-")}`;
+      state.textContent = String(item.state || "unknown").replaceAll("_", " ").toUpperCase();
+      top.append(leg, attempt, state);
+      const identity = document.createElement("div");
+      identity.className = "routing-selection-agent";
+      const avatar = document.createElement("span");
+      avatar.className = `routing-agent-avatar adapter-${String(item.adapter || "unknown").toLowerCase()}`;
+      avatar.textContent = String(item.adapter || "?").slice(0, 1).toUpperCase();
+      const identityCopy = node("routing-selection-identity", "AGENT");
+      const actor = document.createElement("strong");
+      actor.textContent = item.actor || item.role || "Agent";
+      const adapterName = document.createElement("small");
+      adapterName.textContent = String(item.adapter || "unknown").toUpperCase();
+      identityCopy.append(actor, adapterName);
+      identity.append(avatar, identityCopy);
+      const purpose = node("routing-selection-purpose", "MISSION");
+      const phasePurpose = ROUTING_PHASE_PURPOSES[Number(item.phase_number)] || `PHASE ${item.phase_number || "—"}`;
+      const purposeName = document.createElement("strong");
+      purposeName.textContent = item.purpose || phasePurpose;
+      const phase = document.createElement("small");
+      phase.textContent = `PHASE ${item.phase_number || "—"}`;
+      purpose.append(purposeName, phase);
+      const model = node("routing-selection-model", "EXACT MODEL");
+      const modelName = document.createElement("strong");
+      modelName.textContent = item.model || "Not reported by provider";
+      modelName.classList.toggle("is-unknown", !item.model);
+      const modelDetail = document.createElement("small");
+      const sourceLabels = {
+        adapter_reported: "verified from runner telemetry",
+        adaptive_selection: "exact adaptive selection",
+        exact_request: "exact requested model",
+        not_reported: `requested ${item.requested_model || "provider default"}`,
+      };
+      modelDetail.textContent = sourceLabels[item.model_source] || String(item.reason || "selected").replaceAll("_", " ");
+      if (item.model_consistency === "matched") modelDetail.textContent += " · matches route";
+      if (item.model_consistency === "pending_verification") modelDetail.textContent += " · awaiting provider confirmation";
+      if (item.model_consistency === "mismatch") {
+        modelDetail.textContent += ` · differs from routed ${item.requested_model}`;
+        model.classList.add("is-mismatch");
+      }
+      model.append(modelName, modelDetail);
+      const footer = document.createElement("div");
+      footer.className = "routing-selection-footer";
+      const tier = document.createElement("small");
+      tier.className = `routing-selection-tier tier-${String(item.tier || "configured").toLowerCase()}`;
+      tier.textContent = item.adaptive ? (item.tier || "—") : "CONFIGURED";
+      const time = document.createElement("span");
+      time.className = "routing-selection-time";
+      const started = routingJourneyTime(item.started_at);
+      const ended = routingJourneyTime(item.ended_at);
+      time.textContent = `${started || "TIME UNAVAILABLE"} → ${ended || (item.state === "running" || item.state === "launching" ? "IN FLIGHT" : "END UNRECORDED")}`;
+      if (item.started_at || item.ended_at) time.title = `${item.started_at || "unknown start"} → ${item.ended_at || "in flight"}`;
+      footer.append(tier, time);
+      row.append(top, identity, purpose, model, footer);
+      selections.append(row);
+    }
+  }
   const state = $("routing-state");
   if (state) {
     state.textContent = adaptiveRoutingPauseLabel(routing);
-    state.className = `section-meta adaptive-routing-state ${view.pause ? "is-warning" : ""}`;
+    state.className = `adaptive-routing-state ${view.pause ? "is-warning" : view.used ? "is-active" : "is-unused"}`;
   }
   const detail = $("routing-pause-detail");
   if (detail) {
@@ -1531,7 +1701,7 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
-  renderAdaptiveRouting(snapshot.adaptive_routing || snapshot.routing || null);
+  renderAdaptiveRouting(snapshot.adaptive_routing || null);
   renderCi(snapshot.ci || null);
   const consistency = snapshot.status?.consistency_errors || [];
   $("consistency-fault").classList.toggle("hidden", !consistency.length);
