@@ -59,19 +59,10 @@ verdict that fails to dispatch is recovered with `session-result-adopt
 --session hs-...`; a reviewer you killed stays "live" to the watchdog for
 `stall_minutes`, then `recover --by <you>` relaunches it.
 
-**Provider quota is Supervisor discretion.** A provider/model that is at or
-has exhausted its account quota does not create a Pilot decision. Before the
-next launch, the Supervisor selects an explicit, available model from another
-vendor that meets or exceeds the task's reasoning, context, tool and safety
-requirements. For a reviewer, the replacement must also remain independent of
-the Implementer. Record the original and replacement adapter/model, the quota
-reason and the new session in the handoff journey; keep the same role, phase,
-criteria and review-attempt boundary. Use the configured ordered fallback when
-one qualifies; otherwise set the next-launch profile explicitly. Ask the Pilot
-only when no qualified cross-vendor model is available or a project constraint
-forbids every qualified vendor. Provider quota/rate-limit exhaustion is not the
-same as Handsoff's per-session token ceiling: the latter remains a bounded-spend
-pause and never triggers another paid attempt automatically.
+**Provider quota is Supervisor discretion.** Route the same task to an explicit
+equivalent model from another vendor, preserving constraints and independence;
+ledger both models and `provider_quota`. Ask the Pilot only if no route is
+allowed. A per-session token ceiling pauses without fallback.
 
 **Tree changes after verify are evidence drift.** Re-run every `verify`,
 then `record-review --by <reviewer> --reaffirm --tests-executed yes
