@@ -38,6 +38,51 @@ class ReviewLaneTests(HandsoffTestCase):
             (self.tmp / name).unlink(missing_ok=True)
         return self.git_commit(author)
 
+    def phase_five_review(self, *, second=False):
+        ref = self.prepared("Adopted Author <author@example.com>")
+        result = run(["init", "Review gates", "--lane", "review", "--adopt", ref, "--by", "pilot"], self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if second:
+            added = run(["criterion-add", "REQ-002", "--type", "supporting",
+                         "--requirement", "review supporting criterion",
+                         "--verification", "automated", "--test", "true"], self.tmp)
+            self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+        updated = run(["criterion-update", "REQ-001", "--test", "true"], self.tmp)
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        verified = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer"], self.tmp)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        status = self.read_status()
+        acceptance = self.read_acceptance()
+        status.update(phase_number=5, phase=lib.PHASES[5], phases_run=[5, 6])
+        lib.commit(self.tmp, lib.load_config(self.tmp), status=status, acceptance=acceptance,
+                   event_kind="test_review_phase_five", event_message="Restore review phase")
+        return ref
+
+    def record_approved_review(self):
+        status = self.read_status()
+        acceptance = self.read_acceptance()
+        cfg = lib.load_config(self.tmp)
+        lib.open_review_attempt(status, acceptance, cfg, by="independent-reviewer", reviewer="independent-reviewer")
+        now = datetime.now(timezone.utc).isoformat()
+        attempt = status["review_attempts"][-1]
+        attempt.update({"closed_at": now, "reviewer": "independent-reviewer", "disposition": "approved",
+                        "tests_executed": "yes", "findings": []})
+        profile = lib.audited_agent_profile(cfg, "reviewer")
+        status["review"] = {"decision": "approved", "by": "independent-reviewer", "at": now,
+                             "acceptance_hash": lib.acceptance_hash(acceptance["criteria"]),
+                             "config_hash": lib.config_hash(cfg),
+                             "scope_hash": lib.work_item_scope_hash(acceptance.get("work_items", []), acceptance["criteria"]),
+                             "implementer_profile": profile, "reviewer_profile": profile,
+                             "tests_executed": "yes", "profiles_distinct": True,
+                             **lib.rules_binding(self.tmp, cfg),
+                             "checklist": {"symptom_reproduced": "not_applicable", "symptom_resolved": "yes",
+                                           "all_criteria_verified": "yes", "evidence_attached": "yes"}}
+        status["reviewed_by"] = "independent-reviewer"
+        lib.commit(self.tmp, cfg, status=status, event_kind="test_review_approved",
+                   event_message="Approve review fixture")
+
     def test_review_adoption_records_lane_waivers_and_provenance(self):
         ref = self.prepared()
         result = run(["init", "Review adoption", "--lane", "review", "--adopt", ref, "--by", "pilot"], self.tmp)
@@ -111,7 +156,19 @@ class ReviewLaneTests(HandsoffTestCase):
         ref = self.prepared("Adopted Author <author@example.com>")
         result = run(["init", "Review report", "--lane", "review", "--adopt", ref, "--by", "pilot"], self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(run(["criterion-update", "REQ-001", "--baseline", "not_applicable",
+                              "--baseline-reason", "review adopts an existing implementation"], self.tmp).returncode, 0)
+        self.assertEqual(run(["criterion-update", "REQ-001", "--verification", "manual"], self.tmp).returncode, 0)
+        self.assertEqual(run(["record-evidence", "REQ-001", "--kind", "manual",
+                              "--description", "reviewed adopted implementation", "--by", "pilot"], self.tmp).returncode, 0)
+        acceptance = self.read_acceptance()
+        acceptance.pop("work_items", None)
+        acceptance["criteria"][0]["state"] = "passing"
         status = self.read_status()
+        status["requirement_coverage"] = lib.coverage_for(acceptance["criteria"], False)
+        status.update(phase_number=5, phase=lib.PHASES[5], phases_run=[5, 6])
+        lib.commit(self.tmp, lib.load_config(self.tmp), status=status, acceptance=acceptance,
+                   event_kind="test_review_fixture_restored", event_message="Restore review phase")
         cfg = lib.load_config(self.tmp)
         lib.open_review_attempt(status, self.read_acceptance(), cfg,
                                 by="independent-reviewer", reviewer="independent-reviewer")
@@ -126,7 +183,7 @@ class ReviewLaneTests(HandsoffTestCase):
         status["review"] = {"decision": "approved", "by": "independent-reviewer", "at": now,
                              "acceptance_hash": lib.acceptance_hash(self.read_acceptance()["criteria"]),
                              "config_hash": lib.config_hash(cfg),
-                             "scope_hash": lib.work_item_scope_hash(self.read_acceptance()["work_items"], self.read_acceptance()["criteria"]),
+                             "scope_hash": lib.work_item_scope_hash([], self.read_acceptance()["criteria"]),
                              "implementer_profile": profile, "reviewer_profile": profile,
                              "tests_executed": "yes", "profiles_distinct": True,
                              **lib.rules_binding(self.tmp, cfg),
@@ -146,6 +203,55 @@ class ReviewLaneTests(HandsoffTestCase):
                      "REQ-001", "state:", "incorrect_implementation", "first finding",
                      "acceptance_not_met", "second finding"):
             self.assertIn(text, report)
+
+    def test_review_phase_six_evidence_gate_refusal_is_transactional(self):
+        self.phase_five_review(second=True)
+        names = ("handsoff-status.json", "handsoff-acceptance.json",
+                 "handsoff-verifications.jsonl", "handsoff-events.jsonl")
+        before = {name: (self.tmp / name).read_bytes() for name in names}
+        refused = run(["advance", "6", "60"], self.tmp)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("evidence", refused.stdout + refused.stderr)
+        self.assertEqual(before, {name: (self.tmp / name).read_bytes() for name in names})
+
+    def test_review_phase_six_requires_complete_anchor(self):
+        self.phase_five_review()
+        status = self.read_status()
+        status["implementation_adopted"].pop("commit_author")
+        lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
+                   event_kind="test_incomplete_anchor", event_message="Remove anchor author")
+        refused = run(["advance", "6", "60"], self.tmp)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("review anchor gate", refused.stdout + refused.stderr)
+
+    def test_review_progress_gate_requires_required_work_item(self):
+        self.phase_five_review()
+        self.record_approved_review()
+        acceptance = self.read_acceptance()
+        acceptance["work_items"] = [{"id": "issue-999", "kind": "issue", "number": 999,
+                                      "title": "unfinished", "url": "", "required": True,
+                                      "github_state": None, "github_checked_at": None,
+                                      "created_at": "2026-01-01T00:00:00+00:00",
+                                      "updated_at": "2026-01-01T00:00:00+00:00", "notes": ""}]
+        acceptance["criteria"][0]["requirement"] = "[#999] review criterion"
+        status = self.read_status()
+        status["requirement_coverage"] = lib.coverage_for(acceptance["criteria"], False)
+        status["progress"] = 95
+        status["review"]["scope_hash"] = lib.work_item_scope_hash(acceptance["work_items"], acceptance["criteria"])
+        status["review"]["acceptance_hash"] = lib.acceptance_hash(acceptance["criteria"])
+        status["work_item_delivery"] = lib.new_work_item_delivery(acceptance["work_items"], "full")
+        lib.commit(self.tmp, lib.load_config(self.tmp), status=status, acceptance=acceptance,
+                   event_kind="test_unfinished_item", event_message="Restore unfinished item")
+        refused = run(["advance", "6", "95"], self.tmp)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("progress gate", refused.stdout + refused.stderr)
+
+    def test_review_complete_anchor_advances_and_terminalizes(self):
+        self.phase_five_review()
+        self.record_approved_review()
+        advanced = run(["advance", "6", "60"], self.tmp)
+        self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+        self.assertEqual(self.read_status()["status"], "review_complete")
 
     def test_archive_analysis_applies_rules_only_to_their_lane_and_is_report_only(self):
         archive = self.tmp / "archive"

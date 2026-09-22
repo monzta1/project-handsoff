@@ -6074,6 +6074,25 @@ def _valid_symptom_record(status: dict, criteria: list[dict], verifications: lis
     return None
 
 
+def _valid_review_anchor(status: dict) -> dict | None:
+    """A review lane anchors its evidence to the adopted implementation.
+
+    Review lanes have no original symptom to resolve, but they must still
+    carry an immutable commit identity and concrete provenance before they
+    can cross the implementation gates.
+    """
+    adopted = status.get("implementation_adopted")
+    if not isinstance(adopted, dict):
+        return None
+    if not str(adopted.get("sha") or "").strip():
+        return None
+    if not str(adopted.get("commit_author") or "").strip():
+        return None
+    if not str(adopted.get("adopting_actor") or "").strip():
+        return None
+    return adopted
+
+
 def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime | None = None,
                    verifications: list[dict] | None = None,
                    verification_problems: list[str] | None = None,
@@ -6121,7 +6140,9 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
             errors.append(f"evidence drift: {cid} was verified on a different repository digest{suffix}; "
                           f"re-run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
     expected_coverage = coverage_for(criteria, resolved)
+    review_lane = status.get("lane") == "review"
     symptom_record = _valid_symptom_record(status, gate_criteria, verifications or [])
+    anchor_record = _valid_review_anchor(status) if review_lane else symptom_record
 
     if status.get("feature") != acceptance.get("feature"):
         errors.append("state gate: status and acceptance describe different features")
@@ -6137,16 +6158,20 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     # opened at, forward and back, until it is approved or escalated.
     errors.extend(amendment_freeze_errors(status))
 
-    if phase >= 6 and status.get("lane") != "review" and (not green or not resolved or not symptom_record or evidence_errors):
+    if phase >= 6 and (not green or (not anchor_record) or evidence_errors):
         errors.append("phase gate: every criterion and the original symptom must have verified evidence before Phase 6+")
-        if resolved and not symptom_record:
+        if review_lane and not anchor_record:
+            errors.append("review anchor gate: review lane requires a valid implementation_adopted record with sha, commit_author, and adopting_actor")
+        elif resolved and not symptom_record:
             errors.append("symptom gate: resolved original symptom must reference a successful verification run")
         errors.extend(evidence_errors)
-    if progress >= 95 and status.get("lane") != "review" and (not green or not resolved or not symptom_record or evidence_errors):
+    if progress >= 95 and (not green or not anchor_record or evidence_errors):
         errors.append("progress gate: 95%+ requires verified acceptance and a resolved original symptom")
+        if review_lane and not anchor_record:
+            errors.append("review anchor gate: review lane requires a valid implementation_adopted record with sha, commit_author, and adopting_actor")
         if phase < 6:
             errors.extend(evidence_errors)  # name the baseline gaps here too (#165)
-    if "work_items" in acceptance and progress >= 95 and status.get("lane") != "review":
+    if "work_items" in acceptance and progress >= 95:
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
                       if item.get("required") and item.get("status") != "done"]
         for item in unfinished:
@@ -6155,7 +6180,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                 errors.append(f"progress gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
             else:
                 errors.append(f"progress gate: required work item {item['id']} must be done before 95%+")
-    if status.get("status") in ("ready_to_deploy", "awaiting_approval", "complete") and (not green or not resolved or not symptom_record or evidence_errors):
+    if status.get("status") in ("ready_to_deploy", "awaiting_approval", "complete", "review_complete") and (not green or not anchor_record or evidence_errors):
         errors.append("status gate: acceptance registry is not fully green")
     if "work_items" in acceptance and (phase >= 8 or status.get("status") == "complete"):
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
