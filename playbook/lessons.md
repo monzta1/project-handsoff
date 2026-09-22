@@ -82,3 +82,13 @@ twice becomes a refusal in the engine.
   the checks list as main's plus its own lines and the manifest regenerated.
 - After a fix mid-review, `verify` pulls the run back to Phase 4; `advance
   5` again before the reviewer's result can dispatch, or adopt it after.
+- Before the push, run every suite whose files you touched, not the one you
+  wrote: a new first line of output (`INSTALL_CHECK_OK`) and a new row in a
+  panel broke three neighbouring suites on CI, one round each.
+- The last merge comes before the live runs: a tests-only merge that lands
+  between `verify` and `verify-live` invalidates every lane's evidence and
+  costs the whole live pass again. Order: last merge, re-verify, reaffirm,
+  `advance 6`, `advance 7`, `verify-live`, `advance 8`.
+- A set of parallel lanes is one release, not one per lane: land them in
+  sequence, bump once, install once, run `verify-live` once per lane against
+  that one install.
