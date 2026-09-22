@@ -7,6 +7,11 @@ land through a pull request, live-verify against the installed engine,
 close with the written result. Read this file before `init`; read
 `landing.md` before `advance 6`; read `lessons.md` once per session.
 
+**One run, N tickets.** Open tickets that will land together are one run:
+`init --item "#1" --item "#2" ...`, one criterion per acceptance line with
+its `[#N]` tag, one worktree, one pull request, one release. Start a
+separate run only for a ticket that must land or release on its own.
+
 **Board first.** "Board" means the Handsoff run dashboard: `init --by
 <you>`, then `dashboard --owned-by-run --port <free> --no-open` served from
 the engine that carries your change (in an engine checkout, `python3
