@@ -132,3 +132,10 @@ twice becomes a refusal in the engine.
   the full-feature task and three test commands burned an 80k budget with no
   verdict; the same review scoped to `git diff A..B` and one command answered
   in 12k. A budget-exhausted reviewer spends an attempt and returns nothing.
+- Account quota belongs to the provider, not to the role. When a selected
+  model is at or out of quota, the Supervisor records `provider_quota` and
+  routes the same bounded task to an explicit equivalent-or-stronger model
+  from another vendor; do not stop for a Pilot choice when a qualified option
+  exists. Preserve reviewer independence and show both sides of the handoff.
+  Do not confuse this with Handsoff's per-session token ceiling, which pauses
+  rather than starting another paid attempt.

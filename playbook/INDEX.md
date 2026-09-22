@@ -16,7 +16,7 @@ trimmed, so a file that grows is shortened by its author.
 |---|---|---|
 | lanes | lanes.md | before `init`: board first, criteria, proposal, reviewers, drift, parallel lanes |
 | landing | landing.md | before `advance 6`: the pull request, the release, the install, verify-live, Phase 8, the archive |
-| reviewers | reviewers.md | before launching a reviewer: what a task names, delta attempts, declines |
+| reviewers | reviewers.md | before launching a reviewer: tasks, delta attempts, declines, cross-vendor quota routing |
 | lessons | lessons.md | once per session: every rule that cost a round, and the refusal it prevents |
 | protocol | protocol.md | when writing or reading a managed role's lines: every prefix with its exact fields, derived from the validators |
 
