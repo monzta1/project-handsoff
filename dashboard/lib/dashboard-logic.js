@@ -384,6 +384,41 @@ function resolveAgentSelectValue(storedAdapter) {
   return ALLOWED_ADAPTERS.includes(value) ? value : null;
 }
 
+// REQ-007/008: the server's adaptive_routing object is the canonical source
+// for both the audit record and Mission Control. Keep the UI tolerant of an
+// older snapshot while never inventing routing activity.
+const ADAPTIVE_ROUTING_TIERS = ["FAST", "STANDARD", "PREMIUM"];
+
+function adaptiveRoutingView(routing) {
+  const source = routing && typeof routing === "object" ? routing : {};
+  const usage = source.token_usage && typeof source.token_usage === "object" ? source.token_usage : {};
+  const calls = source.calls_by_tier && typeof source.calls_by_tier === "object" ? source.calls_by_tier : {};
+  const pause = source.pause && typeof source.pause === "object" ? source.pause : null;
+  return {
+    tier: source.tier || null,
+    model: source.model || null,
+    token_usage: {
+      input: Number(usage.input) || 0,
+      output: Number(usage.output) || 0,
+      total: Number(usage.total) || ((Number(usage.input) || 0) + (Number(usage.output) || 0)),
+    },
+    estimated_cost: source.estimated_cost ?? null,
+    duration_ms: source.duration_ms ?? null,
+    escalation_reason: source.escalation_reason || null,
+    repair_rounds: Number(source.repair_rounds) || 0,
+    review_rounds: Number(source.review_rounds) || 0,
+    active_premium_scope: source.active_premium_scope || null,
+    outcome: source.outcome || null,
+    calls_by_tier: Object.fromEntries(ADAPTIVE_ROUTING_TIERS.map((tier) => [tier, Number(calls[tier]) || 0])),
+    pause: pause ? { state: "paused", reason: pause.reason || "unavailable", scope: pause.scope || null } : null,
+  };
+}
+
+function adaptiveRoutingPauseLabel(routing) {
+  const view = adaptiveRoutingView(routing);
+  return view.pause ? `PAUSED · ${String(view.pause.reason).replaceAll("_", " ")}` : "AVAILABLE";
+}
+
 // REQ-007: pure, boundary-safe manipulation of a per-role fallback list.
 // Each function mutates `entries` in place (matching the array-by-reference
 // style the dashboard's render loop already relies on) and returns whether
