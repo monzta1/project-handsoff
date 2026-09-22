@@ -29,8 +29,8 @@
     "playbook/INDEX.md": "f5074a450ebb4b81f8606c14f5d829c332e430aa608fe76d0bebda694a460a4c",
     "playbook/index.json": "c6b27d32796e4e85fffeaedc61be9d69be48667c6cb8f9ae46243772efd8161b",
     "playbook/landing.md": "0dd3377efa183046980801b8a1b54dfc194de75d72186aa3cfd28e4e5ac96634",
-    "playbook/lanes.md": "d47ae6d7803a16af5fe5044f4bad4c436bf933a0d1361a2c49a6bfd6feeb27a2",
-    "playbook/lessons.md": "95f5c494e4ba2bd748050c62c9a23af95418df4114161af488b33d64d963fb0b",
+    "playbook/lanes.md": "42e47ee88c13c5b73729fd209270363f6bbdd2711432063b17eafcdb28fa1c5d",
+    "playbook/lessons.md": "10aac5382bbae596947cbaad7f43c26eec29c06eef9f9ffe6577d759c7155c1f",
     "playbook/protocol.md": "3c15ffef742a8c12b9ab5e2924031f218fbca3a1ada340a3804ad29ffc9ab1b1",
     "playbook/reviewers.md": "f77b55aee806161e76acf74c79790f4339704ba1d0fce6e723dcb32ef5ed5787",
     "prompts/architect.md": "05563511be601b20d3e0ef5f92d3d7e7b97325c049d8daad5cbcb05dcf29a310",
@@ -47,5 +47,5 @@
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },
   "schema": 1,
-  "version": "v0.3.71"
+  "version": "v0.3.72"
 }

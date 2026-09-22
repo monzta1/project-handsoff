@@ -92,3 +92,9 @@ twice becomes a refusal in the engine.
 - A set of parallel lanes is one release, not one per lane: land them in
   sequence, bump once, install once, run `verify-live` once per lane against
   that one install.
+- Several open tickets that will land together are ONE run with N items
+  (`init --item "#1" --item "#2" ...`, one `[#N]` tag per criterion), one
+  worktree, one pull request, one reviewer pass per phase, one live pass,
+  one release. Five separate runs for five tickets on 2026-09-21 cost five
+  of everything; a separate run is for a ticket that must land or release
+  on its own.
