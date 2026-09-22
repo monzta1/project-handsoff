@@ -8,6 +8,7 @@ commands exposed by the supervisor CLI.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 import hmac
 import io
@@ -304,16 +305,23 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
         return tuple(signature)
 
 
-def _phase_view(current: int, run_complete: bool, current_name: str | None = None, closed: bool = False) -> list[dict]:
+def _phase_view(current: int, run_complete: bool, current_name: str | None = None, closed: bool = False,
+                lane: str | None = None, phases_run: list[int] | None = None,
+                phases_waived: list[int] | None = None) -> list[dict]:
     """The current phase renders "active" (the pulsing in-progress bar) only
     while the run is still moving. Once status is complete, phase 8 being
     "current" no longer means "in progress", so it renders solid-complete
     like every phase before it instead of blinking forever.
     """
+    # Snapshot contract choice (a): every snapshot carries all eight phases.
+    # Lane phases are marked below, so waived work remains visible instead of
+    # being silently dropped from the strip.
+    waived = set(phases_waived or [])
     return [
         {
             "number": number,
             "name": current_name if number == current and current_name else name,
+            "lane_status": ("waived" if lane and lane != "full" and number in waived else "run"),
             "state": ("closed" if closed and number == current
                       else "complete" if number < current or (number == current and run_complete)
                       else "active" if number == current else "upcoming"),
@@ -1115,11 +1123,20 @@ def build_snapshot(root: Path) -> dict:
         "project": {"name": root.name, "feature": status.get("feature", acceptance.get("feature", "Untitled feature")),
                     "logo_url": "/project-logo" if lib.project_logo(root, cfg) else None},
         "status": display_status,
+        # Snapshot contract choice (a): these keys are always emitted, with
+        # empty/null defaults for legacy full runs rather than being optional.
+        "lane": status.get("lane"),
+        "phases_run": deepcopy(status.get("phases_run", [])),
+        "phases_waived": deepcopy(status.get("phases_waived", [])),
+        "design_document": status.get("design_document"),
         "phases": _phase_view(
             int(status.get("phase_number", 1) or 1),
             status.get("status") == "complete",
             display_status["phase"],
             closed=isinstance(status.get("run_closed"), dict),
+            lane=status.get("lane"),
+            phases_run=status.get("phases_run"),
+            phases_waived=status.get("phases_waived"),
         ),
         "acceptance": {
             "criteria": criteria,

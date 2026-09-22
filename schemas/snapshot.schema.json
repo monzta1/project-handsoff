@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/monzta1/project-handsoff/schemas/snapshot.schema.json",
   "title": "Handsoff run-page snapshot",
-  "description": "What build_snapshot emits for /api/dashboard (#218 step one). The top level is closed: every key the engine emits is listed and required; a new key is a contract change and a fixture regeneration. The enumerated objects below carry the values the pages switch on and are closed; runtime and metrics are the intentionally open objects, marked in their descriptions.",
+  "description": "What build_snapshot emits for /api/dashboard (#218 step one). The top level is closed: every key the engine emits is listed and required; a new key is a contract change and a fixture regeneration. Lane metadata is always emitted so the snapshot has a total shape. Every lane keeps all eight phases; lane_status marks phases as run or waived. The enumerated objects below carry the values the pages switch on and are closed; runtime and metrics are the intentionally open objects, marked in their descriptions.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -29,6 +29,10 @@
     "operations",
     "operator_actions",
     "phases",
+    "lane",
+    "phases_run",
+    "phases_waived",
+    "design_document",
     "policy",
     "project",
     "questions",
@@ -78,15 +82,39 @@
               "complete",
               "closed"
             ]
+          },
+          "lane_status": {
+            "enum": [
+              "run",
+              "waived"
+            ]
           }
         },
         "additionalProperties": false,
         "required": [
           "number",
           "name",
-          "state"
+          "state",
+          "lane_status"
         ]
       }
+    },
+    "lane": {
+      "type": ["string", "null"],
+      "enum": ["full", "design", "review", null]
+    },
+    "phases_run": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1, "maximum": 8},
+      "uniqueItems": true
+    },
+    "phases_waived": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1, "maximum": 8},
+      "uniqueItems": true
+    },
+    "design_document": {
+      "type": ["string", "null"]
     },
     "input_required": {
       "type": "object",

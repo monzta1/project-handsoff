@@ -221,6 +221,35 @@ class SnapshotContractTests(HandsoffTestCase):
             self.assertIs(SCHEMA["properties"][key]["additionalProperties"], False)
         self.assertIs(SCHEMA["properties"]["phases"]["items"]["additionalProperties"], False)
 
+    def test_full_snapshot_cannot_be_truncated(self):
+        """The honest schema floor rejects the exact silent-loss regression."""
+        snapshot = self.drive("closed")
+        self.assertEqual(snapshot["lane"], None)
+        self.assertEqual(len(snapshot["phases"]), 8)
+        truncated = dict(snapshot, phases=snapshot["phases"][:1])
+        violations = validate(truncated, SCHEMA)
+        self.assertTrue(violations, "a one-phase full snapshot must be rejected")
+        self.assertTrue(any("fewer than 8 items" in violation for violation in violations))
+
+    def test_lane_phase_counts_are_enforced_against_build_snapshot(self):
+        """All eight phases remain visible; lane status marks waived work."""
+        snapshot = self.drive("in_progress")
+        cfg = lib.load_config(self.tmp)
+        status = self.read_status()
+        for lane, run_phases, waived_phases, expected_run in (
+                ("design", [1, 2, 3], [4, 5, 6, 7, 8], 3),
+                ("review", [5, 6], [1, 2, 3, 4, 7, 8], 2)):
+            status["lane"] = lane
+            status["phases_run"] = run_phases
+            status["phases_waived"] = waived_phases
+            lib.commit(self.tmp, cfg, status=status, event_kind="test_lane_shape", event_message=lane)
+            lane_snapshot = dashboard.build_snapshot(self.tmp)
+            self.assertEqual(len(lane_snapshot["phases"]), 8, lane)
+            self.assertEqual(sum(p["lane_status"] == "run" for p in lane_snapshot["phases"]), expected_run, lane)
+            self.assertEqual([p["lane_status"] for p in lane_snapshot["phases"]],
+                             (["run"] * 3 + ["waived"] * 5 if lane == "design"
+                              else ["waived"] * 4 + ["run"] * 2 + ["waived"] * 2), lane)
+
 
 if __name__ == "__main__":
     unittest.main()
