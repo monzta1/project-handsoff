@@ -99,6 +99,33 @@ function renderProviderStatus(providers) {
   }
 }
 
+function renderAdaptiveRouting(routing) {
+  const panel = $("adaptive-routing-panel");
+  if (!panel) return;
+  const view = adaptiveRoutingView(routing);
+  const set = (id, value) => { const element = $(id); if (element) element.textContent = value; };
+  set("routing-tier", view.tier || "—");
+  set("routing-model", view.model || "—");
+  set("routing-tokens", view.token_usage.total.toLocaleString());
+  set("routing-cost", view.estimated_cost == null ? "—" : `$${Number(view.estimated_cost).toFixed(4)}`);
+  set("routing-duration", view.duration_ms == null ? "—" : `${view.duration_ms} ms`);
+  set("routing-escalation", view.escalation_reason || "None");
+  set("routing-rounds", `${view.repair_rounds} repair · ${view.review_rounds} review`);
+  set("routing-premium-scope", view.active_premium_scope || "None");
+  set("routing-outcome", view.outcome || "—");
+  for (const tier of ADAPTIVE_ROUTING_TIERS) set(`routing-calls-${tier.toLowerCase()}`, String(view.calls_by_tier[tier]));
+  const state = $("routing-state");
+  if (state) {
+    state.textContent = adaptiveRoutingPauseLabel(routing);
+    state.className = `section-meta adaptive-routing-state ${view.pause ? "is-warning" : ""}`;
+  }
+  const detail = $("routing-pause-detail");
+  if (detail) {
+    detail.textContent = view.pause ? `Routing is paused: ${view.pause.reason.replaceAll("_", " ")}${view.pause.scope ? ` (${view.pause.scope})` : ""}.` : "";
+    detail.classList.toggle("hidden", !view.pause);
+  }
+}
+
 function markSettingsDirty() {
   state.settingsDirty = true;
   $("settings-result").textContent = "";
@@ -1504,6 +1531,7 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
+  renderAdaptiveRouting(snapshot.adaptive_routing || snapshot.routing || null);
   renderCi(snapshot.ci || null);
   const consistency = snapshot.status?.consistency_errors || [];
   $("consistency-fault").classList.toggle("hidden", !consistency.length);

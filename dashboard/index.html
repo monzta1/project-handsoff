@@ -80,6 +80,19 @@
 
         <section id="consistency-fault" class="consistency-fault hidden" role="alert" aria-live="polite"><strong>CONSISTENCY FAULT</strong><span id="consistency-fault-message"></span></section>
 
+        <section id="adaptive-routing-panel" class="panel adaptive-routing-panel" aria-label="Adaptive model routing telemetry">
+          <div class="section-head"><div><p class="panel-label">MODEL ROUTING</p><h2>Adaptive mission route</h2></div><span id="routing-state" class="section-meta adaptive-routing-state">AVAILABLE</span></div>
+          <p id="routing-pause-detail" class="routing-pause-detail hidden" role="status"></p>
+          <dl class="routing-facts">
+            <div><dt>Current tier</dt><dd id="routing-tier">—</dd></div><div><dt>Model</dt><dd id="routing-model">—</dd></div>
+            <div><dt>Calls · FAST / STANDARD / PREMIUM</dt><dd><span id="routing-calls-fast">0</span> / <span id="routing-calls-standard">0</span> / <span id="routing-calls-premium">0</span></dd></div>
+            <div><dt>Tokens</dt><dd id="routing-tokens">0</dd></div><div><dt>Estimated cost</dt><dd id="routing-cost">—</dd></div>
+            <div><dt>Duration</dt><dd id="routing-duration">—</dd></div><div><dt>Escalation</dt><dd id="routing-escalation">None</dd></div>
+            <div><dt>Repair / review rounds</dt><dd id="routing-rounds">0 repair · 0 review</dd></div><div><dt>Active PREMIUM scope</dt><dd id="routing-premium-scope">None</dd></div>
+            <div><dt>Outcome</dt><dd id="routing-outcome">—</dd></div>
+          </dl>
+        </section>
+
         <section class="bridge" aria-label="Mission bridge">
           <article class="panel now-panel">
             <div class="now-head">

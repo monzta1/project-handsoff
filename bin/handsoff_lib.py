@@ -301,7 +301,65 @@ DEFAULT_SMALL_FIX_MAX_CRITERIA = 3
 DEFAULT_SMALL_FIX_MAX_CHANGED_LINES = 200
 DEFAULT_SMALL_FIX_MAX_FILES = 6
 
+# Adaptive routing is intentionally expressed in capability terms.  Provider
+# and model identifiers remain adapter concerns; they are not used to decide
+# whether a mission is eligible for a profile.
+ADAPTIVE_ROUTING_TIERS = ("FAST", "STANDARD", "PREMIUM")
+ADAPTIVE_RISK_CLASSES = (
+    "routine", "elevated", "security_sensitive", "persistence_migration",
+    "shared_infrastructure", "irreversible",
+)
+ADAPTIVE_DEFAULT_RISK_POLICY = {
+    "routine": {"min_tier": "FAST", "reviewer_required": False,
+                "human_gate_required": False, "irreversible": False},
+    "elevated": {"min_tier": "STANDARD", "reviewer_required": True,
+                  "human_gate_required": False, "irreversible": False},
+    "security_sensitive": {"min_tier": "PREMIUM", "reviewer_required": True,
+                            "human_gate_required": True, "irreversible": False},
+    "persistence_migration": {"min_tier": "PREMIUM", "reviewer_required": True,
+                               "human_gate_required": True, "irreversible": False},
+    "shared_infrastructure": {"min_tier": "PREMIUM", "reviewer_required": True,
+                               "human_gate_required": True, "irreversible": False},
+    "irreversible": {"min_tier": "PREMIUM", "reviewer_required": True,
+                      "human_gate_required": True, "irreversible": True},
+}
+ADAPTIVE_PROFILE_FIELDS = ("model", "capabilities", "limits", "latency_ms", "estimated_cost")
+ADAPTIVE_ESCALATION_TERMINAL_OUTCOMES = ("accepted", "rejected", "human_pause")
+ADAPTIVE_ESCALATION_QUESTION_STATES = ("open", "resolved", "withdrawn")
+ADAPTIVE_ESCALATION_CLAIM_DECISIONS = ("accept", "reject", "repair")
+ADAPTIVE_ESCALATION_CHECK_OUTCOMES = ("pass", "fail", "not_applicable", "error")
+ADAPTIVE_BUDGET_FIELDS = ("premium_calls", "repair_rounds", "total_calls", "concurrent_premium_agents")
+ADAPTIVE_DEFAULT_BUDGETS = {
+    "per_mission": {field: None for field in ADAPTIVE_BUDGET_FIELDS},
+    "fleet": {field: None for field in ADAPTIVE_BUDGET_FIELDS},
+}
+ADAPTIVE_DEFAULT_PROFILES = {
+    "FAST": {
+        "model": "default",
+        "capabilities": ["text", "code", "structured_output"],
+        "limits": {"context_tokens": 32768, "output_tokens": 4096},
+        "latency_ms": 1500,
+        "estimated_cost": 0.001,
+    },
+    "STANDARD": {
+        "model": "default",
+        "capabilities": ["text", "code", "structured_output", "tool_use", "analysis"],
+        "limits": {"context_tokens": 131072, "output_tokens": 16384},
+        "latency_ms": 4000,
+        "estimated_cost": 0.01,
+    },
+    "PREMIUM": {
+        "model": "default",
+        "capabilities": ["text", "code", "structured_output", "tool_use", "analysis", "deep_reasoning"],
+        "limits": {"context_tokens": 262144, "output_tokens": 32768},
+        "latency_ms": 10000,
+        "estimated_cost": 0.1,
+    },
+}
+
 DEFAULT_CONFIG = {
+    "adaptive_routing_profiles": deepcopy(ADAPTIVE_DEFAULT_PROFILES) if "deepcopy" in globals() else ADAPTIVE_DEFAULT_PROFILES,
+    "adaptive_routing_budgets": deepcopy(ADAPTIVE_DEFAULT_BUDGETS) if "deepcopy" in globals() else ADAPTIVE_DEFAULT_BUDGETS,
     "logo": None,
     "status_file": "handsoff-status.json",
     "acceptance_file": "handsoff-acceptance.json",
@@ -1147,6 +1205,8 @@ def load_config(root: Path) -> dict:
     cfg = dict(DEFAULT_CONFIG)
     cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
+    cfg["adaptive_routing_profiles"] = deepcopy(ADAPTIVE_DEFAULT_PROFILES)
+    cfg["adaptive_routing_budgets"] = deepcopy(ADAPTIVE_DEFAULT_BUDGETS)
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
     cfg["agent_token_budgets"] = dict(DEFAULT_AGENT_TOKEN_BUDGETS)
     cfg["adapters"] = {}
@@ -1183,16 +1243,20 @@ def load_config(root: Path) -> dict:
     recovery = raw.get("recovery", {})
     regression_gate = raw.get("regression_gate", {})
     analysis = raw.get("analysis", {})
+    routing_profiles = raw.get("routing_profiles", {})
+    routing_budgets = raw.get("routing_budgets", {})
     digest = raw.get("digest", {})
     briefing = raw.get("briefing")
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
     if not isinstance(digest, dict):
         raise HandsoffError("handsoff.toml: digest must be a table")
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets)):
         raise HandsoffError(
             "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, and analysis must be tables"
         )
+    cfg["adaptive_routing_profiles"] = validate_adaptive_routing_profiles(routing_profiles or ADAPTIVE_DEFAULT_PROFILES)
+    cfg["adaptive_routing_budgets"] = validate_adaptive_routing_budgets(routing_budgets or ADAPTIVE_DEFAULT_BUDGETS)
     if briefing is not None:
         if not isinstance(briefing, dict):
             raise HandsoffError("handsoff.toml: briefing must be a table")
@@ -1787,6 +1851,306 @@ def agent_profiles(cfg: dict) -> dict:
                "model": None if cfg["agents"][role] == HOST_AGENT_ADAPTER else cfg["models"][role]}
         for role in SELECTABLE_AGENT_ROLES
     }
+
+
+def validate_adaptive_routing_profiles(value: object) -> dict:
+    """Validate the capability-based routing catalog and return a copy.
+
+    The catalog is deliberately independent of adapter names.  A profile may
+    name the runner model it uses, but selection only examines capabilities,
+    limits, and policy requirements.
+    """
+    if not isinstance(value, dict):
+        raise HandsoffError("routing_profiles must be a table")
+    unknown = set(value) - set(ADAPTIVE_ROUTING_TIERS)
+    if unknown:
+        raise HandsoffError("routing_profiles has unknown tier(s): " + ", ".join(sorted(unknown)))
+    result = deepcopy(ADAPTIVE_DEFAULT_PROFILES)
+    for tier in ADAPTIVE_ROUTING_TIERS:
+        raw = value.get(tier, result[tier])
+        if not isinstance(raw, dict):
+            raise HandsoffError(f"routing_profiles.{tier} must be a table")
+        profile = dict(result[tier])
+        profile.update(raw)
+        if not isinstance(profile.get("model"), str) or not profile["model"].strip():
+            raise HandsoffError(f"routing_profiles.{tier}.model must be a non-empty string")
+        capabilities = profile.get("capabilities")
+        if not isinstance(capabilities, list) or not capabilities or not all(isinstance(x, str) and x.strip() for x in capabilities):
+            raise HandsoffError(f"routing_profiles.{tier}.capabilities must be a non-empty array of strings")
+        limits = profile.get("limits")
+        if not isinstance(limits, dict) or not limits or any(not isinstance(k, str) or not isinstance(v, int) or isinstance(v, bool) or v < 0 for k, v in limits.items()):
+            raise HandsoffError(f"routing_profiles.{tier}.limits must map names to non-negative integers")
+        for field in ("latency_ms", "estimated_cost"):
+            number = profile.get(field)
+            if not isinstance(number, (int, float)) or isinstance(number, bool) or number < 0:
+                raise HandsoffError(f"routing_profiles.{tier}.{field} must be a non-negative number")
+        result[tier] = {
+            "model": profile["model"].strip(),
+            "capabilities": sorted(set(x.strip() for x in capabilities)),
+            "limits": dict(limits),
+            "latency_ms": profile["latency_ms"],
+            "estimated_cost": profile["estimated_cost"],
+        }
+    return result
+
+
+def adaptive_routing_profiles(cfg: dict | None = None) -> dict:
+    """Return the validated routing catalog suitable for audit/status output."""
+    return validate_adaptive_routing_profiles((cfg or {}).get("adaptive_routing_profiles", ADAPTIVE_DEFAULT_PROFILES))
+
+
+def validate_adaptive_routing_budgets(value: object) -> dict:
+    """Validate finite per-mission and fleet safety budgets.
+
+    ``None`` means that a dimension is not capped.  Counters are supplied by
+    the mission coordinator, keeping this policy independent of adapters.
+    """
+    if not isinstance(value, dict):
+        raise HandsoffError("routing_budgets must be a table")
+    unknown = set(value) - {"per_mission", "fleet"}
+    if unknown:
+        raise HandsoffError("routing_budgets has unknown scope(s): " + ", ".join(sorted(unknown)))
+    result = deepcopy(ADAPTIVE_DEFAULT_BUDGETS)
+    for scope in ("per_mission", "fleet"):
+        raw = value.get(scope, {})
+        if not isinstance(raw, dict):
+            raise HandsoffError(f"routing_budgets.{scope} must be a table")
+        unknown_fields = set(raw) - set(ADAPTIVE_BUDGET_FIELDS)
+        if unknown_fields:
+            raise HandsoffError(f"routing_budgets.{scope} has unknown fields: {', '.join(sorted(unknown_fields))}")
+        for field, limit in raw.items():
+            if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 0):
+                raise HandsoffError(f"routing_budgets.{scope}.{field} must be a non-negative integer or null")
+            result[scope][field] = limit
+    return result
+
+
+def adaptive_routing_budgets(cfg: dict | None = None) -> dict:
+    return validate_adaptive_routing_budgets((cfg or {}).get("adaptive_routing_budgets", ADAPTIVE_DEFAULT_BUDGETS))
+
+
+def evaluate_adaptive_budget(cfg: dict | None = None, *, mission_usage=None, fleet_usage=None,
+                             deterministic_checks_complete=False) -> dict:
+    """Return a safe continuation decision after deterministic checks drain.
+
+    The first exhausted dimension is reported distinctly; no PREMIUM call is
+    authorized while checks are still in flight.
+    """
+    budgets = adaptive_routing_budgets(cfg)
+    usage = {"per_mission": dict(mission_usage or {}), "fleet": dict(fleet_usage or {})}
+    if not deterministic_checks_complete:
+        return {"state": "paused", "reason": "deterministic_checks_in_flight", "scope": None, "field": None}
+    for scope in ("per_mission", "fleet"):
+        for field in ADAPTIVE_BUDGET_FIELDS:
+            limit = budgets[scope][field]
+            used = usage[scope].get(field, 0)
+            if not isinstance(used, int) or isinstance(used, bool) or used < 0:
+                raise HandsoffError(f"{scope} usage {field} must be a non-negative integer")
+            if limit is not None and used >= limit:
+                return {"state": "paused", "reason": f"{scope}_{field}_exhausted",
+                        "scope": scope, "field": field, "used": used, "limit": limit}
+    return {"state": "allowed", "reason": "within_budget", "scope": None, "field": None}
+
+
+def validate_adaptive_risk_policy(value: object) -> dict:
+    """Validate the closed, provider-independent mission risk policy."""
+    if not isinstance(value, dict) or set(value) != set(ADAPTIVE_RISK_CLASSES):
+        raise HandsoffError("risk_policy must contain exactly the six adaptive risk classes")
+    result = {}
+    for risk_class in ADAPTIVE_RISK_CLASSES:
+        row = value[risk_class]
+        if not isinstance(row, dict) or set(row) != {"min_tier", "reviewer_required", "human_gate_required", "irreversible"}:
+            raise HandsoffError(f"risk_policy.{risk_class} has invalid fields")
+        if row["min_tier"] not in ADAPTIVE_ROUTING_TIERS:
+            raise HandsoffError(f"risk_policy.{risk_class}.min_tier is invalid")
+        if any(not isinstance(row[field], bool) for field in ("reviewer_required", "human_gate_required", "irreversible")):
+            raise HandsoffError(f"risk_policy.{risk_class} gate fields must be booleans")
+        result[risk_class] = dict(row)
+    return result
+
+
+def adaptive_risk_policy(cfg: dict | None = None) -> dict:
+    """Return the exact six-row risk policy used by adaptive routing."""
+    return validate_adaptive_risk_policy((cfg or {}).get("risk_policy", ADAPTIVE_DEFAULT_RISK_POLICY))
+
+
+def classify_adaptive_risk(risk_class: str) -> str:
+    """Validate and return one canonical mission risk class."""
+    if not isinstance(risk_class, str) or risk_class not in ADAPTIVE_RISK_CLASSES:
+        raise HandsoffError("risk_class must be one of " + ", ".join(ADAPTIVE_RISK_CLASSES))
+    return risk_class
+
+
+def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(), minimum_tier=None,
+                           available_tiers=None, risk_class="routine",
+                           reviewer_approved=False, human_gate_approved=False,
+                           mission_usage=None, fleet_usage=None,
+                           deterministic_checks_complete=True) -> dict:
+    """Select the least expensive qualified tier, or return an auditable pause.
+
+    ``available_tiers`` models runtime capability availability and is kept
+    separate from configuration.  No unqualified profile is ever returned.
+    """
+    profiles = adaptive_routing_profiles(cfg)
+    risk_class = classify_adaptive_risk(risk_class)
+    policy = adaptive_risk_policy(cfg)
+    risk = policy[risk_class]
+    budget = evaluate_adaptive_budget(cfg, mission_usage=mission_usage, fleet_usage=fleet_usage,
+                                      deterministic_checks_complete=deterministic_checks_complete)
+    required_floor = risk["min_tier"]
+    if minimum_tier is not None and minimum_tier not in ADAPTIVE_ROUTING_TIERS:
+        raise HandsoffError(f"minimum_tier must be one of {', '.join(ADAPTIVE_ROUTING_TIERS)}")
+    if minimum_tier is None or ADAPTIVE_ROUTING_TIERS.index(minimum_tier) < ADAPTIVE_ROUTING_TIERS.index(required_floor):
+        minimum_tier = required_floor
+    required = sorted(set(required_capabilities))
+    if any(not isinstance(capability, str) or not capability.strip() for capability in required):
+        raise HandsoffError("required_capabilities must contain non-empty strings")
+    if minimum_tier is not None and minimum_tier not in ADAPTIVE_ROUTING_TIERS:
+        raise HandsoffError(f"minimum_tier must be one of {', '.join(ADAPTIVE_ROUTING_TIERS)}")
+    allowed = set(ADAPTIVE_ROUTING_TIERS if available_tiers is None else available_tiers)
+    start = ADAPTIVE_ROUTING_TIERS.index(minimum_tier) if minimum_tier else 0
+    candidates = []
+    for tier in ADAPTIVE_ROUTING_TIERS[start:]:
+        profile = profiles[tier]
+        missing = sorted(set(required) - set(profile["capabilities"]))
+        if tier in allowed and not missing:
+            candidates.append((profile["estimated_cost"], ADAPTIVE_ROUTING_TIERS.index(tier), tier, profile))
+    routing_metadata = {"risk_class": risk_class, "risk_policy": deepcopy(risk),
+                        "reviewer_approved": bool(reviewer_approved),
+                        "human_gate_approved": bool(human_gate_approved)}
+    if risk["reviewer_required"] and not reviewer_approved:
+        return {"state": "paused", "tier": None, "profile": None,
+                "required_capabilities": required, "reason": "reviewer_required", **routing_metadata}
+    if risk["human_gate_required"] and not human_gate_approved:
+        return {"state": "paused", "tier": None, "profile": None,
+                "required_capabilities": required, "reason": "human_gate_required", **routing_metadata}
+    if budget["state"] != "allowed":
+        return {"state": "paused", "tier": None, "profile": None,
+                "required_capabilities": required, "reason": budget["reason"],
+                "budget": budget, **routing_metadata}
+    if candidates:
+        _, _, tier, profile = min(candidates)
+        return {"state": "selected", "tier": tier, "profile": deepcopy(profile),
+                "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
+    available = [tier for tier in ADAPTIVE_ROUTING_TIERS if tier in allowed]
+    reason_kind = "required_capability_unavailable" if not any(
+        not (set(required) - set(profiles[tier]["capabilities"])) for tier in available
+    ) else "required_tier_unavailable"
+    return {"state": "paused", "tier": None, "profile": None,
+            "required_capabilities": required, "reason": reason_kind,
+            "detail": "No available configured profile satisfies the required policy",
+            **routing_metadata}
+
+
+def _adaptive_required_text(value, field, maximum=512):
+    if not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > maximum:
+        raise HandsoffError(f"{field} must be a non-empty string of at most {maximum} characters")
+    return value
+
+
+def _adaptive_mission_binding(mission_id, acceptance_hash):
+    return {"mission_id": _adaptive_required_text(mission_id, "mission_id"),
+            "acceptance_hash": _adaptive_required_text(acceptance_hash, "acceptance_hash")}
+
+
+def validate_adaptive_check_plan(checks, *, mission_id, acceptance_hash):
+    """Validate and deterministically order checks before model escalation."""
+    binding = _adaptive_mission_binding(mission_id, acceptance_hash)
+    if not isinstance(checks, (list, tuple)) or len(checks) > 32:
+        raise HandsoffError("deterministic checks must contain at most 32 items")
+    result = []
+    seen = set()
+    for index, check in enumerate(checks):
+        if not isinstance(check, dict):
+            raise HandsoffError(f"deterministic check {index} must be a record")
+        if set(check) - {"check_id", "command", "applies_to", "order"}:
+            raise HandsoffError(f"deterministic check {index} has unknown fields")
+        check_id = _adaptive_required_text(check.get("check_id"), "check_id", 96)
+        if check_id in seen:
+            raise HandsoffError("deterministic check ids must be unique")
+        seen.add(check_id)
+        command = _adaptive_required_text(check.get("command"), "command", 1024)
+        applies_to = check.get("applies_to", "all")
+        if not isinstance(applies_to, str) or not applies_to.strip():
+            raise HandsoffError("deterministic check applies_to must be a non-empty string")
+        order = check.get("order", index)
+        if not isinstance(order, int) or isinstance(order, bool) or order < 0:
+            raise HandsoffError("deterministic check order must be a non-negative integer")
+        result.append({**binding, "check_id": check_id, "command": command,
+                       "applies_to": applies_to.strip(), "order": order})
+    return sorted(result, key=lambda row: (row["order"], row["check_id"]))
+
+
+def record_adaptive_check(check, *, outcome, evidence=None, detail=""):
+    """Create the auditable result for one already-bound deterministic check."""
+    if not isinstance(check, dict) or not check.get("mission_id") or not check.get("acceptance_hash"):
+        raise HandsoffError("deterministic check is missing mission binding")
+    if outcome not in ADAPTIVE_ESCALATION_CHECK_OUTCOMES:
+        raise HandsoffError("invalid deterministic check outcome")
+    record = dict(check)
+    record.update({"record_type": "deterministic_check", "outcome": outcome,
+                   "evidence": list(evidence or []), "detail": detail})
+    return record
+
+
+def adaptive_escalation_records(*, mission_id, acceptance_hash, implementer, reviewer,
+                                supporting_evidence=(), unresolved_question=None):
+    """Return separate, mission-bound claim/evidence/question audit records."""
+    binding = _adaptive_mission_binding(mission_id, acceptance_hash)
+    records = []
+    for role, claim in (("implementer", implementer), ("reviewer", reviewer)):
+        if not isinstance(claim, dict):
+            raise HandsoffError(f"{role} claim must be a record")
+        decision = claim.get("decision")
+        if decision not in ADAPTIVE_ESCALATION_CLAIM_DECISIONS:
+            raise HandsoffError(f"{role} claim decision is invalid")
+        records.append({**binding, "record_type": f"{role}_claim", "role": role,
+                        "claim_id": _adaptive_required_text(claim.get("claim_id"), "claim_id", 96),
+                        "actor": _adaptive_required_text(claim.get("actor"), "actor", 128),
+                        "decision": decision,
+                        "summary": _adaptive_required_text(claim.get("summary"), "summary")})
+    for evidence in supporting_evidence:
+        if not isinstance(evidence, dict):
+            raise HandsoffError("supporting evidence must be records")
+        records.append({**binding, "record_type": "supporting_evidence",
+                        "evidence_id": _adaptive_required_text(evidence.get("evidence_id"), "evidence_id", 96),
+                        "kind": _adaptive_required_text(evidence.get("kind"), "kind", 64),
+                        "detail": _adaptive_required_text(evidence.get("detail"), "detail")})
+    if unresolved_question is not None:
+        records.append({**binding, "record_type": "unresolved_question",
+                        "question_id": _adaptive_required_text(unresolved_question.get("question_id"), "question_id", 96),
+                        "question": _adaptive_required_text(unresolved_question.get("question"), "question"),
+                        "state": unresolved_question.get("state", "open")})
+        if records[-1]["state"] not in ADAPTIVE_ESCALATION_QUESTION_STATES:
+            raise HandsoffError("unresolved question state is invalid")
+    return records
+
+
+def bound_adaptive_escalation(*, disagreement_rounds=0, repair_rounds=0,
+                              max_disagreement_rounds=2, max_repair_rounds=2,
+                              human_decision=None):
+    """Return a terminal decision or a human pause; never permit an open loop."""
+    for value, name in ((disagreement_rounds, "disagreement_rounds"),
+                        (repair_rounds, "repair_rounds"),
+                        (max_disagreement_rounds, "max_disagreement_rounds"),
+                        (max_repair_rounds, "max_repair_rounds")):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise HandsoffError(f"{name} must be a non-negative integer")
+    if max_disagreement_rounds == 0 or max_repair_rounds == 0:
+        raise HandsoffError("escalation round limits must be positive")
+    if human_decision in ADAPTIVE_ESCALATION_TERMINAL_OUTCOMES:
+        outcome = human_decision
+        reason = "human_decision"
+    elif disagreement_rounds >= max_disagreement_rounds:
+        outcome, reason = "human_pause", "disagreement_limit"
+    elif repair_rounds >= max_repair_rounds:
+        outcome, reason = "human_pause", "repair_limit"
+    else:
+        outcome, reason = None, "continue"
+    return {"state": "terminal" if outcome else "active", "outcome": outcome,
+            "reason": reason, "disagreement_rounds": disagreement_rounds,
+            "repair_rounds": repair_rounds, "max_disagreement_rounds": max_disagreement_rounds,
+            "max_repair_rounds": max_repair_rounds}
 
 
 def followup_reviewer_profile(cfg: dict) -> dict | None:
