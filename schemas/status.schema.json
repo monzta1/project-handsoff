@@ -19,6 +19,28 @@
     "risk_class": {
       "enum": ["routine", "elevated", "security_sensitive", "persistence_migration", "shared_infrastructure", "irreversible"]
     },
+    "adaptive_escalation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "outcome",
+        "reason",
+        "disagreement_rounds",
+        "repair_rounds",
+        "max_disagreement_rounds",
+        "max_repair_rounds"
+      ],
+      "properties": {
+        "state": {"enum": ["active", "terminal"]},
+        "outcome": {"enum": [null, "accepted", "rejected", "human_pause"]},
+        "reason": {"enum": ["continue", "human_decision", "disagreement_limit", "repair_limit"]},
+        "disagreement_rounds": {"type": "integer", "minimum": 0},
+        "repair_rounds": {"type": "integer", "minimum": 0},
+        "max_disagreement_rounds": {"type": "integer", "minimum": 1},
+        "max_repair_rounds": {"type": "integer", "minimum": 1}
+      }
+    },
     "lane": {
       "type": "string",
       "enum": ["full", "design", "review"]

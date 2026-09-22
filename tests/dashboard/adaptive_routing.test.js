@@ -26,7 +26,7 @@ test("Mission Control exposes assignments and explicit not-used state without a 
     "routing-cost", "routing-duration", "routing-escalation", "routing-rounds",
     "routing-premium-scope", "routing-outcome", "routing-pause-detail",
     "routing-calls-fast", "routing-calls-standard", "routing-calls-premium",
-    "routing-not-used", "routing-details", "routing-assignments", "routing-journey-map", "routing-selections",
+    "routing-not-used", "routing-details", "routing-assignments", "routing-journey-map", "routing-journey-track", "routing-selections",
   ]) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(app, /renderAdaptiveRouting\(snapshot\.adaptive_routing \|\| null\)/);
   assert.doesNotMatch(app, /snapshot\.routing/);
@@ -48,6 +48,9 @@ test("Mission Control exposes assignments and explicit not-used state without a 
   assert.match(app, /IN FLIGHT/);
   assert.match(read("dashboard/styles.css"), /routing-handoff-track/);
   assert.match(read("dashboard/styles.css"), /routing-map-orbit/);
+  assert.match(read("dashboard/styles.css"), /\.routing-journey-map \{[^}]*overflow-x: auto/);
+  assert.match(read("dashboard/styles.css"), /\.routing-journey-track \{[^}]*min-width: calc\(var\(--journey-legs\) \* 112px\)/);
+  assert.match(app, /journeyTrack\.append\(mapStop\)/);
 });
 
 test("model handoff journey is deterministic and derives honest per-mission attempts", () => {

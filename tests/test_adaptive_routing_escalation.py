@@ -1,4 +1,5 @@
 """REQ-004/REQ-005: evidence-first escalation and bounded convergence."""
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -41,6 +42,13 @@ class AdaptiveEscalationTests(unittest.TestCase):
         repair = lib.bound_adaptive_escalation(disagreement_rounds=0, repair_rounds=2)
         self.assertEqual(repair["reason"], "repair_limit")
         self.assertEqual(lib.bound_adaptive_escalation(human_decision="accepted")["outcome"], "accepted")
+
+    def test_status_schema_closes_the_adaptive_escalation_contract(self):
+        schema_path = Path(__file__).resolve().parents[1] / "schemas" / "status.schema.json"
+        escalation = json.loads(schema_path.read_text())["properties"]["adaptive_escalation"]
+        self.assertIs(escalation["additionalProperties"], False)
+        self.assertEqual(set(escalation["required"]), set(lib.bound_adaptive_escalation()))
+        self.assertEqual(escalation["properties"]["max_repair_rounds"]["minimum"], 1)
 
     def test_invalid_cross_mission_or_unbounded_records_are_refused(self):
         with self.assertRaises(lib.HandsoffError):

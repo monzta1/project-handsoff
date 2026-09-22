@@ -150,9 +150,9 @@ function renderAdaptiveRouting(routing) {
   const selections = $("routing-selections");
   if (selections) {
     selections.replaceChildren();
-    const journeyMap = $("routing-journey-map");
-    journeyMap?.replaceChildren();
-    journeyMap?.style.setProperty("--journey-legs", String(view.selections.length));
+    const journeyTrack = $("routing-journey-track");
+    journeyTrack?.replaceChildren();
+    journeyTrack?.style.setProperty("--journey-legs", String(view.selections.length));
     const providers = new Set(view.selections.map((item) => item.adapter).filter(Boolean));
     const transfers = view.selections.slice(1).filter((item, index) => {
       const previous = view.selections[index];
@@ -160,7 +160,7 @@ function renderAdaptiveRouting(routing) {
     }).length;
     set("routing-journey-summary", `${view.selections.length} LEGS · ${providers.size} PROVIDER${providers.size === 1 ? "" : "S"} · ${transfers} HANDOFF${transfers === 1 ? "" : "S"}`);
     for (const [index, item] of view.selections.entries()) {
-      if (journeyMap) {
+      if (journeyTrack) {
         const mapStop = document.createElement("div");
         const mapTransfer = index > 0 ? routingHandoff(view.selections[index - 1], item) : null;
         mapStop.className = `routing-map-stop adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}${mapTransfer?.kind === "handoff" ? " is-handoff" : ""}`;
@@ -186,7 +186,7 @@ function renderAdaptiveRouting(routing) {
           mapStop.append(marker);
         }
         mapStop.append(mapLeg, orbit, mapProvider, mapModel);
-        journeyMap.append(mapStop);
+        journeyTrack.append(mapStop);
       }
       if (index > 0) {
         const transfer = routingHandoff(view.selections[index - 1], item);
