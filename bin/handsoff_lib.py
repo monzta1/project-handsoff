@@ -2207,7 +2207,7 @@ def _agent_assignment(session: dict) -> dict:
     }
 
 
-def adaptive_routing_snapshot(status: dict) -> dict:
+def adaptive_routing_snapshot(status: dict, cfg: dict | None = None) -> dict:
     """Build the total dashboard shape from recorded routing/session facts."""
     sessions = (status or {}).get("agent_sessions") or {}
     routed = [session for session in sessions.values()
@@ -2241,12 +2241,27 @@ def adaptive_routing_snapshot(status: dict) -> dict:
             duration_reported = True
         except (KeyError, TypeError, ValueError):
             pass
+    risk_class = status.get("risk_class")
     latest = routed[-1]["adaptive_routing"] if routed else {}
+    if not latest and risk_class:
+        ready = route_adaptive_profile(
+            cfg, required_capabilities=("text", "tool_use"),
+            risk_class=risk_class, deterministic_checks_complete=True,
+        )
+        if ready.get("state") == "selected":
+            latest = {
+                "tier": ready["tier"],
+                "adapter": ready["profile"]["adapter"],
+                "model": ready["profile"]["model"],
+            }
     escalation = status.get("adaptive_escalation") if isinstance(status.get("adaptive_escalation"), dict) else {}
     repairs = sum(1 for attempt in (status.get("review_attempts") or [])
                   if isinstance(attempt, dict) and attempt.get("disposition") == "changes_requested")
     return {
-        "used": bool(routed), "risk_class": status.get("risk_class"),
+        # `used` means the run is governed by adaptive routing. Calls remain
+        # separately auditable in calls_by_tier and selections, so a newly
+        # initialized zero-call run is visibly ready without inventing use.
+        "used": bool(risk_class or routed), "risk_class": risk_class,
         "tier": latest.get("tier"), "adapter": latest.get("adapter"), "model": latest.get("model"),
         "token_usage": {"input": tokens_in, "output": tokens_out, "total": tokens_total},
         "estimated_cost": round(known_cost, 6) if cost_reported else None,
@@ -3622,8 +3637,12 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         if schema_errors:
             raise HandsoffError(schema_errors[0])
         _assert_agent_telemetry_integrity(root, cfg, status)
+        legacy_risk_defaulted = False
         if adaptive_routing is not None:
-            if status.get("risk_class") != adaptive_routing["risk_class"]:
+            status_risk_class = status.get("risk_class")
+            if status_risk_class is None and adaptive_routing["risk_class"] == "routine":
+                legacy_risk_defaulted = True
+            elif status_risk_class != adaptive_routing["risk_class"]:
                 raise HandsoffError("adaptive routing selection is stale for the run risk class")
             refreshed = route_adaptive_profile(
                 cfg, risk_class=adaptive_routing["risk_class"],
@@ -3672,6 +3691,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         if reservation is not None:
             reservation["launch_session_id"] = session_id
         proposed = deepcopy(status)
+        if legacy_risk_defaulted:
+            proposed["risk_class"] = "routine"
         opened_attempt = None
         # The convergence gate must run before a not-yet-launched session is
         # inserted into canonical state. A refused fourth attempt may persist
@@ -3776,6 +3797,12 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         if schema_errors:
             raise HandsoffError(schema_errors[0])
         extra_events = []
+        if legacy_risk_defaulted:
+            extra_events.append({
+                "kind": "adaptive_risk_defaulted",
+                "message": "Legacy run defaulted to routine adaptive routing at managed launch",
+                "risk_class": "routine", "session_id": session_id,
+            })
         if tier is not None:
             # #37: the selection is a fact of its own, logged before the
             # launch event it explains (extra_events precede the primary).
@@ -10341,7 +10368,7 @@ HANDSOFF_GENERATED_NAMES = frozenset({
     ".handsoff.lock", ".handsoff-event-head.json", ".handsoff-writeahead.json",
     ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
     # Agent output is gitignored Handsoff runtime state, not repository evidence.
-    ".handsoff-agent-output.json",
+    ".handsoff-agent-output.json", ".handsoff-regression.json",
     LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE, PREFLIGHT_FILE,
     LIVE_INFLIGHT_FILE,
     ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,

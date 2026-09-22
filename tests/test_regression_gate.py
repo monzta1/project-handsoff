@@ -14,6 +14,7 @@ BIN = ROOT / "bin"
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_supervisor as supervisor  # noqa: E402
+import handsoff_dashboard as dashboard  # noqa: E402
 
 
 class RegressionGateTests(unittest.TestCase):
@@ -86,10 +87,14 @@ class RegressionGateTests(unittest.TestCase):
         args = argparse.Namespace(root=str(self.root), request_id=item["request_id"], by="runner")
         result = [{"command": item["commands"][0], "exit_code": 0, "output_sha256": "0" * 64,
                    "duration_s": 0.01, "output_tail": "ok"}]
-        with mock.patch.object(lib, "run_checks", return_value=result) as run:
+        with mock.patch.object(supervisor.regress, "run_battery_results", return_value=result) as run:
             self.assertEqual(supervisor.cmd_regression_run(args), 0)
-        run.assert_called_once_with(lib.load_config(self.root), self.root.resolve(),
-                                    commands=item["commands"], allow_regression=True)
+        run.assert_called_once_with(
+            self.root.resolve(), item["group"], item["commands"],
+            timeout=lib.load_config(self.root)["check_timeout_seconds"],
+            request_id=item["request_id"], command_sha256=item["command_sha256"],
+            max_shards=supervisor.regress.DEFAULT_SHARDS,
+        )
         final = self.status()["regression_requests"][-1]
         self.assertEqual(final["state"], "completed")
         self.assertRegex(final["launch_nonce_sha256"], r"^[0-9a-f]{64}$")
@@ -119,9 +124,20 @@ class RegressionGateTests(unittest.TestCase):
             return [{"command": item["commands"][0], "exit_code": 0,
                      "output_sha256": "0" * 64, "duration_s": 0.01, "output_tail": "ok"}]
 
-        with mock.patch.object(lib, "run_checks", side_effect=mutate_policy):
+        with mock.patch.object(supervisor.regress, "run_battery_results", side_effect=mutate_policy):
             self.assertEqual(supervisor.cmd_regression_run(args), 1)
         self.assertEqual(self.status()["regression_requests"][-1]["state"], "invalidated")
+
+    def test_progress_telemetry_must_match_request_and_command_hash(self):
+        request = {"request_id": "rg-current", "command_sha256": "a" * 64}
+        path = self.root / ".handsoff-regression.json"
+        payload = {**request, "totals": {"total": 8, "done": 3}}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertEqual(dashboard._regression_progress(self.root, request), payload)
+        self.assertIsNone(dashboard._regression_progress(
+            self.root, {**request, "request_id": "rg-new"}))
+        self.assertIsNone(dashboard._regression_progress(
+            self.root, {**request, "command_sha256": "b" * 64}))
 
     def test_repository_snapshot_uses_default_branch_merge_base(self):
         base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root, check=True,

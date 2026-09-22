@@ -11658,11 +11658,15 @@ class TestVerificationCache(HandsoffTestCase):
         launched = [{"command": item["commands"][0], "exit_code": 0, "output_sha256": "0" * 64,
                      "duration_s": 0.01, "timed_out": False, "truncated": False, "output_bytes": 2,
                      "output_tail": "ok"}]
-        with mock.patch.object(self.lib, "run_checks", return_value=launched) as runner, \
+        with mock.patch.object(self.supervisor.regress, "run_battery_results", return_value=launched) as runner, \
                 __import__("contextlib").redirect_stdout(io.StringIO()):
             self.assertEqual(self.supervisor.cmd_regression_run(args), 0)
-        runner.assert_called_once_with(self.lib.load_config(self.tmp), self.tmp.resolve(),
-                                       commands=item["commands"], allow_regression=True)
+        runner.assert_called_once_with(
+            self.tmp.resolve(), item["group"], item["commands"],
+            timeout=self.lib.load_config(self.tmp)["check_timeout_seconds"],
+            request_id=item["request_id"], command_sha256=item["command_sha256"],
+            max_shards=self.supervisor.regress.DEFAULT_SHARDS,
+        )
         final = self.read_status()["regression_requests"][-1]
         self.assertEqual(final["state"], "completed")
         self.assertNotIn("output_tail", final["results"][0])

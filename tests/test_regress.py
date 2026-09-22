@@ -12,6 +12,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
@@ -146,9 +147,45 @@ class TestRunBattery(unittest.TestCase):
         self.assertEqual(state["totals"], {"total": 4, "done": 4, "passed": 2, "failed": 1, "errors": 0, "skipped": 1})
         command = state["commands"][0]
         self.assertEqual(command["exit_code"], 1)
+        self.assertEqual(command["mode"], "sharded")
         self.assertEqual([f["name"] for f in command["failures"]], ["tests.test_fixture.TestFixture.test_fails"])
         self.assertIsNone(command["current"])
-        self.assertTrue(Path(command["log"]).is_file())
+        self.assertEqual(len(command["shards"]), 4)
+        self.assertEqual([shard["test_count"] for shard in command["shards"]], [1, 1, 1, 1])
+        self.assertTrue(all(shard["done"] == 1 for shard in command["shards"]))
+        self.assertTrue(all(Path(shard["log"]).is_file() for shard in command["shards"]))
+        seen = set()
+        for shard in command["shards"]:
+            pending = None
+            for line in Path(shard["log"]).read_text(encoding="utf-8").splitlines():
+                event, pending = regress.parse_line(line, pending)
+                if event:
+                    seen.add(event["name"])
+        self.assertEqual(seen, {
+            "tests.test_fixture.TestFixture.test_fails",
+            "tests.test_fixture.TestFixture.test_leaks_then_passes",
+            "tests.test_fixture.TestFixture.test_passes",
+            "tests.test_fixture.TestFixture.test_skipped",
+        })
+
+    def test_enumeration_ambiguity_falls_back_to_one_sequential_worker(self):
+        command = "python3 -m unittest tests.test_fixture"
+        with mock.patch.object(regress, "_enumerate_unittest_ids",
+                               return_value=(None, "discovery import error")):
+            results = regress.run_battery_results(
+                self.tmp, "fallback", [command], timeout=120,
+                request_id="rg-fallback", command_sha256="a" * 64,
+            )
+        self.assertEqual(results[0]["exit_code"], 1)
+        self.assertEqual(len(results[0]["shards"]), 1)
+        state = json.loads((self.tmp / regress.PROGRESS_FILE).read_text())
+        self.assertEqual(state["request_id"], "rg-fallback")
+        self.assertEqual(state["command_sha256"], "a" * 64)
+        entry = state["commands"][0]
+        self.assertEqual(entry["mode"], "sequential")
+        self.assertEqual(entry["fallback_reason"], "discovery import error")
+        self.assertEqual(len(entry["shards"]), 1)
+        self.assertEqual(entry["done"], 4)
 
     def test_unknown_group_is_refused(self):
         proc = subprocess.run(

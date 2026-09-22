@@ -19,6 +19,11 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
 
     def test_legacy_snapshot_is_explicitly_not_used(self):
         self.init("Legacy snapshot")
+        status = self.read_status()
+        status.pop("risk_class")
+        with lib.project_lock(self.tmp):
+            lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
+                       event_kind="test_setup", event_message="historical status without risk class")
         session = lib.create_agent_session(
             self.tmp, role="implementer", actor="configured-implementer", adapter="codex",
             requested_model="configured-model", resolution_source="configured",
@@ -36,6 +41,17 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
             "model_consistency": "not_applicable",
             "reason": "configured", "state": "launching",
         }])
+
+    def test_new_default_run_is_routing_ready_before_its_first_call(self):
+        self.init("Default routing snapshot")
+        snapshot = dashboard.build_snapshot(self.tmp)["adaptive_routing"]
+        self.assertTrue(snapshot["used"])
+        self.assertEqual(snapshot["risk_class"], "routine")
+        self.assertEqual((snapshot["tier"], snapshot["adapter"], snapshot["model"]), (
+            "FAST", "claude", "claude-haiku-4-5-20251001",
+        ))
+        self.assertEqual(snapshot["calls_by_tier"], {"FAST": 0, "STANDARD": 0, "PREMIUM": 0})
+        self.assertEqual(snapshot["selections"], [])
 
     def test_snapshot_names_which_agent_used_which_model_for_which_phase(self):
         result = run(["init", "Routed snapshot", "--risk-class", "routine"], cwd=self.tmp)
@@ -70,6 +86,11 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
 
     def test_provider_default_is_not_presented_as_an_exact_model(self):
         self.init("Resolved model telemetry")
+        status = self.read_status()
+        status.pop("risk_class")
+        with lib.project_lock(self.tmp):
+            lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
+                       event_kind="test_setup", event_message="historical configured session")
         session = lib.create_agent_session(
             self.tmp, role="implementer", actor="claude-implementer", adapter="claude",
             requested_model="default", resolution_source="configured",
@@ -108,6 +129,11 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
 
     def test_historical_session_without_phase_remains_schema_valid(self):
         self.init("Historical")
+        status = self.read_status()
+        status.pop("risk_class")
+        with lib.project_lock(self.tmp):
+            lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
+                       event_kind="test_setup", event_message="historical status")
         session = lib.create_agent_session(
             self.tmp, role="implementer", actor="old-implementer", adapter="codex",
             requested_model="default", resolution_source="configured",
