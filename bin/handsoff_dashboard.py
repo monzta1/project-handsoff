@@ -265,6 +265,27 @@ def _read_events(root: Path, cfg: dict) -> list[dict]:
     return events
 
 
+def _regression_progress(root: Path, request: dict | None) -> dict | None:
+    """Return side telemetry only when it belongs to the displayed request.
+
+    The progress file is generated state, never authorization or evidence.
+    Matching both identities here prevents a prior run from appearing under
+    a newer accepted request even if a browser refresh races file creation.
+    """
+    if not isinstance(request, dict):
+        return None
+    path = root / ".handsoff-regression.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) \
+            or payload.get("request_id") != request.get("request_id") \
+            or payload.get("command_sha256") != request.get("command_sha256"):
+        return None
+    return payload
+
+
 def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
     """Return a cheap, lock-consistent fingerprint of dashboard inputs.
 
@@ -290,6 +311,7 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 # #58: every bounded log append invalidates Mission Control.
                 lib.agent_output_path(root),
                 lib.operations_path(root),
+                root / ".handsoff-regression.json",
                 root / tranche.PROPOSAL_FILE,
             ]
         except lib.HandsoffError:
@@ -964,6 +986,10 @@ def build_snapshot(root: Path) -> dict:
             live = lib.live_status(status, cfg, root)
             agent_output = lib.agent_output_view(status, root)
             operation = lib.operation_view(status, root)
+            current_regression = lib.active_regression_request(status)
+            last_regression = next((item for item in reversed(status.get("regression_requests") or [])
+                                    if item.get("state") not in {"awaiting_approval", "accepted", "launched"}), None)
+            regression_progress = _regression_progress(root, current_regression or last_regression)
             # #38: states and hashes only; the bounded output stays in the side file.
             try:
                 design_evidence = lib.design_evidence_view(root, cfg)
@@ -1165,7 +1191,7 @@ def build_snapshot(root: Path) -> dict:
             "operation": operation,
         },
         "metrics": metrics,
-        "adaptive_routing": lib.adaptive_routing_snapshot(status),
+        "adaptive_routing": lib.adaptive_routing_snapshot(status, cfg),
         "audit": {
             "healthy": audit_healthy,
             "gate_errors": gate_errors,
@@ -1214,9 +1240,9 @@ def build_snapshot(root: Path) -> dict:
             "release_plan": status.get("release_plan"),
             "pending": next((item for item in reversed(status.get("regression_requests") or [])
                              if item.get("state") == "awaiting_approval"), None),
-            "current": lib.active_regression_request(status),
-            "last": next((item for item in reversed(status.get("regression_requests") or [])
-                          if item.get("state") not in {"awaiting_approval", "accepted", "launched"}), None),
+            "current": current_regression,
+            "last": last_regression,
+            "progress": regression_progress,
             "history": list(reversed((status.get("regression_requests") or [])[-8:])),
         },
         "escalation": status.get("escalation"),
@@ -1468,12 +1494,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
         if path == "/api/regression":
-            # Live battery progress written by bin/handsoff_regress.py; a
-            # missing file means no battery has run on this root.
-            progress = self.server.project_root / ".handsoff-regression.json"
             try:
-                payload = json.loads(progress.read_text(encoding="utf-8")) if progress.is_file() else None
-            except (OSError, ValueError):
+                root = self.server.project_root
+                with lib.project_lock(root):
+                    cfg = lib.load_config(root)
+                    status = lib.load_unique_json(lib.status_path(root, cfg))
+                    current = lib.active_regression_request(status)
+                    last = next((item for item in reversed(status.get("regression_requests") or [])
+                                 if item.get("state") not in {"awaiting_approval", "accepted", "launched"}), None)
+                    payload = _regression_progress(root, current or last)
+            except (lib.HandsoffError, OSError, ValueError):
                 payload = None
             self._json_response(HTTPStatus.OK, {"regression": payload, "generated_at": datetime.now(timezone.utc).isoformat()})
             return

@@ -30,7 +30,7 @@ class LaunchRuleTests(HandsoffTestCase):
 
     def which(self, name):
         self.which_calls.append(name)
-        return "/usr/local/bin/codex" if name == "codex" else None
+        return f"/usr/local/bin/{name}" if name in {"codex", "claude"} else None
 
     def _switch_off(self):
         toml = self.tmp / "handsoff.toml"

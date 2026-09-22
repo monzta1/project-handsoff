@@ -160,12 +160,13 @@ function renderAdaptiveRouting(routing) {
     }).length;
     set("routing-journey-summary", `${view.selections.length} LEGS · ${providers.size} PROVIDER${providers.size === 1 ? "" : "S"} · ${transfers} HANDOFF${transfers === 1 ? "" : "S"}`);
     for (const [index, item] of view.selections.entries()) {
+      const friendlyActor = friendlyActorLabel(item);
       if (journeyTrack) {
         const mapStop = document.createElement("div");
         const mapTransfer = index > 0 ? routingHandoff(view.selections[index - 1], item) : null;
         mapStop.className = `routing-map-stop adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}${mapTransfer?.kind === "handoff" ? " is-handoff" : ""}`;
-        mapStop.setAttribute("aria-label", `Leg ${item.journey_index}, ${item.actor || item.role}, ${item.purpose}, ${item.model || "model not reported"}`);
-        mapStop.title = `${item.actor || item.role} · ${item.purpose} · ${item.model || "Not reported by provider"}`;
+        mapStop.setAttribute("aria-label", `Leg ${item.journey_index}, ${friendlyActor}, ${item.purpose}, ${item.model || "model not reported"}`);
+        mapStop.title = `${friendlyActor} · ${item.purpose} · ${item.model || "Not reported by provider"}`;
         const mapLeg = document.createElement("span");
         mapLeg.className = "routing-map-leg";
         mapLeg.textContent = String(item.journey_index).padStart(2, "0");
@@ -208,7 +209,7 @@ function renderAdaptiveRouting(routing) {
       }
       const row = document.createElement("article");
       row.className = `routing-selection adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}`;
-      row.setAttribute("aria-label", `Journey leg ${item.journey_index}: ${item.actor || item.role}, ${item.purpose}, ${item.model || "model not reported"}, ${item.state}`);
+      row.setAttribute("aria-label", `Journey leg ${item.journey_index}: ${friendlyActor}, ${item.purpose}, ${item.model || "model not reported"}, ${item.state}`);
       const node = (className, label) => {
         const element = document.createElement("div");
         element.className = `routing-selection-node ${className}`;
@@ -237,7 +238,8 @@ function renderAdaptiveRouting(routing) {
       avatar.textContent = String(item.adapter || "?").slice(0, 1).toUpperCase();
       const identityCopy = node("routing-selection-identity", "AGENT");
       const actor = document.createElement("strong");
-      actor.textContent = item.actor || item.role || "Agent";
+      actor.textContent = friendlyActor;
+      actor.title = item.actor || "";
       const adapterName = document.createElement("small");
       adapterName.textContent = String(item.adapter || "unknown").toUpperCase();
       identityCopy.append(actor, adapterName);
@@ -603,6 +605,51 @@ function releasePlanText(plan) {
   ].filter(Boolean).join("\n");
 }
 
+function renderRegressionProgress(regression, request) {
+  const panel = $("regression-progress");
+  if (!panel) return;
+  const progress = regression?.progress;
+  const matches = progress && request
+    && progress.request_id === request.request_id
+    && progress.command_sha256 === request.command_sha256;
+  panel.classList.toggle("hidden", !matches);
+  if (!matches) return;
+  const totals = progress.totals || {};
+  const total = Number.isInteger(totals.total) ? totals.total : null;
+  const done = Number(totals.done || 0);
+  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const running = !progress.finished_at;
+  const shards = (progress.commands || []).flatMap((command) => command.shards || []);
+  const active = shards.filter((shard) => !shard.finished_at);
+  const failed = Number(totals.failed || 0);
+  const errors = Number(totals.errors || 0);
+  $("regression-progress-state").textContent = running
+    ? `RUNNING · ${active.length || shards.length} WORKER${(active.length || shards.length) === 1 ? "" : "S"}`
+    : (progress.exit_code === 0 ? "COMPLETE · GREEN" : "COMPLETE · ATTENTION");
+  $("regression-progress-percent").textContent = total ? `${percent}%` : `${done}`;
+  $("regression-progress-done").textContent = total ? `${done} / ${total}` : `${done} RUN`;
+  $("regression-progress-pass").textContent = String(totals.passed || 0);
+  $("regression-progress-fail").textContent = String(failed);
+  $("regression-progress-error").textContent = String(errors);
+  $("regression-progress-skip").textContent = String(totals.skipped || 0);
+  const current = active.filter((shard) => shard.current)
+    .map((shard) => `${shard.label || `Worker ${shard.index}`}: ${shard.current}`);
+  $("regression-progress-current").textContent = running
+    ? (current.join(" · ") || "Preparing deterministic test partitions")
+    : `Finished with exit ${progress.exit_code}`;
+  const bar = $("regression-progress-bar");
+  bar.setAttribute("aria-valuenow", String(percent));
+  bar.setAttribute("aria-valuetext", total ? `${done} of ${total} tests` : `${done} tests completed`);
+  $("regression-progress-fill").style.width = `${percent}%`;
+  $("regression-progress-workers").innerHTML = shards.map((shard) => {
+    const bad = Number(shard.failed || 0) + Number(shard.errors || 0);
+    const workerState = !shard.finished_at ? "running" : (shard.exit_code === 0 ? "passed" : "failed");
+    const count = shard.test_count == null ? `${shard.done || 0} run` : `${shard.done || 0} / ${shard.test_count}`;
+    const detail = shard.current || `${count} · ${shard.passed || 0} pass${bad ? ` · ${bad} attention` : ""}`;
+    return `<div class="regression-worker is-${workerState}"><strong>${escapeHtml(shard.label || `Worker ${shard.index}`)} · ${workerState.toUpperCase()}</strong><small>${escapeHtml(detail)}</small></div>`;
+  }).join("");
+}
+
 function renderRegression(regression) {
   const current = regression?.current || null;
   const last = regression?.last || null;
@@ -610,6 +657,7 @@ function renderRegression(regression) {
   const card = $("regression-alert");
   card.classList.toggle("hidden", !current && !last && !plan);
   $("regression-status-details").textContent = regressionRecordText(current || last) || releasePlanText(plan);
+  renderRegressionProgress(regression, current || last);
   $("regression-last").textContent = last
     ? `Last closed request: ${last.group} · ${String(last.state || "unknown").toUpperCase()} · ${last.completed_at || last.decided_at || last.requested_at}`
     : "";
@@ -1567,7 +1615,7 @@ function renderCrew(crew) {
   $("crew-list").innerHTML = crew.map((member) => `
     <div class="crew-member">
       <span>${escapeHtml(member.label)}</span>
-      <div><strong class="${member.actor ? "" : "unassigned"}">${escapeHtml(member.actor || "Station vacant")}</strong><small>${escapeHtml(crewProfileLabel(member))}</small></div>
+      <div><strong class="${member.actor ? "" : "unassigned"}" title="${escapeHtml(member.actor || "")}">${escapeHtml(member.actor ? friendlyActorLabel({ role: member.key, actor: member.actor }) : "Station vacant")}</strong><small>${escapeHtml(crewProfileLabel(member))}</small></div>
     </div>`).join("");
 }
 

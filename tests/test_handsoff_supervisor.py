@@ -1248,7 +1248,7 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
         with self.assertRaisesRegex(self.lib.HandsoffError, "no supported agent adapter"):
             self.lib.resolved_agent_profiles(cfg, which=lambda _name: None, require_available=True)
 
-    def test_missing_recommended_executable_is_reported_truthfully_and_never_launched(self):
+    def test_missing_recommended_executable_is_truthful_while_the_active_run_uses_fast_routing(self):
         self._write_toml()
         # This test is about executable discovery at Phase 1; the shipped
         # reviewer-launch-phase-1 rule (#165) would refuse the launch first.
@@ -1268,23 +1268,20 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
             self.assertTrue(crew[role]["available"])
             self.assertEqual(crew[role]["executable"], "/usr/local/bin/claude")
 
-        with self.assertRaises(self.lib.HandsoffError) as refused:
-            self.runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=claude_only)
-        message = str(refused.exception)
-        self.assertIn("reviewer", message)
-        self.assertIn("recommended default", message)
-        self.assertIn("Install codex", message)
-        self.assertIn("[agents].reviewer", message)
-        self.assertIn("fallback_policy.reviewer", message)
+        spec = self.runtime.build_launch_spec(self.tmp, "reviewer", "inspect", which=claude_only)
+        self.assertEqual((spec.adapter, spec.model), ("claude", "claude-haiku-4-5-20251001"))
+        self.assertEqual(spec.resolution_source, "adaptive")
+        self.assertEqual(spec.adaptive_routing["tier"], "FAST")
+        self.assertEqual(spec.adaptive_routing["risk_class"], "routine")
         self.assertNotIn("agent_sessions", self.read_status())
         self.assertEqual(self.read_status().get("current_agent_sessions"), None)
 
-        # A role whose recommended adapter is installed launches and its
-        # telemetry says the profile was the recommended one.
+        # Every normal active-run role uses the same exact cost-aware route;
+        # configured/recommended availability remains truthful crew metadata.
         spec = self.runtime.build_launch_spec(self.tmp, "implementer", "build", which=claude_only)
-        self.assertEqual(spec.resolution_source, "recommended")
-        self.assertEqual((spec.adapter, spec.model), self.RECOMMENDED["implementer"])
-        self.assertEqual(spec.argv[spec.argv.index("--model") + 1], "claude-opus-5")
+        self.assertEqual((spec.adapter, spec.model), ("claude", "claude-haiku-4-5-20251001"))
+        self.assertEqual(spec.resolution_source, "adaptive")
+        self.assertEqual(spec.argv[spec.argv.index("--model") + 1], "claude-haiku-4-5-20251001")
 
         class Process:
             pid = None
@@ -1303,8 +1300,10 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
             session_id_factory=lambda: "hs-" + "39" * 16,
         ), 0)
         session = self.read_status()["agent_sessions"]["hs-" + "39" * 16]
-        self.assertEqual(session["resolution_source"], "recommended")
-        self.assertEqual((session["adapter"], session["requested_model"]), self.RECOMMENDED["implementer"])
+        self.assertEqual(session["resolution_source"], "adaptive")
+        self.assertEqual((session["adapter"], session["requested_model"]),
+                         ("claude", "claude-haiku-4-5-20251001"))
+        self.assertEqual(session["adaptive_routing"]["tier"], "FAST")
         self.assertEqual(session["state"], "completed")
         self.assertEqual(self.read_status()["current_agent_sessions"].get("reviewer"), None)
         validated = run(["validate"], cwd=self.tmp)
@@ -8398,7 +8397,7 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         self.lib.record_design_proposal(self.tmp, None, {
             "summary": "budget fixture", "approach": ["one"], "tradeoffs": [], "decisions": ["one"],
             "constraints": [], "verification": ["one"]}, architect_actor="host-architect")
-        which = lambda name: f"/usr/local/bin/{name}" if name == "codex" else None
+        which = lambda name: f"/usr/local/bin/{name}" if name in {"codex", "claude"} else None
         before = self._files_snapshot()
         with self.assertRaisesRegex(self.lib.HandsoffError, "design-review-authorize") as ctx:
             self.runtime.build_launch_spec(self.tmp, "reviewer", "Review the design", which=which)
@@ -11658,11 +11657,15 @@ class TestVerificationCache(HandsoffTestCase):
         launched = [{"command": item["commands"][0], "exit_code": 0, "output_sha256": "0" * 64,
                      "duration_s": 0.01, "timed_out": False, "truncated": False, "output_bytes": 2,
                      "output_tail": "ok"}]
-        with mock.patch.object(self.lib, "run_checks", return_value=launched) as runner, \
+        with mock.patch.object(self.supervisor.regress, "run_battery_results", return_value=launched) as runner, \
                 __import__("contextlib").redirect_stdout(io.StringIO()):
             self.assertEqual(self.supervisor.cmd_regression_run(args), 0)
-        runner.assert_called_once_with(self.lib.load_config(self.tmp), self.tmp.resolve(),
-                                       commands=item["commands"], allow_regression=True)
+        runner.assert_called_once_with(
+            self.tmp.resolve(), item["group"], item["commands"],
+            timeout=self.lib.load_config(self.tmp)["check_timeout_seconds"],
+            request_id=item["request_id"], command_sha256=item["command_sha256"],
+            max_shards=self.supervisor.regress.DEFAULT_SHARDS,
+        )
         final = self.read_status()["regression_requests"][-1]
         self.assertEqual(final["state"], "completed")
         self.assertNotIn("output_tail", final["results"][0])

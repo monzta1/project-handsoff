@@ -96,6 +96,23 @@ function adapterLabel(adapter) {
   return adapter || "NONE DETECTED";
 }
 
+function friendlyActorLabel({ role, purpose, actor } = {}) {
+  const key = String(role || "").toLowerCase();
+  const mission = String(purpose || "").toLowerCase();
+  if (key.includes("reviewer") || mission.includes("review")) {
+    return mission.includes("design") || key === "design_reviewer" ? "Design Reviewer" : "Implementation Reviewer";
+  }
+  if (key === "architect") return "Solution Architect";
+  if (key === "supervisor") return "Mission Supervisor";
+  if (key === "implementer") return "Implementation Engineer";
+  if (key === "approver" || /pilot/i.test(String(actor || ""))) return "Mission Pilot";
+  if (typeof actor === "string" && actor.trim()) {
+    return actor.trim().replace(/^(claude|codex)[-_]/i, "").replaceAll(/[-_]+/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+  return "Agent";
+}
+
 function effectiveProfileLabel(profile) {
   const adapter = adapterLabel(profile?.adapter);
   const model = profile?.model || "default";
@@ -130,10 +147,10 @@ function runProfileLabel(role, context = {}) {
     const reported = session.reported_model
       ? `reported ${session.reported_model}`
       : "exact model not reported";
-    return `THIS RUN: ${adapterLabel(session.adapter)} · ${requested} · ${reported} · ${session.actor} · ${session.session_id} · ${String(session.state || "unknown").replaceAll("_", " ").toUpperCase()}`;
+    return `THIS RUN: ${adapterLabel(session.adapter)} · ${requested} · ${reported} · ${friendlyActorLabel({ role, actor: session.actor })} · ${session.session_id} · ${String(session.state || "unknown").replaceAll("_", " ").toUpperCase()}`;
   }
   if (!actor) return "THIS RUN: station not assigned · no managed session recorded";
-  return `THIS RUN: external/manual launch · provider, model, and session not recorded · ${actor}`;
+  return `THIS RUN: external/manual launch · provider, model, and session not recorded · ${friendlyActorLabel({ role, actor })}`;
 }
 
 // #35: the design-review attempt budget, derived from the structured
@@ -925,6 +942,7 @@ if (typeof module !== "undefined" && module.exports) {
     questionBannerCards,
     collectQuestionFormAnswers,
     adapterLabel,
+    friendlyActorLabel,
     effectiveProfileLabel,
     actorForRole,
     runProfileLabel,

@@ -6,7 +6,8 @@ const vm = require("node:vm");
 
 // #161: one ENGINE badge in the topbar of both pages, fed by the Fleet
 // payload's engine on Fleet and by the snapshot's engine on Mission Control,
-// UNKNOWN until the first snapshot; Fleet cards mark engine drift.
+// CONNECTING until the first snapshot; Fleet cards mark engine drift and a
+// genuinely missing runtime identity still renders UNKNOWN.
 const root = path.resolve(__dirname, "../..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const fleetHtml = read("fleet/index.html");
@@ -15,14 +16,15 @@ const dashHtml = read("dashboard/index.html");
 const fleetApp = read("fleet/app.js");
 const dashApp = read("dashboard/app.js");
 
-test("both pages carry the badge span in the topbar meta, reading UNKNOWN before any data", () => {
+test("both pages carry a readable CONNECTING badge before any data", () => {
   for (const html of [fleetHtml, metricsHtml, dashHtml]) {
-    assert.match(html, /<span id="engine-badge" class="engine-badge" title="[^"]+">ENGINE UNKNOWN<\/span>/);
+    assert.match(html, /<span id="engine-badge" class="engine-badge" title="Connecting to engine identity">ENGINE CONNECTING<\/span>/);
     const meta = html.indexOf('class="topbar-meta"');
     assert.ok(meta > 0 && html.indexOf('id="engine-badge"') > meta, "badge sits inside .topbar-meta");
   }
   for (const css of [read("fleet/styles.css"), read("dashboard/styles.css")]) {
     assert.match(css, /\.engine-badge \{ display: inline-flex;/);
+    assert.match(css, /font: 700 13px\/1 var\(--mono\)/);
   }
 });
 

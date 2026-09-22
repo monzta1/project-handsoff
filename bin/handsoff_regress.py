@@ -18,14 +18,18 @@ or `python3 tests/<module>.py` invocation, else it grows as tests report.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -99,6 +103,7 @@ def count_event(entry: dict, event: dict) -> None:
     entry["current"] = event["name"]
 NODE_LINE = re.compile(r"^(?P<not>not )?ok (?P<num>\d+) - (?P<name>.*?)(?: # (?P<directive>SKIP|TODO).*)?$")
 MAX_RECENT = 64
+DEFAULT_SHARDS = 4
 
 
 def progress_path(root: Path) -> Path:
@@ -113,24 +118,54 @@ def _write(root: Path, state: dict) -> None:
     lib.atomic_write_json(progress_path(root), state)
 
 
-def _count_unittest_total(root: Path, argv: list[str]) -> int | None:
-    """Best effort: count tests by discovery for the module the command names."""
+def _unittest_names(argv: list[str]) -> list[str]:
+    """Return unittest load names only for the two command shapes we can shard."""
+    if len(argv) >= 3 and argv[0].startswith("python") and argv[1:3] == ["-m", "unittest"]:
+        return [arg for arg in argv[3:] if not arg.startswith("-")]
+    if len(argv) >= 2 and argv[0].startswith("python") and argv[1].startswith("tests/") \
+            and argv[1].endswith(".py"):
+        return [argv[1][:-3].replace("/", ".")]
+    return []
+
+
+def _enumerate_unittest_ids(root: Path, argv: list[str]) -> tuple[list[str] | None, str | None]:
+    """Enumerate exact IDs in a clean process, or explain why sharding is unsafe.
+
+    Any import/discovery ambiguity fails closed to the approved command's
+    sequential path. A duplicate ID is also unsafe: a shard plan must prove
+    every discovered case appears exactly once.
+    """
     try:
-        names: list[str] = []
-        if len(argv) >= 3 and argv[1] == "-m" and argv[2] == "unittest":
-            names = [a for a in argv[3:] if not a.startswith("-")]
-        elif len(argv) >= 2 and argv[1].startswith("tests/") and argv[1].endswith(".py"):
-            names = [argv[1][:-3].replace("/", ".")]
+        names = _unittest_names(argv)
         if not names:
-            return None
-        code = ("import sys, unittest; sys.path.insert(0, '.'); "
-                "loader = unittest.TestLoader(); "
-                "print(sum(loader.loadTestsFromName(n).countTestCases() for n in sys.argv[1:]))")
-        out = subprocess.run([sys.executable, "-c", code, *names], cwd=str(root), capture_output=True,
+            return None, None
+        code = (
+            "import json, sys, unittest; sys.path.insert(0, '.'); "
+            "loader=unittest.TestLoader(); suites=[loader.loadTestsFromName(n) for n in sys.argv[1:]]; "
+            "walk=lambda s: [t for x in s for t in (walk(x) if isinstance(x, unittest.TestSuite) else [x])]; "
+            "tests=[t for s in suites for t in walk(s)]; "
+            "bad=[t.id() for t in tests if t.__class__.__name__ == '_FailedTest']; "
+            "ids=[t.id() for t in tests]; "
+            "print(json.dumps({'ok': not bad and bool(ids) and len(ids)==len(set(ids)), "
+            "'ids': ids, 'bad': bad}))"
+        )
+        out = subprocess.run([argv[0], "-c", code, *names], cwd=str(root), capture_output=True,
                              text=True, timeout=120, env={**os.environ, "HANDSOFF_SKIP_PREFLIGHT": "1"})
-        return int(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip().isdigit() else None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+        if out.returncode != 0:
+            return None, f"enumeration exited {out.returncode}"
+        payload = json.loads(out.stdout)
+        ids = payload.get("ids") if isinstance(payload, dict) else None
+        if not payload.get("ok") or not isinstance(ids, list) or not all(isinstance(item, str) and item for item in ids):
+            reason = "discovery import error" if payload.get("bad") else "empty or duplicate test inventory"
+            return None, reason
+        return sorted(ids), None
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        return None, f"enumeration failed: {type(exc).__name__}"
+
+
+def _count_unittest_total(root: Path, argv: list[str]) -> int | None:
+    ids, _ = _enumerate_unittest_ids(root, argv)
+    return len(ids) if ids is not None else None
 
 
 def _verbose_argv(command: str) -> list[str]:
@@ -143,42 +178,153 @@ def _verbose_argv(command: str) -> list[str]:
     return argv
 
 
-def run_command(root: Path, command: str, state: dict, *, timeout: int) -> int:
+def _recount_entry(entry: dict) -> None:
+    for key in ("done", "passed", "failed", "errors", "skipped"):
+        entry[key] = sum(int(shard.get(key, 0) or 0) for shard in entry["shards"])
+    failures = []
+    for shard in sorted(entry["shards"], key=lambda item: item["index"]):
+        failures.extend({**failure, "shard": shard["index"]} for failure in shard.get("failures", []))
+    entry["failures"] = failures[-MAX_RECENT:]
+    active = [shard for shard in entry["shards"] if not shard.get("finished_at") and shard.get("current")]
+    entry["current"] = active[0]["current"] if active else None
+
+
+def _new_shard(index: int, test_count: int | None) -> dict:
+    return {"index": index, "label": f"Worker {index}", "test_count": test_count,
+            "started_at": None, "finished_at": None, "exit_code": None, "timed_out": False,
+            "done": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
+            "current": None, "failures": [], "log": None, "output_sha256": None, "output_bytes": 0}
+
+
+def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, shard: dict,
+                timeout: int, command_index: int, lock: threading.Lock) -> None:
+    log_path = Path(tempfile.gettempdir()) / (
+        f"handsoff-regress-{os.getpid()}-{command_index}-{shard['index']}.log"
+    )
+    env = {**os.environ, "PYTHONUNBUFFERED": "1",
+           "HANDSOFF_SKIP_PREFLIGHT": os.environ.get("HANDSOFF_SKIP_PREFLIGHT", "1")}
+    timed_out = threading.Event()
+    process = None
+
+    def expire() -> None:
+        if process is None or process.poll() is not None:
+            return
+        timed_out.set()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+
+    shard["started_at"] = _now()
+    try:
+        process = subprocess.Popen(run_spec, shell=shell, cwd=str(root), stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, env=env, start_new_session=True)
+        timer = threading.Timer(timeout, expire)
+        timer.daemon = True
+        timer.start()
+        with log_path.open("w", encoding="utf-8") as log, process.stdout:
+            assert process.stdout is not None
+            pending_name = None
+            for line in process.stdout:
+                log.write(line)
+                event, pending_name = parse_line(line.rstrip("\n"), pending_name)
+                if event is None:
+                    continue
+                with lock:
+                    count_event(shard, event)
+                    _recount_entry(entry)
+                    state["totals"] = _totals(state)
+                    _write(root, state)
+        code = process.wait()
+        timer.cancel()
+        code = 124 if timed_out.is_set() else code
+    except OSError as exc:
+        code = 127
+        log_path.write_text(f"HANDSOFF: worker launch failed: {exc}\n", encoding="utf-8")
+    raw = log_path.read_bytes() if log_path.is_file() else b""
+    with lock:
+        shard["finished_at"] = _now()
+        shard["exit_code"] = code
+        shard["timed_out"] = code == 124
+        shard["current"] = None
+        shard["log"] = str(log_path)
+        shard["output_sha256"] = hashlib.sha256(raw).hexdigest()
+        shard["output_bytes"] = len(raw)
+        _recount_entry(entry)
+        state["totals"] = _totals(state)
+        _write(root, state)
+
+
+def _merged_result(command: str, entry: dict, started: float) -> dict:
+    chunks = []
+    summaries = []
+    ordered = sorted(entry["shards"], key=lambda item: item["index"])
+    for shard in ordered:
+        header = f"\n===== shard {shard['index']} of {len(ordered)} =====\n".encode()
+        try:
+            raw = Path(shard["log"]).read_bytes()
+        except (OSError, TypeError):
+            raw = b""
+        chunks.extend((header, raw))
+        summaries.append({key: shard.get(key) for key in (
+            "index", "label", "test_count", "done", "passed", "failed", "errors", "skipped",
+            "exit_code", "timed_out", "output_sha256", "output_bytes"
+        )})
+    merged = b"".join(chunks)
+    decoded = merged.decode("utf-8", "replace")
+    exit_code = 124 if any(shard.get("timed_out") for shard in ordered) else next(
+        (int(shard["exit_code"]) for shard in ordered if shard.get("exit_code") != 0), 0
+    )
+    return {"command": command, "exit_code": exit_code, "output_sha256": hashlib.sha256(merged).hexdigest(),
+            "duration_s": round(time.monotonic() - started, 2), "timed_out": exit_code == 124,
+            "truncated": len(decoded) > lib.CHECK_OUTPUT_TAIL_CHARS, "output_bytes": len(merged),
+            "output_tail": decoded[-lib.CHECK_OUTPUT_TAIL_CHARS:], "shards": summaries}
+
+
+def run_command(root: Path, command: str, state: dict, *, timeout: int, command_index: int = 1,
+                max_shards: int = DEFAULT_SHARDS) -> dict:
+    started = time.monotonic()
     argv = _verbose_argv(command)
-    total = _count_unittest_total(root, argv)
+    eligible = bool(_unittest_names(argv))
+    ids, enumeration_error = _enumerate_unittest_ids(root, argv) if eligible else (None, None)
+    use_shards = ids is not None and len(ids) > 1 and max_shards > 1
+    partitions = []
+    if use_shards:
+        worker_count = min(max_shards, len(ids))
+        partitions = [ids[index::worker_count] for index in range(worker_count)]
     entry = {"command": command, "started_at": _now(), "finished_at": None, "exit_code": None,
-             "total": total, "done": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
-             "current": None, "failures": []}
+             "total": len(ids) if ids is not None else None, "done": 0, "passed": 0, "failed": 0,
+             "errors": 0, "skipped": 0, "current": None, "failures": [], "shards": [],
+             "mode": "sharded" if use_shards else "sequential",
+             "fallback_reason": enumeration_error if eligible and ids is None else None}
+    specs = []
+    if use_shards:
+        for index, partition in enumerate(partitions, 1):
+            shard = _new_shard(index, len(partition))
+            entry["shards"].append(shard)
+            specs.append(([argv[0], "-m", "unittest", "-v", *partition], False, shard))
+    else:
+        shard = _new_shard(1, len(ids) if ids is not None else None)
+        entry["shards"].append(shard)
+        sequential = shlex.join(argv) if eligible else command
+        specs.append((sequential, True, shard))
     state["commands"].append(entry)
     state["current_command"] = command
     _write(root, state)
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "HANDSOFF_SKIP_PREFLIGHT": os.environ.get("HANDSOFF_SKIP_PREFLIGHT", "1")}
-    process = subprocess.Popen(argv, cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, env=env, start_new_session=True)
-    deadline = time.monotonic() + timeout
-    log_path = Path(tempfile.gettempdir()) / f"handsoff-regress-{os.getpid()}.log"
-    with log_path.open("a", encoding="utf-8") as log:
-        assert process.stdout is not None
-        pending_name = None
-        for line in process.stdout:
-            log.write(line)
-            event, pending_name = parse_line(line.rstrip("\n"), pending_name)
-            if event is None:
-                continue
-            count_event(entry, event)
-            state["totals"] = _totals(state)
-            _write(root, state)
-            if time.monotonic() > deadline:
-                process.kill()
-                break
-    code = process.wait()
+    lock = threading.Lock()
+    with ThreadPoolExecutor(max_workers=len(specs), thread_name_prefix="handsoff-regression") as pool:
+        futures = [pool.submit(_run_worker, root, spec, shell=shell, state=state, entry=entry, shard=shard,
+                               timeout=timeout, command_index=command_index, lock=lock)
+                   for spec, shell, shard in specs]
+        for future in futures:
+            future.result()
+    result = _merged_result(command, entry, started)
     entry["finished_at"] = _now()
-    entry["exit_code"] = code
+    entry["exit_code"] = result["exit_code"]
     entry["current"] = None
-    entry["log"] = str(log_path)
     state["totals"] = _totals(state)
     _write(root, state)
-    return code
+    return result
 
 
 def _totals(state: dict) -> dict:
@@ -187,27 +333,36 @@ def _totals(state: dict) -> dict:
     for entry in state["commands"]:
         for key in keys:
             value = entry.get(key)
-            if key == "total":
-                if value is None:
-                    totals["total"] = None if totals["total"] is None else totals["total"]
-                    continue
+            if key == "total" and (value is None or totals["total"] is None):
+                totals["total"] = None
+                continue
             totals[key] = (totals[key] or 0) + (value or 0)
     return totals
 
 
-def run_battery(root: Path, label: str, commands: list[str], *, timeout: int) -> int:
+def run_battery_results(root: Path, label: str, commands: list[str], *, timeout: int,
+                        request_id: str | None = None, command_sha256: str | None = None,
+                        max_shards: int = DEFAULT_SHARDS) -> list[dict]:
     state = {"label": label, "started_at": _now(), "finished_at": None, "exit_code": None,
-             "commands": [], "current_command": None, "totals": {}, "root": str(root)}
+             "commands": [], "current_command": None, "totals": {}, "root": str(root),
+             "request_id": request_id, "command_sha256": command_sha256,
+             "worker_limit": max_shards}
     _write(root, state)
-    worst = 0
-    for command in commands:
-        code = run_command(root, command, state, timeout=timeout)
-        worst = worst or code
+    results = [run_command(root, command, state, timeout=timeout, command_index=index,
+                           max_shards=max_shards) for index, command in enumerate(commands, 1)]
+    worst = next((result["exit_code"] for result in results if result["exit_code"] != 0), 0)
     state["finished_at"] = _now()
     state["exit_code"] = worst
     state["current_command"] = None
     _write(root, state)
-    return worst
+    return results
+
+
+def run_battery(root: Path, label: str, commands: list[str], *, timeout: int,
+                max_shards: int = DEFAULT_SHARDS) -> int:
+    results = run_battery_results(root, label, commands, timeout=timeout, max_shards=max_shards,
+                                  command_sha256=lib.command_sha256(commands))
+    return next((result["exit_code"] for result in results if result["exit_code"] != 0), 0)
 
 
 def main() -> int:
@@ -216,6 +371,8 @@ def main() -> int:
     parser.add_argument("--group", default=None, help="a [[regressions]] group name from handsoff.toml")
     parser.add_argument("--command", action="append", default=[], help="an explicit command (repeatable)")
     parser.add_argument("--timeout", type=int, default=3600, help="per-command timeout in seconds")
+    parser.add_argument("--shards", type=int, default=DEFAULT_SHARDS,
+                        help=f"maximum Python unittest workers (default: {DEFAULT_SHARDS})")
     args = parser.parse_args()
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -232,7 +389,10 @@ def main() -> int:
         print("HANDSOFF_REGRESS_BLOCKED: give --group or at least one --command", file=sys.stderr)
         return 2
     print(f"HANDSOFF_REGRESS_STARTED: {label} ({len(commands)} command(s)); progress in {progress_path(root)}")
-    code = run_battery(root, label, commands, timeout=args.timeout)
+    if not 1 <= args.shards <= 16:
+        print("HANDSOFF_REGRESS_BLOCKED: --shards must be from 1 to 16", file=sys.stderr)
+        return 2
+    code = run_battery(root, label, commands, timeout=args.timeout, max_shards=args.shards)
     state = json.loads(progress_path(root).read_text(encoding="utf-8"))
     totals = state["totals"]
     print(f"HANDSOFF_REGRESS_{'OK' if code == 0 else 'FAILED'}: {totals.get('passed', 0)} passed, "

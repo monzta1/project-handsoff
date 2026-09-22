@@ -28,7 +28,7 @@
         <span class="mission-state" id="mission-state">STANDBY</span>
       </div>
       <div class="topbar-meta">
-        <span id="engine-badge" class="engine-badge" title="Engine this run uses">ENGINE UNKNOWN</span>
+        <span id="engine-badge" class="engine-badge" title="Connecting to engine identity">ENGINE CONNECTING</span>
         <span id="host-badge" class="engine-badge host-badge" title="Host driving this run">HOST UNKNOWN</span>
         <span class="connection"><i></i><span id="connection-status">LINK: CONNECTING</span></span>
         <span id="last-sync" class="last-sync">Acquiring telemetry…</span>
@@ -87,8 +87,8 @@
           </div>
           <p id="routing-pause-detail" class="routing-pause-detail hidden" role="status"></p>
           <div id="routing-not-used" class="routing-empty">
-            <strong>Configured profiles are in control</strong>
-            <span>This mission did not opt into risk-class routing. No adaptive calls were made.</span>
+            <strong>No adaptive classification is recorded</strong>
+            <span>This is a historical run with no stored risk class. Its configured sessions remain visible below.</span>
           </div>
           <div id="routing-details" class="routing-details hidden">
             <div class="routing-route"><span id="routing-tier" class="routing-tier">—</span><div><small>SELECTED MODEL</small><strong id="routing-model">—</strong></div></div>
@@ -191,6 +191,22 @@
           <div class="workspace-main">
             <section id="regression-alert" class="regression-card panel hidden" aria-live="polite">
               <div class="section-head"><div><p class="panel-label">REGRESSION GATE</p><h2>Full regression request</h2></div></div>
+              <div id="regression-progress" class="regression-progress hidden">
+                <div class="regression-progress-head">
+                  <div><span id="regression-progress-state">PREPARING</span><strong id="regression-progress-percent">0%</strong></div>
+                  <p id="regression-progress-current">Waiting for the first test</p>
+                </div>
+                <div id="regression-progress-bar" class="regression-progress-bar" role="progressbar" aria-label="Full regression progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="regression-progress-fill"></i></div>
+                <div class="regression-progress-stats" aria-label="Regression result counts">
+                  <span><strong id="regression-progress-done">0 / 0</strong> TESTS</span>
+                  <span class="is-pass"><strong id="regression-progress-pass">0</strong> PASS</span>
+                  <span class="is-fail"><strong id="regression-progress-fail">0</strong> FAIL</span>
+                  <span class="is-error"><strong id="regression-progress-error">0</strong> ERROR</span>
+                  <span><strong id="regression-progress-skip">0</strong> SKIP</span>
+                </div>
+                <div id="regression-progress-workers" class="regression-progress-workers"></div>
+                <a class="regression-console-link" href="/regression">OPEN DETAILED REGRESSION CONSOLE</a>
+              </div>
               <pre id="regression-status-details" class="regression-details"></pre>
               <p id="regression-last" class="regression-last"></p>
             </section>

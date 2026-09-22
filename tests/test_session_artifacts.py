@@ -207,7 +207,7 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
         self.set_criterion_state("passing", resolved=False)
         reached = self.advance_to(5, implemented_by="test-implementer")
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
-        which = lambda name: "/usr/local/bin/codex" if name == "codex" else None
+        which = lambda name: f"/usr/local/bin/{name}" if name in {"codex", "claude"} else None
         with self.assertRaisesRegex(lib.HandsoffError, "record-symptom-resolved --evidence"):
             runtime.build_launch_spec(self.tmp, "reviewer", "review", which=which)
         records = [json.loads(line) for line in (self.tmp / "handsoff-verifications.jsonl").read_text().splitlines()]

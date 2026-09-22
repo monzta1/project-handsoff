@@ -1,4 +1,4 @@
-"""REQ-001/REQ-003: opt-in adaptive routing reaches real launch/session paths."""
+"""REQ-001/REQ-004: default adaptive routing reaches real launch/session paths."""
 import json
 import shutil
 import sys
@@ -44,7 +44,7 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
             return agent.build_launch_spec(self.tmp, "implementer", "task",
                                            which=lambda name: f"/opt/test/{name}", skip_preflight=True)
 
-    def test_init_records_explicit_risk_but_legacy_omission_is_byte_compatible(self):
+    def test_init_records_explicit_risk_and_omission_defaults_to_routine(self):
         result = run(["init", "Classified", "--risk-class", "elevated"], cwd=self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.read_status()["risk_class"], "elevated")
@@ -55,31 +55,50 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
             for name in ("handsoff-status.json", "handsoff-acceptance.json", "handsoff-events.jsonl",
                          ".handsoff-event-head.json"):
                 (other / name).unlink(missing_ok=True)
-            result = run(["init", "Legacy"], cwd=other)
+            result = run(["init", "Defaulted"], cwd=other)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             status = json.loads((other / "handsoff-status.json").read_text())
-            self.assertNotIn("risk_class", status)
+            self.assertEqual(status["risk_class"], "routine")
             self.assertFalse(any("adaptive_routing" in session for session in (status.get("agent_sessions") or {}).values()))
         finally:
             shutil.rmtree(other, ignore_errors=True)
 
-    def test_build_launch_spec_routes_only_the_classified_normal_launch(self):
+    def test_legacy_normal_launch_routes_and_atomically_persists_routine(self):
         self.init("Legacy")
         self._phase_four()
-        legacy = self._spec()
-        self.assertIsNone(legacy.adaptive_routing)
-        legacy_pair = (legacy.adapter, legacy.model, legacy.resolution_source)
-
         status = self.read_status()
-        status["risk_class"] = "routine"
+        status.pop("risk_class")
         with lib.project_lock(self.tmp):
             lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
-                       event_kind="test_setup", event_message="classified")
+                       event_kind="test_setup", event_message="legacy status without risk class")
+        self.assertNotIn("risk_class", self.read_status())
+
         routed = self._spec()
         self.assertEqual((routed.adapter, routed.model, routed.resolution_source),
                          ("claude", "claude-haiku-4-5-20251001", "adaptive"))
-        self.assertNotEqual(legacy_pair, (routed.adapter, routed.model, routed.resolution_source))
         self.assertEqual(routed.adaptive_routing["tier"], "FAST")
+        self.assertNotIn("risk_class", self.read_status(), "building a spec is read-only")
+
+        session = lib.create_agent_session(
+            self.tmp, role="implementer", actor="test-implementer",
+            adapter=routed.adapter, requested_model=routed.model,
+            resolution_source=routed.resolution_source,
+            adaptive_routing=routed.adaptive_routing,
+        )
+        self.assertEqual(self.read_status()["risk_class"], "routine")
+        self.assertEqual(session["adaptive_routing"]["tier"], "FAST")
+        events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
+        self.assertTrue(any(event["kind"] == "adaptive_risk_defaulted" for event in events))
+
+    def test_operator_surfaces_document_routine_as_the_default(self):
+        result = run(["init", "--help"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("set adaptive routing risk (default: routine)", result.stdout)
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        reference = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
+        self.assertIn("Every new run uses adaptive model routing", readme)
+        self.assertIn("Adaptive routing is the default for every new run", reference)
+        self.assertNotIn("Adaptive routing is opt-in per run", reference)
 
     def test_session_commit_rechecks_budget_and_refusal_mutates_no_ledger(self):
         result = run(["init", "Budget", "--risk-class", "irreversible"], cwd=self.tmp)

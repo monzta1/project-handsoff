@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_regress as regress  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
 # One inventory for the command line, broker, and Mission Control. A command
@@ -252,7 +253,7 @@ def cmd_init(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     try:
-        risk_class = lib.classify_adaptive_risk(args.risk_class) if args.risk_class is not None else None
+        risk_class = lib.classify_adaptive_risk(args.risk_class or "routine")
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}")
         return 1
@@ -373,8 +374,7 @@ def cmd_init(args) -> int:
                                    "all_criteria_verified": "no", "evidence_attached": "no"},
             "events": [],
         }
-        if risk_class is not None:
-            status["risk_class"] = risk_class
+        status["risk_class"] = risk_class
         if source_design is not None:
             status["design_review"] = source_design.get("design_review")
             status["design_approved"] = source_design.get("design_approved")
@@ -1821,7 +1821,14 @@ def cmd_regression_run(args) -> int:
         lib.commit(root, cfg, status=status, event_kind="regression_launched",
                    event_message=f"Accepted regression group {item['group']} launched",
                    request_id=item["request_id"], by=actor)
-    results = lib.run_checks(cfg, root, commands=commands, allow_regression=True)
+    # Full regressions have their own progress-aware execution path. Targeted
+    # verification deliberately remains on lib.run_checks so sharding cannot
+    # alter evidence-cache semantics outside a Pilot-accepted gate.
+    results = regress.run_battery_results(
+        root, item["group"], commands, timeout=cfg.get("check_timeout_seconds", 600),
+        request_id=item["request_id"], command_sha256=item["command_sha256"],
+        max_shards=regress.DEFAULT_SHARDS,
+    )
     with lib.project_lock(root):
         # Re-read policy after the command returns. Reusing the pre-launch
         # object would let a concurrent policy edit pass its own comparison.
@@ -4705,8 +4712,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="initial run or delivery lane")
     init.add_argument("--from-design", default=None, metavar="PATH",
                       help="take up a completed design.html document")
-    init.add_argument("--risk-class", choices=lib.ADAPTIVE_RISK_CLASSES, default=None,
-                      help="opt this run into adaptive model routing with an explicit risk class")
+    init.add_argument("--risk-class", choices=lib.ADAPTIVE_RISK_CLASSES, default="routine",
+                      help="set adaptive routing risk (default: routine)")
 
     sub.add_parser("status", help="print run state as JSON, including the requested crew per role "
                                   "with its source (explicit or recommended) and adapter availability")

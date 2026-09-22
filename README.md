@@ -55,14 +55,23 @@ handsoff supervisor --root /path/to/project init "Fix the thing" --by <you> --it
 handsoff supervisor --root /path/to/project dashboard --owned-by-run --port 8790
 ```
 
-Add `--risk-class elevated` (or another documented risk class) to `init` to
-opt that run into adaptive model routing. Mission Control then shows exactly
-which agent and phase received which tier, adapter, and model; unclassified
-runs show `NOT USED` and keep their configured role profiles unchanged.
+Every new run uses adaptive model routing. `init` defaults to `--risk-class
+routine`; pass `elevated` or another documented risk class when the work needs
+stronger review or approval obligations. Mission Control shows exactly which
+agent and phase received which tier, adapter, and model. Historical statuses
+with no stored risk class show `NOT USED` until their next normal managed
+launch safely defaults them to routine routing.
 
 Every registered project sits on the Fleet page (`handsoff fleet serve`,
 `http://127.0.0.1:8765/`), with a Metrics tab for issues, commits and
 releases per repository.
+
+Mission Control uses readable crew names such as **Solution Architect** and
+**Implementation Reviewer**, while the adjacent run profile keeps the exact
+provider, requested model, provider-reported model, session, and state. An
+accepted full regression gets a large live progress bar, result counts, and
+worker cards; eligible Python unittest suites run in up to four deterministic
+shards.
 
 ## The house
 

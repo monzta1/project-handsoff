@@ -300,6 +300,33 @@ body.input-is-required .decisions-clear { display: none; }
 .regression-card { border-color: rgba(245, 194, 107, .5); background: rgba(60, 44, 14, .35); }
 .regression-card .regression-details { color: #ffe8bd; }
 .regression-last { margin: 10px 0 0; color: var(--muted); font: 11.5px/1.45 var(--mono); }
+.regression-progress { margin: 18px 0 16px; padding: 18px; border: 1px solid rgba(95, 211, 255, .25); border-radius: 14px; background: linear-gradient(145deg, rgba(7, 28, 43, .82), rgba(15, 22, 35, .64)); box-shadow: inset 0 1px rgba(255, 255, 255, .04); }
+.regression-progress-head { display: flex; justify-content: space-between; align-items: end; gap: 18px; margin-bottom: 13px; }
+.regression-progress-head > div { display: flex; align-items: baseline; gap: 12px; }
+.regression-progress-head span { color: var(--cyan); font: 700 14px/1 var(--mono); letter-spacing: .12em; }
+.regression-progress-head strong { color: #fff; font: 700 30px/1 var(--display); letter-spacing: -.02em; }
+.regression-progress-head p { margin: 0; max-width: 58%; color: #d8eaf2; font: 14px/1.45 var(--mono); text-align: right; overflow-wrap: anywhere; }
+.regression-progress-bar { height: 14px; overflow: hidden; border: 1px solid rgba(95, 211, 255, .28); border-radius: 999px; background: rgba(1, 8, 14, .82); }
+.regression-progress-bar i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #24a9df, #6ae6d0); box-shadow: 0 0 18px rgba(95, 211, 255, .55); transition: width .35s ease; }
+.regression-progress-stats { display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 8px; margin-top: 14px; }
+.regression-progress-stats span { padding: 10px 11px; border: 1px solid rgba(255, 255, 255, .08); border-radius: 9px; color: var(--muted); font: 700 12px/1.25 var(--mono); letter-spacing: .06em; }
+.regression-progress-stats strong { display: block; margin-bottom: 3px; color: #f7fbff; font-size: 18px; letter-spacing: 0; }
+.regression-progress-stats .is-pass strong { color: var(--green); }
+.regression-progress-stats .is-fail strong, .regression-progress-stats .is-error strong { color: var(--red); }
+.regression-progress-workers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; margin-top: 12px; }
+.regression-worker { padding: 10px 11px; border-left: 3px solid rgba(95, 211, 255, .35); border-radius: 7px; background: rgba(255, 255, 255, .035); }
+.regression-worker.is-running { border-left-color: var(--cyan); }
+.regression-worker.is-failed { border-left-color: var(--red); }
+.regression-worker strong, .regression-worker small { display: block; }
+.regression-worker strong { color: #eefaff; font: 700 14px/1.3 var(--mono); }
+.regression-worker small { margin-top: 4px; color: var(--muted); font: 13px/1.35 var(--mono); overflow-wrap: anywhere; }
+.regression-console-link { display: inline-block; margin-top: 14px; color: var(--cyan); font: 700 13px/1 var(--mono); letter-spacing: .06em; text-decoration: none; }
+.regression-console-link:hover { color: #fff; }
+@media (max-width: 760px) {
+  .regression-progress-head { align-items: start; flex-direction: column; }
+  .regression-progress-head p { max-width: none; text-align: left; }
+  .regression-progress-stats { grid-template-columns: repeat(2, 1fr); }
+}
 .alert-button { height: 34px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: rgba(255, 255, 255, .03); color: var(--muted); font: 700 10.5px/1 var(--sans); letter-spacing: .06em; cursor: pointer; }
 .alert-button:hover { color: var(--ink); border-color: var(--ink); }
 .alert-button:disabled { cursor: default; opacity: .6; }
@@ -704,7 +731,7 @@ a.settings-toggle { display: inline-flex; align-items: center; text-decoration: 
 .console-link:hover { color: var(--accent); border-color: var(--accent-line); }
 
 /* #161: the engine badge, one style on Mission Control and Fleet. */
-.engine-badge { display: inline-flex; align-items: center; padding: 6px 10px; margin-right: 10px; border: 1px solid var(--accent-line); border-radius: 6px; background: var(--accent-soft); color: var(--accent); font: 700 10.5px/1 var(--mono); letter-spacing: .08em; white-space: nowrap; }
+.engine-badge { display: inline-flex; align-items: center; padding: 8px 12px; margin-right: 10px; border: 1px solid var(--accent-line); border-radius: 7px; background: var(--accent-soft); color: var(--accent); font: 700 13px/1 var(--mono); letter-spacing: .07em; white-space: nowrap; }
 
 
 /* #165 #167 #166: workflow feature switches in the settings dialog */

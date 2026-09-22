@@ -411,12 +411,16 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         else:
             resolution_source = "configured"
     adaptive_routing = None
-    if selection is None and isinstance(run_status, dict) and run_status.get("risk_class"):
+    if selection is None and isinstance(run_status, dict):
+        # Runs created before adaptive routing may have no stored risk class.
+        # A normal managed launch defaults those active runs to routine; the
+        # session commit persists that upgrade atomically with the route.
+        effective_risk_class = run_status.get("risk_class") or "routine"
         available_adapters = [candidate for candidate in lib.SELECTABLE_AGENT_ADAPTERS
                               if cfg.get("adapters", {}).get(candidate) or which(candidate)]
         routed = lib.route_adaptive_profile(
             cfg, required_capabilities=("text", "tool_use"),
-            available_adapters=available_adapters, risk_class=run_status["risk_class"],
+            available_adapters=available_adapters, risk_class=effective_risk_class,
             mission_usage=lib.adaptive_usage(run_status),
             fleet_usage=lib.adaptive_fleet_usage(root, current_status=run_status),
             # Deterministic-check draining gates repair/escalation

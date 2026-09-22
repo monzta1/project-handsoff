@@ -31,6 +31,8 @@ test("Mission Control exposes assignments and explicit not-used state without a 
   assert.match(app, /renderAdaptiveRouting\(snapshot\.adaptive_routing \|\| null\)/);
   assert.doesNotMatch(app, /snapshot\.routing/);
   assert.match(logic, /NOT USED/);
+  assert.match(html, /historical run with no stored risk class/i);
+  assert.doesNotMatch(html, /did not opt into risk-class routing/i);
   assert.match(app, /AGENT|routing-selection-agent/);
   assert.match(app, /DESIGN CHALLENGE/);
   assert.match(app, /IMPLEMENTATION AUDIT/);

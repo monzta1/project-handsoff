@@ -22,7 +22,7 @@ test("assigned session shows adapter, requested and reported model, actor, and s
   });
   assert.equal(
     label,
-    "THIS RUN: Claude Code · requested sonnet-5 · reported claude-sonnet-5-20260201 · claude-implementer-issue25 · sess-01 · RUNNING",
+    "THIS RUN: Claude Code · requested sonnet-5 · reported claude-sonnet-5-20260201 · Implementation Engineer · sess-01 · RUNNING",
   );
 });
 
@@ -53,7 +53,7 @@ test("a role with a recorded actor but no live session shows profile-not-recorde
     runSessions: {},
     actors: { architect: "claude-architect-issue25" },
   });
-  assert.equal(label, "THIS RUN: external/manual launch · provider, model, and session not recorded · claude-architect-issue25");
+  assert.equal(label, "THIS RUN: external/manual launch · provider, model, and session not recorded · Solution Architect");
 });
 
 test("adapterLabel never fabricates a name for an unrecognized/missing adapter", () => {
