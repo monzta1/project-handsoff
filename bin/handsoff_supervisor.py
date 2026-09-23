@@ -25,7 +25,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_close_transaction as close_transaction  # noqa: E402
 import handsoff_regress as regress  # noqa: E402
+import handsoff_release_runtime as release_runtime  # noqa: E402
+import handsoff_runtime_control as runtime_control  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
 # One inventory for the command line, broker, and Mission Control. A command
@@ -40,6 +43,7 @@ OPERATION_REGISTRY = {
     "dashboard": {"class": "diagnostic", "surface": "dashboard"},
     "verify": {"class": "operator-facing", "surface": "verification-list"},
     "release-plan": {"class": "operator-facing", "surface": "regression-alert"},
+    "release-reconcile": {"class": "automatic", "surface": "release-readiness"},
     "regression-request": {"class": "operator-facing", "surface": "regression-alert"},
     "regression-decide": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "regression-run": {"class": "automatic", "surface": "regression-alert"},
@@ -97,7 +101,23 @@ OPERATION_REGISTRY = {
     "run-reopen": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "advance": {"class": "agent-only", "surface": "phase-rail"},
     "deployment-gate": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "monitor-poll": {"class": "automatic", "surface": "live-status"},
+    "evidence-refresh-plan": {"class": "diagnostic", "surface": "verification-list"},
+    "performance-status": {"class": "diagnostic", "surface": "metrics-panel"},
+    "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
 }
+
+RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
+MONITOR_RECORD = "monitor.json"
+PERFORMANCE_RECORD = "performance.json"
+EVIDENCE_AUDIT_RECORD = "evidence-audit.json"
+PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
+    "status", "validate", "verify-log", "doctor", "dashboard", "design-timing",
+    "monitor-poll", "evidence-refresh-plan", "performance-status",
+})
+PERFORMANCE_PAUSE_COMMANDS = frozenset({
+    "performance-resume", "regression-cancel", "run-close",
+})
 
 
 def _load(root: Path, cfg: dict):
@@ -117,6 +137,173 @@ def _load_all(root: Path, cfg: dict):
     status, acceptance = _load(root, cfg)
     verifications, verification_problems = lib.load_verifications(root, cfg)
     return status, acceptance, verifications, verification_problems
+
+
+def _runtime_path(root: Path, name: str) -> Path:
+    return root / RUNTIME_CONTROL_DIR / name
+
+
+def _runtime_write(root: Path, name: str, payload: dict) -> None:
+    path = _runtime_path(root, name)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lib.atomic_write_json(path, payload)
+
+
+def _runtime_read(root: Path, name: str, schema: str) -> dict | None:
+    path = _runtime_path(root, name)
+    if not path.exists():
+        return None
+    access = runtime_control.load_versioned_record(
+        lib.load_unique_json(path), expected_schema=schema, for_mutation=True,
+    )
+    if access.migrated:
+        _runtime_write(root, name, access.record)
+    return access.record
+
+
+def _runtime_run_id(root: Path, events: list[dict]) -> str:
+    seed = next((event.get("hash") for event in events if isinstance(event.get("hash"), str)), None)
+    seed = seed or hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()
+    return f"run-{seed[:32]}"
+
+
+def _event_datetime(value: object, fallback: datetime) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _sync_performance_holds(history: dict, events: list[dict]) -> dict:
+    """Import persisted human pauses once; concurrent background work still counts."""
+    updated = deepcopy(history)
+    episode = updated["episodes"][-1]
+    episode_start = _event_datetime(episode["started_at"], datetime.now(timezone.utc))
+    existing = {item["hold_id"]: item for item in episode["holds"]}
+    open_holds: list[tuple[str, datetime, str]] = []
+    completed: list[dict] = []
+    for index, event in enumerate(events):
+        kind = event.get("kind")
+        at = _event_datetime(event.get("at"), episode_start)
+        if at < episode_start:
+            continue
+        if kind == "human_pause_started":
+            hold_id = f"pilot-{str(event.get('hash') or index)[:64]}"
+            open_holds.append((hold_id, at, runtime_control.content_hash({
+                "kind": kind, "at": at.isoformat(), "by": event.get("by"),
+            })))
+        elif kind == "human_pause_ended" and open_holds:
+            hold_id, started, evidence_hash = open_holds.pop(0)
+            completed.append({"hold_id": hold_id, "kind": "pilot", "started_at": started.isoformat(),
+                              "ended_at": at.isoformat(), "evidence_hash": evidence_hash})
+    for hold_id, started, evidence_hash in open_holds:
+        completed.append({"hold_id": hold_id, "kind": "pilot", "started_at": started.isoformat(),
+                          "ended_at": None, "evidence_hash": evidence_hash})
+    for item in completed:
+        prior = existing.get(item["hold_id"])
+        if prior is None:
+            episode["holds"].append(item)
+            existing[item["hold_id"]] = item
+        elif prior.get("ended_at") is None and item.get("ended_at") is not None:
+            # A prior refresh persisted the open hold.  Reconcile the later
+            # end event into that same durable row instead of ignoring it as
+            # a duplicate and excluding the rest of the run forever.
+            prior["ended_at"] = item["ended_at"]
+    runtime_control.validate_performance_history(updated)
+    return updated
+
+
+def refresh_performance_state(
+    root: Path,
+    *,
+    status: dict | None = None,
+    events: list[dict] | None = None,
+    metrics: dict | None = None,
+    now: datetime | None = None,
+    persist: bool = True,
+) -> dict:
+    """Refresh durable 90/120-minute state and return content-free telemetry."""
+    root = Path(root)
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    cfg = lib.load_config(root)
+    status = status or lib.load_unique_json(lib.status_path(root, cfg))
+    events = events if events is not None else lib.read_events(root, cfg)
+    run_id = _runtime_run_id(root, events)
+    history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
+    if history is None or history.get("run_id") != run_id:
+        started = _event_datetime(events[0].get("at") if events else status.get("updated_at"), now)
+        history = runtime_control.new_performance_history(run_id, "episode-1", now=min(started, now))
+    history = _sync_performance_holds(history, events)
+    live_sessions = [
+        {"operation_id": session_id, "kind": "agent", "location": "local",
+         "cancellable": True, "bounded": True, "state": "running"}
+        for session_id, session in (status.get("agent_sessions") or {}).items()
+        if isinstance(session, dict) and session.get("state") in getattr(lib, "AGENT_SESSION_LIVE_STATES", set())
+    ]
+    history, decision = runtime_control.transition_performance(history, now=now, in_flight=live_sessions)
+    if persist:
+        _runtime_write(root, PERFORMANCE_RECORD, history)
+    episode = history["episodes"][-1]
+    active_seconds = runtime_control.episode_active_seconds(episode, now=now)
+    progress = max(0, min(100, int(float(status.get("progress", 0) or 0))))
+    forecast_total = (active_seconds * 100 / progress) if progress else None
+    forecast_remaining = max(0.0, forecast_total - active_seconds) if forecast_total is not None else None
+    phase_seconds = (metrics or {}).get("phase_seconds") or {}
+    bottleneck = None
+    if phase_seconds:
+        phase, seconds = max(phase_seconds.items(), key=lambda item: float(item[1] or 0))
+        bottleneck = {"phase": str(phase), "seconds": float(seconds or 0)}
+    return {
+        "schema": "handsoff.performance_view", "version": 1,
+        "run_id": run_id, "episode_id": episode["episode_id"], "state": episode["state"],
+        "overall_percent": progress, "active_seconds": active_seconds,
+        "warning_seconds": 90 * 60, "pause_seconds": 120 * 60,
+        "warning_at": episode["warning_at"], "paused_at": episode["paused_at"],
+        "block_new_work": decision["block_new_work"], "transition": decision["action"],
+        "forecast_total_seconds": forecast_total, "forecast_remaining_seconds": forecast_remaining,
+        "forecast_variance_seconds": (forecast_total - 120 * 60) if forecast_total is not None else None,
+        "bottleneck": bottleneck, "breaches": history["breaches"],
+    }
+
+
+def performance_mutation_refusal(root: Path, operation: str) -> str | None:
+    """Return the deterministic pause refusal used by CLI and dashboard launchers."""
+    try:
+        view = refresh_performance_state(root)
+    except (lib.HandsoffError, OSError):
+        return None
+    if not view["block_new_work"]:
+        return None
+    if operation in PERFORMANCE_READ_ONLY_COMMANDS or operation in PERFORMANCE_PAUSE_COMMANDS:
+        return None
+    return (f"{operation} is blocked: active run time reached 120 minutes and the run is "
+            "paused_for_performance_review; record an explicit performance-resume decision")
+
+
+def _runtime_snapshot(status: dict, events: list[dict], performance: dict) -> dict:
+    terminal = status.get("status") == "complete" and int(status.get("progress", 0) or 0) >= 100
+    live = [item for item in (status.get("agent_sessions") or {}).values()
+            if isinstance(item, dict) and item.get("state") in getattr(lib, "AGENT_SESSION_LIVE_STATES", set())]
+    failures = [item for item in (status.get("agent_failures") or {}).values() if isinstance(item, dict)]
+    regressions = status.get("regression_requests") or []
+    gate = "performance_pause" if performance["block_new_work"] else (
+        "regression" if any(item.get("state") in {"accepted", "launched"} for item in regressions if isinstance(item, dict)) else "none"
+    )
+    worker_state = "healthy" if live else ("failed" if failures else "quiet")
+    if terminal:
+        worker_state = "none"
+    return {
+        "schema": "handsoff.run_snapshot", "version": 1, "run_id": performance["run_id"],
+        "state": "completed" if terminal else ("blocked" if status.get("status") == "blocked" else "in_progress"),
+        "percent": performance["overall_percent"], "verified_complete": terminal, "gate": gate,
+        "worker_state": worker_state, "failure_category": failures[-1].get("category") if failures else None,
+        "recovery_attempts": len(status.get("recovery_attempts") or []),
+        "escalation_recorded": bool(status.get("escalation")),
+        "result_adoptable": any(isinstance(item.get("result"), dict) for item in failures),
+    }
 
 
 def _criterion(acceptance: dict, criterion_id: str) -> dict | None:
@@ -596,6 +783,12 @@ def cmd_advance(args) -> int:
             return _print_audit_block(audit_errors)
         lib.ensure_no_launched_regression(status)
 
+        if args.phase == 8:
+            release_error = release_runtime.completion_error(root, status.get("release_plan"))
+            if release_error:
+                print(f"SHIP_FEATURE_BLOCKED: release gate: {release_error}")
+                return 1
+
         refusal = lib.lane_gate_refusal(status, f"advance_{args.phase}")
         if refusal:
             print(f"SHIP_FEATURE_BLOCKED: {refusal}")
@@ -1045,6 +1238,7 @@ def cmd_ci_watch(args) -> int:
         return 1
     try:
         if args.pr is not None:
+            _enforce_refs_only_pr(root, args.pr)
             watch = lib.ci_watch_start(root, cfg, pr=args.pr, by=args.by)
             expected = f"{watch['expected_seconds']:.0f} s expected" if watch.get("expected_seconds") else lib.CI_NO_HISTORY_NOTE
             print(f"CI_WATCH_STARTED: PR #{watch['pr']} head {watch['head'][:12]}; {expected}")
@@ -1065,6 +1259,29 @@ def cmd_ci_watch(args) -> int:
         print(f"CI_WATCH_BLOCKED: {exc}")
         return 1
     return 0
+
+
+def _enforce_refs_only_pr(root: Path, number: int, *, runner=subprocess.run) -> None:
+    """Refuse a watched PR whose title/body can auto-close a work item."""
+    try:
+        result = runner(
+            ["gh", "pr", "view", str(number), "--json", "title,body"],
+            cwd=str(root), capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode != 0:
+        return
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    try:
+        close_transaction.enforce_refs_only(payload.get("title") or "", payload.get("body") or "")
+    except close_transaction.CloseTransactionError as exc:
+        raise lib.HandsoffError(f"ci-watch: {exc}") from exc
 
 
 def _release_run_dashboard(root, cfg) -> None:
@@ -1688,6 +1905,62 @@ def cmd_release_plan(args) -> int:
             full_regression_eligible=plan["full_regression_eligible"], by=actor,
         )
     print(json.dumps(plan, indent=2))
+    return 0
+
+
+def cmd_release_reconcile(args) -> int:
+    """Run or resume the Phase-7 release transaction."""
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, _acceptance, records, problems = _load_all(root, cfg)
+        except lib.HandsoffError as exc:
+            print(f"RELEASE_BLOCKED: {exc}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if status.get("phase_number") != 7:
+            print("RELEASE_BLOCKED: release reconciliation requires Phase 7")
+            return 1
+        if lib.adaptive_deployment_approval_required(status, cfg) and not status.get("deployment_approved"):
+            print("RELEASE_BLOCKED: deployment approval is required before publishing")
+            return 1
+        plan = deepcopy(status.get("release_plan"))
+        if not isinstance(plan, dict):
+            print("RELEASE_BLOCKED: record release-plan before publishing")
+            return 1
+        plan_binding = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+
+    def rooted(value, default=None):
+        path = Path(value) if value else default
+        if path is not None and not path.is_absolute():
+            path = root / path
+        return path
+
+    try:
+        evidence = release_runtime.reconcile_release(
+            root, plan, rooted(args.artifact), repository=args.repository, commit=args.commit,
+            manifest=rooted(args.manifest, root / "handsoff-runtime.json"),
+            notes_file=rooted(args.notes_file),
+        )
+    except (release_runtime.ReleaseProviderError,
+            release_runtime.tx.ReleaseTransactionError, ValueError) as exc:
+        print(f"RELEASE_BLOCKED: {exc}")
+        return 1
+    with lib.project_lock(root):
+        status, _ = _load(root, cfg)
+        current = status.get("release_plan")
+        if status.get("phase_number") != 7 or not isinstance(current, dict) \
+                or json.dumps(current, sort_keys=True, separators=(",", ":")) != plan_binding:
+            print("RELEASE_BLOCKED: workflow state or release plan changed during reconciliation")
+            return 1
+        lib.commit(root, cfg, status=status, event_kind="release_reconciled",
+                   event_message=f"Release {plan['version']} published, installed and manifest-verified",
+                   by=actor, release=evidence)
+    print(json.dumps(evidence, indent=2))
     return 0
 
 
@@ -4637,20 +4910,198 @@ def cmd_dashboard(args) -> int:
                  owned_by_run=bool(getattr(args, "owned_by_run", False)))
 
 
+def _close_transaction_identity(root: Path, cfg: dict) -> tuple[str, Path]:
+    """Stable identity/path for the current initialized run."""
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        events = lib.read_events(root, cfg)
+        problems = lib.verify_event_log(root, cfg)
+    if problems:
+        raise lib.HandsoffError("run-close: event log authentication failed: " + problems[0])
+    # A local run-reopen starts a new close episode.  It retains the run's
+    # feature identity while preventing a completed prior close transaction
+    # from suppressing the new report/close reconciliation pass.
+    reopen_count = sum(event.get("kind") == "run_reopened" for event in events)
+    token = hashlib.sha256(
+        f"{lib.feature_hash(status, events)}:{reopen_count}".encode("utf-8")
+    ).hexdigest()
+    path = root / ".handsoff-archive" / "close-transactions" / f"{token}.json"
+    return token, path
+
+
+def _load_close_transaction(root: Path, cfg: dict) -> tuple[close_transaction.CloseTransaction, Path]:
+    token, path = _close_transaction_identity(root, cfg)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except (OSError, ValueError) as exc:
+        raise lib.HandsoffError(f"run-close: close transaction is unreadable: {exc}") from exc
+    try:
+        record = close_transaction.migrate_transaction(
+            raw, root=root, run_token=token, authenticated=True,
+        )
+    except close_transaction.CloseTransactionError as exc:
+        raise lib.HandsoffError(f"run-close: {exc}") from exc
+
+    def persist(value: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lib.atomic_write_json(path, value)
+
+    transaction = close_transaction.CloseTransaction(record, persist=persist)
+    persist(record)
+    return transaction, path
+
+
+def _fleet_run_state(root: Path) -> str | None:
+    import handsoff_fleet as fleet
+    entry = next((row for row in fleet.load_registry() if row.get("root") == str(root.resolve())), None)
+    return entry.get("state") if isinstance(entry, dict) else None
+
+
+def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
+    """Execute the product close path as an ordered, resumable transaction."""
+    transaction, transaction_path = _load_close_transaction(root, cfg)
+    result: dict = {}
+
+    def current_status() -> dict:
+        with lib.project_lock(root):
+            return lib.load_unique_json(lib.status_path(root, cfg))
+
+    def revalidate() -> None:
+        token, path = _close_transaction_identity(root, cfg)
+        if token != transaction.record.get("run_token") or path != transaction_path:
+            raise close_transaction.CloseConflict("run identity changed during close")
+
+    def close_state() -> dict:
+        status = current_status()
+        return {"closed": isinstance(status.get("run_closed"), dict),
+                "run_closed": status.get("run_closed")}
+
+    def close_action() -> None:
+        result.update(lib.close_run(
+            root, by=args.by, reason=args.reason,
+            expected_updated_at=getattr(args, "expected_updated_at", None),
+            cancel_active=bool(getattr(args, "cancel_active", False)),
+            release_dashboard=False,
+        ))
+
+    started_at = transaction.record.get("created_at") or ""
+
+    with lib.project_lock(root):
+        close_status, close_acceptance = _load(root, cfg)
+    expected_issue_numbers = {
+        item["number"] for item in lib.derive_work_items(close_status, close_acceptance, cfg).get("items", [])
+        if item.get("kind") == "issue" and isinstance(item.get("number"), int)
+    }
+
+    def report_state() -> dict:
+        matching = [event for event in lib.read_events(root, cfg)
+                    if event.get("kind") in {"report_posted", "report_not_posted"}
+                    and str(event.get("at") or "") >= started_at]
+        rows = transaction.record.get("items") or {}
+        complete = all(
+            bool(rows.get(str(number), {}).get("commented"))
+            and bool(rows.get(str(number), {}).get("closed"))
+            and bool(rows.get(str(number), {}).get("ticked"))
+            for number in expected_issue_numbers
+        )
+        kind = matching[-1].get("kind") if matching else None
+        return {"recorded": bool(matching), "kind": kind,
+                "items_complete": complete and kind == "report_posted"}
+
+    def report_action() -> None:
+        rows = transaction.record.setdefault("items", {})
+        known_closed = {int(number) for number, row in rows.items()
+                        if str(number).isdigit()
+                        and (row.get("closed") is True or row.get("closed_dispatched") is True)}
+        # Prior close episodes remain attributable through the authenticated
+        # event ledger.  This permits a deliberate run-reopen to reconcile a
+        # previously completed Handsoff closure without treating an arbitrary
+        # pre-existing closed issue as ours.
+        for event in lib.read_events(root, cfg):
+            if event.get("kind") != "report_posted":
+                continue
+            for posted in event.get("posted") or []:
+                if isinstance(posted, dict) and isinstance(posted.get("number"), int) \
+                        and posted.get("closed") is True:
+                    known_closed.add(posted["number"])
+        def checkpoint(number: int, operation: str, state: str) -> None:
+            row = rows.setdefault(str(number), {})
+            if state == "intent":
+                row[f"{operation}_intent"] = True
+            elif state == "dispatched":
+                row[f"{operation}_dispatched"] = True
+            elif state == "complete":
+                row[operation] = True
+            transaction._persist()
+
+        outcome = _post_report(
+            root, cfg, by=args.by, known_handsoff_closed=known_closed,
+            checkpoint=checkpoint,
+        )
+        for posted in outcome.get("posted") or []:
+            number = posted.get("number")
+            if not isinstance(number, int):
+                continue
+            row = rows.setdefault(str(number), {})
+            row["commented"] = posted.get("comment") in {"posted", "skipped"}
+            row["closed"] = posted.get("closed") is True
+            row["ticked"] = posted.get("parent") is None or posted.get("ticked") is True
+        transaction._persist()
+
+    def fleet_action() -> None:
+        import handsoff_fleet as fleet
+        fleet.note_registry_state(root, None, "closed")
+
+    operations = {
+        "prepare": close_transaction.Operation(close_state, lambda value: value["closed"], close_action),
+        "final_report_post": close_transaction.Operation(
+            report_state, lambda value: value["items_complete"], report_action,
+            optional=not bool(getattr(args, "post", False)),
+            unavailable_reason=None if getattr(args, "post", False) else "--post was not requested",
+        ),
+        # This transaction file is the durable local close archive. The
+        # existing retire_finished_run path moves the full ledgers at init.
+        "archive": close_transaction.Operation(
+            lambda: {"path": str(transaction_path), "exists": transaction_path.is_file()},
+            lambda value: value["exists"], lambda: None,
+        ),
+        "fleet_unregister": close_transaction.Operation(
+            lambda: {"state": _fleet_run_state(root)},
+            lambda value: value["state"] == "closed", fleet_action,
+        ),
+        "dashboard_shutdown": close_transaction.Operation(
+            lambda: {"owner_present": lib.dashboard_owner_path(root).exists()},
+            lambda value: not value["owner_present"], lambda: _release_run_dashboard(root, cfg),
+        ),
+        "config_restore": close_transaction.Operation(
+            lambda: {"owned_override": False},
+            lambda value: value["owned_override"] is False, lambda: None,
+        ),
+        "optional_analysis": close_transaction.Operation(
+            lambda: {"applicable": False}, lambda _value: False, lambda: None,
+            optional=True, unavailable_reason="analysis runs after a completed Phase 8 archive",
+        ),
+    }
+    try:
+        transaction.run(operations, revalidate=revalidate)
+    except close_transaction.CloseTransactionError as exc:
+        raise lib.HandsoffError(f"run-close: {exc}") from exc
+    if not result:
+        closed = close_state()["run_closed"]
+        result = {"closed": True, "already_closed": True, "run_closed": closed,
+                  "dashboard": {"released": False, "reason": "closure transaction resumed"}}
+    result["transaction"] = {"state": transaction.record["state"], "path": str(transaction_path)}
+    return result
+
+
 def cmd_run_close(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
-    if getattr(args, "post", False):
-        # #171: the report is built and posted before the close, from the
-        # ledger as it stands; the close itself is what follows.
-        _post_report(root, cfg, by=args.by)
-    result = lib.close_run(
-        root, by=args.by, reason=args.reason,
-        expected_updated_at=getattr(args, "expected_updated_at", None),
-        cancel_active=bool(getattr(args, "cancel_active", False)),
-        release_dashboard=bool(getattr(args, "release_dashboard", True)),
-    )
-    _release_tickets(root, "closed")
+    try:
+        result = _run_close_transaction(args, root, cfg)
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
     print(json.dumps(result, sort_keys=True))
     return 0
 
@@ -4663,13 +5114,18 @@ def _validate_lines(root, cfg) -> list[str]:
     return ["SHIP_FEATURE_VALID"] if not errors else ["SHIP_FEATURE_BLOCKED"] + [f"- {e}" for e in errors]
 
 
-def _post_report(root, cfg, *, by: str) -> dict:
+def _post_report(root, cfg, *, by: str, known_handsoff_closed: set[int] | None = None,
+                 checkpoint=None) -> dict:
     """#171: render from the ledger, post once per ticket, record the outcome."""
     with lib.project_lock(root):
         status, acceptance, verifications, _problems = _load_all(root, cfg)
         events = lib.read_events(root, cfg)
     validate = _validate_lines(root, cfg)
-    outcome = lib.post_final_report(root, cfg, status, acceptance, events, verifications, validate, by=by)
+    outcome = lib.post_final_report(
+        root, cfg, status, acceptance, events, verifications, validate, by=by,
+        known_handsoff_closed=known_handsoff_closed,
+        checkpoint=checkpoint,
+    )
     with lib.project_lock(root):
         lib.record_report_outcome(root, cfg, outcome, by=by)
     if outcome.get("reason"):
@@ -4697,6 +5153,96 @@ def cmd_run_reopen(args) -> int:
         expected_updated_at=getattr(args, "expected_updated_at", None),
     )
     print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+def cmd_performance_status(args) -> int:
+    root = lib.resolve_root(args.root)
+    with lib.project_lock(root):
+        print(json.dumps(refresh_performance_state(root), indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_performance_resume(args) -> int:
+    root = lib.resolve_root(args.root)
+    with lib.project_lock(root):
+        history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
+        if history is None:
+            raise lib.HandsoffError("no performance episode exists to resume")
+        at = datetime.now(timezone.utc)
+        decision = {
+            "decision_id": f"resume-{uuid.uuid4().hex}", "action": "resume", "actor": args.by,
+            "reason": args.reason, "evidence_hash": args.evidence_hash, "at": at.isoformat(),
+        }
+        resumed = runtime_control.resume_performance(
+            history, decision, f"episode-{len(history['episodes']) + 1}",
+        )
+        _runtime_write(root, PERFORMANCE_RECORD, resumed)
+    print("PERFORMANCE_RESUMED")
+    return 0
+
+
+def cmd_monitor_poll(args) -> int:
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    now = datetime.now(timezone.utc)
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        events = lib.read_events(root, cfg)
+        performance = refresh_performance_state(root, status=status, events=events, now=now)
+        record = _runtime_read(root, MONITOR_RECORD, "handsoff.monitor")
+        if record is None or record.get("run_id") != performance["run_id"]:
+            record = runtime_control.new_monitor(performance["run_id"], args.owner, now=now,
+                                                 lease_seconds=args.lease_seconds)
+        else:
+            record = runtime_control.claim_monitor(
+                record, args.owner, now=now, lease_seconds=args.lease_seconds,
+                expected_epoch=record["lease_epoch"], expected_cursor=record["cursor"],
+            )
+        cursor = len(events)
+        if cursor > record["cursor"]:
+            record = runtime_control.advance_monitor_cursor(
+                record, owner_instance=args.owner, lease_epoch=record["lease_epoch"],
+                expected_cursor=record["cursor"], new_cursor=cursor, now=now,
+            )
+        snapshot = _runtime_snapshot(status, events, performance)
+        policy = {"same_task_retry_cap": 2, "equivalent_quota_fallback": True,
+                  "safe_result_adoption": True}
+        decision = runtime_control.decide_monitor_action(snapshot, policy)
+        if decision["action"] == "complete_monitor":
+            record = runtime_control.finish_monitor(
+                record, owner_instance=args.owner, lease_epoch=record["lease_epoch"],
+                expected_cursor=record["cursor"], now=now,
+            )
+        _runtime_write(root, MONITOR_RECORD, record)
+    print(json.dumps({"monitor": record, "decision": decision, "performance": performance}, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_evidence_refresh_plan(args) -> int:
+    root = lib.resolve_root(args.root)
+    def read_bounded(path_text: str) -> dict | list:
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = root / path
+        if path.stat().st_size > 1_000_000:
+            raise lib.HandsoffError(f"runtime-control input is too large: {path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+    mapping = read_bounded(args.map)
+    changes = read_bounded(args.changes)
+    hashes = read_bounded(args.hashes)
+    regenerated = read_bounded(args.regenerated) if args.regenerated else None
+    assessment = runtime_control.assess_dependency_drift(
+        mapping, args.subject, changes, hashes, current_input_hash=args.input_hash,
+        regenerated_outputs=regenerated,
+    )
+    event = runtime_control.dependency_audit_event(assessment, at=datetime.now(timezone.utc))
+    with lib.project_lock(root):
+        path = _runtime_path(root, EVIDENCE_AUDIT_RECORD)
+        audit = lib.load_unique_json(path) if path.exists() else {"schema": 1, "events": []}
+        audit["events"] = (audit.get("events") or [])[-4095:] + [event]
+        _runtime_write(root, EVIDENCE_AUDIT_RECORD, audit)
+    print(json.dumps(assessment, indent=2, sort_keys=True))
     return 0
 
 
@@ -4756,6 +5302,15 @@ def build_parser() -> argparse.ArgumentParser:
     release_plan.add_argument("--version", required=True)
     release_plan.add_argument("--by", required=True)
     release_plan.add_argument("--full-regression-override-reason")
+
+    release_reconcile = sub.add_parser(
+        "release-reconcile", help="publish, install and verify the planned release transaction")
+    release_reconcile.add_argument("--artifact", required=True)
+    release_reconcile.add_argument("--by", required=True)
+    release_reconcile.add_argument("--repository")
+    release_reconcile.add_argument("--commit")
+    release_reconcile.add_argument("--manifest")
+    release_reconcile.add_argument("--notes-file")
 
     regression_request = sub.add_parser("regression-request")
     regression_request.add_argument("--group", required=True)
@@ -5177,6 +5732,24 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--by", default=None)
     gate.add_argument("--reason", default=None)
 
+    monitor = sub.add_parser("monitor-poll", help="model-free durable monitor poll")
+    monitor.add_argument("--owner", required=True)
+    monitor.add_argument("--lease-seconds", type=int, default=30)
+
+    evidence_refresh = sub.add_parser("evidence-refresh-plan", help="conservatively assess evidence drift")
+    evidence_refresh.add_argument("--map", required=True)
+    evidence_refresh.add_argument("--subject", required=True)
+    evidence_refresh.add_argument("--changes", required=True)
+    evidence_refresh.add_argument("--hashes", required=True)
+    evidence_refresh.add_argument("--input-hash", required=True)
+    evidence_refresh.add_argument("--regenerated")
+
+    sub.add_parser("performance-status", help="refresh and print the 90/120-minute run state")
+    performance_resume = sub.add_parser("performance-resume", help="open a new episode after explicit reevaluation")
+    performance_resume.add_argument("--by", required=True)
+    performance_resume.add_argument("--reason", required=True)
+    performance_resume.add_argument("--evidence-hash", required=True)
+
     return p
 
 
@@ -5187,6 +5760,7 @@ def main() -> int:
         "advance": cmd_advance, "deployment-gate": cmd_deployment_gate,
         "verify": cmd_verify, "verify-log": cmd_verify_log, "doctor": cmd_doctor,
         "release-plan": cmd_release_plan,
+        "release-reconcile": cmd_release_reconcile,
         "regression-request": cmd_regression_request,
         "regression-decide": cmd_regression_decide,
         "regression-run": cmd_regression_run,
@@ -5243,8 +5817,17 @@ def main() -> int:
         "design-decline": cmd_design_decline,
         "run-close": cmd_run_close,
         "run-reopen": cmd_run_reopen,
+        "monitor-poll": cmd_monitor_poll,
+        "evidence-refresh-plan": cmd_evidence_refresh_plan,
+        "performance-status": cmd_performance_status,
+        "performance-resume": cmd_performance_resume,
     }
     try:
+        if args.command != "init":
+            root = lib.resolve_root(args.root)
+            refusal = performance_mutation_refusal(root, args.command)
+            if refusal:
+                raise lib.HandsoffError(refusal)
         return handlers[args.command](args)
     except lib.HandsoffError as e:
         print(f"SHIP_FEATURE_BLOCKED: {e}")

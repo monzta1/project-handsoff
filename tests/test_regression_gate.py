@@ -53,7 +53,7 @@ class RegressionGateTests(unittest.TestCase):
     def test_equivalent_full_suite_is_blocked_outside_gate(self):
         cfg = lib.load_config(self.root)
         with self.assertRaisesRegex(lib.HandsoffError, "full regression blocked"):
-            lib.run_checks(cfg, self.root, commands=["python -m unittest tests.test_handsoff_supervisor"])
+            lib.run_checks(cfg, self.root, commands=["python3 tests/shard.py --all"])
         self.assertEqual(
             lib.normalized_test_footprint("python ./tests/test_handsoff_supervisor.py -v", self.root),
             frozenset({"tests/test_handsoff_supervisor.py"}),

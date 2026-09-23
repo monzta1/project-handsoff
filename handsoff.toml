@@ -248,7 +248,7 @@ full_regression_major_only = true
 
 [[regressions]]
 name = "python-full"
-commands = ["python3 tests/test_handsoff_supervisor.py"]
+commands = ["python3 tests/shard.py --all"]
 
 [[regressions]]
 name = "dashboard-full"

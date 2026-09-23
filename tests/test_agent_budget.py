@@ -85,6 +85,24 @@ class TestAgentTokenBudget(HandsoffTestCase):
         self.assertTrue(spec.budget_decision["followup"])
         self.assertEqual(spec.budget_decision["changed_files"], 3)
 
+    def test_implementation_delta_is_hash_bound(self):
+        self.init("Hash the implementation delta")
+        status = self.read_status()
+        status.update(phase_number=5, phase=lib.PHASES[5], review_attempts=[{
+            "attempt": 1, "disposition": "changes_requested",
+            "closed_at": "2026-01-01T00:00:00+00:00",
+            "findings": [{"code": "F1", "summary": "bounded correction"}],
+        }])
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(status))
+        packet = runtime.implementation_review_delta_packet(self.tmp, lib.load_config(self.tmp), "reviewer")
+        self.assertRegex(packet["packet_hash"], r"^[0-9a-f]{64}$")
+        body = dict(packet)
+        observed = body.pop("packet_hash")
+        expected = __import__("hashlib").sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(observed, expected)
+
     def test_implementer_receives_the_exact_reviewer_approved_contract(self):
         self.init("Reviewer first implementation contract")
         acceptance = self.read_acceptance()
@@ -114,6 +132,10 @@ class TestAgentTokenBudget(HandsoffTestCase):
                          "Render the exact accepted outcome")
         self.assertEqual(contract["criteria"][0]["tests"],
                          ["python3 -m unittest tests.test_agent_budget -v"])
+        self.assertRegex(contract["contract_hash"], r"^[0-9a-f]{64}$")
+        self.assertEqual(len(contract["criterion_hashes"]), 1)
+        repeated = runtime.build_role_input(self.tmp, "implementer", "Build the contract.")
+        self.assertEqual(text, repeated)
 
         acceptance["criteria"][0]["requirement"] = "Unreviewed replacement"
         self.write_acceptance(acceptance)

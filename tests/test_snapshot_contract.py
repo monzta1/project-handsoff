@@ -214,7 +214,7 @@ class SnapshotContractTests(HandsoffTestCase):
         """[#218] F1.2: every emitted key listed and required; three open objects, marked."""
         self.assertIs(SCHEMA["additionalProperties"], False)
         self.assertEqual(sorted(SCHEMA["required"]), sorted(SCHEMA["properties"]))
-        for key in ("runtime", "metrics"):
+        for key in ("runtime", "metrics", "performance"):
             self.assertIs(SCHEMA["properties"][key]["additionalProperties"], True)
             self.assertIn("intentionally open", SCHEMA["properties"][key]["description"])
         for key in ("input_required", "supervisor", "engine"):

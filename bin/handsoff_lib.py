@@ -2678,12 +2678,25 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
                          ("changed_files", changed_files)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise HandsoffError(f"{label} must be a non-negative integer")
+    estimated_input_tokens = math.ceil(packet_bytes / 3)
+    input_guard_tokens = math.ceil(estimated_input_tokens * 0.10)
+    protocol_overhead_tokens = 1_024
+    response_reserve_tokens = max(4_096, criteria_count * 256)
+    safe_minimum = (estimated_input_tokens + input_guard_tokens
+                    + protocol_overhead_tokens + response_reserve_tokens)
+    sizing = {
+        "estimator": "ceil_utf8_bytes_over_3", "estimated_input_tokens": estimated_input_tokens,
+        "input_guard_tokens": input_guard_tokens,
+        "protocol_overhead_tokens": protocol_overhead_tokens,
+        "response_reserve_tokens": response_reserve_tokens,
+        "safe_minimum": safe_minimum,
+    }
     if risk_class is None:
         return {"ceiling": configured_ceiling, "configured_ceiling": configured_ceiling,
                 "floor": ROLE_BUDGET_FLOORS[role], "risk_class": None,
                 "role": role, "packet_bytes": packet_bytes,
                 "criteria_count": criteria_count, "changed_files": changed_files,
-                "followup": bool(followup), "basis": "legacy_configured_ceiling"}
+                "followup": bool(followup), "basis": "legacy_configured_ceiling", **sizing}
     risk_class = classify_adaptive_risk(risk_class)
     floor = ROLE_BUDGET_FLOORS[role]
     # Packet bytes are converted conservatively: roughly four bytes/token,
@@ -2709,13 +2722,15 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
             "floor": floor, "risk_class": risk_class, "role": role,
             "packet_bytes": packet_bytes, "criteria_count": criteria_count,
             "changed_files": changed_files, "followup": bool(followup),
-            "basis": "risk_role_packet_scope"}
+            "basis": "risk_role_packet_scope", **sizing}
 
 
 def validate_session_budget_decision(value: object) -> dict:
-    required = {"ceiling", "configured_ceiling", "floor", "risk_class", "role",
+    legacy = {"ceiling", "configured_ceiling", "floor", "risk_class", "role",
                 "packet_bytes", "criteria_count", "changed_files", "followup", "basis"}
-    if not isinstance(value, dict) or set(value) != required:
+    sizing = {"estimator", "estimated_input_tokens", "input_guard_tokens",
+              "protocol_overhead_tokens", "response_reserve_tokens", "safe_minimum"}
+    if not isinstance(value, dict) or set(value) not in {frozenset(legacy), frozenset(legacy | sizing)}:
         raise HandsoffError("budget_decision has invalid fields")
     if value.get("role") not in ROLE_BUDGET_FLOORS:
         raise HandsoffError("budget_decision role is invalid")
@@ -2730,6 +2745,13 @@ def validate_session_budget_decision(value: object) -> dict:
     if not isinstance(value.get("followup"), bool) or value.get("basis") not in {
             "legacy_configured_ceiling", "risk_role_packet_scope"}:
         raise HandsoffError("budget_decision followup or basis is invalid")
+    if sizing <= set(value):
+        if value.get("estimator") != "ceil_utf8_bytes_over_3":
+            raise HandsoffError("budget_decision estimator is invalid")
+        for field in sizing - {"estimator"}:
+            number = value.get(field)
+            if not isinstance(number, int) or isinstance(number, bool) or number < 0:
+                raise HandsoffError(f"budget_decision {field} must be a non-negative integer")
     return deepcopy(value)
 
 
@@ -7706,11 +7728,15 @@ def reviewer_implementation_contract(status: dict, acceptance: dict) -> dict | N
          if key in item}
         for item in criteria[:64] if isinstance(item, dict)
     ]
-    return {
+    body = {
         "schema": 1,
         "issued_by": review.get("by"),
         "design_review_attempt": review.get("attempt"),
         "design_hash": current_hash,
+        "governance_hash": review.get("config_hash"),
+        "criterion_hashes": [hashlib.sha256(json.dumps(item, sort_keys=True, separators=(",", ":"),
+                                                        ensure_ascii=False).encode("utf-8")).hexdigest()
+                             for item in exact],
         "criteria": exact,
         "instructions": (
             "Implement and verify every criterion exactly as written. Do not broaden, narrow, "
@@ -7718,6 +7744,10 @@ def reviewer_implementation_contract(status: dict, acceptance: dict) -> dict | N
             "review will judge this same packet."
         ),
     }
+    body["contract_hash"] = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return body
 
 
 def session_liveness_path(root: Path) -> Path:
@@ -11791,7 +11821,7 @@ FAILURE_CATEGORIES = (
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
     "reviewer_modified_project",
     "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
-    "protocol_silence",
+    "protocol_silence", "model_identity_mismatch",
 )
 
 _FAILURE_REASON_LABELS = {
@@ -11815,6 +11845,7 @@ _FAILURE_REASON_LABELS = {
     "no_artifact": "process exited 0 without a protocol result",
     "network": "network connection to a dependency failed",
     "target_service": "target service reported a failure",
+    "model_identity_mismatch": "provider reported a different model than requested",
 }
 
 # Order matters: tier 3 checks these in sequence and the first match wins,
@@ -14103,7 +14134,9 @@ def _gh(args: list[str], *, runner=subprocess.run, cwd: Path | None = None):
 
 def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
                       verifications: list[dict], validate_lines: list[str], *, by: str,
-                      runner=subprocess.run) -> dict:
+                      runner=subprocess.run,
+                      known_handsoff_closed: set[int] | None = None,
+                      checkpoint: Callable[[int, str, str], None] | None = None) -> dict:
     """#171: one comment per issue work item, marked with the ledger head so
     a second post finds it and does nothing; the item is closed and its box
     ticked in a parent epic. Nothing is posted when a credential shape
@@ -14120,15 +14153,52 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         return {"posted": [], "skipped": [], "reason": "gh_auth", "detail": "gh is not authenticated; nothing posted"}
     items = [item for item in derive_work_items(status, acceptance, cfg).get("items", [])
              if item.get("kind") == "issue" and isinstance(item.get("number"), int)]
-    posted, skipped = [], []
-    body = marker + "\n" + text
+    known_handsoff_closed = set(known_handsoff_closed or ())
+    # Read every issue before the first mutation.  A pre-existing closure is
+    # safe only when this close transaction already persisted that Handsoff
+    # closed the same item.  Human/unknown closures pause the whole report so
+    # a comment or parent edit cannot leak out before the conflict is known.
+    issue_views: dict[int, dict] = {}
     for item in items:
         number = item["number"]
-        view = _gh(["issue", "view", str(number), "--json", "body,url,state,comments"], runner=runner, cwd=root)
+        view = _gh(["issue", "view", str(number), "--json", "body,url,state,comments"],
+                   runner=runner, cwd=root)
         try:
-            issue = json.loads(view.stdout) if view.returncode == 0 else {}
+            issue = json.loads(view.stdout) if view.returncode == 0 else None
         except ValueError:
-            issue = {}
+            issue = None
+        if not isinstance(issue, dict) or str(issue.get("state") or "").upper() not in {"OPEN", "CLOSED"}:
+            return {"posted": [], "skipped": [], "reason": "issue_state",
+                    "detail": f"issue #{number} state could not be read; nothing posted"}
+        existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
+        has_report = any(isinstance(c, str) and c.lstrip().startswith(
+            REPORT_MARKER.split("{head}")[0]) for c in existing)
+        report_heads = {
+            match.group(1) for comment in existing if isinstance(comment, str)
+            for match in re.finditer(r"<!--\s*handsoff-report\s+([0-9a-f]{64})\s*-->", comment)
+        }
+        closure_heads = {
+            match.group(1) for comment in existing if isinstance(comment, str)
+            for match in re.finditer(r"Closed by the Handsoff run report \(([0-9a-f]{12})\)", comment)
+        }
+        canonically_attributed = any(
+            any(report_head.startswith(close_head) for report_head in report_heads)
+            for close_head in closure_heads
+        )
+        if str(issue.get("state")).upper() == "CLOSED" \
+                and not ((number in known_handsoff_closed and has_report) or canonically_attributed):
+            return {"posted": [], "skipped": [], "reason": "issue_state",
+                    "detail": f"issue #{number} is closed without attributable Handsoff ownership; nothing posted"}
+        issue_views[number] = issue
+    posted, skipped = [], []
+    body = marker + "\n" + text
+    def save(number: int, operation: str, state: str) -> None:
+        if checkpoint is not None:
+            checkpoint(number, operation, state)
+
+    for item in items:
+        number = item["number"]
+        issue = issue_views[number]
         existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
         # any earlier report on this ticket counts: the head moves with every
         # event, the marker's prefix does not. The comment is the only
@@ -14138,18 +14208,38 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         url = None
         if already:
             skipped.append({"number": number, "reason": "already posted"})
+            save(number, "commented", "complete")
         else:
+            save(number, "commented", "intent")
             comment = _gh(["issue", "comment", str(number), "--body", body], runner=runner, cwd=root)
             if comment.returncode != 0:
                 skipped.append({"number": number, "reason": "comment failed"})
                 continue
+            save(number, "commented", "complete")
             url = comment.stdout.strip().splitlines()[-1] if comment.stdout.strip() else None
         closed = str(issue.get("state") or "").upper() == "CLOSED"
         did_close = did_tick = False
         if not closed:
-            closed = _gh(["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
-                         runner=runner, cwd=root).returncode == 0
+            # Persist before the provider call.  If the response/read-back is
+            # lost, a retry may safely reconcile this attempted operation
+            # instead of misclassifying its own close as human/unknown.
+            save(number, "closed", "intent")
+            close_result = _gh(
+                ["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
+                runner=runner, cwd=root,
+            )
+            if close_result.returncode == 0:
+                save(number, "closed", "dispatched")
+            close_readback = _gh(["issue", "view", str(number), "--json", "state"],
+                                 runner=runner, cwd=root)
+            try:
+                closed = close_readback.returncode == 0 and str(
+                    json.loads(close_readback.stdout).get("state") or "").upper() == "CLOSED"
+            except ValueError:
+                closed = False
             did_close = closed
+        if closed:
+            save(number, "closed", "complete")
         parent_match = re.search(r"(?im)^\s*parent:\s*#([1-9][0-9]{0,8})\b", str(issue.get("body") or ""))
         parent = int(parent_match.group(1)) if parent_match else None
         ticked = False
@@ -14162,12 +14252,25 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
             unticked = re.compile(rf"^(\s*- \[) (\] #{number}\b)", re.MULTILINE)
             if unticked.search(parent_body):
                 new_body = unticked.sub(r"\1x\2", parent_body, count=1)
-                ticked = _gh(["issue", "edit", str(parent), "--body", new_body], runner=runner, cwd=root).returncode == 0
+                save(number, "ticked", "intent")
+                _gh(["issue", "edit", str(parent), "--body", new_body], runner=runner, cwd=root)
+                parent_readback = _gh(["issue", "view", str(parent), "--json", "body"],
+                                      runner=runner, cwd=root)
+                try:
+                    observed_parent = json.loads(parent_readback.stdout).get("body") or "" \
+                        if parent_readback.returncode == 0 else ""
+                except ValueError:
+                    observed_parent = ""
+                ticked = bool(re.search(rf"^\s*- \[x\] #{number}\b", observed_parent,
+                                        re.MULTILINE | re.IGNORECASE))
                 did_tick = ticked
             elif re.search(rf"^\s*- \[x\] #{number}\b", parent_body, re.MULTILINE | re.IGNORECASE):
                 ticked = True
-        if already and not did_close and not did_tick and closed and (ticked or not parent):
-            continue  # everything was done on an earlier post; nothing touched now
+        if ticked or not parent:
+            save(number, "ticked", "complete")
+        # Even a no-op read-back is returned so a fresh close episode can
+        # persist that every mandatory item is already complete.  ``skipped``
+        # still records that no duplicate comment was sent.
         posted.append({"number": number, "url": url, "closed": closed, "parent": parent, "ticked": ticked,
                        "comment": "skipped" if already else "posted"})
     return {"posted": posted, "skipped": skipped, "reason": None, "detail": None, "head": head}

@@ -26,6 +26,8 @@ with log.open("a") as fh:
     fh.write(json.dumps(args) + "\n")
 if args[:2] == ["auth", "status"]:
     sys.exit(0 if state.get("auth", True) else 1)
+if args[:2] == ["issue", "view"] and args[-1] == "state" and state.get("fail_close_readback"):
+    sys.exit(1)
 if args[:2] == ["issue", "view"]:
     number = args[2]
     issue = state["issues"].setdefault(number, {"body": "", "comments": [], "url": f"https://example.test/issues/{number}", "closed": False})
@@ -171,7 +173,8 @@ class ReportPostingTests(HandsoffTestCase):
         self._run()
         self._gh_state({**self._gh_state(), "fail_close": True, "fail_edit": True})
         r = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("final_report_post incomplete", r.stdout)
         state = self._gh_state()
         self.assertEqual(len(state["issues"]["40"]["comments"]), 1)
         self.assertFalse(state["issues"]["40"]["closed"])
@@ -181,7 +184,6 @@ class ReportPostingTests(HandsoffTestCase):
         self.assertEqual((first[0]["closed"], first[0]["ticked"], first[0]["comment"]), (False, False, "posted"))
         # GitHub recovers: the next post closes and ticks, and never comments again
         self._gh_state({**self._gh_state(), "fail_close": False, "fail_edit": False})
-        run(["run-reopen", "--by", "moncy", "--reason", "retry"], cwd=self.tmp)
         r = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self._gh_state()
@@ -196,6 +198,58 @@ class ReportPostingTests(HandsoffTestCase):
         before = len(self._calls())
         r = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
         mutations = [c for c in self._calls()[before:] if c[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
+        self.assertEqual(mutations, [])
+
+    def test_an_unknown_closed_issue_pauses_before_any_github_mutation(self):
+        self._run()
+        state = self._gh_state()
+        state["issues"]["40"]["closed"] = True
+        self._gh_state(state)
+        before = len(self._calls())
+        result = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("closed without attributable Handsoff ownership", result.stdout)
+        mutations = [call for call in self._calls()[before:]
+                     if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
+        self.assertEqual(mutations, [])
+
+    def test_a_lost_close_readback_is_attributed_and_reconciled_on_retry(self):
+        self._run()
+        self._gh_state({**self._gh_state(), "fail_close_readback": True})
+        first = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(first.returncode, 0)
+        self.assertTrue(self._gh_state()["issues"]["40"]["closed"])
+        records = list((self.tmp / ".handsoff-archive" / "close-transactions").glob("*.json"))
+        record = json.loads(records[0].read_text())
+        self.assertTrue(record["items"]["40"]["closed_intent"])
+        self.assertTrue(record["items"]["40"]["closed_dispatched"])
+
+        self._gh_state({**self._gh_state(), "fail_close_readback": False})
+        retry = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertNotIn("closed without attributable Handsoff ownership", retry.stdout)
+
+    def test_failed_close_intent_does_not_attribute_a_later_human_closure(self):
+        self._run()
+        self._gh_state({**self._gh_state(), "fail_close": True, "fail_edit": True})
+        first = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(first.returncode, 0)
+        records = list((self.tmp / ".handsoff-archive" / "close-transactions").glob("*.json"))
+        record = json.loads(records[0].read_text())
+        self.assertTrue(record["items"]["40"]["closed_intent"])
+        self.assertNotIn("closed_dispatched", record["items"]["40"])
+
+        state = self._gh_state()
+        state["issues"]["40"]["closed"] = True
+        state["fail_close"] = False
+        state["fail_edit"] = False
+        self._gh_state(state)
+        before = len(self._calls())
+        retry = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(retry.returncode, 0)
+        self.assertIn("closed without attributable Handsoff ownership", retry.stdout)
+        mutations = [call for call in self._calls()[before:]
+                     if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
         self.assertEqual(mutations, [])
 
     def test_without_post_nothing_leaves_and_no_gh_auth_records_not_posted(self):

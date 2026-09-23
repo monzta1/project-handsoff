@@ -53,7 +53,7 @@ class DocsOnlyPathTests(unittest.TestCase):
         text = CI.read_text()
         text = text[text.index("\njobs:\n"):]
         jobs = re.findall(r"(?m)^  ([a-z]+):\n", text)
-        self.assertEqual(jobs, ["changes", "docs", "python", "modules", "dashboard", "tests"])
+        self.assertEqual(jobs, ["changes", "docs", "python", "dashboard", "tests"])
 
         def block(name):
             start = text.index(f"\n  {name}:\n")
@@ -62,15 +62,15 @@ class DocsOnlyPathTests(unittest.TestCase):
             return rest[: rest.index("\n") + 1 + end.start()] if end else rest
 
         self.assertIn("if: needs.changes.outputs.docs_only == 'true'", block("docs"))
-        for name in ("python", "modules", "dashboard"):
+        for name in ("python", "dashboard"):
             self.assertIn("if: needs.changes.outputs.docs_only != 'true'", block(name), name)
             self.assertIn("needs: changes", block(name), name)
         gather = block("tests")
-        self.assertIn("needs: [changes, python, modules, dashboard, docs]", gather)
+        self.assertIn("needs: [changes, python, dashboard, docs]", gather)
         self.assertIn("if: always()", gather)
         self.assertIn('if [ "${{ needs.changes.outputs.docs_only }}" = "true" ]', gather)
         self.assertIn('test "${{ needs.docs.result }}" = "success"', gather)
-        self.assertIn('test "${{ needs.python.result }}" = "success" && test "${{ needs.modules.result }}" = "success" && test "${{ needs.dashboard.result }}" = "success"', gather)
+        self.assertIn('test "${{ needs.python.result }}" = "success" && test "${{ needs.dashboard.result }}" = "success"', gather)
         classify = block("changes")
         self.assertIn("*.md|docs/*) ;;", classify)
         self.assertIn('if [ "${{ github.event_name }}" != "pull_request" ]', classify)  # a push to main is never docs-only
