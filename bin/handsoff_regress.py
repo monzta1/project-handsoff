@@ -151,7 +151,20 @@ def balanced_shards(test_ids: list[str], shard_count: int = DEFAULT_SHARDS) -> l
     if duplicates:
         raise RegressionInventoryError(f"duplicate test id(s): {', '.join(duplicates)}")
     ordered = sorted(test_ids)
-    return [ordered[index::shard_count] for index in range(shard_count)]
+    # Contiguous count-balanced slices keep tests from the same module (and
+    # usually the same TestCase) together. Round-robin-by-ID was numerically
+    # balanced but forced nearly every module to start in every worker: the
+    # first real 1,251-test run launched roughly 440 interpreters and hit the
+    # 15-minute timeout. Contiguous boundaries preserve the <=1 count spread
+    # while duplicating at most four boundary modules across five workers.
+    base, remainder = divmod(len(ordered), shard_count)
+    shards = []
+    offset = 0
+    for index in range(shard_count):
+        size = base + (1 if index < remainder else 0)
+        shards.append(ordered[offset:offset + size])
+        offset += size
+    return shards
 
 
 def _exact_ids(expected: list[str], actual: list[str], context: str) -> None:

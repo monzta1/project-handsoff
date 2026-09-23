@@ -118,7 +118,14 @@ def all_test_ids() -> list[str]:
 
 def all_plan(total: int, ids: list[str] | None = None) -> list[list[str]]:
     ordered = sorted(ids if ids is not None else all_test_ids())
-    return [ordered[index::total] for index in range(total)]
+    base, remainder = divmod(len(ordered), total)
+    result = []
+    offset = 0
+    for index in range(total):
+        size = base + (1 if index < remainder else 0)
+        result.append(ordered[offset:offset + size])
+        offset += size
+    return result
 
 
 def _module_for_id(test_id: str, names: list[str]) -> str:

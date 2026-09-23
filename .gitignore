@@ -29,5 +29,7 @@ dist/
 .handsoff-digests/
 .handsoff-runtime-control/
 .handsoff-regression.json
+.handsoff-regression-inventory.json
+.handsoff-test-progress.json
 web/dist/
 web/.dev.vars

@@ -10,7 +10,7 @@
     "bin/handsoff_lib.py": "62799bc491590be89480767f0665aa9962be0072bb7718aa1806033cbc213a3d",
     "bin/handsoff_manifest.py": "384bd29b88a1bf2ff60e7fc5448e008ab41e659875fc8b7aff0a9746c1a96c9d",
     "bin/handsoff_progress.py": "f43294b2b663b56221f80ab60f3a6c2eb21f6bddfd62c00366d88b8b26126671",
-    "bin/handsoff_regress.py": "4119daef9eb52e7ef8d0a525bd77980cbd67bce05400aa3c304af4bdb2db442b",
+    "bin/handsoff_regress.py": "51332d176a3ea78edcd3888257ce3c12a7b812532f1d602d485e56def3e208f3",
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",
     "bin/handsoff_release_transaction.py": "31318f55dc7f7e0d6d19903488164b81e3e458fdc54acc609c5de1b992fb6889",
     "bin/handsoff_runtime_control.py": "9e0e6c5b8bc849982f99f53287ff9925c5972883a4b37460a3d6bc3dadeedb1e",
@@ -47,7 +47,7 @@
     "rules/reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "rules/reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
     "schemas/acceptance.schema.json": "80b910b8971861820fcec06b28531cdafc5871ef767211c24616803b13b896ec",
-    "schemas/snapshot.schema.json": "2023773e719969796e23e2c33ded2693b2deb3746a21a2eed8307cd791e64d8e",
+    "schemas/snapshot.schema.json": "1c48ce2f3541e023358286d48e720bbe3ac3decb598a31e9fd5f02041808fecb",
     "schemas/status.schema.json": "dfb8fca48a4820464738a78fe5a58d1c9d53b4aa8643633ecfe6c705e0236153",
     "templates/handsoff.toml": "ad0491d52af3a2951a943b571ff4b88894d1acf4ea436a5a7f7070dd80787fe4"
   },

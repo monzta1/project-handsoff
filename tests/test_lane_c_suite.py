@@ -58,6 +58,7 @@ class RunnerAndModulesTests(unittest.TestCase):
         self.assertEqual(sorted(ids), sorted(fixture_ids), "complete")
         self.assertEqual(len(ids), len(set(ids)), "disjoint")
         self.assertLessEqual(max(map(len, plan)) - min(map(len, plan)), 1)
+        self.assertEqual(plan[0], sorted(fixture_ids)[:3], "contiguous module-friendly slices")
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
         self.assertIn("python3 tests/shard.py --all --total 5 --index ${{ matrix.shard }}", workflow)
         self.assertIn("needs: [changes, python, dashboard, docs]", workflow)  # #227 adds the docs path
