@@ -796,7 +796,7 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int, command_
                 if all_tests:
                     specs.append(([
                         argv[0], argv[1], "--all", "--total", str(max_shards),
-                        "--index", str(index - 1),
+                        "--index", str(index - 1), "--run-test-ids", *partition,
                     ], False, shard))
                 else:
                     specs.append(([argv[0], "-m", "unittest", "-v", *partition], False, shard))
@@ -804,7 +804,8 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int, command_
         shard = _new_shard(1, ids)
         entry["shards"].append(shard)
         if all_tests and ids is not None:
-            specs.append(([argv[0], argv[1], "--all", "--total", "1", "--index", "0"], False, shard))
+            specs.append(([argv[0], argv[1], "--all", "--total", "1", "--index", "0",
+                           "--run-test-ids", *ids], False, shard))
         else:
             sequential = shlex.join(argv) if eligible else command
             specs.append((sequential, True, shard))

@@ -186,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--modules", action="store_true", help="shard the other test modules instead of the supervisor file")
     ap.add_argument("--all", action="store_true", help="use the complete module-isolated unittest inventory")
     ap.add_argument("--inventory", action="store_true", help="print the --all test-id inventory as JSON")
+    ap.add_argument("--run-test-ids", nargs="+",
+                    help="run coordinator-assigned --all test IDs without recollecting the inventory")
     a = ap.parse_args(argv)
     if a.inventory:
         if not a.all:
@@ -197,6 +199,14 @@ def main(argv: list[str] | None = None) -> int:
             "test_count": len(ids), "test_ids": ids,
         }, sort_keys=True))
         return 0
+    if a.run_test_ids:
+        if not a.all:
+            ap.error("--run-test-ids requires --all")
+        if a.total is None or a.index is None:
+            ap.error("--run-test-ids requires --total and --index")
+        if len(a.run_test_ids) != len(set(a.run_test_ids)):
+            ap.error("--run-test-ids contains duplicates")
+        return run_all_shard(sorted(a.run_test_ids), a.index, a.total)
     if a.total is None:
         ap.error("--total is required unless --inventory is used")
     if a.total < 1:
