@@ -392,16 +392,11 @@ Every release is a wheel attached to a GitHub release whose tag matches `pyproje
 #### What CI runs
 
 `.github/workflows/ci.yml` runs on every pull request and every push to
-`main`: six `python (shard i of 6)` jobs deal the classes of
-`tests/test_handsoff_supervisor.py` (`tests/shard.py`, weights in
-`tests/shard_weights.json`), four `modules (shard i of 4)` jobs deal every
-other `tests/test_*.py` module, one process per module (`tests/shard.py
---modules`, weights in `tests/shard_module_weights.json`; the scripts that
-are not unittest modules are named in `MODULE_SCRIPTS` and never silently
-skipped), and `dashboard` runs the node suite. The required check `tests`
-gathers all three, so `main` cannot take a change that reddens any module
-(#179). Refresh the weight files from a run's log when a shard drifts past
-the others.
+`main`: exactly five `python (shard i of 5)` jobs divide the complete,
+versioned Python inventory across isolated workers, and `dashboard` runs the
+Node suite. The required check `tests` gathers both, so `main` cannot take a
+change that reddens any module (#179). Refresh the shared inventory weights
+from a run's log when a shard drifts past the others.
 
 #### Landing a lane in this repository, in order
 
