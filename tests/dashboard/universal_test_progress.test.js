@@ -30,11 +30,14 @@ test("overall and test progress stay visible with readable responsive sizing", (
   assert.match(css, /@media \(max-width:/);
 });
 
-test("sticky progress stays proportional to the other topbar controls", () => {
-  assert.match(css, /\.settings-toggle \{[^}]*height: 34px;/);
-  assert.match(css, /\.topbar-progress \{[^}]*height: 34px;/);
-  assert.match(css, /\.topbar-progress-item strong \{[^}]*13px\/1 var\(--mono\)/);
+test("sticky progress is integrated into one proportional mission bar", () => {
+  assert.match(html, /id="mission-topbar" class="topbar"/);
+  assert.match(css, /\.topbar \{[^}]*--mission-progress: 0%;/);
+  assert.match(css, /\.topbar::after \{[^}]*width: var\(--mission-progress\)/);
+  assert.doesNotMatch(css, /\.topbar-progress \{[^}]*border:/, "progress readouts should not create a nested table");
+  assert.match(css, /\.topbar-progress-item strong \{[^}]*15px\/1 var\(--mono\)/);
   assert.match(css, /\.topbar-progress-item small \{ display: none; \}/);
+  assert.match(app, /\$\("mission-topbar"\)\.style\.setProperty\("--mission-progress", `\$\{progress\}%`\)/);
 });
 
 test("shard grid exposes state, counts, and bounded server-provided rows", () => {

@@ -1778,6 +1778,7 @@ function render(snapshot) {
     document.title = "Handsoff // E.V.E. Mission Control";
     $("active-state").classList.add("hidden");
     $("topbar-overall").textContent = "0%";
+    $("mission-topbar").style.setProperty("--mission-progress", "0%");
     $("topbar-criteria").textContent = "0/0";
     renderTestProgress(null);
     $("empty-state").classList.remove("hidden");
@@ -1851,6 +1852,7 @@ function render(snapshot) {
   const complete = progress >= 100;
   $("progress-value").textContent = Math.round(progress);
   $("topbar-overall").textContent = `${Math.round(progress)}%`;
+  $("mission-topbar").style.setProperty("--mission-progress", `${progress}%`);
   const topbarOverall = $("topbar-overall-progress");
   topbarOverall.setAttribute("aria-valuenow", String(Math.round(progress)));
   topbarOverall.setAttribute("aria-valuetext", `${Math.round(progress)} percent complete`);

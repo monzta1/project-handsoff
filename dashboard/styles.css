@@ -133,14 +133,15 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 
 /* ---------- command bar ---------- */
 .topbar {
+  --mission-progress: 0%;
   position: sticky; top: 0; z-index: 40;
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 22px;
   height: 72px; margin: 0 -20px; padding: 0 20px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(10, 16, 24, .92), rgba(7, 9, 12, .86)); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
 }
-.topbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, var(--accent) 45%, #fff 50%, var(--accent) 55%, transparent); background-size: 40% 100%; background-repeat: no-repeat; opacity: .8; animation: signal-sweep 6s ease-in-out infinite; }
-@keyframes signal-sweep { 0% { background-position: -40% 0; } 100% { background-position: 140% 0; } }
+.topbar::before { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: rgba(148, 170, 190, .08); }
+.topbar::after { content: ""; position: absolute; left: 0; bottom: -1px; width: var(--mission-progress); height: 2px; background: linear-gradient(90deg, #24a9df, #bcefff); box-shadow: 0 0 12px rgba(95, 211, 255, .62); transition: width .45s ease; }
 .brand-mark { box-shadow: inset 0 0 14px rgba(95, 211, 255, .18), 0 0 18px rgba(95, 211, 255, .12); }
 .phase-pill { box-shadow: inset 0 0 12px rgba(95, 211, 255, .16), 0 0 14px rgba(95, 211, 255, .12); text-shadow: 0 0 8px rgba(95, 211, 255, .6); }
 .brand { display: flex; align-items: center; gap: 11px; color: var(--ink); text-decoration: none; }
@@ -156,11 +157,11 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 .topbar-mission .eyebrow { margin: 0; color: var(--faint); font: 700 10px/1.2 var(--sans); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar-mission .sep { margin: 0 8px; color: var(--line-strong); }
 .topbar-mission h1 { margin: 2px 0 0; font-size: 15px; font-weight: 600; line-height: 1.25; letter-spacing: -.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.topbar-state { display: flex; align-items: center; gap: 8px; }
-.phase-pill, .mission-state { display: inline-flex; align-items: center; height: 28px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 6px; font: 700 10.5px/1 var(--mono); letter-spacing: .08em; white-space: nowrap; }
-.phase-pill { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
-.mission-state { color: var(--muted); background: rgba(255, 255, 255, .02); }
-.topbar-meta { display: flex; align-items: center; gap: 14px; color: var(--muted); font: 600 11px/1 var(--sans); }
+.topbar-state { display: grid; align-content: center; gap: 5px; min-width: 112px; padding-left: 15px; border-left: 1px solid var(--line); }
+.phase-pill, .mission-state { display: block; height: auto; padding: 0; border: 0; border-radius: 0; background: transparent; font: 750 10.5px/1 var(--mono); letter-spacing: .09em; white-space: nowrap; }
+.phase-pill { color: var(--accent); box-shadow: none; text-shadow: 0 0 8px rgba(95, 211, 255, .35); }
+.mission-state { color: var(--faint); font-size: 9.5px; }
+.topbar-meta { display: flex; align-items: center; gap: 16px; color: var(--muted); font: 600 11px/1 var(--sans); }
 .connection { display: inline-flex; align-items: center; color: var(--accent); font: 700 10.5px/1 var(--mono); letter-spacing: .06em; white-space: nowrap; }
 .connection i { display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); animation: pulse 2s infinite; }
 .last-sync { color: var(--faint); font: 600 10.5px/1 var(--mono); letter-spacing: .04em; white-space: nowrap; }
@@ -168,14 +169,15 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 .settings-toggle:focus-visible, .console-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .settings-toggle { height: 34px; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: rgba(255, 255, 255, .02); font: 700 10.5px/1 var(--sans); letter-spacing: .08em; cursor: pointer; }
 .settings-toggle:hover { color: var(--accent); border-color: var(--accent-line); }
-.topbar-progress { display: flex; align-items: stretch; height: 34px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: rgba(255, 255, 255, .02); }
-.topbar-progress-item { position: relative; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0 10px; border-left: 1px solid var(--line); }
-.topbar-progress-item:first-child { border-left: 0; }
-.topbar-progress-item span { color: var(--faint); font: 800 9px/1 var(--mono); letter-spacing: .08em; }
-.topbar-progress-item strong { color: var(--ink); font: 750 13px/1 var(--mono); letter-spacing: .01em; white-space: nowrap; }
+.topbar-progress { display: flex; align-items: center; height: 44px; overflow: visible; }
+.topbar-progress-item { position: relative; display: grid; align-content: center; gap: 5px; min-width: 78px; height: 36px; padding: 0 14px; }
+.topbar-progress-item::before { content: ""; position: absolute; top: 7px; bottom: 7px; left: 0; width: 1px; background: var(--line); }
+.topbar-progress-item:first-child::before { display: none; }
+.topbar-progress-item span { color: var(--faint); font: 800 8.5px/1 var(--mono); letter-spacing: .12em; }
+.topbar-progress-item strong { color: var(--ink); font: 750 15px/1 var(--mono); letter-spacing: .015em; white-space: nowrap; }
 .topbar-progress-item small { display: none; }
 .topbar-progress-item.is-overall strong { color: var(--accent); text-shadow: 0 0 9px rgba(95, 211, 255, .28); }
-.topbar-progress-item.is-tests { min-width: 104px; }
+.topbar-progress-item.is-tests { min-width: 94px; }
 .topbar-progress-item.is-tests[data-state="running"] strong { color: var(--amber); }
 .topbar-progress-item.is-tests[data-state="passed"] strong { color: var(--emerald); }
 .topbar-progress-item.is-tests[data-state="failed"] strong { color: var(--red); }
@@ -654,7 +656,8 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
   .shell { width: min(100% - 24px, 1560px); }
   .topbar { margin: 0 -12px; padding: 0 12px; gap: 12px; }
   .brand-copy, .last-sync { display: none; }
-  .topbar-progress-item { padding-inline: 8px; }
+  .topbar-progress { height: 34px; }
+  .topbar-progress-item { min-width: 54px; height: 30px; padding-inline: 8px; }
   .topbar-progress-item.is-tests { min-width: 0; }
   .topbar-progress-item span { display: none; }
   .bridge { grid-template-columns: 1fr; }
@@ -800,7 +803,7 @@ a.settings-toggle { display: inline-flex; align-items: center; text-decoration: 
   .topbar { height: 64px; }
   .brand-mark { width: 44px; height: 44px; }
   .settings-toggle { display: none; }
-  .topbar-progress-item { padding-inline: 7px; }
+  .topbar-progress-item { min-width: 50px; padding-inline: 7px; }
 }
 /* #184: one line about tokens until a session reports them */
 .metrics-note { margin: 6px 0 0; color: var(--faint); font: 11px/1.4 var(--mono); }
