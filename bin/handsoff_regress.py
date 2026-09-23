@@ -666,6 +666,19 @@ def _isolated_worker(root: Path, command_index: int, shard_index: int) -> tuple[
         PROGRESS_FILE, INVENTORY_FILE, test_progress.PROGRESS_FILE,
     )
     shutil.copytree(root, source, symlinks=True, ignore=ignored)
+    # Tests and build tools may legitimately inspect the tracked inventory.
+    # Keep that contract without sharing the caller's mutable .git directory:
+    # every worker gets a fresh repository and index over its copied tree.
+    # The copied .gitignore keeps runtime artifacts out of that index.
+    try:
+        subprocess.run(["git", "init", "--quiet"], cwd=str(source), check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "add", "--all"], cwd=str(source), check=True,
+                       capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        shutil.rmtree(base, ignore_errors=True)
+        detail = getattr(exc, "stderr", None) or str(exc)
+        raise RuntimeError(f"could not create isolated worker Git index: {detail.strip()}") from exc
     namespaces = {}
     for name in ("tmp", "cache", "state", "service"):
         target = base / name
