@@ -1262,7 +1262,11 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
         # This test is about executable discovery at Phase 1; the shipped
         # reviewer-launch-phase-1 rule (#165) would refuse the launch first.
         toml = self.tmp / "handsoff.toml"
-        toml.write_text(toml.read_text() + "\n[features]\nlaunch_rules = false\n")
+        toml.write_text(
+            toml.read_text()
+            + "\n[features]\nlaunch_rules = false\n"
+            + "\n[reviewer_isolation]\ncompatibility_mode = true\ncompatibility_approved = true\n"
+        )
         self.init("Recommended crew availability")
         claude_only = lambda name: "/usr/local/bin/claude" if name == "claude" else None
         cfg = self.lib.load_config(self.tmp)
