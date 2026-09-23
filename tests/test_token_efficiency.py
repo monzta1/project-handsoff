@@ -50,6 +50,26 @@ class TokenEfficiencyTests(unittest.TestCase):
         )
         self.assertEqual(followup["ceiling"], 80_000)
 
+    def test_packet_safe_minimum_is_conservative_and_auditable(self):
+        decision = lib.plan_role_token_budget(
+            configured_ceiling=80_000, role="implementer", risk_class="routine",
+            packet_bytes=30_001, criteria_count=20,
+        )
+        self.assertEqual(decision["estimated_input_tokens"], 10_001)
+        self.assertEqual(decision["input_guard_tokens"], 1_001)
+        self.assertEqual(decision["protocol_overhead_tokens"], 1_024)
+        self.assertEqual(decision["response_reserve_tokens"], 5_120)
+        self.assertEqual(decision["safe_minimum"], 17_146)
+        self.assertEqual(lib.validate_session_budget_decision(decision), decision)
+
+    def test_packet_safe_minimum_uses_four_k_response_floor(self):
+        decision = lib.plan_role_token_budget(
+            configured_ceiling=30_000, role="reviewer", risk_class="routine",
+            packet_bytes=3_000, criteria_count=1,
+        )
+        self.assertEqual(decision["response_reserve_tokens"], 4_096)
+        self.assertEqual(decision["safe_minimum"], 6_220)
+
 
 if __name__ == "__main__":
     unittest.main()

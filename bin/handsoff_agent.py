@@ -182,11 +182,15 @@ def implementation_review_delta_packet(root: Path, cfg: dict, role: str) -> dict
                 if isinstance(item, dict) and isinstance(item.get("id"), str)][:64]
     findings = [{"code": item.get("code"), "summary": str(item.get("summary") or "")[:240]}
                 for item in (previous.get("findings") or []) if isinstance(item, dict)][:16]
-    return {
+    payload = {
         "schema": 1, "previous_attempt": previous.get("attempt"),
         "changed_files": changed_files, "unresolved_findings": findings,
         "affected_criteria": criteria, "new_evidence": evidence,
     }
+    payload["packet_hash"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return payload
 
 
 def build_role_input(root: Path, role: str, task: str, topic: str | None = None) -> str:
@@ -443,6 +447,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     context = lib.managed_design_context(root, role) or {}
     _refuse_reviewer_launch_over_budget(root, cfg, role)
     selection = _phase2_design_reviewer_selection(root, route_cfg, role, which=which)
+    explicit_role_route = False
     if selection is not None:
         adapter = selection["adapter"]
         model = lib.validate_agent_model(selection["model"])
@@ -464,6 +469,16 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         # records the recommended profile as launched when it was not: the
         # executable check below refuses first.
         adapter_source = profile["source"]["adapter"]
+        model_source = profile["source"]["model"]
+        # An explicit role adapter or model is a mission constraint, not a
+        # hint for adaptive routing to replace.  In particular, an explicit
+        # Codex implementer must never be rewritten to the built-in Claude
+        # PREMIUM profile for a shared-infrastructure run.
+        configured_model = cfg.get("models", {}).get(role, lib.DEFAULT_AGENT_MODEL)
+        explicit_role_route = (
+            configured_adapter != lib.AUTO_AGENT_ADAPTER
+            or configured_model != lib.DEFAULT_AGENT_MODEL
+        ) and (adapter_source == "explicit" or model_source == "explicit")
         if configured_adapter == lib.AUTO_AGENT_ADAPTER:
             resolution_source = "auto_detected"
         elif adapter_source == lib.RECOMMENDED_PROFILE_SOURCE:
@@ -471,7 +486,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         else:
             resolution_source = "configured"
     adaptive_routing = None
-    if selection is None and isinstance(run_status, dict):
+    if selection is None and isinstance(run_status, dict) and not explicit_role_route:
         # Runs created before adaptive routing may have no stored risk class.
         # A normal managed launch defaults those active runs to routine; the
         # session commit persists that upgrade atomically with the route.
@@ -519,6 +534,13 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         followup=implementation_delta is not None,
     )
     token_budget = budget_decision["ceiling"]
+    if token_budget < budget_decision["safe_minimum"]:
+        raise lib.HandsoffError(
+            "managed launch refused before session creation: rendered packet estimates "
+            f"{budget_decision['estimated_input_tokens']} input tokens, reserves "
+            f"{budget_decision['response_reserve_tokens']} response tokens, and requires at least "
+            f"{budget_decision['safe_minimum']} tokens; selected ceiling is {token_budget}"
+        )
     executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
         # An auto-detected adapter is by construction installed, so only a
@@ -1360,6 +1382,23 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             raise AgentLaunchError(
                 f"agent output stream failed: {type(reader_errors[0]).__name__}", session_id,
             ) from reader_errors[0]
+    requested_identity = lib._canonical_provider_model(spec.model)
+    reported_identity = lib._canonical_provider_model(usage_watcher.reported_model)
+    if requested_identity not in {None, lib.DEFAULT_AGENT_MODEL} and reported_identity is not None \
+            and reported_identity != requested_identity:
+        # Provider identity is authoritative once supplied.  Refuse before
+        # any structured result is dispatched so a denied or silently
+        # substituted model can never contribute governed evidence.
+        failure = {
+            "category": "model_identity_mismatch",
+            "reason": "provider reported a different model than requested",
+            "tail_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+        end_session("failed", exit_code=process.returncode or 1, failure=failure)
+        raise AgentLaunchError(
+            f"provider model identity mismatch: requested {requested_identity}, reported {reported_identity}",
+            session_id,
+        )
     if process.returncode:
         # #114: on a budget error Codex can route the final message to
         # stderr. A complete protocol line there is still the result, so

@@ -2678,12 +2678,25 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
                          ("changed_files", changed_files)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise HandsoffError(f"{label} must be a non-negative integer")
+    estimated_input_tokens = math.ceil(packet_bytes / 3)
+    input_guard_tokens = math.ceil(estimated_input_tokens * 0.10)
+    protocol_overhead_tokens = 1_024
+    response_reserve_tokens = max(4_096, criteria_count * 256)
+    safe_minimum = (estimated_input_tokens + input_guard_tokens
+                    + protocol_overhead_tokens + response_reserve_tokens)
+    sizing = {
+        "estimator": "ceil_utf8_bytes_over_3", "estimated_input_tokens": estimated_input_tokens,
+        "input_guard_tokens": input_guard_tokens,
+        "protocol_overhead_tokens": protocol_overhead_tokens,
+        "response_reserve_tokens": response_reserve_tokens,
+        "safe_minimum": safe_minimum,
+    }
     if risk_class is None:
         return {"ceiling": configured_ceiling, "configured_ceiling": configured_ceiling,
                 "floor": ROLE_BUDGET_FLOORS[role], "risk_class": None,
                 "role": role, "packet_bytes": packet_bytes,
                 "criteria_count": criteria_count, "changed_files": changed_files,
-                "followup": bool(followup), "basis": "legacy_configured_ceiling"}
+                "followup": bool(followup), "basis": "legacy_configured_ceiling", **sizing}
     risk_class = classify_adaptive_risk(risk_class)
     floor = ROLE_BUDGET_FLOORS[role]
     # Packet bytes are converted conservatively: roughly four bytes/token,
@@ -2709,13 +2722,15 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
             "floor": floor, "risk_class": risk_class, "role": role,
             "packet_bytes": packet_bytes, "criteria_count": criteria_count,
             "changed_files": changed_files, "followup": bool(followup),
-            "basis": "risk_role_packet_scope"}
+            "basis": "risk_role_packet_scope", **sizing}
 
 
 def validate_session_budget_decision(value: object) -> dict:
-    required = {"ceiling", "configured_ceiling", "floor", "risk_class", "role",
+    legacy = {"ceiling", "configured_ceiling", "floor", "risk_class", "role",
                 "packet_bytes", "criteria_count", "changed_files", "followup", "basis"}
-    if not isinstance(value, dict) or set(value) != required:
+    sizing = {"estimator", "estimated_input_tokens", "input_guard_tokens",
+              "protocol_overhead_tokens", "response_reserve_tokens", "safe_minimum"}
+    if not isinstance(value, dict) or set(value) not in {frozenset(legacy), frozenset(legacy | sizing)}:
         raise HandsoffError("budget_decision has invalid fields")
     if value.get("role") not in ROLE_BUDGET_FLOORS:
         raise HandsoffError("budget_decision role is invalid")
@@ -2730,6 +2745,13 @@ def validate_session_budget_decision(value: object) -> dict:
     if not isinstance(value.get("followup"), bool) or value.get("basis") not in {
             "legacy_configured_ceiling", "risk_role_packet_scope"}:
         raise HandsoffError("budget_decision followup or basis is invalid")
+    if sizing <= set(value):
+        if value.get("estimator") != "ceil_utf8_bytes_over_3":
+            raise HandsoffError("budget_decision estimator is invalid")
+        for field in sizing - {"estimator"}:
+            number = value.get(field)
+            if not isinstance(number, int) or isinstance(number, bool) or number < 0:
+                raise HandsoffError(f"budget_decision {field} must be a non-negative integer")
     return deepcopy(value)
 
 
@@ -7706,11 +7728,15 @@ def reviewer_implementation_contract(status: dict, acceptance: dict) -> dict | N
          if key in item}
         for item in criteria[:64] if isinstance(item, dict)
     ]
-    return {
+    body = {
         "schema": 1,
         "issued_by": review.get("by"),
         "design_review_attempt": review.get("attempt"),
         "design_hash": current_hash,
+        "governance_hash": review.get("config_hash"),
+        "criterion_hashes": [hashlib.sha256(json.dumps(item, sort_keys=True, separators=(",", ":"),
+                                                        ensure_ascii=False).encode("utf-8")).hexdigest()
+                             for item in exact],
         "criteria": exact,
         "instructions": (
             "Implement and verify every criterion exactly as written. Do not broaden, narrow, "
@@ -7718,6 +7744,10 @@ def reviewer_implementation_contract(status: dict, acceptance: dict) -> dict | N
             "review will judge this same packet."
         ),
     }
+    body["contract_hash"] = hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return body
 
 
 def session_liveness_path(root: Path) -> Path:
@@ -11791,7 +11821,7 @@ FAILURE_CATEGORIES = (
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
     "reviewer_modified_project",
     "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
-    "protocol_silence",
+    "protocol_silence", "model_identity_mismatch",
 )
 
 _FAILURE_REASON_LABELS = {
@@ -11815,6 +11845,7 @@ _FAILURE_REASON_LABELS = {
     "no_artifact": "process exited 0 without a protocol result",
     "network": "network connection to a dependency failed",
     "target_service": "target service reported a failure",
+    "model_identity_mismatch": "provider reported a different model than requested",
 }
 
 # Order matters: tier 3 checks these in sequence and the first match wins,

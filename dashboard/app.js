@@ -297,11 +297,12 @@ function renderAdaptiveRouting(routing, modelPolicy = state.modelPolicy, launchP
       model.append(modelName, modelDetail);
       const budget = document.createElement("div");
       budget.className = "routing-selection-budget";
+      const decision = item.budget_decision;
       const budgetFacts = [
-        ["BUDGET", item.budget_decision ? `${Number(item.budget_decision.ceiling).toLocaleString()} ceiling` : "host/configured"],
-        ["PACKET", item.budget_decision ? `${Number(item.budget_decision.packet_bytes).toLocaleString()} bytes` : "not metered"],
+        ["BUDGET", decision ? `${Number(decision.ceiling).toLocaleString()} ceiling · ${Number(decision.safe_minimum || 0).toLocaleString()} safe min` : "host/configured"],
+        ["PACKET", decision ? `${Number(decision.estimated_input_tokens || 0).toLocaleString()} estimated tokens · ${Number(decision.packet_bytes).toLocaleString()} bytes` : "not metered"],
         ["USAGE", item.usage?.source === "adapter" && Number.isFinite(Number(item.usage.tokens_total)) ? `${Number(item.usage.tokens_total).toLocaleString()} actual` : "not reported"],
-        ["COST", "not exposed"],
+        ["WHY", decision ? String(decision.basis || "configured").replaceAll("_", " ") : "host/configured"],
       ];
       for (const [labelText, valueText] of budgetFacts) {
         const fact = document.createElement("span");

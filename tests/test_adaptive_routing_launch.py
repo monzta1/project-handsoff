@@ -143,6 +143,32 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
                          ("codex", "reserved-model", "fallback"))
         self.assertIsNone(spec.adaptive_routing)
 
+    def test_explicit_role_profile_is_not_replaced_by_adaptive_routing(self):
+        result = run(["init", "Explicit", "--risk-class", "shared_infrastructure"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self._phase_four()
+        config = (self.tmp / "handsoff.toml").read_text(encoding="utf-8")
+        config = config.replace('implementer = "auto"', 'implementer = "codex"', 1)
+        config = config.replace('implementer = "default"', 'implementer = "gpt-6-astra"', 1)
+        (self.tmp / "handsoff.toml").write_text(config, encoding="utf-8")
+        spec = self._spec()
+        self.assertEqual((spec.adapter, spec.model, spec.resolution_source),
+                         ("codex", "gpt-6-astra", "configured"))
+        self.assertIsNone(spec.adaptive_routing)
+
+    def test_undersized_rendered_packet_refuses_without_creating_a_session(self):
+        result = run(["init", "Packet preflight", "--risk-class", "routine"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self._phase_four()
+        before = self.read_status()
+        with mock.patch.object(agent.lib, "validate_runtime_integrity"), \
+                mock.patch.object(agent, "build_role_input", return_value="x" * 300_000), \
+                mock.patch.object(agent, "applicable_design_review_packet", return_value=None):
+            with self.assertRaisesRegex(lib.HandsoffError, "refused before session creation"):
+                agent.build_launch_spec(self.tmp, "implementer", "task",
+                                        which=lambda name: f"/opt/test/{name}", skip_preflight=True)
+        self.assertEqual(self.read_status(), before)
+
     def test_phase_five_reviewer_can_launch_when_routing_selects_the_same_profile(self):
         result = run(["init", "Review", "--risk-class", "routine"], cwd=self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

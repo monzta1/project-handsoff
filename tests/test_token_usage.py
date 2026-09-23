@@ -101,6 +101,22 @@ class UsageOnSessionTests(HandsoffTestCase):
         row = next(s for s in metrics["sessions"] if s["session_id"] == sid)
         self.assertEqual((row["total_tokens"], row["usage_source"]), (44988, "adapter"))
 
+    def test_provider_model_mismatch_is_quarantined_before_review_dispatch(self):
+        spec = runtime.LaunchSpec(
+            "reviewer", "claude", "claude-sonnet-5", ("/bin/claude",), str(self.tmp),
+            "bounded prompt", token_budget=40_000, project_root=str(self.tmp.resolve()),
+        )
+        output = json.dumps({"type": "system", "subtype": "init", "model": "claude-opus-5"}) + "\n" + APPROVED
+        dispatch = mock.Mock()
+        with mock.patch.object(broker, "dispatch_reviewer_result", dispatch):
+            with self.assertRaisesRegex(runtime.AgentLaunchError, "model identity mismatch"):
+                runtime.execute_launch(spec, popen_factory=mock.Mock(return_value=_FakeProcess(output)),
+                                       beacon_interval=0.01)
+        dispatch.assert_not_called()
+        _sid, session = self._session()
+        self.assertEqual(session["state"], "failed")
+        self.assertEqual(session["reported_model"], "claude-opus-5")
+
     def test_usage_on_stderr_and_on_a_failed_session_and_nothing_printed(self):
         class Stderr(_FakeProcess):
             def __init__(self, stdout="", **kw):
