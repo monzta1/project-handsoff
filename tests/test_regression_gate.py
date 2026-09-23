@@ -91,7 +91,7 @@ class RegressionGateTests(unittest.TestCase):
             self.assertEqual(supervisor.cmd_regression_run(args), 0)
         run.assert_called_once_with(
             self.root.resolve(), item["group"], item["commands"],
-            timeout=lib.load_config(self.root)["check_timeout_seconds"],
+            timeout=item["timeout_seconds"],
             request_id=item["request_id"], command_sha256=item["command_sha256"],
             max_shards=supervisor.regress.DEFAULT_SHARDS,
         )
@@ -99,6 +99,19 @@ class RegressionGateTests(unittest.TestCase):
         self.assertEqual(final["state"], "completed")
         self.assertRegex(final["launch_nonce_sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("output_tail", final["results"][0])
+
+    def test_regression_timeout_overrides_the_focused_check_timeout(self):
+        cfg = lib.load_config(self.root)
+        group = lib.regression_group(cfg, "python-full")
+        self.assertEqual(cfg["check_timeout_seconds"], 600)
+        self.assertEqual(group["timeout_seconds"], 1800)
+        item = self.request()
+        self.assertEqual(item["timeout_seconds"], 1800)
+
+        path = self.root / "handsoff.toml"
+        path.write_text(path.read_text().replace("timeout_seconds = 1800", "timeout_seconds = 0"))
+        with self.assertRaisesRegex(lib.HandsoffError, "timeout_seconds must be a positive integer"):
+            lib.load_config(self.root)
 
     def test_repository_change_invalidates_decision(self):
         item = self.request()

@@ -254,6 +254,9 @@ full_regression_major_only = true
 [[regressions]]
 name = "python-full"
 commands = ["python3 tests/shard.py --all"]
+# Five concurrent local workers can run more slowly than CI on a loaded laptop.
+# Keep this bounded well inside the workflow's two-hour reevaluation boundary.
+timeout_seconds = 1800
 
 [[regressions]]
 name = "dashboard-full"

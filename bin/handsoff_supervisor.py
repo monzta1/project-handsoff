@@ -2013,6 +2013,7 @@ def cmd_regression_request(args) -> int:
         item = {
             "request_id": f"rg-{uuid.uuid4().hex}", "group": group["name"],
             "commands": list(group["commands"]), "command_sha256": lib.command_sha256(group["commands"]),
+            "timeout_seconds": group.get("timeout_seconds", cfg.get("check_timeout_seconds", 600)),
             "state": "awaiting_approval", "requested_by": actor, "requested_at": now.isoformat(),
             "expires_at": (now + timedelta(minutes=cfg["regression_gate"]["approval_timeout_minutes"])).isoformat(),
             "decided_by": None, "decided_at": None, "launched_at": None, "completed_at": None,
@@ -2120,7 +2121,8 @@ def cmd_regression_run(args) -> int:
     # verification deliberately remains on lib.run_checks so sharding cannot
     # alter evidence-cache semantics outside a Pilot-accepted gate.
     results = regress.run_battery_results(
-        root, item["group"], commands, timeout=cfg.get("check_timeout_seconds", 600),
+        root, item["group"], commands,
+        timeout=item.get("timeout_seconds", cfg.get("check_timeout_seconds", 600)),
         request_id=item["request_id"], command_sha256=item["command_sha256"],
         max_shards=regress.DEFAULT_SHARDS,
     )

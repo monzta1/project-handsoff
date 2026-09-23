@@ -1512,14 +1512,26 @@ def load_config(root: Path) -> dict:
         raise HandsoffError("handsoff.toml: regressions must be an array of tables")
     normalized_regressions = []
     for index, item in enumerate(regressions):
-        if not isinstance(item, dict) or set(item) != {"name", "commands"}:
-            raise HandsoffError(f"handsoff.toml: regressions[{index}] must contain exactly name and commands")
+        allowed = {"name", "commands", "timeout_seconds"}
+        if not isinstance(item, dict) or not {"name", "commands"} <= set(item) or set(item) - allowed:
+            raise HandsoffError(
+                f"handsoff.toml: regressions[{index}] must contain name, commands, and optional timeout_seconds"
+            )
         name, commands = item.get("name"), item.get("commands")
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
             raise HandsoffError(f"handsoff.toml: regressions[{index}].name is invalid")
         if not isinstance(commands, list) or not commands or not all(isinstance(cmd, str) and cmd.strip() for cmd in commands):
             raise HandsoffError(f"handsoff.toml: regressions[{index}].commands must be non-empty strings")
-        normalized_regressions.append({"name": name, "commands": list(commands)})
+        normalized = {"name": name, "commands": list(commands)}
+        if "timeout_seconds" in item:
+            regression_timeout = item["timeout_seconds"]
+            if not isinstance(regression_timeout, int) or isinstance(regression_timeout, bool) \
+                    or regression_timeout <= 0:
+                raise HandsoffError(
+                    f"handsoff.toml: regressions[{index}].timeout_seconds must be a positive integer"
+                )
+            normalized["timeout_seconds"] = regression_timeout
+        normalized_regressions.append(normalized)
     if len({item["name"] for item in normalized_regressions}) != len(normalized_regressions):
         raise HandsoffError("handsoff.toml: regression names must be unique")
     cfg["regressions"] = normalized_regressions
@@ -6259,7 +6271,7 @@ def validate_status_schema(status: dict) -> list[str]:
             }
             label = f"status: regression_requests[{index}]"
             rid = item.get("request_id") if isinstance(item, dict) else None
-            optional = {"release_version", "release_class", "policy_override_reason"}
+            optional = {"release_version", "release_class", "policy_override_reason", "timeout_seconds"}
             if not isinstance(item, dict) or not required <= set(item) or set(item) - required - optional:
                 errors.append(f"{label} has invalid fields")
                 continue
@@ -6285,6 +6297,10 @@ def validate_status_schema(status: dict) -> list[str]:
             if not isinstance(item.get("commands"), list) or not item["commands"] \
                     or not all(isinstance(cmd, str) and cmd.strip() for cmd in item["commands"]):
                 errors.append(f"{label}.commands is invalid")
+            if "timeout_seconds" in item and (not isinstance(item["timeout_seconds"], int)
+                                               or isinstance(item["timeout_seconds"], bool)
+                                               or item["timeout_seconds"] <= 0):
+                errors.append(f"{label}.timeout_seconds is invalid")
             for key in ("command_sha256", "acceptance_hash", "config_hash", "scope_hash", "epoch_sha256"):
                 if not isinstance(item.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", item[key]):
                     errors.append(f"{label}.{key} is invalid")
