@@ -50,9 +50,10 @@ verdict with `session-result-adopt`; recover a killed session after its stall
 window.
 
 **Provider quota is Supervisor discretion.** Route the unchanged task to an
-explicit equivalent cross-vendor model, preserving independence and ledgering
+explicit equivalent model from another vendor, preserving independence and ledgering
 both models plus `provider_quota`. Ask only when no route is allowed. Auth,
-runtime, and token-cap failures are not quota; size caps by role, risk, packet.
+runtime, and per-session token-cap failures are not quota; size caps by role,
+risk, and packet.
 
 **Tree changes after verify are evidence drift.** Re-run every `verify`,
 then `record-review --by <reviewer> --reaffirm --tests-executed yes

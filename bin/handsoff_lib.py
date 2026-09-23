@@ -12554,19 +12554,26 @@ def host_identity(status: dict, events: list[dict]) -> dict:
         or os.environ.get("HANDSOFF_HOST_MODEL_CLASS")
         or ""
     ).strip()[:64] or None
+
+    def identified(family, actor, source):
+        value = {"family": family, "actor": actor, "source": source}
+        # Preserve the established three-key API when the runtime does not
+        # expose an exact model; an unavailable value is absence, not a new
+        # nullable field forced on every existing consumer.
+        if model_class is not None:
+            value["model_class"] = model_class
+        return value
+
     for event in events:
         if event.get("kind") == "initialized" and actor_family(event.get("by")):
-            return {"family": actor_family(event["by"]), "actor": event["by"],
-                    "source": "initialized", "model_class": model_class}
+            return identified(actor_family(event["by"]), event["by"], "initialized")
     for event in reversed(events):
         if event.get("kind") in HOST_COMMAND_EVENT_KINDS and actor_family(event.get("by")):
-            return {"family": actor_family(event["by"]), "actor": event["by"],
-                    "source": "ledger", "model_class": model_class}
+            return identified(actor_family(event["by"]), event["by"], "ledger")
     implemented = status.get("implemented_by") if isinstance(status, dict) else None
     if actor_family(implemented):
-        return {"family": actor_family(implemented), "actor": implemented,
-                "source": "ledger", "model_class": model_class}
-    return {"family": "unknown", "actor": None, "source": "none", "model_class": model_class}
+        return identified(actor_family(implemented), implemented, "ledger")
+    return identified("unknown", None, "none")
 
 
 def host_wait_view(status: dict, events: list[dict], cfg: dict, *, now: datetime | None = None,
