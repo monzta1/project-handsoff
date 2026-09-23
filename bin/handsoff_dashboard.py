@@ -284,10 +284,6 @@ def _regression_progress(root: Path, request: dict | None) -> dict | None:
             or payload.get("request_id") != request.get("request_id") \
             or payload.get("command_sha256") != request.get("command_sha256"):
         return None
-    try:
-        payload["heartbeat_at"] = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
-    except OSError:
-        pass
     return payload
 
 
@@ -302,8 +298,18 @@ def _test_progress(root: Path, status: dict, events: list[dict], request: dict |
                 or local.get("command_sha256") != request.get("command_sha256"):
             local = None
     external = test_progress.from_ci(run_id, ci) if isinstance(ci, dict) else None
-    legacy = test_progress.from_legacy_regression(run_id, legacy_regression) \
-        if isinstance(legacy_regression, dict) else None
+    legacy = None
+    if isinstance(legacy_regression, dict):
+        legacy_payload = dict(legacy_regression)
+        if not legacy_payload.get("heartbeat_at"):
+            try:
+                legacy_payload["heartbeat_at"] = datetime.fromtimestamp(
+                    (root / ".handsoff-regression.json").stat().st_mtime,
+                    timezone.utc,
+                ).isoformat()
+            except OSError:
+                pass
+        legacy = test_progress.from_legacy_regression(run_id, legacy_payload)
     candidates = [item for item in (local, legacy, external) if item]
     if not candidates:
         return None
