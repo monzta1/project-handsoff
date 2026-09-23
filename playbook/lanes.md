@@ -43,6 +43,17 @@ checks without a prompt or shorthand. Keep the dashboard live, report material
 progress, recover in-scope failures, and start each eligible step. Pause only
 for a new Pilot decision or unresolvable external blocker; state it once.
 
+**Two hours is a hard active-run ceiling.** At 90 active minutes, enter
+deadline protection: expose the critical path, stop redundant attempts, and
+use only policy-authorized fallback capacity. Before 120 active minutes,
+checkpoint every bounded operation. At 120, atomically enter
+`paused_for_performance_review`, stop new agents/tests/merges/releases,
+terminate bounded local work, detach remote work for read-only reconciliation,
+quarantine late results, and publish the reevaluation packet. Sleep and a
+persisted Pilot or verified outage hold are excluded; routine provider, CI,
+retry, and cleanup time are not. Never resume that episode without an explicit
+recorded decision.
+
 **Reviewers.** Launch an independent managed reviewer with host session vars
 unset, scratch `TMPDIR`, and absolute project paths. Findings are <=400
 characters and use supported `CODE: summary` values. Adopt an undispatched

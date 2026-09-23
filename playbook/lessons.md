@@ -134,3 +134,6 @@ twice becomes a refusal in the engine.
   in 12k. A budget-exhausted reviewer spends an attempt and returns nothing.
 - Provider quota changes the vendor, not the role: route to another vendor and
   record `provider_quota`. A per-session token ceiling pauses without fallback.
+- A run approaching two active hours is a performance incident, not a reason to
+  hide time in a wait state. Warn at 90 minutes; at 120 checkpoint, fence late
+  results, pause visibly, and require an explicit reevaluation decision.
