@@ -10102,6 +10102,9 @@ def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
     instead of raising on any OSError: the beacon is a liveness hint, never
     the authority, so a full disk or a bad path must not touch the child's
     lifecycle or the session record."""
+    root = Path(root)
+    if not root.is_dir():
+        return False
     now = now or datetime.now(timezone.utc)
     if not isinstance(pid, int) or isinstance(pid, bool):
         pid = None
@@ -10734,6 +10737,11 @@ def note_output_liveness(root: Path, session_id: str, role: str, nbytes: int, *,
     change the child's lifecycle, the session record, or any ledger.
     `monotonic` (the rate-limit clock) and `now` (the stamped time) are
     injectable for tests."""
+    root = Path(root)
+    # Liveness is an optional side signal, never a reason to manufacture a
+    # missing project root (or make a failed launch look active).
+    if not root.is_dir():
+        return False
     if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
         nbytes = 0
     with _OUTPUT_LIVENESS_LOCK:

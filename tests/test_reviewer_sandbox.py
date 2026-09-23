@@ -54,7 +54,10 @@ class ReviewerSandboxTests(HandsoffTestCase):
     def test_claude_reviewer_is_refused_before_scratch_or_session(self):
         import handsoff_lib as lib
         toml = self.tmp / "handsoff.toml"
-        toml.write_text(toml.read_text().replace('reviewer = "auto"', 'reviewer = "claude"', 1))
+        text = toml.read_text().replace('reviewer = "auto"', 'reviewer = "claude"', 1)
+        text = text.replace("compatibility_mode = true", "compatibility_mode = false")
+        text = text.replace("compatibility_approved = true", "compatibility_approved = false")
+        toml.write_text(text)
         before = set(__import__("pathlib").Path("/tmp").glob("handsoff-reviewer-*"))
         with self.assertRaisesRegex(lib.HandsoffError, "before session reservation"):
             runtime.build_launch_spec(self.tmp, "reviewer", "Review it.",

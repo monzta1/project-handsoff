@@ -64,7 +64,8 @@ class DigestIgnoreDocsTests(TestCase):
 class DogfoodExecutionProfileTests(HandsoffTestCase):
     def _enable_dogfood_waivers(self):
         toml = self.tmp / "handsoff.toml"
-        text = toml.read_text().replace("deployment_requires_explicit_approval = true",
+        text = toml.read_text().replace('profile = "safe"', 'profile = "dogfood"')
+        text = text.replace("deployment_requires_explicit_approval = true",
                                         "deployment_requires_explicit_approval = false")
         text = text.replace("require_design_approval = true", "require_design_approval = false")
         toml.write_text(text)
@@ -94,11 +95,11 @@ class DogfoodExecutionProfileTests(HandsoffTestCase):
     def test_safe_template_and_dogfood_profile_are_governance_bound(self):
         template = (ROOT / "templates" / "handsoff.toml").read_text()
         self.assertIn('profile = "safe"', template)
-        dogfood = lib.load_config(self.tmp)
         toml = self.tmp / "handsoff.toml"
-        text = toml.read_text().replace("deployment_requires_explicit_approval = false",
-                                        "deployment_requires_explicit_approval = true")
-        text = text.replace("require_design_approval = false", "require_design_approval = true")
+        text = toml.read_text().replace('profile = "safe"', 'profile = "dogfood"')
+        toml.write_text(text)
+        dogfood = lib.load_config(self.tmp)
+        text = toml.read_text()
         text = text.replace('profile = "dogfood"', 'profile = "safe"')
         toml.write_text(text)
         self.assertNotEqual(lib.config_hash(dogfood), lib.config_hash(lib.load_config(self.tmp)))

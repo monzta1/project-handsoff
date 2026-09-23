@@ -94,7 +94,7 @@ OPERATION_REGISTRY = {
     "question-raise": {"class": "agent-only", "surface": "questions-panel"},
     "question-answer": {"class": "operator-facing", "surface": "questions-panel"},
     "analyze-archives": {"class": "automatic", "surface": "flight-log"},
-    "pilot-note": {"class": "operator-facing", "surface": "pilot-note-form"},
+    "pilot-note": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "ci-watch": {"class": "agent-only", "surface": "ci-status"},
     "design-decline": {"class": "agent-only", "surface": "phase-rail"},
     "run-close": {"class": "operator-facing", "surface": "operator-actions-panel"},
@@ -613,13 +613,13 @@ def cmd_init(args) -> int:
                        "the independent design review remains required",
                        "config_key": "require_design_approval",
         }]
-        waived.insert(0, {
+        posture_event = {
             "kind": "approval_posture_recorded",
             "message": (f"Execution profile {status['approval_posture']['profile']}: "
                         f"design approval {'required' if status['approval_posture']['require_design_approval'] else 'waived'}, "
                         f"deployment approval {'required' if status['approval_posture']['require_deployment_approval'] else 'waived'}"),
             **status["approval_posture"],
-        })
+        }
         if args.lane == "design":
             lane_actor = args.by.strip() if args.by and args.by.strip() else "unknown"
             waived.append({"kind": "lane_selected", "message": "Design lane selected",
@@ -640,6 +640,10 @@ def cmd_init(args) -> int:
                   project_root=str(root), engine=lib.ledger_engine_identity(root),
                   ticket_lock="evaluated" if lib.feature_enabled(cfg, "ticket_lock") else "disabled",
                   pin_written=pin_written, by=(args.by.strip() if isinstance(args.by, str) and args.by.strip() else None))
+        posture_extra = {key: value for key, value in posture_event.items()
+                         if key not in {"kind", "message"}}
+        lib.commit(root, cfg, event_kind=posture_event["kind"],
+                   event_message=posture_event["message"], **posture_extra)
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
     for previous in adopted["adopted_from"]:
         print(f"WORK_ITEM_ADOPTED: #{', #'.join(str(n) for n in previous['numbers'])} from {previous['root']}")

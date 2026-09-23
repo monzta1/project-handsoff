@@ -104,6 +104,15 @@ def normalize_fixture_config(path):
             value = line.split("=", 1)[1]
             in_replaced_array = value.count("[") > value.count("]")
         normalized.append(f"{replacement}\n" if replacement is not None else line)
+    # Legacy launch tests exercise routing, budgets and protocol parsing, not
+    # host sandbox availability. Their fixture explicitly opts into the
+    # documented compatibility posture; the focused reviewer-isolation tests
+    # turn it off when they verify fail-closed behavior.
+    normalized.extend([
+        "\n[reviewer_isolation]\n",
+        "compatibility_mode = true\n",
+        "compatibility_approved = true\n",
+    ])
     path.write_text("".join(normalized))
 
 
@@ -1875,9 +1884,9 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
                     self.tmp, role, "-m remains task data; $(touch never-runs)",
                     which=lambda name: f"/usr/local/bin/{name}",
                 )
-                if adapter == "codex" and role == "reviewer":
-                    # A Codex Reviewer runs from a scratch boundary outside
-                    # the project so its sandbox never writes the tree.
+                if role == "reviewer":
+                    # Every Reviewer runs from a provider-neutral scratch
+                    # boundary outside the project tree.
                     self.assertNotEqual(spec.cwd, str(self.tmp.resolve()))
                     self.assertNotIn(str(self.tmp.resolve()), spec.cwd)
                 else:
@@ -8054,7 +8063,11 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         legacy_keys = tuple(k for k in self.lib.GOVERNANCE_CONFIG_KEYS
                             if k not in self.lib._LEGACY_OPTIONAL_GOVERNANCE_KEYS)
         legacy_hash = self.lib.hashlib.sha256(
-            self.lib._canonical({k: cfg.get(k) for k in legacy_keys}).encode("utf-8")).hexdigest()
+            self.lib._canonical({
+                **{k: cfg.get(k) for k in legacy_keys},
+                **({"execution_profile": cfg["execution_profile"]}
+                   if cfg.get("execution_profile") != "safe" else {}),
+            }).encode("utf-8")).hexdigest()
         self.assertEqual(self.lib.config_hash(cfg), legacy_hash)
         toml = self.tmp / "handsoff.toml"
         toml.write_text(toml.read_text().replace("stall_minutes = 10", "stall_minutes = 10\nmax_autonomous_design_reviews = 1"))
@@ -9152,6 +9165,12 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         lines += [f"{key} = {json.dumps(value)}" for key, value in agents.items()]
         lines += ["", "[models]"]
         lines += [f"{key} = {json.dumps(value)}" for key, value in models.items()]
+        # These legacy tier-selection fixtures intentionally exercise a
+        # Claude follow-up adapter without launching a real process. Keep
+        # that compatibility opt-in explicit so production remains
+        # fail-closed when no OS-backed reviewer boundary is available.
+        lines += ["", "[reviewer_isolation]", "compatibility_mode = true",
+                  "compatibility_approved = true"]
         (self.tmp / "handsoff.toml").write_text("\n".join(lines) + "\n")
 
     def _reset(self):
@@ -13219,9 +13238,12 @@ print(json.dumps(report))
                          [("Mission Control Pilot", "Deploy step needs a checklist")])
         html = (ROOT / "dashboard" / "index.html").read_text()
         app = (ROOT / "dashboard" / "app.js").read_text()
-        self.assertIn('id="pilot-note-text"', html)
-        self.assertIn('id="pilot-note-send"', html)
-        self.assertIn('fetch("/api/pilot-note"', app)
+        self.assertNotIn('id="pilot-note-text"', html)
+        self.assertNotIn('id="pilot-note-send"', html)
+        self.assertIn('id="topbar-overall"', html)
+        self.assertIn('id="topbar-criteria"', html)
+        self.assertIn('id="topbar-test-state"', html)
+        self.assertNotIn('fetch("/api/pilot-note"', app)
 
     def test_broker_routes_pilot_note_for_the_supervisor(self):
         import handsoff_broker

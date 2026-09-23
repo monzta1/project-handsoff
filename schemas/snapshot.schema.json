@@ -17,6 +17,7 @@
     "crew",
     "design_evidence",
     "design_review_packet",
+    "durability",
     "engine",
     "escalation",
     "events",
@@ -56,6 +57,17 @@
     "work_items"
   ],
   "properties": {
+    "durability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "file_fsync", "directory_fsync", "reason"],
+      "properties": {
+        "level": {"enum": ["full", "best_effort"]},
+        "file_fsync": {"type": "boolean"},
+        "directory_fsync": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]}
+      }
+    },
     "adaptive_routing": {
       "type": "object",
       "additionalProperties": false,

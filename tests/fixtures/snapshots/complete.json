@@ -8,7 +8,7 @@
      "kind": "none"
     },
     "evidence": [
-     "vr-95b63b5ccc784ec5bc8c9f5824a95dcc"
+     "vr-ac2fdb06b8104a8baa66cbd6cc98ec76"
     ],
     "id": "REQ-001",
     "requirement": "State the exact observable outcome.",
@@ -81,10 +81,10 @@
  "audit": {
   "chain_errors": [],
   "engine_error": null,
-  "event_count": 19,
+  "event_count": 20,
   "gate_errors": [],
   "healthy": true,
-  "verification_head": "05392aabf7cfb59d90b5212648a7962eab73406ac0384f8e932ecb7638c5d158",
+  "verification_head": "3041f3044178a3cb598e10d502727c5eb123086c280b8be65acf5a2314464e86",
   "verification_runs": 2
  },
  "ci": null,
@@ -129,88 +129,94 @@
  "design_document": null,
  "design_evidence": [],
  "design_review_packet": null,
+ "durability": {
+  "directory_fsync": true,
+  "file_fsync": true,
+  "level": "full",
+  "reason": null
+ },
  "engine": {
-  "compatibility": "v0.3.78",
-  "manifest_sha256": "e97ba26f192f2540af2ab7acd8cd8d09daff3d0c950f0faa69a0d8c994dc61ae",
+  "compatibility": "v0.3.79",
+  "manifest_sha256": "4afe30d97d1ad06b46d19aa08fe592ac2f72275a3f6029af16a8a8a93ba34d91",
   "source": "project-drop-in",
   "source_root": "<root>",
-  "version": "v0.3.78"
+  "version": "v0.3.79"
  },
  "escalation": null,
  "events": [
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:22.016962+00:00",
-   "hash": "19923aaff1297ad41541ca3668fcc33558e58d6365fdef09dd8f34bb3de9e7e6",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.860895+00:00",
+   "hash": "6192314bbc832492b1d3162247c5dde720e20b7c56ab2c1688dcb94657938466",
    "kind": "dashboard_release_skipped",
    "message": "Run-owned dashboard release skipped: no run-owned dashboard",
-   "prev_hash": "d9a3b42f52781ac06e6ee5cde90f5f5a028102c006267935d11381c02d369499",
+   "prev_hash": "78a1684e111757377d05cb1592a710641d14bc96f5150c21450fda5e4efba153",
    "reason": "no run-owned dashboard",
-   "status_sha256": "edee952662e5cd822194359d7b506a0c48a2ca42c3e37502de81eb8227adac89"
+   "status_sha256": "5562ba6af6825085739634ecda1e30331715b91e7159ed470108f4332a9296fe"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:22.010580+00:00",
-   "hash": "d9a3b42f52781ac06e6ee5cde90f5f5a028102c006267935d11381c02d369499",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.854390+00:00",
+   "hash": "78a1684e111757377d05cb1592a710641d14bc96f5150c21450fda5e4efba153",
    "kind": "phase_advanced",
    "message": "Advanced to Live verified",
    "phase_number": 8,
-   "prev_hash": "88a9204c03c9cad5c1ff48f8f07c06a1fc4fe724dbe396834b5917871e5d5bfb",
+   "prev_hash": "f42ad5694fc0b51e0b0fc97a2ad0572af618f6059bbd53213d75563ef83c682c",
    "progress": 100,
-   "status_sha256": "edee952662e5cd822194359d7b506a0c48a2ca42c3e37502de81eb8227adac89"
+   "status_sha256": "5562ba6af6825085739634ecda1e30331715b91e7159ed470108f4332a9296fe"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:21.738757+00:00",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.693580+00:00",
    "by": "moncy",
-   "hash": "88a9204c03c9cad5c1ff48f8f07c06a1fc4fe724dbe396834b5917871e5d5bfb",
+   "hash": "f42ad5694fc0b51e0b0fc97a2ad0572af618f6059bbd53213d75563ef83c682c",
    "kind": "live_checks_run",
    "message": "Ran configured live checks",
    "ok": true,
-   "prev_hash": "0651778f96fe74824836ad93fc4b24ccc72a0076ed3e95e589cf0c4b22e89467",
-   "run_id": "vr-738141fa863c43548b723d562f03aed0",
-   "status_sha256": "b02c6d46e7610afbfe8b1ccec57d069979a42a1299858e9d46f16ceca694959b"
+   "prev_hash": "ea7a71969dbbea0123f8d06679577319d682779de77a770390f85963ba0150a7",
+   "run_id": "vr-e87ac544ee514062b5a0cbf0dc64cb15",
+   "status_sha256": "007d8fdd3bfeab878ebca053d43fdb37b37cee915510627f0b0fd41ca3dc45b8"
   },
   {
-   "acceptance_hash": "d919d020e1e928594b77e58f437b2a1f168a783834f9432dafad0a98393243c6",
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:21.518941+00:00",
+   "acceptance_hash": "2960f683e19ee229d99999f6f1fc47ecad3a0b35885a011a24e01f9516e0b5d6",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.548467+00:00",
    "by": "moncy",
    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
-   "hash": "0651778f96fe74824836ad93fc4b24ccc72a0076ed3e95e589cf0c4b22e89467",
+   "hash": "ea7a71969dbbea0123f8d06679577319d682779de77a770390f85963ba0150a7",
    "kind": "deployment_approved",
    "message": "Explicit deployment approval recorded",
-   "prev_hash": "d7fe0a24de5ad6c0ce40e81153ca45549e71980b858facd7ed69d072729d7419",
-   "status_sha256": "4cddb33c6df1e8494fb3ec2ede6516ff1d344acefe1d5eeb523b45a248c032d6"
+   "prev_hash": "0813035c91db909857a73adc40a136f48a1bfd1d9cf45a295a4c143298edbe44",
+   "status_sha256": "f61015145999f1513b73a75b9ca76254cc73d8bae1a3d9bedce2ed23ce9bea8a"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:21.195647+00:00",
-   "hash": "d7fe0a24de5ad6c0ce40e81153ca45549e71980b858facd7ed69d072729d7419",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.350748+00:00",
+   "hash": "0813035c91db909857a73adc40a136f48a1bfd1d9cf45a295a4c143298edbe44",
    "kind": "phase_advanced",
    "message": "Advanced to Awaiting deployment approval",
    "phase_number": 7,
-   "prev_hash": "430e731725d83f188d012d3759dfef1387945c15f4308cbea40680887eeb7e65",
+   "prev_hash": "f5db9c828e6ffd323746946f33d80e2c51766b64ffea4780fc4475e520877342",
    "progress": 70,
-   "status_sha256": "02ede2dbd2ad14da22ee3896f115c4913f9b0abf922736809af4167146f40e80"
+   "status_sha256": "f94f18da7b96b86e7d29ba25337b00ad7f1035390c957766776c1ef0a53ff74b"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:20.892787+00:00",
-   "hash": "430e731725d83f188d012d3759dfef1387945c15f4308cbea40680887eeb7e65",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.194132+00:00",
+   "hash": "f5db9c828e6ffd323746946f33d80e2c51766b64ffea4780fc4475e520877342",
    "kind": "phase_advanced",
    "message": "Advanced to Checks & documentation",
    "phase_number": 6,
-   "prev_hash": "d8cb7a2905d7690e33802fdf85c6ab4ce85eb82411dfbda7750fb5a352fd2f96",
+   "prev_hash": "794cbb9d86c61955a7dacfa80f93761ef07d77c1726468963a265daf2e24e0a8",
    "progress": 65,
-   "status_sha256": "ca06b336710b838ec9ab856469d091a401be60a8e530efcda6ddb46cff841ff1"
+   "status_sha256": "b3f691d8a701d78f222d9eac056046358d63049b3d35f0c1b12c79a7bf877bea"
   },
   {
-   "acceptance_hash": "d919d020e1e928594b77e58f437b2a1f168a783834f9432dafad0a98393243c6",
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:20.585276+00:00",
+   "acceptance_hash": "2960f683e19ee229d99999f6f1fc47ecad3a0b35885a011a24e01f9516e0b5d6",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.026529+00:00",
    "by": "rev-1",
-   "hash": "d8cb7a2905d7690e33802fdf85c6ab4ce85eb82411dfbda7750fb5a352fd2f96",
+   "hash": "794cbb9d86c61955a7dacfa80f93761ef07d77c1726468963a265daf2e24e0a8",
    "implementer_profile": {
     "adapter": "auto",
     "effective_adapter": "codex",
@@ -222,7 +228,7 @@
    },
    "kind": "review_approved",
    "message": "Independent review approved current acceptance",
-   "prev_hash": "865b94a0f7d04aab1c0660bd595958f3d7fc7e67a2e2f17ff558b9835f61314f",
+   "prev_hash": "7a1de9b8f5584c812e1e32f24495ad78c949cc81e01353faf439bc4fcb4e0403",
    "profiles_distinct": false,
    "reviewer_profile": {
     "adapter": "auto",
@@ -234,68 +240,68 @@
     }
    },
    "reviewer_session_id": null,
-   "status_sha256": "ecf7f9f4b282891184ad8e5fd23a496459f3147915214df472ad88756b2b8ff5"
+   "status_sha256": "9fbe4d2b7dd95bf3319da2a01eafc3dec8fb6e7aed843a0962ae402b030c9427"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:20.584517+00:00",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:31.024969+00:00",
    "attempt": 1,
-   "attempt_id": "ha-8106b33362844b7896f405dcece1d2ad",
+   "attempt_id": "ha-0bfb86ef6c7f466e85d777b207e6084f",
    "disposition": "approved",
-   "hash": "865b94a0f7d04aab1c0660bd595958f3d7fc7e67a2e2f17ff558b9835f61314f",
+   "hash": "7a1de9b8f5584c812e1e32f24495ad78c949cc81e01353faf439bc4fcb4e0403",
    "kind": "review_attempt_closed",
    "message": "Review attempt 1 approved",
-   "prev_hash": "fb1fa2355e2fe63632d181ffb929715ea8bbe913a9a1d4158f5f7da3dce72d25",
+   "prev_hash": "d3b4596615be9307610ec6d75267be65905e736171653c96520286c3c36057da",
    "reviewer": "rev-1",
-   "status_sha256": "ecf7f9f4b282891184ad8e5fd23a496459f3147915214df472ad88756b2b8ff5"
+   "status_sha256": "9fbe4d2b7dd95bf3319da2a01eafc3dec8fb6e7aed843a0962ae402b030c9427"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:20.275319+00:00",
-   "hash": "fb1fa2355e2fe63632d181ffb929715ea8bbe913a9a1d4158f5f7da3dce72d25",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:30.855532+00:00",
+   "hash": "d3b4596615be9307610ec6d75267be65905e736171653c96520286c3c36057da",
    "kind": "phase_advanced",
    "message": "Advanced to Independent review",
    "phase_number": 5,
-   "prev_hash": "59ac9e74a0c6099808d25b8e5833a494d09a85d66ac66c52df112bc806cc00bb",
+   "prev_hash": "22dc1c78d7e99d9bd0426d16900f3cac04ba9ab6bd849e42c531ee402c16894f",
    "progress": 50,
-   "status_sha256": "93365bf501d81119bcb3169f61036848caf8888677954dc0cb7f9c6a8976688c"
+   "status_sha256": "387d17de4f092e8a8ea7a48505decd85d465d89862d471766d006c6c20ad6d6d"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:19.984658+00:00",
-   "hash": "59ac9e74a0c6099808d25b8e5833a494d09a85d66ac66c52df112bc806cc00bb",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:30.698263+00:00",
+   "hash": "22dc1c78d7e99d9bd0426d16900f3cac04ba9ab6bd849e42c531ee402c16894f",
    "kind": "phase_advanced",
    "message": "Advanced to Implementation",
    "phase_number": 4,
-   "prev_hash": "a7c27b342c557cc7887450370d1f43dfe0a0457659790169c42221f91e6d4b97",
+   "prev_hash": "11478fdd82c4adbc017cb259a6b46d13ddf381c281224c123f8bd9d4ce25f0ef",
    "progress": 50,
-   "status_sha256": "1dd4afab5a0b1d5885f9a44de7e5486e7d5a46ba8a08a0c326d76056de79c0a5"
+   "status_sha256": "8cf3147c256a6b4beb251f3e549fadcb948b6a13cdcfd6414c7e9d79a7de776e"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
-   "at": "2026-09-23T12:45:19.752500+00:00",
-   "hash": "a7c27b342c557cc7887450370d1f43dfe0a0457659790169c42221f91e6d4b97",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
+   "at": "2026-09-23T19:28:30.570784+00:00",
+   "hash": "11478fdd82c4adbc017cb259a6b46d13ddf381c281224c123f8bd9d4ce25f0ef",
    "kind": "phase_advanced",
    "message": "Advanced to Design approved",
    "phase_number": 3,
-   "prev_hash": "6395b6d709bc08437c4ee69284540deaec0e64f19b67b6f597ddcc12fa2c242f",
+   "prev_hash": "cd949c26f6e068d57edff18db8607619cacd74889366a8e1407cb8a7137d26b9",
    "progress": 50,
-   "status_sha256": "d7ec07fcee8bf32c1b4efba31bf2d28f1bd94c2e034e072f46fa4d4779843504"
+   "status_sha256": "736617b546eb47926b5e234e945f5ce8e965e8c2e901c73923243d21743543ee"
   },
   {
-   "acceptance_sha256": "06e688940d0d3b2460665ef577e7378924f491fdbcf41ea5e7f5e7b439f96123",
+   "acceptance_sha256": "3327680e1d6cbc413204ec53987297500ad34b2c5c30e7a4f2022ce8603ec5bb",
    "architect": "test-architect",
-   "at": "2026-09-23T12:45:19.525369+00:00",
+   "at": "2026-09-23T19:28:30.439360+00:00",
    "by": "test-approver",
-   "hash": "6395b6d709bc08437c4ee69284540deaec0e64f19b67b6f597ddcc12fa2c242f",
+   "hash": "cd949c26f6e068d57edff18db8607619cacd74889366a8e1407cb8a7137d26b9",
    "kind": "design_approved",
    "message": "Test-fixture design approval",
-   "prev_hash": "b2c04e03f41c7ae63ffe62a3f4f8ba0de7f1dd3a4733f9d978199186cd7eba45",
+   "prev_hash": "b999a5fc2cc8ca5f8240b2b4441ac0635aee092763beff185f19b488fb5702f5",
    "redesigns_settled_work": null,
-   "status_sha256": "5c3644a8293f1a4b4e42437cf8daa551df42e716596faf2f481df47de4d478ca"
+   "status_sha256": "0cb58409ae99009ceaec4f3fc40572df8813b286518b1f25ef04c1b8c74a1b8f"
   }
  ],
- "generated_at": "2026-09-23T12:45:22.054581+00:00",
+ "generated_at": "2026-09-23T19:28:31.882366+00:00",
  "host": {
   "actor": null,
   "family": "unknown",
@@ -329,7 +335,7 @@
   "detail": "run complete",
   "ended_at": null,
   "exit_code": null,
-  "last_activity_at": "2026-09-23T12:45:21.950031+00:00",
+  "last_activity_at": "2026-09-23T19:28:31.817526+00:00",
   "process_signal": "none",
   "role": null,
   "seconds_since_activity": 0,
@@ -345,10 +351,10 @@
    "state": "unavailable"
   },
   "design_review_attempts": 1,
-  "elapsed_seconds": 4.122,
-  "ended_at": "2026-09-23T12:45:21.950031+00:00",
+  "elapsed_seconds": 2.309,
+  "ended_at": "2026-09-23T19:28:31.817526+00:00",
   "failed_sessions": 0,
-  "generated_at": "2026-09-23T12:45:22.145032+00:00",
+  "generated_at": "2026-09-23T19:28:31.933512+00:00",
   "implementation_review_attempts": 1,
   "largest_sessions": [],
   "managed_sessions": 0,
@@ -363,21 +369,21 @@
    "8": 0.0
   },
   "phase_seconds": {
-   "1": 1.201,
-   "2": 0.724,
-   "3": 0.232,
-   "4": 0.291,
-   "5": 0.617,
-   "6": 0.303,
-   "7": 0.815,
+   "1": 0.662,
+   "2": 0.4,
+   "3": 0.127,
+   "4": 0.157,
+   "5": 0.339,
+   "6": 0.157,
+   "7": 0.504,
    "8": 0.0
   },
-  "phase_started_at": "2026-09-23T12:45:22.010580+00:00",
+  "phase_started_at": "2026-09-23T19:28:31.854390+00:00",
   "pilot_wait_seconds": 0.0,
   "recovery_attempts": 0,
   "replacement_count": 0,
   "sessions": [],
-  "started_at": "2026-09-23T12:45:17.828152+00:00",
+  "started_at": "2026-09-23T19:28:29.508387+00:00",
   "tokens": {
    "cached": null,
    "coverage": "0/0 sessions",
@@ -405,17 +411,17 @@
     "migrate_preview": "handsoff migrate <root> --dry-run",
     "rollback": "handsoff rollback <root>",
     "rollback_preview": "handsoff rollback <root> --dry-run",
-    "upgrade": "handsoff upgrade <root> --to v0.3.78",
-    "upgrade_preview": "handsoff upgrade <root> --to v0.3.78 --dry-run"
+    "upgrade": "handsoff upgrade <root> --to v0.3.79",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.79 --dry-run"
    },
-   "compatibility": "v0.3.78",
+   "compatibility": "v0.3.79",
    "execution": "unavailable",
    "execution_reason": "execution is not offered while a dashboard is serving this root",
-   "pin": "v0.3.78",
+   "pin": "v0.3.79",
    "reason": null,
    "source": "project-drop-in",
    "source_root": "<root>",
-   "version": "v0.3.78"
+   "version": "v0.3.79"
   },
   "inventory": [
    {
@@ -626,26 +632,26 @@
    "in_flight": [],
    "latest": {
     "REQ-001": {
-     "at": "2026-09-23T12:45:18.319934+00:00",
+     "at": "2026-09-23T19:28:29.783308+00:00",
      "ok": true,
-     "run_id": "vr-95b63b5ccc784ec5bc8c9f5824a95dcc"
+     "run_id": "vr-ac2fdb06b8104a8baa66cbd6cc98ec76"
     }
    },
    "live": {
-    "at": "2026-09-23T12:45:21.737609+00:00",
+    "at": "2026-09-23T19:28:31.691813+00:00",
     "in_flight": null,
     "last_failure": null,
     "ok": true,
-    "run_id": "vr-738141fa863c43548b723d562f03aed0"
+    "run_id": "vr-e87ac544ee514062b5a0cbf0dc64cb15"
    }
   }
  },
  "operator_actions": [
   {
-   "action_id": "run_close:7fa915cb647a8cb6",
-   "binding": "7fa915cb647a8cb6",
+   "action_id": "run_close:8f79fbe6297d4622",
+   "binding": "8f79fbe6297d4622",
    "consequence": "Records closure and releases run-owned resources",
-   "created_at": "2026-09-23T12:45:21.950031+00:00",
+   "created_at": "2026-09-23T19:28:31.817526+00:00",
    "kind": "run_close",
    "label": "Cleanly close run",
    "operation": "run-close",
@@ -659,21 +665,21 @@
   }
  ],
  "performance": {
-  "active_seconds": 4.317011,
+  "active_seconds": 2.425199,
   "block_new_work": false,
   "bottleneck": {
    "phase": "1",
-   "seconds": 1.201
+   "seconds": 0.662
   },
   "breaches": 0,
   "episode_id": "episode-1",
   "forecast_remaining_seconds": 0.0,
-  "forecast_total_seconds": 4.317011,
-  "forecast_variance_seconds": -7195.682989,
+  "forecast_total_seconds": 2.425199,
+  "forecast_variance_seconds": -7197.574801,
   "overall_percent": 100,
   "pause_seconds": 7200,
   "paused_at": null,
-  "run_id": "run-5731abf89408e4042615b911ba191386",
+  "run_id": "run-7082362e84e462a9bed4cf02ac825a20",
   "schema": "handsoff.performance_view",
   "state": "active",
   "transition": "none",
@@ -768,7 +774,7 @@
  "project": {
   "feature": "Snapshot contract",
   "logo_url": null,
-  "name": "handsoff-test-l7v_5q0o"
+  "name": "handsoff-test-0fo3fl0n"
  },
  "questions": {
   "answered": [],
@@ -804,11 +810,11 @@
   "attempts": [
    {
     "attempt": 1,
-    "attempt_id": "ha-8106b33362844b7896f405dcece1d2ad",
-    "closed_at": "2026-09-23T12:45:20.582043+00:00",
+    "attempt_id": "ha-0bfb86ef6c7f466e85d777b207e6084f",
+    "closed_at": "2026-09-23T19:28:31.023801+00:00",
     "disposition": "approved",
     "findings_count": 0,
-    "opened_at": "2026-09-23T12:45:20.518752+00:00",
+    "opened_at": "2026-09-23T19:28:30.984636+00:00",
     "reviewer": "rev-1",
     "tests_executed": "unknown",
     "trigger": "initial"
@@ -1127,11 +1133,17 @@
   },
   "amendment": null,
   "amendments": [],
+  "approval_posture": {
+   "profile": "safe",
+   "require_deployment_approval": true,
+   "require_design_approval": true,
+   "waivers_active": false
+  },
   "background_wait": null,
   "consistency_errors": [],
   "deployment_approved": {
-   "acceptance_hash": "d919d020e1e928594b77e58f437b2a1f168a783834f9432dafad0a98393243c6",
-   "at": "2026-09-23T12:45:21.463749+00:00",
+   "acceptance_hash": "2960f683e19ee229d99999f6f1fc47ecad3a0b35885a011a24e01f9516e0b5d6",
+   "at": "2026-09-23T19:28:31.508824+00:00",
    "by": "moncy",
    "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
    "rules_entries": {
@@ -1144,14 +1156,14 @@
     "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
     "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
-    "engine:version": "v0.3.78",
-    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+    "engine:version": "v0.3.79",
+    "handsoff.toml": "4e1d569a47883c05f778a93020a07ff3c38954359797a739c27b70ce424dd28b"
    },
-   "rules_hash": "de97818964882fcc43e7e6c4ef99c500ce28fa9f708fd72b0b7302ec20f3b68e"
+   "rules_hash": "4a78480b3943bc525f3a7c97d069461f7043796ec1beb271eef5b6fec948c81c"
   },
   "design_approved": {
    "architect": "test-architect",
-   "at": "2026-09-23T12:45:19.522489+00:00",
+   "at": "2026-09-23T19:28:30.437506+00:00",
    "by": "test-approver",
    "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
@@ -1167,17 +1179,17 @@
     "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
     "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
-    "engine:version": "v0.3.78",
-    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+    "engine:version": "v0.3.79",
+    "handsoff.toml": "4e1d569a47883c05f778a93020a07ff3c38954359797a739c27b70ce424dd28b"
    },
-   "rules_hash": "de97818964882fcc43e7e6c4ef99c500ce28fa9f708fd72b0b7302ec20f3b68e",
+   "rules_hash": "4a78480b3943bc525f3a7c97d069461f7043796ec1beb271eef5b6fec948c81c",
    "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
    "summary": "Test-fixture design approval"
   },
   "design_proposal": null,
   "design_review": {
    "architect": "test-architect",
-   "at": "2026-09-23T12:45:19.288581+00:00",
+   "at": "2026-09-23T19:28:30.305919+00:00",
    "attempt": 1,
    "by": "test-design-reviewer",
    "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
@@ -1229,14 +1241,14 @@
    "detail": "run complete",
    "ended_at": null,
    "exit_code": null,
-   "last_activity_at": "2026-09-23T12:45:21.950031+00:00",
+   "last_activity_at": "2026-09-23T19:28:31.817526+00:00",
    "process_signal": "none",
    "role": null,
    "seconds_since_activity": 0,
    "session_id": null,
    "state": "complete"
   },
-  "live_verification_id": "vr-738141fa863c43548b723d562f03aed0",
+  "live_verification_id": "vr-e87ac544ee514062b5a0cbf0dc64cb15",
   "model_policy": {
    "allowed_adapters": [
     "codex",
@@ -1246,7 +1258,7 @@
    "quota_substitution": true
   },
   "next_action": "Workflow complete; no further action required.",
-  "original_symptom_evidence_id": "vr-95b63b5ccc784ec5bc8c9f5824a95dcc",
+  "original_symptom_evidence_id": "vr-ac2fdb06b8104a8baa66cbd6cc98ec76",
   "pending_questions": [],
   "phase": "Live verified",
   "phase_number": 8,
@@ -1267,8 +1279,8 @@
   "requires_design_review": true,
   "retry_count": 0,
   "review": {
-   "acceptance_hash": "d919d020e1e928594b77e58f437b2a1f168a783834f9432dafad0a98393243c6",
-   "at": "2026-09-23T12:45:20.519028+00:00",
+   "acceptance_hash": "2960f683e19ee229d99999f6f1fc47ecad3a0b35885a011a24e01f9516e0b5d6",
+   "at": "2026-09-23T19:28:30.984999+00:00",
    "by": "rev-1",
    "checklist": {
     "all_criteria_verified": "yes",
@@ -1306,23 +1318,23 @@
     "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
     "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
-    "engine:version": "v0.3.78",
-    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+    "engine:version": "v0.3.79",
+    "handsoff.toml": "4e1d569a47883c05f778a93020a07ff3c38954359797a739c27b70ce424dd28b"
    },
-   "rules_hash": "de97818964882fcc43e7e6c4ef99c500ce28fa9f708fd72b0b7302ec20f3b68e",
+   "rules_hash": "4a78480b3943bc525f3a7c97d069461f7043796ec1beb271eef5b6fec948c81c",
    "scope_hash": "73dc805a5821e2ee5ce922392f89bacf95fb494fbcd77ba393b004f2ef4ae80a",
    "tests_executed": "unknown"
   },
   "review_attempts": [
    {
-    "acceptance_hash": "d919d020e1e928594b77e58f437b2a1f168a783834f9432dafad0a98393243c6",
+    "acceptance_hash": "2960f683e19ee229d99999f6f1fc47ecad3a0b35885a011a24e01f9516e0b5d6",
     "attempt": 1,
-    "attempt_id": "ha-8106b33362844b7896f405dcece1d2ad",
-    "closed_at": "2026-09-23T12:45:20.582043+00:00",
+    "attempt_id": "ha-0bfb86ef6c7f466e85d777b207e6084f",
+    "closed_at": "2026-09-23T19:28:31.023801+00:00",
     "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
     "disposition": "approved",
     "findings": [],
-    "opened_at": "2026-09-23T12:45:20.518752+00:00",
+    "opened_at": "2026-09-23T19:28:30.984636+00:00",
     "opened_by": "rev-1",
     "phase_number": 5,
     "reviewer": "rev-1",
@@ -1345,8 +1357,8 @@
   "stall_warning": null,
   "status": "complete",
   "summary": "",
-  "updated_at": "2026-09-23T12:45:21.950031+00:00",
-  "verification_head": "05392aabf7cfb59d90b5212648a7962eab73406ac0384f8e932ecb7638c5d158",
+  "updated_at": "2026-09-23T19:28:31.817526+00:00",
+  "verification_head": "3041f3044178a3cb598e10d502727c5eb123086c280b8be65acf5a2314464e86",
   "verification_progress": 100,
   "work_item_delivery": {
    "issue-218": {
@@ -1375,7 +1387,7 @@
   "headline": "Objectives neutralized. Mission complete, Pilot.",
   "label": "Mission complete",
   "latest_event": {
-   "at": "2026-09-23T12:45:22.016962+00:00",
+   "at": "2026-09-23T19:28:31.860895+00:00",
    "kind": "dashboard_release_skipped",
    "message": "Run-owned dashboard release skipped: no run-owned dashboard"
   },
@@ -1385,18 +1397,18 @@
   "tone": "success"
  },
  "test_progress": {
-  "age_seconds": 0.414,
+  "age_seconds": 0.247,
   "command_sha256": "8894cdad26ef749f311249c169d54f2f48118502d7fdacfad532d5d190fb98ff",
-  "execution_id": "tx-4c34f896e3574e4381b8bdac846482e0",
-  "finished_at": "2026-09-23T12:45:21.734327+00:00",
-  "heartbeat_at": "2026-09-23T12:45:21.734506+00:00",
+  "execution_id": "tx-0f10fdb64686405e92074e5bdca80e7a",
+  "finished_at": "2026-09-23T19:28:31.689249+00:00",
+  "heartbeat_at": "2026-09-23T19:28:31.689347+00:00",
   "label": "Live verification",
   "request_id": null,
   "result": "1 of 1 checks passed",
-  "run_id": "d125cad2d67d815bdd63aba5af40345ff46daf6f73897303aebcc989857a78c9",
+  "run_id": "684420a81af0285e5e322a44185ae974bd24c5147de71d855a57deee2abb7501",
   "schema_version": 1,
   "source": "verify-live",
-  "started_at": "2026-09-23T12:45:21.722842+00:00",
+  "started_at": "2026-09-23T19:28:31.679456+00:00",
   "state": "passed",
   "totals": {
    "cancelled": 0,
@@ -1432,23 +1444,23 @@
   "in_flight": [],
   "latest": {
    "REQ-001": {
-    "at": "2026-09-23T12:45:18.319934+00:00",
+    "at": "2026-09-23T19:28:29.783308+00:00",
     "ok": true,
-    "run_id": "vr-95b63b5ccc784ec5bc8c9f5824a95dcc"
+    "run_id": "vr-ac2fdb06b8104a8baa66cbd6cc98ec76"
    }
   },
   "live": {
-   "at": "2026-09-23T12:45:21.737609+00:00",
+   "at": "2026-09-23T19:28:31.691813+00:00",
    "in_flight": null,
    "last_failure": null,
    "ok": true,
-   "run_id": "vr-738141fa863c43548b723d562f03aed0"
+   "run_id": "vr-e87ac544ee514062b5a0cbf0dc64cb15"
   }
  },
  "verifications": [
   {
-   "acceptance_hash": "d919d020e1e928594b77e58f437b2a1f168a783834f9432dafad0a98393243c6",
-   "at": "2026-09-23T12:45:21.737609+00:00",
+   "acceptance_hash": "2960f683e19ee229d99999f6f1fc47ecad3a0b35885a011a24e01f9516e0b5d6",
+   "at": "2026-09-23T19:28:31.691813+00:00",
    "binding": null,
    "by": "moncy",
    "commands": [
@@ -1464,10 +1476,10 @@
    "description": "",
    "executed": true,
    "feature_hash": null,
-   "hash": "05392aabf7cfb59d90b5212648a7962eab73406ac0384f8e932ecb7638c5d158",
+   "hash": "3041f3044178a3cb598e10d502727c5eb123086c280b8be65acf5a2314464e86",
    "kind": "live",
    "ok": true,
-   "prev_hash": "de1d13fa3cc9defe5ab03c4dd321a3b5057ab312101f924db3c84221ee1f0710",
+   "prev_hash": "0720b5b70fff045dff34e92e0861a3168084965c9be1929e7093ad753cdc2074",
    "repository_digest": null,
    "results": [
     {
@@ -1491,17 +1503,17 @@
     "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
     "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
-    "engine:version": "v0.3.78",
-    "handsoff.toml": "bacf10ca328ca2d86187659949b3fbd07dffec4c08cfe770c27f5052b2751c28"
+    "engine:version": "v0.3.79",
+    "handsoff.toml": "4e1d569a47883c05f778a93020a07ff3c38954359797a739c27b70ce424dd28b"
    },
-   "rules_hash": "de97818964882fcc43e7e6c4ef99c500ce28fa9f708fd72b0b7302ec20f3b68e",
-   "run_id": "vr-738141fa863c43548b723d562f03aed0"
+   "rules_hash": "4a78480b3943bc525f3a7c97d069461f7043796ec1beb271eef5b6fec948c81c",
+   "run_id": "vr-e87ac544ee514062b5a0cbf0dc64cb15"
   },
   {
    "acceptance_hash": null,
-   "at": "2026-09-23T12:45:18.319934+00:00",
+   "at": "2026-09-23T19:28:29.783308+00:00",
    "binding": {
-    "true": "47518a7d30f605626af1ed36361bd93da2a8ae1cf9c2869758c096c9d8baffaa"
+    "true": "71c1e2cf75ac75c2e1de977148e840a0b39c4779d7f48210df8a6f758e896e9a"
    },
    "by": "test-implementer",
    "commands": [
@@ -1516,12 +1528,12 @@
    },
    "description": "",
    "executed": true,
-   "feature_hash": "d125cad2d67d815bdd63aba5af40345ff46daf6f73897303aebcc989857a78c9",
-   "hash": "de1d13fa3cc9defe5ab03c4dd321a3b5057ab312101f924db3c84221ee1f0710",
+   "feature_hash": "684420a81af0285e5e322a44185ae974bd24c5147de71d855a57deee2abb7501",
+   "hash": "0720b5b70fff045dff34e92e0861a3168084965c9be1929e7093ad753cdc2074",
    "kind": "checks",
    "ok": true,
    "prev_hash": "GENESIS",
-   "repository_digest": "6c437eb5e8d393e97f4ffb302613b125c287e648afb4b37afa9b689384cfad69",
+   "repository_digest": "10660130780e706651746362eb7bb75411757b5dc9943941fc3e80fd23354550",
    "results": [
     {
      "command": "true",
@@ -1534,7 +1546,7 @@
     }
    ],
    "reused_from": null,
-   "run_id": "vr-95b63b5ccc784ec5bc8c9f5824a95dcc"
+   "run_id": "vr-ac2fdb06b8104a8baa66cbd6cc98ec76"
   }
  ],
  "work_items": {
@@ -1556,7 +1568,7 @@
   "items": [
    {
     "blocker": "",
-    "created_at": "2026-09-23T12:45:17.818240+00:00",
+    "created_at": "2026-09-23T19:28:29.503155+00:00",
     "criteria": [
      "REQ-001"
     ],
@@ -1576,7 +1588,7 @@
     "required": true,
     "status": "done",
     "title": "Issue #218",
-    "updated_at": "2026-09-23T12:45:17.818240+00:00",
+    "updated_at": "2026-09-23T19:28:29.503155+00:00",
     "url": ""
    }
   ],
