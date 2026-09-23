@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_close_transaction as close_transaction  # noqa: E402
 import handsoff_regress as regress  # noqa: E402
 import handsoff_release_runtime as release_runtime  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
@@ -1053,6 +1054,7 @@ def cmd_ci_watch(args) -> int:
         return 1
     try:
         if args.pr is not None:
+            _enforce_refs_only_pr(root, args.pr)
             watch = lib.ci_watch_start(root, cfg, pr=args.pr, by=args.by)
             expected = f"{watch['expected_seconds']:.0f} s expected" if watch.get("expected_seconds") else lib.CI_NO_HISTORY_NOTE
             print(f"CI_WATCH_STARTED: PR #{watch['pr']} head {watch['head'][:12]}; {expected}")
@@ -1073,6 +1075,29 @@ def cmd_ci_watch(args) -> int:
         print(f"CI_WATCH_BLOCKED: {exc}")
         return 1
     return 0
+
+
+def _enforce_refs_only_pr(root: Path, number: int, *, runner=subprocess.run) -> None:
+    """Refuse a watched PR whose title/body can auto-close a work item."""
+    try:
+        result = runner(
+            ["gh", "pr", "view", str(number), "--json", "title,body"],
+            cwd=str(root), capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode != 0:
+        return
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    try:
+        close_transaction.enforce_refs_only(payload.get("title") or "", payload.get("body") or "")
+    except close_transaction.CloseTransactionError as exc:
+        raise lib.HandsoffError(f"ci-watch: {exc}") from exc
 
 
 def _release_run_dashboard(root, cfg) -> None:
@@ -4701,20 +4726,130 @@ def cmd_dashboard(args) -> int:
                  owned_by_run=bool(getattr(args, "owned_by_run", False)))
 
 
+def _close_transaction_identity(root: Path, cfg: dict) -> tuple[str, Path]:
+    """Stable identity/path for the current initialized run."""
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        events = lib.read_events(root, cfg)
+        problems = lib.verify_event_log(root, cfg)
+    if problems:
+        raise lib.HandsoffError("run-close: event log authentication failed: " + problems[0])
+    reopen_count = sum(event.get("kind") == "run_reopened" for event in events)
+    token = hashlib.sha256(
+        f"{lib.feature_hash(status, events)}:{reopen_count}".encode("utf-8")
+    ).hexdigest()
+    path = root / ".handsoff-archive" / "close-transactions" / f"{token}.json"
+    return token, path
+
+
+def _load_close_transaction(root: Path, cfg: dict) -> tuple[close_transaction.CloseTransaction, Path]:
+    token, path = _close_transaction_identity(root, cfg)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except (OSError, ValueError) as exc:
+        raise lib.HandsoffError(f"run-close: close transaction is unreadable: {exc}") from exc
+    try:
+        record = close_transaction.migrate_transaction(raw, root=root, run_token=token, authenticated=True)
+    except close_transaction.CloseTransactionError as exc:
+        raise lib.HandsoffError(f"run-close: {exc}") from exc
+
+    def persist(value: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lib.atomic_write_json(path, value)
+
+    transaction = close_transaction.CloseTransaction(record, persist=persist)
+    persist(record)
+    return transaction, path
+
+
+def _fleet_run_state(root: Path) -> str | None:
+    import handsoff_fleet as fleet
+    entry = next((row for row in fleet.load_registry() if row.get("root") == str(root.resolve())), None)
+    return entry.get("state") if isinstance(entry, dict) else None
+
+
+def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
+    """Execute the product close path as an ordered, resumable transaction."""
+    transaction, transaction_path = _load_close_transaction(root, cfg)
+    result: dict = {}
+
+    def current_status() -> dict:
+        with lib.project_lock(root):
+            return lib.load_unique_json(lib.status_path(root, cfg))
+
+    def revalidate() -> None:
+        token, path = _close_transaction_identity(root, cfg)
+        if token != transaction.record.get("run_token") or path != transaction_path:
+            raise close_transaction.CloseConflict("run identity changed during close")
+
+    def close_state() -> dict:
+        status = current_status()
+        return {"closed": isinstance(status.get("run_closed"), dict), "run_closed": status.get("run_closed")}
+
+    def close_action() -> None:
+        result.update(lib.close_run(
+            root, by=args.by, reason=args.reason,
+            expected_updated_at=getattr(args, "expected_updated_at", None),
+            cancel_active=bool(getattr(args, "cancel_active", False)), release_dashboard=False,
+        ))
+
+    started_at = transaction.record.get("created_at") or ""
+
+    def report_state() -> dict:
+        matching = [event for event in lib.read_events(root, cfg)
+                    if event.get("kind") in {"report_posted", "report_not_posted"}
+                    and str(event.get("at") or "") >= started_at]
+        return {"recorded": bool(matching), "kind": matching[-1].get("kind") if matching else None}
+
+    def fleet_action() -> None:
+        import handsoff_fleet as fleet
+        fleet.note_registry_state(root, None, "closed")
+
+    operations = {
+        "prepare": close_transaction.Operation(close_state, lambda value: value["closed"], close_action),
+        "final_report_post": close_transaction.Operation(
+            report_state, lambda value: value["recorded"], lambda: _post_report(root, cfg, by=args.by),
+            optional=not bool(getattr(args, "post", False)),
+            unavailable_reason=None if getattr(args, "post", False) else "--post was not requested",
+        ),
+        "archive": close_transaction.Operation(
+            lambda: {"path": str(transaction_path), "exists": transaction_path.is_file()},
+            lambda value: value["exists"], lambda: None,
+        ),
+        "fleet_unregister": close_transaction.Operation(
+            lambda: {"state": _fleet_run_state(root)}, lambda value: value["state"] == "closed", fleet_action,
+        ),
+        "dashboard_shutdown": close_transaction.Operation(
+            lambda: {"owner_present": lib.dashboard_owner_path(root).exists()},
+            lambda value: not value["owner_present"], lambda: _release_run_dashboard(root, cfg),
+        ),
+        "config_restore": close_transaction.Operation(
+            lambda: {"owned_override": False}, lambda value: value["owned_override"] is False, lambda: None,
+        ),
+        "optional_analysis": close_transaction.Operation(
+            lambda: {"applicable": False}, lambda _value: False, lambda: None,
+            optional=True, unavailable_reason="analysis runs after a completed Phase 8 archive",
+        ),
+    }
+    try:
+        transaction.run(operations, revalidate=revalidate)
+    except close_transaction.CloseTransactionError as exc:
+        raise lib.HandsoffError(f"run-close: {exc}") from exc
+    if not result:
+        result = {"closed": True, "already_closed": True, "run_closed": close_state()["run_closed"],
+                  "dashboard": {"released": False, "reason": "closure transaction resumed"}}
+    result["transaction"] = {"state": transaction.record["state"], "path": str(transaction_path)}
+    return result
+
+
 def cmd_run_close(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
-    if getattr(args, "post", False):
-        # #171: the report is built and posted before the close, from the
-        # ledger as it stands; the close itself is what follows.
-        _post_report(root, cfg, by=args.by)
-    result = lib.close_run(
-        root, by=args.by, reason=args.reason,
-        expected_updated_at=getattr(args, "expected_updated_at", None),
-        cancel_active=bool(getattr(args, "cancel_active", False)),
-        release_dashboard=bool(getattr(args, "release_dashboard", True)),
-    )
-    _release_tickets(root, "closed")
+    try:
+        result = _run_close_transaction(args, root, cfg)
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
     print(json.dumps(result, sort_keys=True))
     return 0
 
