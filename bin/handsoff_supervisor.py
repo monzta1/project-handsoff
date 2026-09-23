@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_regress as regress  # noqa: E402
+import handsoff_release_runtime as release_runtime  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
 # One inventory for the command line, broker, and Mission Control. A command
@@ -40,6 +41,7 @@ OPERATION_REGISTRY = {
     "dashboard": {"class": "diagnostic", "surface": "dashboard"},
     "verify": {"class": "operator-facing", "surface": "verification-list"},
     "release-plan": {"class": "operator-facing", "surface": "regression-alert"},
+    "release-reconcile": {"class": "automatic", "surface": "release-readiness"},
     "regression-request": {"class": "operator-facing", "surface": "regression-alert"},
     "regression-decide": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "regression-run": {"class": "automatic", "surface": "regression-alert"},
@@ -595,6 +597,12 @@ def cmd_advance(args) -> int:
         if audit_errors:
             return _print_audit_block(audit_errors)
         lib.ensure_no_launched_regression(status)
+
+        if args.phase == 8:
+            release_error = release_runtime.completion_error(root, status.get("release_plan"))
+            if release_error:
+                print(f"SHIP_FEATURE_BLOCKED: release gate: {release_error}")
+                return 1
 
         refusal = lib.lane_gate_refusal(status, f"advance_{args.phase}")
         if refusal:
@@ -1688,6 +1696,62 @@ def cmd_release_plan(args) -> int:
             full_regression_eligible=plan["full_regression_eligible"], by=actor,
         )
     print(json.dumps(plan, indent=2))
+    return 0
+
+
+def cmd_release_reconcile(args) -> int:
+    """Run or resume the Phase-7 release transaction."""
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        try:
+            status, _acceptance, records, problems = _load_all(root, cfg)
+        except lib.HandsoffError as exc:
+            print(f"RELEASE_BLOCKED: {exc}")
+            return 1
+        audit_errors = _audit_errors(root, cfg, status, records, problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if status.get("phase_number") != 7:
+            print("RELEASE_BLOCKED: release reconciliation requires Phase 7")
+            return 1
+        if lib.adaptive_deployment_approval_required(status, cfg) and not status.get("deployment_approved"):
+            print("RELEASE_BLOCKED: deployment approval is required before publishing")
+            return 1
+        plan = deepcopy(status.get("release_plan"))
+        if not isinstance(plan, dict):
+            print("RELEASE_BLOCKED: record release-plan before publishing")
+            return 1
+        plan_binding = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+
+    def rooted(value, default=None):
+        path = Path(value) if value else default
+        if path is not None and not path.is_absolute():
+            path = root / path
+        return path
+
+    try:
+        evidence = release_runtime.reconcile_release(
+            root, plan, rooted(args.artifact), repository=args.repository, commit=args.commit,
+            manifest=rooted(args.manifest, root / "handsoff-runtime.json"),
+            notes_file=rooted(args.notes_file),
+        )
+    except (release_runtime.ReleaseProviderError,
+            release_runtime.tx.ReleaseTransactionError, ValueError) as exc:
+        print(f"RELEASE_BLOCKED: {exc}")
+        return 1
+    with lib.project_lock(root):
+        status, _ = _load(root, cfg)
+        current = status.get("release_plan")
+        if status.get("phase_number") != 7 or not isinstance(current, dict) \
+                or json.dumps(current, sort_keys=True, separators=(",", ":")) != plan_binding:
+            print("RELEASE_BLOCKED: workflow state or release plan changed during reconciliation")
+            return 1
+        lib.commit(root, cfg, status=status, event_kind="release_reconciled",
+                   event_message=f"Release {plan['version']} published, installed and manifest-verified",
+                   by=actor, release=evidence)
+    print(json.dumps(evidence, indent=2))
     return 0
 
 
@@ -4757,6 +4821,15 @@ def build_parser() -> argparse.ArgumentParser:
     release_plan.add_argument("--by", required=True)
     release_plan.add_argument("--full-regression-override-reason")
 
+    release_reconcile = sub.add_parser(
+        "release-reconcile", help="publish, install and verify the planned release transaction")
+    release_reconcile.add_argument("--artifact", required=True)
+    release_reconcile.add_argument("--by", required=True)
+    release_reconcile.add_argument("--repository")
+    release_reconcile.add_argument("--commit")
+    release_reconcile.add_argument("--manifest")
+    release_reconcile.add_argument("--notes-file")
+
     regression_request = sub.add_parser("regression-request")
     regression_request.add_argument("--group", required=True)
     regression_request.add_argument("--by", required=True)
@@ -5187,6 +5260,7 @@ def main() -> int:
         "advance": cmd_advance, "deployment-gate": cmd_deployment_gate,
         "verify": cmd_verify, "verify-log": cmd_verify_log, "doctor": cmd_doctor,
         "release-plan": cmd_release_plan,
+        "release-reconcile": cmd_release_reconcile,
         "regression-request": cmd_regression_request,
         "regression-decide": cmd_regression_decide,
         "regression-run": cmd_regression_run,
