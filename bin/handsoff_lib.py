@@ -14135,7 +14135,8 @@ def _gh(args: list[str], *, runner=subprocess.run, cwd: Path | None = None):
 def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
                       verifications: list[dict], validate_lines: list[str], *, by: str,
                       runner=subprocess.run,
-                      known_handsoff_closed: set[int] | None = None) -> dict:
+                      known_handsoff_closed: set[int] | None = None,
+                      checkpoint: Callable[[int, str, str], None] | None = None) -> dict:
     """#171: one comment per issue work item, marked with the ledger head so
     a second post finds it and does nothing; the item is closed and its box
     ticked in a parent epic. Nothing is posted when a credential shape
@@ -14179,6 +14180,10 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         issue_views[number] = issue
     posted, skipped = [], []
     body = marker + "\n" + text
+    def save(number: int, operation: str, state: str) -> None:
+        if checkpoint is not None:
+            checkpoint(number, operation, state)
+
     for item in items:
         number = item["number"]
         issue = issue_views[number]
@@ -14191,15 +14196,22 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         url = None
         if already:
             skipped.append({"number": number, "reason": "already posted"})
+            save(number, "commented", "complete")
         else:
+            save(number, "commented", "intent")
             comment = _gh(["issue", "comment", str(number), "--body", body], runner=runner, cwd=root)
             if comment.returncode != 0:
                 skipped.append({"number": number, "reason": "comment failed"})
                 continue
+            save(number, "commented", "complete")
             url = comment.stdout.strip().splitlines()[-1] if comment.stdout.strip() else None
         closed = str(issue.get("state") or "").upper() == "CLOSED"
         did_close = did_tick = False
         if not closed:
+            # Persist before the provider call.  If the response/read-back is
+            # lost, a retry may safely reconcile this attempted operation
+            # instead of misclassifying its own close as human/unknown.
+            save(number, "closed", "intent")
             _gh(["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
                 runner=runner, cwd=root)
             close_readback = _gh(["issue", "view", str(number), "--json", "state"],
@@ -14210,6 +14222,8 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
             except ValueError:
                 closed = False
             did_close = closed
+        if closed:
+            save(number, "closed", "complete")
         parent_match = re.search(r"(?im)^\s*parent:\s*#([1-9][0-9]{0,8})\b", str(issue.get("body") or ""))
         parent = int(parent_match.group(1)) if parent_match else None
         ticked = False
@@ -14222,6 +14236,7 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
             unticked = re.compile(rf"^(\s*- \[) (\] #{number}\b)", re.MULTILINE)
             if unticked.search(parent_body):
                 new_body = unticked.sub(r"\1x\2", parent_body, count=1)
+                save(number, "ticked", "intent")
                 _gh(["issue", "edit", str(parent), "--body", new_body], runner=runner, cwd=root)
                 parent_readback = _gh(["issue", "view", str(parent), "--json", "body"],
                                       runner=runner, cwd=root)
@@ -14235,6 +14250,8 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
                 did_tick = ticked
             elif re.search(rf"^\s*- \[x\] #{number}\b", parent_body, re.MULTILINE | re.IGNORECASE):
                 ticked = True
+        if ticked or not parent:
+            save(number, "ticked", "complete")
         # Even a no-op read-back is returned so a fresh close episode can
         # persist that every mandatory item is already complete.  ``skipped``
         # still records that no duplicate comment was sent.

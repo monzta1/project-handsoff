@@ -26,6 +26,8 @@ with log.open("a") as fh:
     fh.write(json.dumps(args) + "\n")
 if args[:2] == ["auth", "status"]:
     sys.exit(0 if state.get("auth", True) else 1)
+if args[:2] == ["issue", "view"] and args[-1] == "state" and state.get("fail_close_readback"):
+    sys.exit(1)
 if args[:2] == ["issue", "view"]:
     number = args[2]
     issue = state["issues"].setdefault(number, {"body": "", "comments": [], "url": f"https://example.test/issues/{number}", "closed": False})
@@ -210,6 +212,21 @@ class ReportPostingTests(HandsoffTestCase):
         mutations = [call for call in self._calls()[before:]
                      if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
         self.assertEqual(mutations, [])
+
+    def test_a_lost_close_readback_is_attributed_and_reconciled_on_retry(self):
+        self._run()
+        self._gh_state({**self._gh_state(), "fail_close_readback": True})
+        first = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(first.returncode, 0)
+        self.assertTrue(self._gh_state()["issues"]["40"]["closed"])
+        records = list((self.tmp / ".handsoff-archive" / "close-transactions").glob("*.json"))
+        record = json.loads(records[0].read_text())
+        self.assertTrue(record["items"]["40"]["closed_intent"])
+
+        self._gh_state({**self._gh_state(), "fail_close_readback": False})
+        retry = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertNotIn("closed without attributable Handsoff ownership", retry.stdout)
 
     def test_without_post_nothing_leaves_and_no_gh_auth_records_not_posted(self):
         self._run()

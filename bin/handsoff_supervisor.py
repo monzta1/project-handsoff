@@ -5011,7 +5011,8 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
     def report_action() -> None:
         rows = transaction.record.setdefault("items", {})
         known_closed = {int(number) for number, row in rows.items()
-                        if str(number).isdigit() and row.get("closed") is True}
+                        if str(number).isdigit()
+                        and (row.get("closed") is True or row.get("closed_intent") is True)}
         # Prior close episodes remain attributable through the authenticated
         # event ledger.  This permits a deliberate run-reopen to reconcile a
         # previously completed Handsoff closure without treating an arbitrary
@@ -5023,7 +5024,18 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
                 if isinstance(posted, dict) and isinstance(posted.get("number"), int) \
                         and posted.get("closed") is True:
                     known_closed.add(posted["number"])
-        outcome = _post_report(root, cfg, by=args.by, known_handsoff_closed=known_closed)
+        def checkpoint(number: int, operation: str, state: str) -> None:
+            row = rows.setdefault(str(number), {})
+            if state == "intent":
+                row[f"{operation}_intent"] = True
+            elif state == "complete":
+                row[operation] = True
+            transaction._persist()
+
+        outcome = _post_report(
+            root, cfg, by=args.by, known_handsoff_closed=known_closed,
+            checkpoint=checkpoint,
+        )
         for posted in outcome.get("posted") or []:
             number = posted.get("number")
             if not isinstance(number, int):
@@ -5100,7 +5112,8 @@ def _validate_lines(root, cfg) -> list[str]:
     return ["SHIP_FEATURE_VALID"] if not errors else ["SHIP_FEATURE_BLOCKED"] + [f"- {e}" for e in errors]
 
 
-def _post_report(root, cfg, *, by: str, known_handsoff_closed: set[int] | None = None) -> dict:
+def _post_report(root, cfg, *, by: str, known_handsoff_closed: set[int] | None = None,
+                 checkpoint=None) -> dict:
     """#171: render from the ledger, post once per ticket, record the outcome."""
     with lib.project_lock(root):
         status, acceptance, verifications, _problems = _load_all(root, cfg)
@@ -5109,6 +5122,7 @@ def _post_report(root, cfg, *, by: str, known_handsoff_closed: set[int] | None =
     outcome = lib.post_final_report(
         root, cfg, status, acceptance, events, verifications, validate, by=by,
         known_handsoff_closed=known_handsoff_closed,
+        checkpoint=checkpoint,
     )
     with lib.project_lock(root):
         lib.record_report_outcome(root, cfg, outcome, by=by)
