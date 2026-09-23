@@ -1119,6 +1119,8 @@ def build_snapshot(root: Path) -> dict:
                   "reported_model", "resolution_source", "state", "started_at",
                   "running_at", "ended_at", "exit_code", "tier")
         view = {field: session.get(field) for field in fields}
+        view["reviewer_isolation"] = deepcopy(session.get("reviewer_isolation")) \
+            if isinstance(session.get("reviewer_isolation"), dict) else None
         if isinstance(session.get("result"), dict) and session["result"].get("adopted_at"):
             view["state"] = "adopted"
         return view
@@ -1248,6 +1250,7 @@ def build_snapshot(root: Path) -> dict:
         },
         "metrics": metrics,
         "performance": performance,
+        "durability": lib.durability_capability(lib.status_path(root, cfg)),
         "adaptive_routing": lib.adaptive_routing_snapshot(status, cfg, host=host, events=events),
         "model_policy": deepcopy(status.get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))),
         "launch_preflight": lib.launch_preflight_snapshot(root),

@@ -70,8 +70,21 @@ Mission Control uses readable crew names such as **Solution Architect** and
 **Implementation Reviewer**, while the adjacent run profile keeps the exact
 provider, requested model, provider-reported model, session, and state. An
 accepted full regression gets a large live progress bar, result counts, and
-worker cards; eligible Python unittest suites run in up to four deterministic
-shards.
+worker cards. Eligible Python unittest suites run in exactly five isolated
+source snapshots by default. The dashboard and CLI both show `mode`,
+`worker_count`, per-shard progress, and any serial `fallback_reason`. Mission
+Control's sticky top bar keeps overall completion, completed criteria, and the
+current test state visible while scrolling; it replaces the former Pilot-note
+composer and duplicate bottom progress dock.
+
+This repository intentionally uses `[execution] profile = "dogfood"`, which
+names its local self-hosting waiver of the design and deployment clicks.
+Generated projects default to `safe`; unattended, shared, and production
+profiles refuse those waivers. Reviewer launches use one provider-neutral
+contract: Codex gets an external write sandbox, a read-only project, sanitized
+credentials, bounded subprocess lifetime, and denied network; adapters that
+cannot enforce that boundary are refused before session reservation unless a
+weaker compatibility mode is explicitly enabled and approved.
 
 ## The house
 

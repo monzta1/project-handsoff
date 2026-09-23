@@ -23,6 +23,11 @@ deployment_requires_explicit_approval = true
 # review stays mandatory. Default true.
 require_design_approval = true
 
+[execution]
+# Safe is the portable default. Only an explicitly named local dogfood
+# profile may waive design or deployment approval.
+profile = "safe"
+
 [features]
 # Workflow switches (README "Workflow features"); Mission Control's CREW
 # dialog edits these. A switch at its default keeps recorded approval

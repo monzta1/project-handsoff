@@ -40,7 +40,7 @@ const AGENT_ROLES = ["architect", "supervisor", "implementer", "reviewer"];
 // profileSourceLabel, autoDetectOptionLabel, resolveAgentSelectValue,
 // ALLOWED_ADAPTERS, liveStatusView, liveAgeLabel, the amendment helpers
 // (showAmendmentPanel, amendmentHeadline, amendmentDecisionLabel, ...), the verification
-// execution helpers (verificationExecutionState, verificationExecutionLabel), pilotNoteText, and the fallback-list helpers come from
+// execution helpers (verificationExecutionState, verificationExecutionLabel) and the fallback-list helpers come from
 // lib/dashboard-logic.js (loaded before this file) so they stay testable
 // with plain `node --test` and no DOM.
 
@@ -304,6 +304,13 @@ function renderAdaptiveRouting(routing, modelPolicy = state.modelPolicy, launchP
         ["USAGE", item.usage?.source === "adapter" && Number.isFinite(Number(item.usage.tokens_total)) ? `${Number(item.usage.tokens_total).toLocaleString()} actual` : "not reported"],
         ["WHY", decision ? String(decision.basis || "configured").replaceAll("_", " ") : "host/configured"],
       ];
+      const isolation = item.reviewer_isolation;
+      if (isolation) {
+        budgetFacts.push(
+          ["REVIEWER ISOLATION", `${String(isolation.decision || "unknown").replaceAll("_", " ")} · ${String(isolation.enforcement || "unknown").replaceAll("_", " ")}`],
+          ["BOUNDARY", `${String(isolation.project_access || "unknown").replaceAll("_", " ")} project · ${String(isolation.network_policy || "unknown").replaceAll("_", " ")} network · ${String(isolation.credentials || "unknown").replaceAll("_", " ")} credentials`],
+        );
+      }
       for (const [labelText, valueText] of budgetFacts) {
         const fact = document.createElement("span");
         fact.textContent = labelText;
@@ -649,11 +656,15 @@ function releasePlanText(plan) {
 
 function renderTestProgress(progress) {
   const panel = $("test-progress-panel");
-  const dock = $("progress-dock-regression");
   if (!panel) return;
   panel.classList.toggle("hidden", !progress);
-  if (dock) dock.classList.toggle("hidden", !progress);
-  if (!progress) return;
+  if (!progress) {
+    $("topbar-tests").dataset.state = "idle";
+    $("topbar-test-label").textContent = "TESTS";
+    $("topbar-test-state").textContent = "IDLE";
+    $("topbar-test-detail").textContent = "No active run";
+    return;
+  }
   const totals = progress.totals || {};
   const total = Number.isInteger(totals.total) ? totals.total : null;
   const done = Number(totals.done || 0);
@@ -672,7 +683,15 @@ function renderTestProgress(progress) {
   const sourceName = ({ regression: "Regression", "verify-live": "Live verification", verify: "Verification", ci: "Continuous integration" })[progress.source] || "Test execution";
   $("test-progress-title").textContent = progress.label || sourceName;
   $("test-progress-console-link").classList.toggle("hidden", progress.source !== "regression");
-  if ($("progress-dock-test-label")) $("progress-dock-test-label").textContent = progress.source === "ci" ? "CI" : (progress.source === "regression" ? "REGRESSION" : "TESTS");
+  const topbarTestLabel = progress.source === "ci" ? "CI" : (progress.source === "regression" ? "REGRESSION" : "TESTS");
+  const topbarTestState = running ? String(progress.state || "running").toUpperCase()
+    : (progress.state === "passed" ? "GREEN" : String(progress.state || "complete").toUpperCase());
+  $("topbar-tests").dataset.state = running ? "running" : (progress.state === "passed" ? "passed" : "failed");
+  $("topbar-test-label").textContent = topbarTestLabel;
+  $("topbar-test-state").textContent = topbarTestState;
+  $("topbar-test-detail").textContent = total != null
+    ? `${percent}% · ${done}/${total}`
+    : `${percent}% · ${unitDone}/${unitTotal}`;
   $("regression-progress-state").textContent = running
     ? `${progress.state.toUpperCase()} · ${active.length} ACTIVE`
     : (progress.state === "passed" ? "COMPLETE · GREEN" : `COMPLETE · ${progress.state.toUpperCase()}`);
@@ -686,20 +705,14 @@ function renderTestProgress(progress) {
   $("regression-progress-current").textContent = running
     ? (current.slice(0, 3).join(" · ") || "Preparing execution")
     : (progress.result || `Finished ${progress.state}`);
+  const mode = String(progress.mode || (progress.source === "regression" ? "preflight" : progress.source || "tests")).toUpperCase();
+  const workers = Number(progress.worker_count || unitTotal || 0);
+  $("regression-progress-mode").textContent = `${mode} · ${workers} WORKER${workers === 1 ? "" : "S"}`
+    + (progress.fallback_reason ? ` · FALLBACK: ${progress.fallback_reason}` : "");
   const bar = $("regression-progress-bar");
   bar.setAttribute("aria-valuenow", String(percent));
   bar.setAttribute("aria-valuetext", total != null ? `${done} of ${total} tests` : `${unitDone} of ${unitTotal} units`);
   $("regression-progress-fill").style.width = `${percent}%`;
-  if (dock) {
-    $("progress-dock-regression-percent").textContent = `${percent}%`;
-    $("progress-dock-regression-detail").textContent = total != null
-      ? `${done} / ${total} tests · ${active.length} active`
-      : `${unitDone} / ${unitTotal} units · ${active.length} active`;
-    const dockBar = $("progress-dock-regression-bar");
-    dockBar.setAttribute("aria-valuenow", String(percent));
-    dockBar.setAttribute("aria-valuetext", total != null ? `${done} of ${total} tests` : `${unitDone} of ${unitTotal} units`);
-    $("progress-dock-regression-fill").style.width = `${percent}%`;
-  }
   $("regression-progress-workers").innerHTML = units.map((unit) => {
     const count = unit.total == null ? `${unit.done || 0} complete` : `${unit.done || 0} / ${unit.total}`;
     const detail = `${count}${unit.result ? ` · ${unit.result}` : ""}`;
@@ -1101,38 +1114,6 @@ async function authorizeDesignReviewAttempt() {
     button.disabled = false;
     button.textContent = "AUTHORIZE ONE MORE DESIGN REVIEW";
     showError(`Authorization rejected: ${error.message}`);
-  }
-}
-
-async function sendPilotNote(event) {
-  // #49: the header note box. The text goes to the current run's ledger
-  // as a pilot_note event; the next archive scan lists it as an R7 finding.
-  event.preventDefault();
-  const input = $("pilot-note-text");
-  const button = $("pilot-note-send");
-  const text = pilotNoteText(input.value);
-  if (!text) {
-    showError("Pilot note rejected: enter 1 to 512 characters");
-    return;
-  }
-  button.disabled = true;
-  button.textContent = "SENDING…";
-  try {
-    const response = await fetch("/api/pilot-note", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || `Pilot note returned ${response.status}`);
-    input.value = "";
-    button.textContent = "SENT";
-    await refresh();
-  } catch (error) {
-    showError(`Pilot note rejected: ${error.message}`);
-  } finally {
-    button.disabled = false;
-    window.setTimeout(() => { button.textContent = "SEND"; }, 1500);
   }
 }
 
@@ -1796,7 +1777,10 @@ function render(snapshot) {
     document.body.classList.remove("input-is-required");
     document.title = "Handsoff // E.V.E. Mission Control";
     $("active-state").classList.add("hidden");
-    $("progress-dock")?.classList.add("hidden");
+    $("topbar-overall").textContent = "0%";
+    $("mission-topbar").style.setProperty("--mission-progress", "0%");
+    $("topbar-criteria").textContent = "0/0";
+    renderTestProgress(null);
     $("empty-state").classList.remove("hidden");
     $("empty-message").textContent = snapshot.error || "No Mission Objective detected. Initialize a Ship Feature to begin.";
     renderOperatorActions([]);
@@ -1806,7 +1790,6 @@ function render(snapshot) {
 
   $("empty-state").classList.add("hidden");
   $("active-state").classList.remove("hidden");
-  $("progress-dock")?.classList.remove("hidden");
   const status = snapshot.status;
   state.lastRunStatus = status.status;
   document.body.classList.toggle("is-closed", status.status === "closed");
@@ -1832,6 +1815,11 @@ function render(snapshot) {
   renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);
   renderRegression(snapshot.regression);
   renderTestProgress(snapshot.test_progress || null);
+  if (!snapshot.test_progress && acceptance.total > 0 && acceptance.passing === acceptance.total) {
+    $("topbar-tests").dataset.state = "passed";
+    $("topbar-test-state").textContent = "GREEN";
+    $("topbar-test-detail").textContent = `${acceptance.passing}/${acceptance.total} evidenced`;
+  }
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   const pilotGate = snapshot.input_required?.turn === "pilot" && !snapshot.input_required?.preauthorized;
   setFaviconState(status.status === "complete" ? "complete"
@@ -1863,14 +1851,11 @@ function render(snapshot) {
   $("mission-state").textContent = String(status.status || "unknown").replaceAll("_", " ").toUpperCase();
   const complete = progress >= 100;
   $("progress-value").textContent = Math.round(progress);
-  $("progress-dock-overall").textContent = Math.round(progress);
-  $("progress-dock-phase").textContent = complete
-    ? "Mission complete"
-    : `Phase ${status.phase_number} of 8 · ${status.phase}`;
-  const dockOverallBar = $("progress-dock-overall-bar");
-  dockOverallBar.setAttribute("aria-valuenow", String(Math.round(progress)));
-  dockOverallBar.setAttribute("aria-valuetext", `${Math.round(progress)} percent complete`);
-  $("progress-dock-overall-fill").style.width = `${progress}%`;
+  $("topbar-overall").textContent = `${Math.round(progress)}%`;
+  $("mission-topbar").style.setProperty("--mission-progress", `${progress}%`);
+  const topbarOverall = $("topbar-overall-progress");
+  topbarOverall.setAttribute("aria-valuenow", String(Math.round(progress)));
+  topbarOverall.setAttribute("aria-valuetext", `${Math.round(progress)} percent complete`);
   $("progress-ring").style.setProperty("--progress", `${progress * 3.6}deg`);
   $("progress-ring").classList.toggle("is-complete", complete);
   $("phase-kicker").textContent = complete ? "MISSION COMPLETE" : `PHASE ${status.phase_number} OF 8`;
@@ -1900,6 +1885,7 @@ function render(snapshot) {
   $("briefing-state").classList.toggle("hidden", supervisor.tone === "steady");
 
   $("acceptance-score").textContent = `${acceptance.passing} / ${acceptance.total}`;
+  $("topbar-criteria").textContent = `${acceptance.passing}/${acceptance.total}`;
   stateClass($("acceptance-score"), acceptance.passing === acceptance.total && acceptance.total ? "is-good" : acceptance.failing || acceptance.blocked ? "is-bad" : "is-warning");
   $("symptom-state").textContent = acceptance.original_symptom_resolved ? "RESOLVED" : "OPEN";
   $("symptom-detail").textContent = acceptance.original_symptom_resolved ? "neutralization confirmed" : "neutralization unconfirmed";
@@ -2071,7 +2057,6 @@ $("design-approve").addEventListener("click", authorizeDesign);
 $("deployment-approve").addEventListener("click", authorizeDeployment);
 $("design-review-authorize").addEventListener("click", authorizeDesignReviewAttempt);
 $("amendment-approve").addEventListener("click", approveAmendment);
-$("pilot-note-form").addEventListener("submit", sendPilotNote);
 $("mission-init-form").addEventListener("submit", initializeMission);
 bindConsoleTabs();
 $("regression-accept").addEventListener("click", () => decideRegression("accept"));

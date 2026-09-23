@@ -379,6 +379,9 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
                     warnings.append("rules-set-changed: " + ", ".join(changed))
     except (lib.HandsoffError, OSError, ValueError):
         rules_note = None
+    durability = lib.durability_capability(lib.status_path(root, cfg))
+    durability["backup_suffix"] = ".bak"
+    durability["restore"] = "handsoff doctor --restore-state PATH"
     return {"ok": not any(item["state"] == "declared_stale_protocol" for item in prompt_overrides), "root": str(root), "engine": identity,
             "rules_set": rules_note,
             "config": str(root / "handsoff.toml"),
@@ -391,7 +394,7 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
             "documentation": documentation,
             "prompt_overrides": prompt_overrides, "run_triage": run_triage,
             "implementer_permissions": permissions,
-            "warnings": warnings,
+            "warnings": warnings, "durability": durability,
             "migration_required": identity["source"] == "project-drop-in",
             "python": ".".join(map(str, sys.version_info[:3]))}
 
@@ -450,6 +453,8 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("root", nargs="?", default=".")
     check.add_argument("--docs-only", action="store_true", help="run only the documentation audit")
     check.add_argument("--skip-preflight", action="store_true")
+    check.add_argument("--restore-state", metavar="PATH",
+                       help="restore PATH from its bounded .bak last-known-good copy, then diagnose")
     sub.add_parser("commands", help="print the argparse command reference")
     playbook = sub.add_parser("playbook", help="#208: print the engine's lane playbook (the index, or one topic)")
     playbook.add_argument("topic", nargs="?", default=None, help="lanes, landing, reviewers, lessons")
@@ -538,7 +543,15 @@ def main() -> int:
                 if not result["diagnostics"]:
                     print("DOCUMENTATION_OK")
                 return 1 if result["diagnostics"] else 0
+            restored = None
+            if args.restore_state:
+                target = Path(args.restore_state).expanduser().resolve()
+                if not target.is_relative_to(root):
+                    raise lib.HandsoffError("--restore-state must name a file inside the diagnosed project root")
+                restored = lib.restore_durable_backup(target)
             result = doctor(root, skip_preflight=args.skip_preflight)
+            if restored:
+                result["restored"] = restored
         elif args.command == "commands":
             print(_commands_reference(), end="")
             return 0

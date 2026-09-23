@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import shlex
 import signal
 import subprocess
@@ -441,6 +442,11 @@ def _publish_normalized(root: Path, state: dict) -> bool:
     snapshot["totals"] = counts
     snapshot["unit_count"] = len(units)
     snapshot["units"] = units[:test_progress.MAX_VISIBLE_UNITS]
+    command_rows = state.get("commands") or []
+    active_command = command_rows[-1] if command_rows else None
+    snapshot["mode"] = active_command.get("mode") if isinstance(active_command, dict) else None
+    snapshot["worker_count"] = active_command.get("worker_count") if isinstance(active_command, dict) else 0
+    snapshot["fallback_reason"] = active_command.get("fallback_reason") if isinstance(active_command, dict) else None
     if isinstance(state.get("inventory"), dict):
         snapshot["inventory"] = state["inventory"]
         snapshot["inventory_id"] = state["inventory"].get("inventory_id")
@@ -647,7 +653,34 @@ def _new_shard(index: int, test_ids: list[str] | None) -> dict:
             "completed_test_ids": [], "inventory_error": None,
             "started_at": None, "finished_at": None, "exit_code": None, "timed_out": False,
             "done": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
-            "current": None, "failures": [], "log": None, "output_sha256": None, "output_bytes": 0}
+            "current": None, "failures": [], "log": None, "output_sha256": None, "output_bytes": 0,
+            "isolation": None, "cleanup": None}
+
+
+def _isolated_worker(root: Path, command_index: int, shard_index: int) -> tuple[Path, dict, dict[str, str]]:
+    """Copy one immutable launch snapshot and allocate unique mutable namespaces."""
+    base = Path(tempfile.mkdtemp(prefix=f"handsoff-shard-{command_index}-{shard_index}-"))
+    source = base / "source"
+    ignored = shutil.ignore_patterns(
+        ".git", ".venv", "venv", "node_modules", "__pycache__", "*.pyc", "*.bak",
+        PROGRESS_FILE, INVENTORY_FILE, test_progress.PROGRESS_FILE,
+    )
+    shutil.copytree(root, source, symlinks=True, ignore=ignored)
+    namespaces = {}
+    for name in ("tmp", "cache", "state", "service"):
+        target = base / name
+        target.mkdir()
+        namespaces[name] = str(target)
+    identity = f"c{command_index}-s{shard_index}-{base.name.rsplit('-', 1)[-1]}"
+    port_base = 20000 + ((command_index * DEFAULT_SHARDS + shard_index) % 300) * 100
+    env = {
+        "TMPDIR": namespaces["tmp"], "TMP": namespaces["tmp"], "TEMP": namespaces["tmp"],
+        "XDG_CACHE_HOME": namespaces["cache"], "XDG_STATE_HOME": namespaces["state"],
+        "HANDSOFF_SHARD_ID": identity, "HANDSOFF_SERVICE_NAMESPACE": identity,
+        "HANDSOFF_PORT_BASE": str(port_base),
+    }
+    return source, {"source_snapshot": str(source), "namespaces": namespaces,
+                    "service_id": identity, "port_base": port_base}, env
 
 
 def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, shard: dict,
@@ -659,6 +692,8 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
            "HANDSOFF_SKIP_PREFLIGHT": os.environ.get("HANDSOFF_SKIP_PREFLIGHT", "1")}
     timed_out = threading.Event()
     process = None
+    worker_root = None
+    isolation_base = None
 
     def expire() -> None:
         if process is None or process.poll() is not None:
@@ -671,7 +706,11 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
 
     shard["started_at"] = _now()
     try:
-        process = subprocess.Popen(run_spec, shell=shell, cwd=str(root), stdout=subprocess.PIPE,
+        worker_root, isolation, worker_env = _isolated_worker(root, command_index, shard["index"])
+        isolation_base = worker_root.parent
+        shard["isolation"] = isolation
+        env.update(worker_env)
+        process = subprocess.Popen(run_spec, shell=shell, cwd=str(worker_root), stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, env=env, start_new_session=True)
         timer = threading.Timer(timeout, expire)
         timer.daemon = True
@@ -693,9 +732,13 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
         code = process.wait()
         timer.cancel()
         code = 124 if timed_out.is_set() else code
-    except OSError as exc:
+    except (OSError, shutil.Error) as exc:
         code = 127
         log_path.write_text(f"HANDSOFF: worker launch failed: {exc}\n", encoding="utf-8")
+    finally:
+        if isolation_base is not None:
+            shutil.rmtree(isolation_base, ignore_errors=True)
+            shard["cleanup"] = "removed" if not isolation_base.exists() else "failed"
     raw = log_path.read_bytes() if log_path.is_file() else b""
     with lock:
         if shard.get("test_ids") is not None:
@@ -762,7 +805,7 @@ def _merged_result(command: str, entry: dict, started: float) -> dict:
         summaries.append({key: shard.get(key) for key in (
             "index", "label", "test_count", "test_ids", "completed_test_ids", "inventory_error",
             "done", "passed", "failed", "errors", "skipped", "exit_code", "timed_out",
-            "output_sha256", "output_bytes"
+            "output_sha256", "output_bytes", "isolation", "cleanup"
         )})
     merged = b"".join(chunks)
     decoded = merged.decode("utf-8", "replace")
@@ -795,6 +838,7 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int, command_
              "total": len(ids) if ids is not None else None, "done": 0, "passed": 0, "failed": 0,
              "errors": 0, "skipped": 0, "current": None, "failures": [], "shards": [],
              "mode": "sharded" if use_shards else "sequential",
+             "worker_count": max_shards if use_shards else 1,
              "degraded": ids is None,
              "collection_state": "collected" if ids is not None else "ambiguous",
              "test_ids": ids,
@@ -942,7 +986,7 @@ def main() -> int:
     parser.add_argument("--command", action="append", default=[], help="an explicit command (repeatable)")
     parser.add_argument("--timeout", type=int, default=3600, help="per-command timeout in seconds")
     parser.add_argument("--shards", type=int, default=DEFAULT_SHARDS,
-                        help=f"maximum Python unittest workers (default: {DEFAULT_SHARDS})")
+                        help=f"isolated Python unittest workers (default: {DEFAULT_SHARDS}); preflight reports sharded/serial mode and fallback reason")
     parser.add_argument("--inventory-only", action="store_true",
                         help="collect, persist, and print the shared inventory without running tests")
     parser.add_argument("--inventory-view", choices=INVENTORY_VIEWS, default="local",
@@ -980,6 +1024,9 @@ def main() -> int:
     code = run_battery(root, label, commands, timeout=args.timeout, max_shards=args.shards)
     state = json.loads(progress_path(root).read_text(encoding="utf-8"))
     totals = state["totals"]
+    for entry in state.get("commands") or []:
+        print(f"HANDSOFF_REGRESS_PLAN: mode={entry.get('mode')} worker_count={entry.get('worker_count')} "
+              f"fallback_reason={entry.get('fallback_reason') or 'none'}")
     print(f"HANDSOFF_REGRESS_{'OK' if code == 0 else 'FAILED'}: {totals.get('passed', 0)} passed, "
           f"{totals.get('failed', 0)} failed, {totals.get('errors', 0)} errors, {totals.get('skipped', 0)} skipped")
     return code

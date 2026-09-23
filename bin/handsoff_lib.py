@@ -384,6 +384,8 @@ DEFAULT_CONFIG = {
     "adaptive_routing_budgets": deepcopy(ADAPTIVE_DEFAULT_BUDGETS),
     "risk_policy": deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY),
     "model_policy": deepcopy(DEFAULT_MODEL_POLICY),
+    "reviewer_isolation": {"compatibility_mode": False, "compatibility_approved": False},
+    "execution_profile": "safe",
     "logo": None,
     "status_file": "handsoff-status.json",
     "acceptance_file": "handsoff-acceptance.json",
@@ -501,7 +503,7 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # the tiered selection, otherwise exactly "primary" or "followup".
 AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id", "usage",
                                  "adaptive_routing",
-                                 "budget_decision", "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
+                                 "budget_decision", "reviewer_isolation", "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
 #: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
 PROGRESS_STATES = ("done", "partial", "untouched")
 PROGRESS_CRITERION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -1273,13 +1275,15 @@ def load_config(root: Path) -> dict:
     routing_budgets = raw.get("routing_budgets", {})
     risk_policy = raw.get("risk_policy", {})
     model_policy = raw.get("model_policy", {})
+    reviewer_isolation = raw.get("reviewer_isolation", {})
+    execution = raw.get("execution", {})
     digest = raw.get("digest", {})
     briefing = raw.get("briefing")
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
     if not isinstance(digest, dict):
         raise HandsoffError("handsoff.toml: digest must be a table")
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, model_policy)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, model_policy, reviewer_isolation, execution)):
         raise HandsoffError(
             "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, and model_policy must be tables"
         )
@@ -1287,6 +1291,26 @@ def load_config(root: Path) -> dict:
     cfg["adaptive_routing_budgets"] = validate_adaptive_routing_budgets(routing_budgets or ADAPTIVE_DEFAULT_BUDGETS)
     cfg["risk_policy"] = validate_adaptive_risk_policy(risk_policy or ADAPTIVE_DEFAULT_RISK_POLICY)
     cfg["model_policy"] = validate_model_policy(model_policy or DEFAULT_MODEL_POLICY)
+    unknown_isolation = set(reviewer_isolation) - {"compatibility_mode", "compatibility_approved"}
+    if unknown_isolation:
+        raise HandsoffError("handsoff.toml: reviewer_isolation has unknown keys: "
+                            + ", ".join(sorted(unknown_isolation)))
+    for key in ("compatibility_mode", "compatibility_approved"):
+        value = reviewer_isolation.get(key, False)
+        if not isinstance(value, bool):
+            raise HandsoffError(f"handsoff.toml: reviewer_isolation.{key} must be boolean")
+    if reviewer_isolation.get("compatibility_approved") and not reviewer_isolation.get("compatibility_mode"):
+        raise HandsoffError("handsoff.toml: reviewer isolation compatibility approval requires compatibility_mode")
+    cfg["reviewer_isolation"] = {
+        "compatibility_mode": bool(reviewer_isolation.get("compatibility_mode")),
+        "compatibility_approved": bool(reviewer_isolation.get("compatibility_approved")),
+    }
+    if set(execution) - {"profile"}:
+        raise HandsoffError("handsoff.toml: execution may contain only profile")
+    profile = execution.get("profile", "safe")
+    if profile not in {"safe", "dogfood", "unattended", "shared", "production"}:
+        raise HandsoffError("handsoff.toml: execution.profile must be safe, dogfood, unattended, shared, or production")
+    cfg["execution_profile"] = profile
     if briefing is not None:
         if not isinstance(briefing, dict):
             raise HandsoffError("handsoff.toml: briefing must be a table")
@@ -1335,6 +1359,12 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
         cfg[key] = value
+    waived = not cfg["deployment_requires_explicit_approval"] or not cfg["require_design_approval"]
+    if waived and cfg["execution_profile"] != "dogfood":
+        raise HandsoffError(
+            "approval waivers require [execution] profile = \"dogfood\"; safe, unattended, shared, "
+            "and production profiles cannot inherit dogfood waivers"
+        )
     features = raw.get("features", {})
     if not isinstance(features, dict):
         raise HandsoffError("handsoff.toml: [features] must be a table")
@@ -1623,6 +1653,56 @@ def claude_argv(executable: str, role: str, allowed_tools: list[str] | None, mod
     return argv
 
 
+def reviewer_isolation_contract(adapter: str, cfg: dict | None = None) -> dict:
+    """Return the provider-neutral, digest-bound pre-launch verdict."""
+    settings = (cfg or {}).get("reviewer_isolation", {})
+    compatibility = bool(settings.get("compatibility_mode"))
+    approved = bool(settings.get("compatibility_approved"))
+    if adapter == "codex":
+        enforcement, decision, reason = "native", "enforce", "native scratch sandbox"
+        network = "denied"
+    elif compatibility and approved:
+        enforcement, decision = "approved_compatibility", "enforce"
+        reason = "explicitly approved adapter compatibility mode"
+        network = "declared"
+    elif compatibility:
+        enforcement, decision = "approved_compatibility", "approval_required"
+        reason = "compatibility mode requires explicit reviewer_isolation.compatibility_approved=true"
+        network = "declared"
+    else:
+        enforcement, decision = "unavailable", "refuse"
+        reason = "adapter has no enforceable OS-backed read-only project boundary"
+        network = "declared"
+    contract = {
+        "adapter": adapter, "enforcement": enforcement,
+        "project_access": "read_only", "scratch_root": "external",
+        "subprocess_policy": "bounded", "credentials": "sanitized",
+        "network_policy": network, "decision": decision, "reason": reason,
+    }
+    contract["contract_digest"] = hashlib.sha256(_canonical(contract).encode()).hexdigest()
+    return contract
+
+
+def validate_reviewer_isolation_contract(value: object) -> dict:
+    fields = {"adapter", "enforcement", "project_access", "scratch_root", "subprocess_policy",
+              "credentials", "network_policy", "decision", "reason", "contract_digest"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise HandsoffError("reviewer_isolation has invalid fields")
+    if value.get("adapter") not in SELECTABLE_AGENT_ADAPTERS \
+            or value.get("enforcement") not in {"native", "os_wrapper", "unavailable", "approved_compatibility"} \
+            or value.get("project_access") != "read_only" or value.get("scratch_root") != "external" \
+            or value.get("subprocess_policy") != "bounded" or value.get("credentials") != "sanitized" \
+            or value.get("network_policy") not in {"denied", "loopback", "declared"} \
+            or value.get("decision") not in {"enforce", "refuse", "approval_required"} \
+            or not isinstance(value.get("reason"), str) or not value["reason"]:
+        raise HandsoffError("reviewer_isolation values are invalid")
+    unsigned = {key: value[key] for key in fields - {"contract_digest"}}
+    expected = hashlib.sha256(_canonical(unsigned).encode()).hexdigest()
+    if value.get("contract_digest") != expected:
+        raise HandsoffError("reviewer_isolation contract digest is invalid")
+    return deepcopy(value)
+
+
 def codex_argv(executable: str, role: str, model: str, token_budget: int, *, reviewer_sandbox: bool = False) -> list[str]:
     """The one Codex argv shape Handsoff launches (and pre-flights)."""
     workspace_write = reviewer_sandbox or role == "implementer"
@@ -1642,7 +1722,7 @@ def codex_argv(executable: str, role: str, model: str, token_budget: int, *, rev
          f"limit_tokens={token_budget},reminder_at_remaining_tokens=[],"
          "sampling_token_weight=1.0,prefill_token_weight=1.0}"),
     ])
-    if workspace_write:
+    if workspace_write and not reviewer_sandbox:
         argv.extend(["-c", CODEX_WORKSPACE_NETWORK_FLAG])
     if model != DEFAULT_AGENT_MODEL:
         argv.extend(["--model", model])
@@ -1696,21 +1776,8 @@ def implementer_permissions_section(root: Path | None, which=shutil.which) -> st
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Atomically replace a UTF-8 text file and clean up on failure."""
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        try:
-            os.chmod(tmp, path.stat().st_mode)
-        except OSError:
-            pass
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+    """Durably replace a UTF-8 text file using the shared state primitive."""
+    durable_replace(path, text.encode("utf-8"))
 
 
 def render_review_report(status: dict, acceptance: dict) -> str:
@@ -2301,6 +2368,8 @@ def _agent_assignment(session: dict) -> dict:
         assignment["budget_decision"] = deepcopy(budget)
     if usage is not None:
         assignment["usage"] = deepcopy(usage)
+    if isinstance(session.get("reviewer_isolation"), dict):
+        assignment["reviewer_isolation"] = deepcopy(session["reviewer_isolation"])
     return assignment
 
 
@@ -3647,24 +3716,101 @@ def load_unique_json(path: Path) -> dict:
         raise HandsoffError(f"invalid JSON in {path}: {e}") from e
 
 
-def atomic_write_json(path: Path, data: dict) -> None:
-    """Write a whole new file, or not at all. A process killed mid-write
-    leaves either the old file or the new one, never a truncated one: the
-    write lands in a sibling temp file first and os.replace is atomic on
-    the same filesystem. A normal exception during the write cleans up its
-    temp file; a SIGKILL or power loss between the write and the rename
-    can still leave a stray .tmp<pid> file behind (harmless, the real file
-    is untouched; see README Known limitations)."""
-    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+def durability_capability(path: Path) -> dict:
+    """Describe the guarantee available to replacement writers on this host.
+
+    POSIX platforms normally support both file and directory fsync.  A
+    platform that rejects directory fsync still gets flushed content and an
+    atomic same-directory replacement, but is reported as best effort.
+    """
+    parent = Path(path).parent
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        descriptor = os.open(parent, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        return {"level": "best_effort", "file_fsync": True, "directory_fsync": False,
+                "reason": f"directory fsync unavailable: {type(exc).__name__}"}
+    return {"level": "full", "file_fsync": True, "directory_fsync": True, "reason": None}
+
+
+def durable_backup_path(path: Path) -> Path:
+    """One bounded last-known-good copy; a newer write replaces the old copy."""
+    return Path(path).with_name(f"{Path(path).name}.bak")
+
+
+def durable_replace(path: Path, payload: bytes, *, fault=None, keep_backup: bool = True) -> dict:
+    """Flush, atomically replace, and sync one durable record.
+
+    ``fault(stage)`` is a test-only interruption hook.  At every boundary the
+    target is either its prior complete bytes or the complete new payload.
+    This is filesystem durability, not a database transaction spanning files.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    try:
+        with tmp.open("wb") as handle:
+            handle.write(bytes(payload))
+            if fault:
+                fault("before_flush")
+            handle.flush()
+            os.fsync(handle.fileno())
+            if fault:
+                fault("after_flush")
+        try:
+            os.chmod(tmp, path.stat().st_mode)
+        except OSError:
+            pass
+        if keep_backup and path.is_file():
+            previous = path.read_bytes()
+            durable_replace(durable_backup_path(path), previous, keep_backup=False)
         os.replace(tmp, path)
-    except Exception:
+        if fault:
+            fault("after_replace")
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        try:
+            descriptor = os.open(path.parent, flags)
+            try:
+                if fault:
+                    fault("during_directory_sync")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            capability = {"level": "full", "file_fsync": True,
+                          "directory_fsync": True, "reason": None}
+        except OSError as exc:
+            capability = {"level": "best_effort", "file_fsync": True,
+                          "directory_fsync": False,
+                          "reason": f"directory fsync unavailable: {type(exc).__name__}"}
+        return capability
+    finally:
         try:
             tmp.unlink()
         except OSError:
             pass
-        raise
+
+
+def restore_durable_backup(path: Path) -> dict:
+    """Restore the bounded last-known-good copy after validating JSON."""
+    path = Path(path)
+    backup = durable_backup_path(path)
+    try:
+        payload = backup.read_bytes()
+        json.loads(payload)
+    except (OSError, ValueError) as exc:
+        raise HandsoffError(f"durable backup is unavailable or invalid: {backup}") from exc
+    capability = durable_replace(path, payload, keep_backup=False)
+    return {"path": str(path), "backup": str(backup), "restored": True,
+            "durability": capability}
+
+
+def atomic_write_json(path: Path, data: object) -> None:
+    """Durably replace a JSON record and retain one last-known-good copy."""
+    durable_replace(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -3995,7 +4141,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          tier_reason: str | None = None,
                          amendment_id: str | None = None,
                          adaptive_routing: dict | None = None,
-                         budget_decision: dict | None = None) -> dict:
+                         budget_decision: dict | None = None,
+                         reviewer_isolation: dict | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
@@ -4019,6 +4166,15 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                         if adaptive_routing is not None else None)
     budget_decision = (validate_session_budget_decision(budget_decision)
                        if budget_decision is not None else None)
+    reviewer_isolation = (validate_reviewer_isolation_contract(reviewer_isolation)
+                          if reviewer_isolation is not None else None)
+    # Direct API callers may load/create legacy fixture sessions without the
+    # additive field; every managed reviewer launch supplies it below.
+    if role != "reviewer" and reviewer_isolation is not None:
+        raise HandsoffError("reviewer_isolation applies only to reviewer sessions")
+    if reviewer_isolation is not None and (reviewer_isolation["adapter"] != adapter
+                                            or reviewer_isolation["decision"] != "enforce"):
+        raise HandsoffError("reviewer isolation contract does not authorize this adapter launch")
     packet_id = _validate_session_reference(packet_id, "packet_id")
     design_hash = _validate_session_reference(design_hash, "design_hash")
     if tier is not None and tier not in DESIGN_REVIEWER_TIERS:
@@ -4159,6 +4315,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session["adaptive_routing"] = deepcopy(adaptive_routing)
         if budget_decision is not None:
             session["budget_decision"] = deepcopy(budget_decision)
+        if reviewer_isolation is not None:
+            session["reviewer_isolation"] = deepcopy(reviewer_isolation)
         sessions[session_id] = session
         current[role] = session_id
         accepted_regression = active_regression_request(proposed)
@@ -5636,6 +5794,15 @@ def validate_status_schema(status: dict) -> list[str]:
             validate_model_policy(status["model_policy"])
         except HandsoffError as exc:
             errors.append(f"status: {exc}")
+    if "approval_posture" in status:
+        posture = status["approval_posture"]
+        expected = {"profile", "require_design_approval", "require_deployment_approval", "waivers_active"}
+        if not isinstance(posture, dict) or set(posture) != expected \
+                or posture.get("profile") not in {"safe", "dogfood", "unattended", "shared", "production"} \
+                or any(not isinstance(posture.get(key), bool) for key in expected - {"profile"}) \
+                or posture.get("waivers_active") != (not posture.get("require_design_approval")
+                                                     or not posture.get("require_deployment_approval")):
+            errors.append("status: 'approval_posture' is invalid")
     if "lane" in status:
         if status["lane"] not in RUN_LANES:
             errors.append("status: 'lane' must be one of full, design, review")
@@ -6186,6 +6353,18 @@ def validate_status_schema(status: dict) -> list[str]:
                         except HandsoffError as exc:
                             errors.append(f"{label}.budget_decision: {exc}")
                     continue
+                if optional_field == "reviewer_isolation":
+                    if value is not None:
+                        try:
+                            validate_reviewer_isolation_contract(value)
+                        except HandsoffError as exc:
+                            errors.append(f"{label}.reviewer_isolation: {exc}")
+                    if session.get("role") == "reviewer" and value is None:
+                        # Legacy reviewer sessions predate this field and remain readable.
+                        pass
+                    elif session.get("role") != "reviewer" and value is not None:
+                        errors.append(f"{label}.reviewer_isolation applies only to reviewer sessions")
+                    continue
                 if optional_field == "phase_number":
                     if value is not None and (not isinstance(value, int) or isinstance(value, bool)
                                               or value not in PHASES):
@@ -6495,6 +6674,18 @@ def config_hash(cfg: dict) -> str:
             if cfg.get(key, default) == default:
                 continue
         bound[key] = cfg.get(key)
+    # The execution profile was introduced after runs already existed. Bind
+    # every non-default profile so changing posture invalidates subsequent
+    # decisions. The sole migration exception is an existing dogfood run
+    # with active waivers: those exact waiver booleans are already present in
+    # ``bound``, so adding the profile as a second representation would only
+    # invalidate an in-flight approval without strengthening the decision.
+    # Once the waivers are removed, dogfood itself is non-default and binds.
+    profile = cfg.get("execution_profile", "safe")
+    waivers_active = (not cfg.get("deployment_requires_explicit_approval", True)
+                      or not cfg.get("require_design_approval", True))
+    if profile != "safe" and not (profile == "dogfood" and waivers_active):
+        bound["execution_profile"] = profile
     # [features] switches bind the same way: a switch at its default keeps
     # every recorded hash byte for byte; a flipped one revokes what was
     # granted under the other setting.
@@ -9911,6 +10102,9 @@ def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
     instead of raising on any OSError: the beacon is a liveness hint, never
     the authority, so a full disk or a bad path must not touch the child's
     lifecycle or the session record."""
+    root = Path(root)
+    if not root.is_dir():
+        return False
     now = now or datetime.now(timezone.utc)
     if not isinstance(pid, int) or isinstance(pid, bool):
         pid = None
@@ -10543,6 +10737,11 @@ def note_output_liveness(root: Path, session_id: str, role: str, nbytes: int, *,
     change the child's lifecycle, the session record, or any ledger.
     `monotonic` (the rate-limit clock) and `now` (the stamped time) are
     injectable for tests."""
+    root = Path(root)
+    # Liveness is an optional side signal, never a reason to manufacture a
+    # missing project root (or make a failed launch look active).
+    if not root.is_dir():
+        return False
     if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
         nbytes = 0
     with _OUTPUT_LIVENESS_LOCK:
@@ -10980,7 +11179,7 @@ def _digest_excluded(relative: str, state_files: set[str]) -> bool:
     would write a side file and flag its own evidence stale on a root that
     is not a git checkout (#77)."""
     parts = relative.split("/")
-    if relative in state_files:
+    if relative in state_files or relative in {f"{name}.bak" for name in state_files}:
         return True
     if any(part in HANDSOFF_GENERATED_NAMES for part in parts):
         return True

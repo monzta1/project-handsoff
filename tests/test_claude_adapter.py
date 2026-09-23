@@ -13,6 +13,9 @@ class ClaudeAdapterTests(TestCase):
     def test_stream_json_read_only_argv(self):
         cfg = lib.load_config(Path('.'))
         cfg['agents']['reviewer'] = 'claude'
+        cfg['reviewer_isolation'] = {
+            'compatibility_mode': True, 'compatibility_approved': True,
+        }
         # The launch spec is computed against a fixture, never the repository's own run.
         with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), \
                 mock.patch.object(lib, "evaluate_launch_rules", return_value=None), \

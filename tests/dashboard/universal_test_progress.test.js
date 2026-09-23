@@ -20,12 +20,24 @@ test("any normalized test execution gets a prominent accessible progress surface
 });
 
 test("overall and test progress stay visible with readable responsive sizing", () => {
-  assert.match(html, /id="progress-dock"[^>]*aria-label="Always-visible mission progress"/);
-  assert.match(html, /id="progress-dock-overall-bar"[^>]*role="progressbar"/);
-  assert.match(html, /id="progress-dock-regression-bar"[^>]*role="progressbar"/);
-  assert.match(css, /\.progress-dock \{ position: fixed;/);
+  assert.match(html, /id="topbar-progress"[^>]*aria-label="Always-visible mission progress"/);
+  assert.match(html, /id="topbar-overall-progress"[^>]*role="progressbar"/);
+  assert.match(html, /id="topbar-criteria"/);
+  assert.match(html, /id="topbar-test-state"/);
+  assert.match(css, /\.topbar \{[^}]*position: sticky;/);
+  assert.doesNotMatch(html, /id="progress-dock"/);
   assert.match(css, /\.regression-progress-head strong \{[^}]*30px/);
   assert.match(css, /@media \(max-width:/);
+});
+
+test("sticky progress is integrated into one proportional mission bar", () => {
+  assert.match(html, /id="mission-topbar" class="topbar"/);
+  assert.match(css, /\.topbar \{[^}]*--mission-progress: 0%;/);
+  assert.match(css, /\.topbar::after \{[^}]*width: var\(--mission-progress\)/);
+  assert.doesNotMatch(css, /\.topbar-progress \{[^}]*border:/, "progress readouts should not create a nested table");
+  assert.match(css, /\.topbar-progress-item strong \{[^}]*15px\/1 var\(--mono\)/);
+  assert.match(css, /\.topbar-progress-item small \{ display: none; \}/);
+  assert.match(app, /\$\("mission-topbar"\)\.style\.setProperty\("--mission-progress", `\$\{progress\}%`\)/);
 });
 
 test("shard grid exposes state, counts, and bounded server-provided rows", () => {
@@ -43,4 +55,19 @@ test("dashboard progress is fed by the shared versioned five-shard inventory", (
   assert.match(regressionRunner, /snapshot\["inventory_id"\]/);
   assert.match(regressionRunner, /DEFAULT_SHARDS = 5/);
   assert.match(regressionRunner, /def balanced_shards\(/);
+  assert.match(html, /id="regression-progress-mode"/);
+  assert.match(app, /progress\.worker_count/);
+  assert.match(app, /progress\.fallback_reason/);
+  assert.match(app, /progress\.mode/);
+  assert.match(regressionRunner, /"worker_count": max_shards if use_shards else 1/);
+  assert.match(regressionRunner, /HANDSOFF_REGRESS_PLAN: mode=/);
+});
+
+test("reviewer isolation is visible on the model handoff journey", () => {
+  assert.match(app, /item\.reviewer_isolation/);
+  assert.match(app, /REVIEWER ISOLATION/);
+  assert.match(app, /isolation\.enforcement/);
+  assert.match(app, /isolation\.project_access/);
+  assert.match(app, /isolation\.network_policy/);
+  assert.match(app, /isolation\.credentials/);
 });

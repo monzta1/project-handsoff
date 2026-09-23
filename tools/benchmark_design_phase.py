@@ -318,7 +318,7 @@ def arm_settings(arm: str, *, no_packets: bool) -> dict:
     return {"reviewer_followup": True, "design_evidence": True, "packets": not no_packets}
 
 
-def render_arm_toml(fixture: dict, arm: str, settings: dict) -> str:
+def render_arm_toml(fixture: dict, arm: str, settings: dict, *, stub_mode: bool = False) -> str:
     profiles = fixture["profiles"]
     lines = [
         "[project]", f'name = "benchmark-{arm}"', "",
@@ -343,6 +343,13 @@ def render_arm_toml(fixture: dict, arm: str, settings: dict) -> str:
         "", "[checks]", f"commands = {json.dumps(list(fixture['check_commands']))}",
         "live_commands = []", "timeout_seconds = 120",
     ]
+    if stub_mode:
+        # Stub adapters are deterministic local scripts operating on a
+        # throwaway checkout. They cannot mutate the source repository, so
+        # explicitly approve the compatibility path used by this benchmark
+        # without weakening live benchmark launches.
+        lines += ["", "[reviewer_isolation]", "compatibility_mode = true",
+                  "compatibility_approved = true"]
     if settings["design_evidence"]:
         for entry in fixture["design_evidence"]:
             lines += [
@@ -606,7 +613,10 @@ class ArmRun:
         self.fixture_head = copy_fixture_repo(options.fixture_repo, options.fixture_revision, self.root)
         if not (self.root / "prompts" / "architect.md").is_file() or not (self.root / "prompts" / "reviewer.md").is_file():
             raise BenchmarkError(f"fixture revision has no prompts/architect.md and prompts/reviewer.md: {self.root}")
-        (self.root / "handsoff.toml").write_text(render_arm_toml(options.fixture, self.arm, self.settings), encoding="utf-8")
+        (self.root / "handsoff.toml").write_text(
+            render_arm_toml(options.fixture, self.arm, self.settings, stub_mode=options.mode == "stub"),
+            encoding="utf-8",
+        )
         pin = self.root / lib.VERSION_PIN_FILE
         if not pin.is_file():
             # #111: a managed launch refuses a project without an engine

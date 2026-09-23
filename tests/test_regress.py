@@ -157,6 +157,9 @@ class TestRunBattery(unittest.TestCase):
         self.assertEqual([shard["done"] for shard in command["shards"]], [1, 1, 1, 1, 0])
         self.assertTrue(all(shard["finished_at"] for shard in command["shards"]))
         self.assertTrue(all(Path(shard["log"]).is_file() for shard in command["shards"]))
+        self.assertTrue(all(shard["cleanup"] == "removed" for shard in command["shards"] if shard["test_count"]))
+        self.assertEqual(command["worker_count"], 5)
+        self.assertTrue(all(shard["isolation"]["service_id"] for shard in command["shards"] if shard["test_count"]))
         seen = set()
         for shard in command["shards"]:
             pending = None
@@ -170,6 +173,50 @@ class TestRunBattery(unittest.TestCase):
             "tests.test_fixture.TestFixture.test_passes",
             "tests.test_fixture.TestFixture.test_skipped",
         })
+
+    def test_shards_use_unique_state_cache_temp_service_and_port_namespaces(self):
+        (self.tmp / "tests" / "test_isolation.py").write_text(textwrap.dedent('''
+            import os, pathlib, socket, unittest
+
+            class TestIsolation(unittest.TestCase):
+                def _exercise(self):
+                    for key in ("TMPDIR", "XDG_CACHE_HOME", "XDG_STATE_HOME", "HANDSOFF_SERVICE_NAMESPACE"):
+                        self.assertTrue(os.environ[key])
+                    marker = pathlib.Path(os.environ["XDG_STATE_HOME"]) / "shared-name"
+                    marker.write_text(os.environ["HANDSOFF_SHARD_ID"])
+                    sock = socket.socket()
+                    try:
+                        sock.bind(("127.0.0.1", int(os.environ["HANDSOFF_PORT_BASE"])))
+                    finally:
+                        sock.close()
+                test_a = _exercise
+                test_b = _exercise
+                test_c = _exercise
+                test_d = _exercise
+                test_e = _exercise
+        '''))
+        results = regress.run_battery_results(
+            self.tmp, "isolated", ["python3 -m unittest tests.test_isolation"], timeout=120,
+            request_id="rg-isolated", command_sha256="c" * 64, max_shards=5,
+        )
+        self.assertEqual(results[0]["exit_code"], 0, results[0]["output_tail"])
+        self.assertEqual(len(results[0]["shards"]), 5)
+        self.assertEqual(len({row["isolation"]["service_id"] for row in results[0]["shards"]}), 5)
+        self.assertTrue(all(row["cleanup"] == "removed" for row in results[0]["shards"]))
+        self.assertFalse((self.tmp / "shared-name").exists())
+
+    def test_serial_and_five_worker_inventory_and_outcome_are_equivalent(self):
+        command = "python3 -m unittest tests.test_fixture"
+        serial = regress.run_battery_results(self.tmp, "serial", [command], timeout=120,
+                                             request_id="rg-serial", command_sha256="d" * 64,
+                                             max_shards=1)[0]
+        sharded = regress.run_battery_results(self.tmp, "sharded", [command], timeout=120,
+                                              request_id="rg-sharded", command_sha256="e" * 64,
+                                              max_shards=5)[0]
+        self.assertEqual(serial["exit_code"], sharded["exit_code"])
+        serial_ids = [test for row in serial["shards"] for test in row["completed_test_ids"]]
+        shard_ids = [test for row in sharded["shards"] for test in row["completed_test_ids"]]
+        self.assertEqual(sorted(serial_ids), sorted(shard_ids))
 
     def test_enumeration_ambiguity_falls_back_to_one_sequential_worker(self):
         command = "python3 -m unittest tests.test_fixture"

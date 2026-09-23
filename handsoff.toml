@@ -22,6 +22,11 @@ deployment_requires_explicit_approval = false
 # review stays mandatory. Default true.
 require_design_approval = false
 
+[execution]
+# Self-hosting deliberately waives both human clicks while testing Handsoff.
+# Other execution profiles reject these waivers during configuration load.
+profile = "dogfood"
+
 [agents]
 # Every role here is set explicitly and happens to equal the recommended
 # crew (README "Default crew"): a role whose key is absent, or still holds
