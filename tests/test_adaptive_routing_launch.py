@@ -143,6 +143,24 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
                          ("codex", "reserved-model", "fallback"))
         self.assertIsNone(spec.adaptive_routing)
 
+    def test_undersized_fallback_packet_refuses_before_preflight(self):
+        self.init("Fallback packet")
+        config_path = self.tmp / "handsoff.toml"
+        config_path.write_text(
+            config_path.read_text().replace("reviewer = 80000", "reviewer = 20000"),
+            encoding="utf-8",
+        )
+        preflight = mock.Mock(return_value={"state": "ready"})
+        with mock.patch.object(agent.lib, "validate_runtime_integrity"), \
+                mock.patch.object(agent.lib, "launch_preflight", preflight):
+            with self.assertRaisesRegex(lib.HandsoffError, "fallback launch refused before reservation"):
+                agent.build_profile_launch_spec(
+                    self.tmp, "reviewer", "x" * 60_000,
+                    {"adapter": "codex", "model": "reserved-model"},
+                    which=lambda name: f"/opt/test/{name}",
+                )
+        preflight.assert_not_called()
+
     def test_explicit_role_profile_is_not_replaced_by_adaptive_routing(self):
         result = run(["init", "Explicit", "--risk-class", "shared_infrastructure"], cwd=self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -171,7 +171,8 @@ class ReportPostingTests(HandsoffTestCase):
         self._run()
         self._gh_state({**self._gh_state(), "fail_close": True, "fail_edit": True})
         r = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("final_report_post incomplete", r.stdout)
         state = self._gh_state()
         self.assertEqual(len(state["issues"]["40"]["comments"]), 1)
         self.assertFalse(state["issues"]["40"]["closed"])
@@ -181,7 +182,6 @@ class ReportPostingTests(HandsoffTestCase):
         self.assertEqual((first[0]["closed"], first[0]["ticked"], first[0]["comment"]), (False, False, "posted"))
         # GitHub recovers: the next post closes and ticks, and never comments again
         self._gh_state({**self._gh_state(), "fail_close": False, "fail_edit": False})
-        run(["run-reopen", "--by", "moncy", "--reason", "retry"], cwd=self.tmp)
         r = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self._gh_state()
@@ -196,6 +196,19 @@ class ReportPostingTests(HandsoffTestCase):
         before = len(self._calls())
         r = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
         mutations = [c for c in self._calls()[before:] if c[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
+        self.assertEqual(mutations, [])
+
+    def test_an_unknown_closed_issue_pauses_before_any_github_mutation(self):
+        self._run()
+        state = self._gh_state()
+        state["issues"]["40"]["closed"] = True
+        self._gh_state(state)
+        before = len(self._calls())
+        result = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("closed without attributable Handsoff ownership", result.stdout)
+        mutations = [call for call in self._calls()[before:]
+                     if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
         self.assertEqual(mutations, [])
 
     def test_without_post_nothing_leaves_and_no_gh_auth_records_not_posted(self):

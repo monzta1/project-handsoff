@@ -14134,7 +14134,8 @@ def _gh(args: list[str], *, runner=subprocess.run, cwd: Path | None = None):
 
 def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
                       verifications: list[dict], validate_lines: list[str], *, by: str,
-                      runner=subprocess.run) -> dict:
+                      runner=subprocess.run,
+                      known_handsoff_closed: set[int] | None = None) -> dict:
     """#171: one comment per issue work item, marked with the ledger head so
     a second post finds it and does nothing; the item is closed and its box
     ticked in a parent epic. Nothing is posted when a credential shape
@@ -14151,15 +14152,36 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         return {"posted": [], "skipped": [], "reason": "gh_auth", "detail": "gh is not authenticated; nothing posted"}
     items = [item for item in derive_work_items(status, acceptance, cfg).get("items", [])
              if item.get("kind") == "issue" and isinstance(item.get("number"), int)]
+    known_handsoff_closed = set(known_handsoff_closed or ())
+    # Read every issue before the first mutation.  A pre-existing closure is
+    # safe only when this close transaction already persisted that Handsoff
+    # closed the same item.  Human/unknown closures pause the whole report so
+    # a comment or parent edit cannot leak out before the conflict is known.
+    issue_views: dict[int, dict] = {}
+    for item in items:
+        number = item["number"]
+        view = _gh(["issue", "view", str(number), "--json", "body,url,state,comments"],
+                   runner=runner, cwd=root)
+        try:
+            issue = json.loads(view.stdout) if view.returncode == 0 else None
+        except ValueError:
+            issue = None
+        if not isinstance(issue, dict) or str(issue.get("state") or "").upper() not in {"OPEN", "CLOSED"}:
+            return {"posted": [], "skipped": [], "reason": "issue_state",
+                    "detail": f"issue #{number} state could not be read; nothing posted"}
+        existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
+        has_report = any(isinstance(c, str) and c.lstrip().startswith(
+            REPORT_MARKER.split("{head}")[0]) for c in existing)
+        if str(issue.get("state")).upper() == "CLOSED" \
+                and not (number in known_handsoff_closed and has_report):
+            return {"posted": [], "skipped": [], "reason": "issue_state",
+                    "detail": f"issue #{number} is closed without attributable Handsoff ownership; nothing posted"}
+        issue_views[number] = issue
     posted, skipped = [], []
     body = marker + "\n" + text
     for item in items:
         number = item["number"]
-        view = _gh(["issue", "view", str(number), "--json", "body,url,state,comments"], runner=runner, cwd=root)
-        try:
-            issue = json.loads(view.stdout) if view.returncode == 0 else {}
-        except ValueError:
-            issue = {}
+        issue = issue_views[number]
         existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
         # any earlier report on this ticket counts: the head moves with every
         # event, the marker's prefix does not. The comment is the only
@@ -14178,8 +14200,15 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         closed = str(issue.get("state") or "").upper() == "CLOSED"
         did_close = did_tick = False
         if not closed:
-            closed = _gh(["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
-                         runner=runner, cwd=root).returncode == 0
+            _gh(["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
+                runner=runner, cwd=root)
+            close_readback = _gh(["issue", "view", str(number), "--json", "state"],
+                                 runner=runner, cwd=root)
+            try:
+                closed = close_readback.returncode == 0 and str(
+                    json.loads(close_readback.stdout).get("state") or "").upper() == "CLOSED"
+            except ValueError:
+                closed = False
             did_close = closed
         parent_match = re.search(r"(?im)^\s*parent:\s*#([1-9][0-9]{0,8})\b", str(issue.get("body") or ""))
         parent = int(parent_match.group(1)) if parent_match else None
@@ -14193,12 +14222,22 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
             unticked = re.compile(rf"^(\s*- \[) (\] #{number}\b)", re.MULTILINE)
             if unticked.search(parent_body):
                 new_body = unticked.sub(r"\1x\2", parent_body, count=1)
-                ticked = _gh(["issue", "edit", str(parent), "--body", new_body], runner=runner, cwd=root).returncode == 0
+                _gh(["issue", "edit", str(parent), "--body", new_body], runner=runner, cwd=root)
+                parent_readback = _gh(["issue", "view", str(parent), "--json", "body"],
+                                      runner=runner, cwd=root)
+                try:
+                    observed_parent = json.loads(parent_readback.stdout).get("body") or "" \
+                        if parent_readback.returncode == 0 else ""
+                except ValueError:
+                    observed_parent = ""
+                ticked = bool(re.search(rf"^\s*- \[x\] #{number}\b", observed_parent,
+                                        re.MULTILINE | re.IGNORECASE))
                 did_tick = ticked
             elif re.search(rf"^\s*- \[x\] #{number}\b", parent_body, re.MULTILINE | re.IGNORECASE):
                 ticked = True
-        if already and not did_close and not did_tick and closed and (ticked or not parent):
-            continue  # everything was done on an earlier post; nothing touched now
+        # Even a no-op read-back is returned so a fresh close episode can
+        # persist that every mandatory item is already complete.  ``skipped``
+        # still records that no duplicate comment was sent.
         posted.append({"number": number, "url": url, "closed": closed, "parent": parent, "ticked": ticked,
                        "comment": "skipped" if already else "posted"})
     return {"posted": posted, "skipped": skipped, "reason": None, "detail": None, "head": head}

@@ -59,6 +59,29 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(record["episodes"][-1]["state"], "active")
         self.assertEqual(len(record["episodes"]), 2)
 
+    def test_a_persisted_open_human_hold_is_closed_by_the_later_end_event(self):
+        open_events = self.events + [{
+            "kind": "human_pause_started", "at": (self.now + timedelta(minutes=10)).isoformat(),
+            "hash": "b" * 64,
+        }]
+        supervisor.refresh_performance_state(
+            self.root, status=self.status, events=open_events,
+            now=self.now + timedelta(minutes=15),
+        )
+        ended_events = open_events + [{
+            "kind": "human_pause_ended", "at": (self.now + timedelta(minutes=20)).isoformat(),
+            "hash": "c" * 64,
+        }]
+        view = supervisor.refresh_performance_state(
+            self.root, status=self.status, events=ended_events,
+            now=self.now + timedelta(minutes=180),
+        )
+        self.assertEqual(view["state"], "paused_for_performance_review")
+        record = json.loads((self.root / supervisor.RUNTIME_CONTROL_DIR /
+                             supervisor.PERFORMANCE_RECORD).read_text())
+        self.assertEqual(record["episodes"][0]["holds"][0]["ended_at"],
+                         (self.now + timedelta(minutes=20)).isoformat())
+
     def test_cli_and_dashboard_expose_runtime_controls_and_telemetry(self):
         parser = supervisor.build_parser()
         self.assertEqual(parser.parse_args(["monitor-poll", "--owner", "host-a"]).command, "monitor-poll")

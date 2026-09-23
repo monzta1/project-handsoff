@@ -628,6 +628,13 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         followup=True,
     )
     token_budget = budget_decision["ceiling"]
+    if token_budget < budget_decision["safe_minimum"]:
+        raise lib.HandsoffError(
+            "managed fallback launch refused before reservation: rendered packet estimates "
+            f"{budget_decision['estimated_input_tokens']} input tokens, reserves "
+            f"{budget_decision['response_reserve_tokens']} response tokens, and requires at least "
+            f"{budget_decision['safe_minimum']} tokens; selected ceiling is {token_budget}"
+        )
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     if not skip_preflight and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":

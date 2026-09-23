@@ -182,7 +182,7 @@ def _sync_performance_holds(history: dict, events: list[dict]) -> dict:
     updated = deepcopy(history)
     episode = updated["episodes"][-1]
     episode_start = _event_datetime(episode["started_at"], datetime.now(timezone.utc))
-    existing = {item["hold_id"] for item in episode["holds"]}
+    existing = {item["hold_id"]: item for item in episode["holds"]}
     open_holds: list[tuple[str, datetime, str]] = []
     completed: list[dict] = []
     for index, event in enumerate(events):
@@ -202,7 +202,16 @@ def _sync_performance_holds(history: dict, events: list[dict]) -> dict:
     for hold_id, started, evidence_hash in open_holds:
         completed.append({"hold_id": hold_id, "kind": "pilot", "started_at": started.isoformat(),
                           "ended_at": None, "evidence_hash": evidence_hash})
-    episode["holds"].extend(item for item in completed if item["hold_id"] not in existing)
+    for item in completed:
+        prior = existing.get(item["hold_id"])
+        if prior is None:
+            episode["holds"].append(item)
+            existing[item["hold_id"]] = item
+        elif prior.get("ended_at") is None and item.get("ended_at") is not None:
+            # A prior refresh persisted the open hold.  Reconcile the later
+            # end event into that same durable row instead of ignoring it as
+            # a duplicate and excluding the rest of the run forever.
+            prior["ended_at"] = item["ended_at"]
     runtime_control.validate_performance_history(updated)
     return updated
 
@@ -4977,11 +4986,53 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
 
     started_at = transaction.record.get("created_at") or ""
 
+    with lib.project_lock(root):
+        close_status, close_acceptance = _load(root, cfg)
+    expected_issue_numbers = {
+        item["number"] for item in lib.derive_work_items(close_status, close_acceptance, cfg).get("items", [])
+        if item.get("kind") == "issue" and isinstance(item.get("number"), int)
+    }
+
     def report_state() -> dict:
         matching = [event for event in lib.read_events(root, cfg)
                     if event.get("kind") in {"report_posted", "report_not_posted"}
                     and str(event.get("at") or "") >= started_at]
-        return {"recorded": bool(matching), "kind": matching[-1].get("kind") if matching else None}
+        rows = transaction.record.get("items") or {}
+        complete = all(
+            bool(rows.get(str(number), {}).get("commented"))
+            and bool(rows.get(str(number), {}).get("closed"))
+            and bool(rows.get(str(number), {}).get("ticked"))
+            for number in expected_issue_numbers
+        )
+        kind = matching[-1].get("kind") if matching else None
+        return {"recorded": bool(matching), "kind": kind,
+                "items_complete": complete and kind == "report_posted"}
+
+    def report_action() -> None:
+        rows = transaction.record.setdefault("items", {})
+        known_closed = {int(number) for number, row in rows.items()
+                        if str(number).isdigit() and row.get("closed") is True}
+        # Prior close episodes remain attributable through the authenticated
+        # event ledger.  This permits a deliberate run-reopen to reconcile a
+        # previously completed Handsoff closure without treating an arbitrary
+        # pre-existing closed issue as ours.
+        for event in lib.read_events(root, cfg):
+            if event.get("kind") != "report_posted":
+                continue
+            for posted in event.get("posted") or []:
+                if isinstance(posted, dict) and isinstance(posted.get("number"), int) \
+                        and posted.get("closed") is True:
+                    known_closed.add(posted["number"])
+        outcome = _post_report(root, cfg, by=args.by, known_handsoff_closed=known_closed)
+        for posted in outcome.get("posted") or []:
+            number = posted.get("number")
+            if not isinstance(number, int):
+                continue
+            row = rows.setdefault(str(number), {})
+            row["commented"] = posted.get("comment") in {"posted", "skipped"}
+            row["closed"] = posted.get("closed") is True
+            row["ticked"] = posted.get("parent") is None or posted.get("ticked") is True
+        transaction._persist()
 
     def fleet_action() -> None:
         import handsoff_fleet as fleet
@@ -4990,7 +5041,7 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
     operations = {
         "prepare": close_transaction.Operation(close_state, lambda value: value["closed"], close_action),
         "final_report_post": close_transaction.Operation(
-            report_state, lambda value: value["recorded"], lambda: _post_report(root, cfg, by=args.by),
+            report_state, lambda value: value["items_complete"], report_action,
             optional=not bool(getattr(args, "post", False)),
             unavailable_reason=None if getattr(args, "post", False) else "--post was not requested",
         ),
@@ -5049,13 +5100,16 @@ def _validate_lines(root, cfg) -> list[str]:
     return ["SHIP_FEATURE_VALID"] if not errors else ["SHIP_FEATURE_BLOCKED"] + [f"- {e}" for e in errors]
 
 
-def _post_report(root, cfg, *, by: str) -> dict:
+def _post_report(root, cfg, *, by: str, known_handsoff_closed: set[int] | None = None) -> dict:
     """#171: render from the ledger, post once per ticket, record the outcome."""
     with lib.project_lock(root):
         status, acceptance, verifications, _problems = _load_all(root, cfg)
         events = lib.read_events(root, cfg)
     validate = _validate_lines(root, cfg)
-    outcome = lib.post_final_report(root, cfg, status, acceptance, events, verifications, validate, by=by)
+    outcome = lib.post_final_report(
+        root, cfg, status, acceptance, events, verifications, validate, by=by,
+        known_handsoff_closed=known_handsoff_closed,
+    )
     with lib.project_lock(root):
         lib.record_report_outcome(root, cfg, outcome, by=by)
     if outcome.get("reason"):
