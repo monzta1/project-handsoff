@@ -34,9 +34,8 @@ test("Mission Control renders an explicit regression Accept/Decline gate", () =>
   assert.match(app, /NO, TARGETED TESTS ONLY/);
   assert.match(app, /release_version/);
   assert.match(app, /regression\?\.last/);
-  assert.match(app, /progress\.request_id === request\.request_id/);
-  assert.match(app, /progress\.command_sha256 === request\.command_sha256/);
-  assert.match(app, /Preparing deterministic test partitions/);
+  assert.match(app, /renderTestProgress\(snapshot\.test_progress \|\| null\)/);
+  assert.match(app, /progress\.source === "regression"/);
 });
 
 test("Mission Control uses friendly role names without hiding model identity", () => {

@@ -3375,7 +3375,8 @@ def cmd_verify_live(args) -> int:
 
     try:
         lib.atomic_write_json(inflight_path, progress)
-        results = lib.run_checks(cfg, root, commands, on_progress=on_progress)
+        results = lib.run_checks(cfg, root, commands, on_progress=on_progress,
+                                 progress_source="verify-live")
         ok = all(r["exit_code"] == 0 for r in results)
         with lib.project_lock(root):
             # Re-read handsoff.toml from disk here, not the `cfg` captured

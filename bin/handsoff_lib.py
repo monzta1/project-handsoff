@@ -10750,12 +10750,14 @@ def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None =
 
 def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
                timeout: int | None = None, *, allow_regression: bool = False,
-               on_progress=None, env: dict | None = None) -> list[dict]:
+               on_progress=None, env: dict | None = None,
+               progress_source: str = "verify") -> list[dict]:
     """Actually execute the given commands (default: [checks].commands), in
     the project root. Each result is real evidence a criterion's evidence
     list can reference, not a sentence someone typed. Timeout comes from
     handsoff.toml's checks.timeout_seconds (default 600s) unless overridden."""
     import subprocess
+    import handsoff_progress as test_progress
     timeout = timeout if timeout is not None else cfg.get("check_timeout_seconds", 600)
     results = []
     selected = list(commands if commands is not None else cfg.get("check_commands", []))
@@ -10769,21 +10771,66 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
                     or ("*" not in gated_footprint and gated_footprint <= set(command_footprint))
                 if captures_group:
                     raise HandsoffError("full regression blocked: create and accept a Mission Control regression request")
+    try:
+        progress_status = load_unique_json(status_path(root, cfg))
+        progress_run_id = feature_hash(progress_status, read_events(root, cfg))
+    except (HandsoffError, OSError, KeyError):
+        progress_run_id = hashlib.sha256(str(Path(root).resolve()).encode("utf-8")).hexdigest()
+    progress = test_progress.start(
+        root, run_id=progress_run_id, source=progress_source,
+        label="Live verification" if progress_source == "verify-live" else "Targeted verification",
+        units=[f"Check {index}" for index in range(1, len(selected) + 1)],
+        command_hash=command_sha256(selected),
+    )
+    all_units = [{"index": index, "label": f"Check {index}", "state": "queued", "total": 1,
+                  "done": 0, "progress": 0.0, "elapsed_seconds": 0.0, "result": None}
+                 for index, _cmd in enumerate(selected, 1)]
+    progress["totals"] = test_progress.aggregate_units(all_units)
+    progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
+    test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
     for cmd in selected:
         index = len(results) + 1
         if on_progress:
             on_progress(index, len(selected), cmd, None)
         started = time.time()
+        unit = all_units[index - 1]
+        unit["state"] = "running"
+        progress["state"] = "running"
+        progress["totals"] = test_progress.aggregate_units(all_units)
+        progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
+        test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
         try:
-            proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=timeout,
-                                  env={**os.environ, **env} if env else None)
+            proc = subprocess.Popen(cmd, shell=True, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, env={**os.environ, **env} if env else None)
+            deadline = time.monotonic() + timeout
+            last_heartbeat = time.monotonic()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+                try:
+                    stdout, stderr = proc.communicate(timeout=min(1.0, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() - last_heartbeat >= test_progress.HEARTBEAT_SECONDS:
+                        unit["elapsed_seconds"] = round(time.time() - started, 2)
+                        progress["totals"] = test_progress.aggregate_units(all_units)
+                        progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
+                        if not test_progress.write(root, progress, expected_execution_id=progress["execution_id"]):
+                            pass
+                        last_heartbeat = time.monotonic()
             returncode = proc.returncode
-            output = proc.stdout + proc.stderr
+            output = stdout + stderr
         except subprocess.TimeoutExpired as exc:
             returncode = 124
             stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
             stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
             output = stdout + stderr + f"\nHANDSOFF: command timed out after {timeout} seconds"
+        except OSError as exc:
+            returncode = 127
+            output = f"HANDSOFF: command launch failed: {exc}"
         raw = output.encode("utf-8", "replace")
         output_hash = hashlib.sha256(raw).hexdigest()
         # #43: the three flags the verification cache reads. A timed-out
@@ -10797,8 +10844,22 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
             "output_bytes": len(raw),
             "output_tail": output[-CHECK_OUTPUT_TAIL_CHARS:],
         })
+        unit["state"] = "timed_out" if returncode == 124 else ("passed" if returncode == 0 else "failed")
+        unit["done"] = 1
+        unit["progress"] = 1.0
+        unit["elapsed_seconds"] = results[-1]["duration_s"]
+        unit["result"] = f"exit {returncode}"
+        progress["totals"] = test_progress.aggregate_units(all_units)
+        progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
+        progress["state"] = progress["totals"]["state"]
+        test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
         if on_progress:
             on_progress(index, len(selected), cmd, results[-1])
+    final_state = progress["totals"]["state"]
+    if final_state not in test_progress.TERMINAL_STATES:
+        final_state = "passed" if all(item["state"] == "passed" for item in all_units) else "failed"
+    test_progress.finish(root, progress, state=final_state,
+                         result=f"{sum(1 for item in all_units if item['state'] == 'passed')} of {len(all_units)} checks passed")
     return results
 
 
@@ -10822,7 +10883,7 @@ HANDSOFF_GENERATED_NAMES = frozenset({
     ".handsoff.lock", ".handsoff-event-head.json", ".handsoff-writeahead.json",
     ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
     # Agent output is gitignored Handsoff runtime state, not repository evidence.
-    ".handsoff-agent-output.json", ".handsoff-regression.json",
+    ".handsoff-agent-output.json", ".handsoff-regression.json", ".handsoff-test-progress.json",
     LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE, PREFLIGHT_FILE,
     LIVE_INFLIGHT_FILE,
     ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,

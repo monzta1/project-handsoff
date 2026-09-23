@@ -161,6 +161,8 @@ commands = [
   "python3 -m unittest tests.test_fixture_hygiene -v",
   "python3 -m unittest tests.test_regress -v",
   "node --test tests/dashboard/regression_gate.test.js",
+  "python3 -m unittest tests.test_universal_test_progress -v",
+  "node --test tests/dashboard/universal_test_progress.test.js",
   "python3 -m unittest tests.test_review_reaffirm -v",
   "python3 -m unittest tests.test_launch_precheck -v",
   "python3 -m unittest tests.test_config_governance -v",

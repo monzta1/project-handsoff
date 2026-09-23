@@ -646,60 +646,63 @@ function releasePlanText(plan) {
   ].filter(Boolean).join("\n");
 }
 
-function renderRegressionProgress(regression, request) {
-  const panel = $("regression-progress");
+function renderTestProgress(progress) {
+  const panel = $("test-progress-panel");
   const dock = $("progress-dock-regression");
   if (!panel) return;
-  const progress = regression?.progress;
-  const matches = progress && request
-    && progress.request_id === request.request_id
-    && progress.command_sha256 === request.command_sha256;
-  panel.classList.toggle("hidden", !matches);
-  if (dock) dock.classList.toggle("hidden", !matches);
-  if (!matches) return;
+  panel.classList.toggle("hidden", !progress);
+  if (dock) dock.classList.toggle("hidden", !progress);
+  if (!progress) return;
   const totals = progress.totals || {};
   const total = Number.isInteger(totals.total) ? totals.total : null;
   const done = Number(totals.done || 0);
-  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
-  const running = !progress.finished_at;
-  const shards = (progress.commands || []).flatMap((command) => command.shards || []);
-  const active = shards.filter((shard) => !shard.finished_at);
-  const failed = Number(totals.failed || 0);
-  const errors = Number(totals.errors || 0);
+  const unitTotal = Number(totals.unit_total || progress.unit_count || 0);
+  const unitDone = Number(totals.unit_done || 0);
+  const percent = total && total > 0
+    ? Math.min(100, Math.round((done / total) * 100))
+    : (unitTotal ? Math.min(100, Math.round((unitDone / unitTotal) * 100)) : 0);
+  const running = ["queued", "running"].includes(progress.state);
+  const units = progress.units || [];
+  const active = units.filter((unit) => ["queued", "running"].includes(unit.state));
+  const passed = Number(totals.passed_tests ?? totals.passed ?? 0);
+  const failed = Number(totals.failed_tests ?? totals.failed ?? 0);
+  const errors = Number(totals.error_tests ?? totals.timed_out ?? 0);
+  const queued = Number(totals.skipped_tests ?? totals.queued ?? 0);
+  const sourceName = ({ regression: "Regression", "verify-live": "Live verification", verify: "Verification", ci: "Continuous integration" })[progress.source] || "Test execution";
+  $("test-progress-title").textContent = progress.label || sourceName;
+  $("test-progress-console-link").classList.toggle("hidden", progress.source !== "regression");
+  if ($("progress-dock-test-label")) $("progress-dock-test-label").textContent = progress.source === "ci" ? "CI" : (progress.source === "regression" ? "REGRESSION" : "TESTS");
   $("regression-progress-state").textContent = running
-    ? `RUNNING · ${active.length || shards.length} WORKER${(active.length || shards.length) === 1 ? "" : "S"}`
-    : (progress.exit_code === 0 ? "COMPLETE · GREEN" : "COMPLETE · ATTENTION");
-  $("regression-progress-percent").textContent = total ? `${percent}%` : `${done}`;
-  $("regression-progress-done").textContent = total ? `${done} / ${total}` : `${done} RUN`;
-  $("regression-progress-pass").textContent = String(totals.passed || 0);
+    ? `${progress.state.toUpperCase()} · ${active.length} ACTIVE`
+    : (progress.state === "passed" ? "COMPLETE · GREEN" : `COMPLETE · ${progress.state.toUpperCase()}`);
+  $("regression-progress-percent").textContent = `${percent}%`;
+  $("regression-progress-done").textContent = total != null ? `${done} / ${total}` : `${unitDone} / ${unitTotal}`;
+  $("regression-progress-pass").textContent = String(passed);
   $("regression-progress-fail").textContent = String(failed);
   $("regression-progress-error").textContent = String(errors);
-  $("regression-progress-skip").textContent = String(totals.skipped || 0);
-  const current = active.filter((shard) => shard.current)
-    .map((shard) => `${shard.label || `Worker ${shard.index}`}: ${shard.current}`);
+  $("regression-progress-skip").textContent = String(queued);
+  const current = active.map((unit) => `${unit.label}: ${unit.state}`);
   $("regression-progress-current").textContent = running
-    ? (current.join(" · ") || "Preparing deterministic test partitions")
-    : `Finished with exit ${progress.exit_code}`;
+    ? (current.slice(0, 3).join(" · ") || "Preparing execution")
+    : (progress.result || `Finished ${progress.state}`);
   const bar = $("regression-progress-bar");
   bar.setAttribute("aria-valuenow", String(percent));
-  bar.setAttribute("aria-valuetext", total ? `${done} of ${total} tests` : `${done} tests completed`);
+  bar.setAttribute("aria-valuetext", total != null ? `${done} of ${total} tests` : `${unitDone} of ${unitTotal} units`);
   $("regression-progress-fill").style.width = `${percent}%`;
   if (dock) {
-    $("progress-dock-regression-percent").textContent = total ? `${percent}%` : String(done);
-    $("progress-dock-regression-detail").textContent = total
-      ? `${done} / ${total} tests · ${active.length || shards.length} worker${(active.length || shards.length) === 1 ? "" : "s"}`
-      : `${done} tests complete`;
+    $("progress-dock-regression-percent").textContent = `${percent}%`;
+    $("progress-dock-regression-detail").textContent = total != null
+      ? `${done} / ${total} tests · ${active.length} active`
+      : `${unitDone} / ${unitTotal} units · ${active.length} active`;
     const dockBar = $("progress-dock-regression-bar");
     dockBar.setAttribute("aria-valuenow", String(percent));
-    dockBar.setAttribute("aria-valuetext", total ? `${done} of ${total} tests` : `${done} tests completed`);
+    dockBar.setAttribute("aria-valuetext", total != null ? `${done} of ${total} tests` : `${unitDone} of ${unitTotal} units`);
     $("progress-dock-regression-fill").style.width = `${percent}%`;
   }
-  $("regression-progress-workers").innerHTML = shards.map((shard) => {
-    const bad = Number(shard.failed || 0) + Number(shard.errors || 0);
-    const workerState = !shard.finished_at ? "running" : (shard.exit_code === 0 ? "passed" : "failed");
-    const count = shard.test_count == null ? `${shard.done || 0} run` : `${shard.done || 0} / ${shard.test_count}`;
-    const detail = shard.current || `${count} · ${shard.passed || 0} pass${bad ? ` · ${bad} attention` : ""}`;
-    return `<div class="regression-worker is-${workerState}"><strong>${escapeHtml(shard.label || `Worker ${shard.index}`)} · ${workerState.toUpperCase()}</strong><small>${escapeHtml(detail)}</small></div>`;
+  $("regression-progress-workers").innerHTML = units.map((unit) => {
+    const count = unit.total == null ? `${unit.done || 0} complete` : `${unit.done || 0} / ${unit.total}`;
+    const detail = `${count}${unit.result ? ` · ${unit.result}` : ""}`;
+    return `<div class="regression-worker is-${escapeHtml(unit.state)}"><strong>${escapeHtml(unit.label || `Unit ${unit.index}`)} · ${escapeHtml(unit.state.toUpperCase())}</strong><small>${escapeHtml(detail)}</small></div>`;
   }).join("");
 }
 
@@ -710,7 +713,6 @@ function renderRegression(regression) {
   const card = $("regression-alert");
   card.classList.toggle("hidden", !current && !last && !plan);
   $("regression-status-details").textContent = regressionRecordText(current || last) || releasePlanText(plan);
-  renderRegressionProgress(regression, current || last);
   $("regression-last").textContent = last
     ? `Last closed request: ${last.group} · ${String(last.state || "unknown").toUpperCase()} · ${last.completed_at || last.decided_at || last.requested_at}`
     : "";
@@ -1818,6 +1820,7 @@ function render(snapshot) {
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);
   renderRegression(snapshot.regression);
+  renderTestProgress(snapshot.test_progress || null);
   if (!state.inputRequired) document.title = `${snapshot.project.feature} · Handsoff`;
   const pilotGate = snapshot.input_required?.turn === "pilot" && !snapshot.input_required?.preauthorized;
   setFaviconState(status.status === "complete" ? "complete"
