@@ -206,6 +206,21 @@ class TestRunBattery(unittest.TestCase):
         self.assertEqual(normalized["state"], "failed")
         self.assertEqual(normalized["totals"]["done"], 0)
 
+    def test_python_full_preflight_names_an_extra_ci_only_module(self):
+        (self.tmp / "tests" / "test_ci_only.py").write_text(textwrap.dedent('''
+            import unittest
+
+            class TestCIOnly(unittest.TestCase):
+                def test_extra_target(self):
+                    pass
+        '''))
+        with self.assertRaisesRegex(
+                regress.RegressionInventoryError,
+                r"missing: tests\.test_ci_only\.TestCIOnly\.test_extra_target"):
+            regress.collect_inventory(
+                self.tmp, "python-full", ["python3 -m unittest tests.test_fixture"]
+            )
+
     def test_unknown_group_is_refused(self):
         proc = subprocess.run(
             [sys.executable, str(ROOT / "bin" / "handsoff_regress.py"), "--root", str(self.tmp), "--group", "nope"],
@@ -303,6 +318,44 @@ class TestRegressionInventory(unittest.TestCase):
             regress._write(self.tmp, state)
         self.assertEqual(regress.test_progress.read(self.tmp)["execution_id"], new["execution_id"])
         self.assertFalse((self.tmp / regress.PROGRESS_FILE).exists())
+
+
+class TestCompleteShardHelper(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-all-shards-"))
+        (self.tmp / "tests").mkdir()
+        (self.tmp / "tests" / "__init__.py").write_text("")
+        shutil.copy(ROOT / "tests" / "shard.py", self.tmp / "tests" / "shard.py")
+        for suffix in ("alpha", "beta"):
+            (self.tmp / "tests" / f"test_{suffix}.py").write_text(textwrap.dedent(f'''
+                import builtins, unittest
+
+                if hasattr(builtins, "_handsoff_incompatible_module"):
+                    raise RuntimeError("incompatible modules shared an interpreter")
+                builtins._handsoff_incompatible_module = "{suffix}"
+
+                class Test{suffix.title()}(unittest.TestCase):
+                    def test_runs(self):
+                        pass
+            '''))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_complete_inventory_runs_once_in_five_shards_with_module_isolation(self):
+        results = regress.run_battery_results(
+            self.tmp, "python-full", ["python3 tests/shard.py --all"], timeout=120,
+        )
+        self.assertEqual(results[0]["exit_code"], 0, results[0]["output_tail"])
+        state = json.loads((self.tmp / regress.PROGRESS_FILE).read_text())
+        inventory = state["inventory"]
+        self.assertEqual(inventory["test_count"], 2)
+        self.assertEqual([item["test_count"] for item in inventory["shards"]], [1, 1, 0, 0, 0])
+        command = state["commands"][0]
+        observed = [test_id for shard in command["shards"]
+                    for test_id in shard["completed_test_ids"]]
+        self.assertEqual(sorted(observed), inventory["test_ids"])
+        self.assertEqual(len(observed), len(set(observed)))
 
 
 if __name__ == "__main__":

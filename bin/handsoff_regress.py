@@ -440,12 +440,70 @@ def _publish_normalized(root: Path, state: dict) -> bool:
 
 def _unittest_names(argv: list[str]) -> list[str]:
     """Return unittest load names only for the two command shapes we can shard."""
-    if len(argv) >= 3 and argv[0].startswith("python") and argv[1:3] == ["-m", "unittest"]:
+    is_python = bool(argv) and Path(argv[0]).name.startswith("python")
+    if len(argv) >= 3 and is_python and argv[1:3] == ["-m", "unittest"]:
         return [arg for arg in argv[3:] if not arg.startswith("-")]
-    if len(argv) >= 2 and argv[0].startswith("python") and argv[1].startswith("tests/") \
+    if len(argv) >= 2 and is_python and argv[1].startswith("tests/") \
             and argv[1].endswith(".py"):
         return [argv[1][:-3].replace("/", ".")]
     return []
+
+
+def _all_tests_command(argv: list[str]) -> bool:
+    return len(argv) >= 3 and Path(argv[0]).name.startswith("python") \
+        and Path(argv[1]).as_posix().endswith("tests/shard.py") and "--all" in argv[2:]
+
+
+def _collect_all_test_ids(root: Path, argv: list[str] | None = None) -> list[str]:
+    """Read tests/shard.py's complete, module-isolated unittest inventory."""
+    script = (argv or [sys.executable, "tests/shard.py"])[1]
+    python = (argv or [sys.executable])[0]
+    result = subprocess.run(
+        [python, script, "--all", "--inventory"], cwd=str(root), capture_output=True,
+        text=True, timeout=300, env={**os.environ, "HANDSOFF_SKIP_PREFLIGHT": "1"},
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise CollectionFailure(
+            f"complete unittest collection failed: {detail[-1][:240] if detail else 'no output'}"
+        )
+    marker = "HANDSOFF_INVENTORY_JSON="
+    line = next((item for item in reversed(result.stdout.splitlines()) if item.startswith(marker)), None)
+    if line is None:
+        raise CollectionFailure("complete unittest collection returned no inventory")
+    try:
+        payload = json.loads(line[len(marker):])
+    except json.JSONDecodeError as exc:
+        raise CollectionFailure("complete unittest collection returned invalid JSON") from exc
+    ids = payload.get("test_ids") if isinstance(payload, dict) else None
+    if not isinstance(ids, list) or not ids or not all(isinstance(item, str) and item for item in ids):
+        raise CollectionFailure("complete unittest collection returned invalid test identifiers")
+    duplicates = sorted(name for name, count in Counter(ids).items() if count > 1)
+    if duplicates:
+        raise CollectionFailure(f"complete unittest collection returned duplicate test id(s): {', '.join(duplicates)}")
+    return sorted(ids)
+
+
+def _discover_complete_test_ids(root: Path) -> list[str]:
+    """Collect the CI unittest universe, one clean process per module."""
+    helper = Path(root) / "tests" / "shard.py"
+    if helper.is_file():
+        return _collect_all_test_ids(root, [sys.executable, "tests/shard.py", "--all"])
+    excluded = {"test_generic_dropin"}
+    ids = []
+    for path in sorted((Path(root) / "tests").glob("test_*.py")):
+        if path.stem in excluded:
+            continue
+        module_ids, reason = _enumerate_unittest_ids(
+            root, [sys.executable, "-m", "unittest", f"tests.{path.stem}"]
+        )
+        if module_ids is None:
+            raise CollectionFailure(f"collection is ambiguous for tests.{path.stem}: {reason}")
+        ids.extend(module_ids)
+    _exact_ids(sorted(set(ids)), ids, "complete unittest collection")
+    if not ids:
+        raise CollectionFailure("complete unittest collection returned no tests")
+    return sorted(ids)
 
 
 def _enumerate_unittest_ids(root: Path, argv: list[str]) -> tuple[list[str] | None, str | None]:
@@ -456,6 +514,8 @@ def _enumerate_unittest_ids(root: Path, argv: list[str]) -> tuple[list[str] | No
     Once a supported collector starts, every error is a hard failure.
     """
     try:
+        if _all_tests_command(argv):
+            return _collect_all_test_ids(root, argv), None
         names = _unittest_names(argv)
         if not names:
             return None, "collection is ambiguous for this command shape"
@@ -539,7 +599,21 @@ def collect_inventory(root: Path, label: str, commands: list[str], *,
                 "test_count": len(ids),
                 "test_ids": ids,
             })
-    return make_inventory(label, command_inventories, shard_count=shard_count)
+    try:
+        revision_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(root), capture_output=True, text=True,
+        )
+        revision = revision_result.stdout.strip() if revision_result.returncode == 0 else "unversioned"
+    except OSError:
+        revision = "unversioned"
+    inventory = make_inventory(
+        label, command_inventories, shard_count=shard_count, revision=revision,
+    )
+    if label == "python-full" and inventory["state"] == "collected" \
+            and not any(_all_tests_command(_verbose_argv(command)) for command in commands):
+        complete_ids = _discover_complete_test_ids(root)
+        _exact_ids(complete_ids, inventory["test_ids"], "python-full local/CI/release")
+    return inventory
 
 
 def _recount_entry(entry: dict) -> None:
@@ -692,7 +766,8 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int, command_
                 max_shards: int = DEFAULT_SHARDS, command_inventory: dict | None = None) -> dict:
     started = time.monotonic()
     argv = _verbose_argv(command)
-    eligible = bool(_unittest_names(argv))
+    all_tests = _all_tests_command(argv)
+    eligible = bool(_unittest_names(argv)) or all_tests
     if command_inventory is None:
         ids, enumeration_error = _enumerate_unittest_ids(root, argv)
     elif command_inventory.get("collection_state") == "collected":
@@ -718,12 +793,21 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int, command_
             shard = _new_shard(index, partition)
             entry["shards"].append(shard)
             if partition:
-                specs.append(([argv[0], "-m", "unittest", "-v", *partition], False, shard))
+                if all_tests:
+                    specs.append(([
+                        argv[0], argv[1], "--all", "--total", str(max_shards),
+                        "--index", str(index - 1),
+                    ], False, shard))
+                else:
+                    specs.append(([argv[0], "-m", "unittest", "-v", *partition], False, shard))
     else:
         shard = _new_shard(1, ids)
         entry["shards"].append(shard)
-        sequential = shlex.join(argv) if eligible else command
-        specs.append((sequential, True, shard))
+        if all_tests and ids is not None:
+            specs.append(([argv[0], argv[1], "--all", "--total", "1", "--index", "0"], False, shard))
+        else:
+            sequential = shlex.join(argv) if eligible else command
+            specs.append((sequential, True, shard))
     state["commands"].append(entry)
     state["current_command"] = command
     _write(root, state)

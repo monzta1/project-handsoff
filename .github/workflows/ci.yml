@@ -5,10 +5,9 @@ on:
     branches: ["main"]
   pull_request:
 
-# The two [[regressions]] from handsoff.toml plus every other test module (#179).
-# python-full is dealt across six
-# runners by tests/shard.py (weights in tests/shard_weights.json), so the wall
-# time is one shard, about 90 s, not the 8.5 min of the whole file (#179).
+# The two [[regressions]] from handsoff.toml. python-full's one versioned
+# inventory is dealt across five count-balanced runners by tests/shard.py;
+# collection and execution isolate modules that cannot share an interpreter.
 # `tests` is the check main requires; it only gathers the shard results, so
 # the required context stays one name however the matrix changes.
 jobs:
@@ -60,13 +59,13 @@ jobs:
   python:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    name: python (shard ${{ matrix.shard }} of 6)
+    name: python (shard ${{ matrix.shard }} of 5)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,32 +77,7 @@ jobs:
       - name: Install the engine
         run: python -m pip install --upgrade pip && python -m pip install .
       - name: python-full, one shard
-        run: python3 tests/shard.py --total 6 --index ${{ matrix.shard }}
-  modules:
-    # #179: the other 53 test modules (539 tests; what [checks] cites), one
-    # process per module, dealt across four runners by tests/shard.py
-    # --modules with weights in tests/shard_module_weights.json.
-    needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
-    name: modules (shard ${{ matrix.shard }} of 4)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install the engine
-        run: python -m pip install --upgrade pip && python -m pip install .
-      - name: the other modules, one shard
-        run: python3 tests/shard.py --modules --total 4 --index ${{ matrix.shard }}
+        run: python3 tests/shard.py --all --total 5 --index ${{ matrix.shard }}
   dashboard:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
@@ -117,16 +91,16 @@ jobs:
       - name: dashboard-full
         run: node --test tests/dashboard/*.test.js
   tests:
-    needs: [changes, python, modules, dashboard, docs]
+    needs: [changes, python, dashboard, docs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: The docs job on a docs-only change; every shard, every module and the dashboard suite otherwise
         run: |
-          echo "docs_only: ${{ needs.changes.outputs.docs_only }}; docs: ${{ needs.docs.result }}; python: ${{ needs.python.result }}; modules: ${{ needs.modules.result }}; dashboard: ${{ needs.dashboard.result }}"
+          echo "docs_only: ${{ needs.changes.outputs.docs_only }}; docs: ${{ needs.docs.result }}; python: ${{ needs.python.result }}; dashboard: ${{ needs.dashboard.result }}"
           if [ "${{ needs.changes.outputs.docs_only }}" = "true" ]; then
             test "${{ needs.docs.result }}" = "success"
           else
-            test "${{ needs.python.result }}" = "success" && test "${{ needs.modules.result }}" = "success" && test "${{ needs.dashboard.result }}" = "success"
+            test "${{ needs.python.result }}" = "success" && test "${{ needs.dashboard.result }}" = "success"
           fi

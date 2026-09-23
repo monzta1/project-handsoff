@@ -44,7 +44,7 @@ class RunnerAndModulesTests(unittest.TestCase):
                                         cwd=str(ROOT), capture_output=True, text=True, timeout=600, env=env)
                 self.assertEqual(result.returncode, 0, result.stderr[-1500:])
 
-    def test_the_module_plan_is_the_whole_tree_and_the_workflow_gathers_it(self):
+    def test_the_shared_inventory_is_the_whole_tree_and_the_workflow_gathers_it(self):
         modules = shard.modules()
         on_disk = sorted(p.stem for p in (ROOT / "tests").glob("test_*.py"))
         self.assertEqual(set(on_disk) - set(modules), {"test_handsoff_supervisor", *shard.MODULE_SCRIPTS})
@@ -52,24 +52,20 @@ class RunnerAndModulesTests(unittest.TestCase):
             text = (ROOT / "tests" / f"{script}.py").read_text()
             self.assertIn("def main(", text, f"{script} is listed as a script; it must be one")
             self.assertNotIn("unittest.TestCase", text)
-        plan = shard.module_plan(4)
-        names = [n for s in plan for n in s]
-        self.assertEqual(sorted(names), modules, "complete")
-        self.assertEqual(len(names), len(set(names)), "disjoint")
-        weights = json.loads((ROOT / "tests" / "shard_module_weights.json").read_text())
-        loads = [sum(weights.get(n, 0) for n in s) for s in plan]
-        self.assertLess(max(loads) - min(loads), 20, loads)
+        fixture_ids = [f"tests.test_x.Case.test_{index}" for index in range(13)]
+        plan = shard.all_plan(5, fixture_ids)
+        ids = [test_id for part in plan for test_id in part]
+        self.assertEqual(sorted(ids), sorted(fixture_ids), "complete")
+        self.assertEqual(len(ids), len(set(ids)), "disjoint")
+        self.assertLessEqual(max(map(len, plan)) - min(map(len, plan)), 1)
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-        self.assertIn("python3 tests/shard.py --modules --total 4 --index ${{ matrix.shard }}", workflow)
-        self.assertIn("needs: [changes, python, modules, dashboard, docs]", workflow)  # #227 adds the docs path
-        self.assertIn('test "${{ needs.modules.result }}" = "success"', workflow)
-        # the plan runs one process per module
-        self.assertIn('subprocess.run([sys.executable, "-m", "unittest", f"tests.{name}"]', (ROOT / "tests" / "shard.py").read_text())
-        # --plan prints without running anything
-        result = subprocess.run([sys.executable, "tests/shard.py", "--modules", "--total", "4", "--plan"],
-                                cwd=str(ROOT), capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count("shard "), 4)
+        self.assertIn("python3 tests/shard.py --all --total 5 --index ${{ matrix.shard }}", workflow)
+        self.assertIn("needs: [changes, python, dashboard, docs]", workflow)  # #227 adds the docs path
+        self.assertNotIn("needs.modules", workflow)
+        helper = (ROOT / "tests" / "shard.py").read_text()
+        self.assertIn('"-m", "unittest", "-v", *selected', helper)
+        config = (ROOT / "handsoff.toml").read_text()
+        self.assertIn('commands = ["python3 tests/shard.py --all"]', config)
 
 
 class ImplementerFillTests(HandsoffTestCase):
