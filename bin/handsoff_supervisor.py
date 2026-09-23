@@ -4909,6 +4909,9 @@ def _close_transaction_identity(root: Path, cfg: dict) -> tuple[str, Path]:
         problems = lib.verify_event_log(root, cfg)
     if problems:
         raise lib.HandsoffError("run-close: event log authentication failed: " + problems[0])
+    # A local run-reopen starts a new close episode.  It retains the run's
+    # feature identity while preventing a completed prior close transaction
+    # from suppressing the new report/close reconciliation pass.
     reopen_count = sum(event.get("kind") == "run_reopened" for event in events)
     token = hashlib.sha256(
         f"{lib.feature_hash(status, events)}:{reopen_count}".encode("utf-8")
@@ -4924,7 +4927,9 @@ def _load_close_transaction(root: Path, cfg: dict) -> tuple[close_transaction.Cl
     except (OSError, ValueError) as exc:
         raise lib.HandsoffError(f"run-close: close transaction is unreadable: {exc}") from exc
     try:
-        record = close_transaction.migrate_transaction(raw, root=root, run_token=token, authenticated=True)
+        record = close_transaction.migrate_transaction(
+            raw, root=root, run_token=token, authenticated=True,
+        )
     except close_transaction.CloseTransactionError as exc:
         raise lib.HandsoffError(f"run-close: {exc}") from exc
 
@@ -4959,13 +4964,15 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
 
     def close_state() -> dict:
         status = current_status()
-        return {"closed": isinstance(status.get("run_closed"), dict), "run_closed": status.get("run_closed")}
+        return {"closed": isinstance(status.get("run_closed"), dict),
+                "run_closed": status.get("run_closed")}
 
     def close_action() -> None:
         result.update(lib.close_run(
             root, by=args.by, reason=args.reason,
             expected_updated_at=getattr(args, "expected_updated_at", None),
-            cancel_active=bool(getattr(args, "cancel_active", False)), release_dashboard=False,
+            cancel_active=bool(getattr(args, "cancel_active", False)),
+            release_dashboard=False,
         ))
 
     started_at = transaction.record.get("created_at") or ""
@@ -4987,19 +4994,23 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
             optional=not bool(getattr(args, "post", False)),
             unavailable_reason=None if getattr(args, "post", False) else "--post was not requested",
         ),
+        # This transaction file is the durable local close archive. The
+        # existing retire_finished_run path moves the full ledgers at init.
         "archive": close_transaction.Operation(
             lambda: {"path": str(transaction_path), "exists": transaction_path.is_file()},
             lambda value: value["exists"], lambda: None,
         ),
         "fleet_unregister": close_transaction.Operation(
-            lambda: {"state": _fleet_run_state(root)}, lambda value: value["state"] == "closed", fleet_action,
+            lambda: {"state": _fleet_run_state(root)},
+            lambda value: value["state"] == "closed", fleet_action,
         ),
         "dashboard_shutdown": close_transaction.Operation(
             lambda: {"owner_present": lib.dashboard_owner_path(root).exists()},
             lambda value: not value["owner_present"], lambda: _release_run_dashboard(root, cfg),
         ),
         "config_restore": close_transaction.Operation(
-            lambda: {"owned_override": False}, lambda value: value["owned_override"] is False, lambda: None,
+            lambda: {"owned_override": False},
+            lambda value: value["owned_override"] is False, lambda: None,
         ),
         "optional_analysis": close_transaction.Operation(
             lambda: {"applicable": False}, lambda _value: False, lambda: None,
@@ -5011,7 +5022,8 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
     except close_transaction.CloseTransactionError as exc:
         raise lib.HandsoffError(f"run-close: {exc}") from exc
     if not result:
-        result = {"closed": True, "already_closed": True, "run_closed": close_state()["run_closed"],
+        closed = close_state()["run_closed"]
+        result = {"closed": True, "already_closed": True, "run_closed": closed,
                   "dashboard": {"released": False, "reason": "closure transaction resumed"}}
     result["transaction"] = {"state": transaction.record["state"], "path": str(transaction_path)}
     return result
