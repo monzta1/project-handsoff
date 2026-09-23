@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, "../..");
 const html = fs.readFileSync(path.join(root, "dashboard/index.html"), "utf8");
 const app = fs.readFileSync(path.join(root, "dashboard/app.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "dashboard/styles.css"), "utf8");
+const regressionRunner = fs.readFileSync(path.join(root, "bin/handsoff_regress.py"), "utf8");
 
 test("any normalized test execution gets a prominent accessible progress surface", () => {
   assert.match(html, /id="test-progress-panel"[^>]*aria-live="polite"/);
@@ -33,4 +34,13 @@ test("shard grid exposes state, counts, and bounded server-provided rows", () =>
   assert.match(app, /unit\.done \|\| 0/);
   assert.match(app, /unit\.total/);
   assert.match(css, /\.regression-progress-workers \{[^}]*grid-template-columns:/);
+});
+
+test("dashboard progress is fed by the shared versioned five-shard inventory", () => {
+  assert.match(regressionRunner, /INVENTORY_SCHEMA_VERSION = 1/);
+  assert.match(regressionRunner, /INVENTORY_VIEWS = \("local", "ci", "release", "dashboard"\)/);
+  assert.match(regressionRunner, /snapshot\["inventory"\] = state\["inventory"\]/);
+  assert.match(regressionRunner, /snapshot\["inventory_id"\]/);
+  assert.match(regressionRunner, /DEFAULT_SHARDS = 5/);
+  assert.match(regressionRunner, /def balanced_shards\(/);
 });

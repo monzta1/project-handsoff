@@ -11,6 +11,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest import mock
 
@@ -151,9 +152,10 @@ class TestRunBattery(unittest.TestCase):
         self.assertEqual(command["mode"], "sharded")
         self.assertEqual([f["name"] for f in command["failures"]], ["tests.test_fixture.TestFixture.test_fails"])
         self.assertIsNone(command["current"])
-        self.assertEqual(len(command["shards"]), 4)
-        self.assertEqual([shard["test_count"] for shard in command["shards"]], [1, 1, 1, 1])
-        self.assertTrue(all(shard["done"] == 1 for shard in command["shards"]))
+        self.assertEqual(len(command["shards"]), 5)
+        self.assertEqual([shard["test_count"] for shard in command["shards"]], [1, 1, 1, 1, 0])
+        self.assertEqual([shard["done"] for shard in command["shards"]], [1, 1, 1, 1, 0])
+        self.assertTrue(all(shard["finished_at"] for shard in command["shards"]))
         self.assertTrue(all(Path(shard["log"]).is_file() for shard in command["shards"]))
         seen = set()
         for shard in command["shards"]:
@@ -184,9 +186,25 @@ class TestRunBattery(unittest.TestCase):
         self.assertEqual(state["command_sha256"], "a" * 64)
         entry = state["commands"][0]
         self.assertEqual(entry["mode"], "sequential")
+        self.assertTrue(entry["degraded"])
         self.assertEqual(entry["fallback_reason"], "discovery import error")
         self.assertEqual(len(entry["shards"]), 1)
         self.assertEqual(entry["done"], 4)
+
+    def test_collection_failure_is_terminal_and_never_serial_fallback(self):
+        (self.tmp / "tests" / "test_broken.py").write_text("raise RuntimeError('broken collection')\n")
+        results = regress.run_battery_results(
+            self.tmp, "broken", ["python3 -m unittest tests.test_broken"], timeout=120,
+            request_id="rg-broken", command_sha256="b" * 64,
+        )
+        self.assertEqual(results[0]["exit_code"], 2)
+        state = json.loads((self.tmp / regress.PROGRESS_FILE).read_text())
+        self.assertEqual(state["exit_code"], 2)
+        self.assertIn("tests.test_broken", state["collection_error"])
+        self.assertEqual(state["commands"], [])
+        normalized = regress.test_progress.read(self.tmp, execution_id=state["execution_id"])
+        self.assertEqual(normalized["state"], "failed")
+        self.assertEqual(normalized["totals"]["done"], 0)
 
     def test_unknown_group_is_refused(self):
         proc = subprocess.run(
@@ -195,6 +213,96 @@ class TestRunBattery(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 2)
         self.assertIn("HANDSOFF_REGRESS_BLOCKED", proc.stderr)
+
+
+class TestRegressionInventory(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-inventory-"))
+        self.ids = [f"tests.test_x.Case.test_{index:02d}" for index in range(11)]
+        self.command = {
+            "command": "python3 -m unittest tests.test_x",
+            "collection_state": "collected",
+            "fallback_reason": None,
+            "test_count": len(self.ids),
+            "test_ids": list(reversed(self.ids)),
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def inventory(self):
+        return regress.make_inventory("python-full", [deepcopy(self.command)])
+
+    def test_one_versioned_inventory_has_equal_independent_views_and_five_balanced_shards(self):
+        inventory = self.inventory()
+        regress.lib.atomic_write_json(regress.inventory_path(self.tmp), inventory)
+        views = {view: regress.read_inventory(self.tmp, view=view)
+                 for view in regress.INVENTORY_VIEWS}
+        self.assertEqual({item["inventory_id"] for item in views.values()}, {inventory["inventory_id"]})
+        self.assertEqual({tuple(item["test_ids"]) for item in views.values()}, {tuple(sorted(self.ids))})
+        self.assertEqual(inventory["schema_version"], 1)
+        self.assertEqual(inventory["shard_count"], 5)
+        sizes = [shard["test_count"] for shard in inventory["shards"]]
+        self.assertEqual(sizes, [3, 2, 2, 2, 2])
+        self.assertLessEqual(max(sizes) - min(sizes), 1)
+
+    def test_duplicates_and_missing_shards_fail_closed(self):
+        duplicate = deepcopy(self.command)
+        duplicate["test_ids"].append(duplicate["test_ids"][0])
+        with self.assertRaisesRegex(regress.RegressionInventoryError, "duplicate"):
+            regress.make_inventory("python-full", [duplicate])
+        missing = self.inventory()
+        missing["shards"].pop()
+        with self.assertRaisesRegex(regress.RegressionInventoryError, "missing shard"):
+            regress.validate_inventory(missing)
+
+    def test_exact_view_equality_names_omission_and_requires_audited_exclusion(self):
+        reference = self.inventory()
+        candidate_command = deepcopy(self.command)
+        omitted = self.ids[-1]
+        candidate_command["test_ids"].remove(omitted)
+        candidate_command["test_count"] -= 1
+        candidate = regress.make_inventory("python-full", [candidate_command])
+        with self.assertRaisesRegex(regress.RegressionInventoryError, omitted):
+            regress.require_equal_inventory(reference, candidate,
+                                            reference_view="local", candidate_view="ci")
+        regress.require_equal_inventory(
+            reference, candidate, reference_view="local", candidate_view="ci",
+            exclusions=[{"test_id": omitted, "view": "ci", "platform": "windows",
+                         "reason": "POSIX-only fixture", "audit_id": "issue-276"}],
+        )
+        with self.assertRaisesRegex(regress.RegressionInventoryError, "not auditable"):
+            regress.require_equal_inventory(
+                reference, candidate, reference_view="local", candidate_view="ci",
+                exclusions=[{"test_id": omitted, "view": "ci", "reason": "not here"}],
+            )
+
+    def test_completed_shards_reject_omission(self):
+        shards = []
+        for plan in self.inventory()["shards"]:
+            shard = regress._new_shard(plan["index"], plan["test_ids"])
+            shard["completed_test_ids"] = list(plan["test_ids"])
+            shard["finished_at"] = "2026-01-01T00:00:00+00:00"
+            shards.append(shard)
+        shards[2]["completed_test_ids"].pop()
+        with self.assertRaisesRegex(regress.RegressionInventoryError, "missing"):
+            regress._validate_completed_shards({"shards": shards}, sorted(self.ids), 5)
+
+    def test_superseded_retry_cannot_publish_false_completion(self):
+        old = regress.test_progress.start(
+            self.tmp, run_id="run", source="regression", label="old", units=["worker"]
+        )
+        state = {
+            "execution_id": old["execution_id"], "commands": [], "planned_commands": [],
+            "totals": {}, "finished_at": "2026-01-01T00:00:00+00:00", "exit_code": 0,
+        }
+        new = regress.test_progress.start(
+            self.tmp, run_id="run", source="regression", label="retry", units=["worker"]
+        )
+        with self.assertRaises(regress.StaleRegressionExecution):
+            regress._write(self.tmp, state)
+        self.assertEqual(regress.test_progress.read(self.tmp)["execution_id"], new["execution_id"])
+        self.assertFalse((self.tmp / regress.PROGRESS_FILE).exists())
 
 
 if __name__ == "__main__":

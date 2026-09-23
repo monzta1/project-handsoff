@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_progress as progress  # noqa: E402
+import handsoff_regress as regress  # noqa: E402
 
 
 class UniversalProgressContract(unittest.TestCase):
@@ -98,6 +99,30 @@ class UniversalProgressContract(unittest.TestCase):
         self.assertEqual(view["execution_id"], "ci-abc")
         self.assertEqual([item["state"] for item in view["units"]], ["passed", "running"])
         self.assertEqual(view["totals"]["state"], "running")
+
+    def test_regression_snapshot_carries_the_same_versioned_dashboard_inventory(self):
+        ids = [f"tests.test_x.Case.test_{index}" for index in range(7)]
+        inventory = regress.make_inventory("python-full", [{
+            "command": "python3 -m unittest tests.test_x",
+            "collection_state": "collected", "fallback_reason": None,
+            "test_count": len(ids), "test_ids": ids,
+        }])
+        normalized = progress.start(
+            self.root, run_id="run-1", source="regression", label="Full", units=[]
+        )
+        state = {
+            "execution_id": normalized["execution_id"], "commands": [], "planned_commands": [],
+            "totals": {"total": 7, "done": 0, "passed": 0, "failed": 0,
+                       "errors": 0, "skipped": 0},
+            "finished_at": None, "exit_code": None, "inventory": inventory,
+        }
+        regress._write(self.root, state)
+        view = progress.read(self.root, execution_id=normalized["execution_id"])
+        self.assertEqual(view["inventory"]["schema_version"], 1)
+        self.assertEqual(view["inventory_id"], inventory["inventory_id"])
+        self.assertEqual(view["inventory_test_count"], 7)
+        dashboard_inventory = regress.read_inventory(self.root, view="dashboard")
+        self.assertEqual(dashboard_inventory["test_ids"], ids)
 
     def test_persisted_labels_are_bounded_and_secret_safe(self):
         snapshot = progress.start(
