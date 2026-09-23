@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_progress as test_progress  # noqa: E402
 import handsoff_supervisor as supervisor  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
@@ -286,6 +287,45 @@ def _regression_progress(root: Path, request: dict | None) -> dict | None:
     return payload
 
 
+def _test_progress(root: Path, status: dict, events: list[dict], request: dict | None,
+                   ci: dict | None, legacy_regression: dict | None = None) -> dict | None:
+    """Choose the newest exact live execution across local checks and CI."""
+    run_id = lib.feature_hash(status, events)
+    local = test_progress.read(root, run_id=run_id)
+    if local and local.get("source") == "regression":
+        if not isinstance(request, dict) \
+                or local.get("request_id") != request.get("request_id") \
+                or local.get("command_sha256") != request.get("command_sha256"):
+            local = None
+    external = test_progress.from_ci(run_id, ci) if isinstance(ci, dict) else None
+    legacy = None
+    if isinstance(legacy_regression, dict):
+        legacy_payload = dict(legacy_regression)
+        if not legacy_payload.get("heartbeat_at"):
+            try:
+                legacy_payload["heartbeat_at"] = datetime.fromtimestamp(
+                    (root / ".handsoff-regression.json").stat().st_mtime,
+                    timezone.utc,
+                ).isoformat()
+            except OSError:
+                pass
+        legacy = test_progress.from_legacy_regression(run_id, legacy_payload)
+    candidates = [item for item in (local, legacy, external) if item]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: str(item.get("started_at") or ""))
+
+
+def _legacy_regression_fresh(root: Path) -> bool:
+    path = root / ".handsoff-regression.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["heartbeat_at"] = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except (OSError, ValueError):
+        return False
+    return test_progress.from_legacy_regression("sse-freshness", payload) is not None
+
+
 def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
     """Return a cheap, lock-consistent fingerprint of dashboard inputs.
 
@@ -313,6 +353,7 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 lib.operations_path(root),
                 root / lib.PREFLIGHT_FILE,
                 root / ".handsoff-regression.json",
+                root / test_progress.PROGRESS_FILE,
                 root / tranche.PROPOSAL_FILE,
             ]
         except lib.HandsoffError:
@@ -325,6 +366,11 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 signature.append((str(path), stat.st_mtime_ns, stat.st_size))
             except OSError:
                 signature.append((str(path), -1, -1))
+        # Freshness itself is observable state. This flips when a silent
+        # execution reaches 30 seconds (or a terminal summary reaches ten
+        # minutes), so SSE invalidates without requiring another file write.
+        signature.append(("__test_progress_fresh__", 1 if test_progress.read(root) else 0, 0))
+        signature.append(("__legacy_regression_fresh__", 1 if _legacy_regression_fresh(root) else 0, 0))
         return tuple(signature)
 
 
@@ -1140,9 +1186,12 @@ def build_snapshot(root: Path) -> dict:
     except (lib.HandsoffError, OSError) as exc:
         ci = {**(status.get("ci") or {}), "checks": [], "progress": None, "elapsed_seconds": None,
               "note": f"CI view unavailable: {exc}"} if isinstance(status.get("ci"), dict) else None
+    universal_progress = _test_progress(root, status, events, current_regression or last_regression,
+                                        ci, regression_progress)
     return {
         "initialized": True,
         "ci": ci,
+        "test_progress": universal_progress,
         "generated_at": generated_at,
         "root": str(root),
         "engine": engine_identity,

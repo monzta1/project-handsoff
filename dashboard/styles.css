@@ -318,7 +318,8 @@ body.input-is-required .decisions-clear { display: none; }
 .regression-progress-workers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; margin-top: 12px; }
 .regression-worker { padding: 10px 11px; border-left: 3px solid rgba(95, 211, 255, .35); border-radius: 7px; background: rgba(255, 255, 255, .035); }
 .regression-worker.is-running { border-left-color: var(--cyan); }
-.regression-worker.is-failed { border-left-color: var(--red); }
+.regression-worker.is-passed { border-left-color: var(--green); }
+.regression-worker.is-failed, .regression-worker.is-timed_out, .regression-worker.is-cancelled { border-left-color: var(--red); }
 .regression-worker strong, .regression-worker small { display: block; }
 .regression-worker strong { color: #eefaff; font: 700 14px/1.3 var(--mono); }
 .regression-worker small { margin-top: 4px; color: var(--muted); font: 13px/1.35 var(--mono); overflow-wrap: anywhere; }

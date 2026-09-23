@@ -35,6 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_progress as test_progress  # noqa: E402
 
 PROGRESS_FILE = ".handsoff-regression.json"
 UNITTEST_LINE = re.compile(r"^(?P<test>test\w*) \((?P<where>[\w.]+)\)(?: \[[^\]]*\])? \.\.\. (?P<result>ok|FAIL|ERROR|skipped.*|expected failure|unexpected success)$")
@@ -116,6 +117,70 @@ def _now() -> str:
 
 def _write(root: Path, state: dict) -> None:
     lib.atomic_write_json(progress_path(root), state)
+    _publish_normalized(root, state)
+
+
+def _publish_normalized(root: Path, state: dict) -> None:
+    execution_id = state.get("execution_id")
+    if not isinstance(execution_id, str):
+        return
+    snapshot = test_progress.read(root, execution_id=execution_id)
+    if snapshot is None:
+        return
+    units = []
+    for command in state.get("commands") or []:
+        for shard in command.get("shards") or []:
+            if shard.get("finished_at"):
+                code = shard.get("exit_code")
+                unit_state = "timed_out" if shard.get("timed_out") else ("passed" if code == 0 else "failed")
+            elif shard.get("started_at"):
+                unit_state = "running"
+            else:
+                unit_state = "queued"
+            total = shard.get("test_count") if isinstance(shard.get("test_count"), int) else None
+            done = max(int(shard.get("done") or 0), 0)
+            try:
+                began = datetime.fromisoformat(str(shard.get("started_at")).replace("Z", "+00:00"))
+                ended = datetime.fromisoformat(str(shard.get("finished_at") or _now()).replace("Z", "+00:00"))
+                elapsed = max(round((ended - began).total_seconds(), 3), 0)
+            except (TypeError, ValueError):
+                elapsed = None
+            units.append({
+                "index": len(units) + 1,
+                "label": str(shard.get("label") or f"Worker {len(units) + 1}")[:240],
+                "state": unit_state,
+                "total": total,
+                "done": done,
+                "progress": min(done / total, 1.0) if total else None,
+                "elapsed_seconds": elapsed,
+                "result": None if not shard.get("finished_at") else f"exit {shard.get('exit_code')}",
+            })
+    planned = list(state.get("planned_commands") or [])
+    for command in planned[len(state.get("commands") or []):]:
+        units.append({"index": len(units) + 1, "label": str(command)[:240], "state": "queued",
+                      "total": None, "done": 0, "progress": None,
+                      "elapsed_seconds": 0.0, "result": None})
+    counts = test_progress.aggregate_units(units)
+    legacy = state.get("totals") or {}
+    counts.update({
+        "total": legacy.get("total") if len(state.get("commands") or []) == len(planned) else None,
+        "done": int(legacy.get("done") or 0),
+        "passed_tests": int(legacy.get("passed") or 0),
+        "failed_tests": int(legacy.get("failed") or 0),
+        "error_tests": int(legacy.get("errors") or 0),
+        "skipped_tests": int(legacy.get("skipped") or 0),
+    })
+    if state.get("finished_at"):
+        counts["state"] = "timed_out" if any(u["state"] == "timed_out" for u in units) \
+            else ("failed" if state.get("exit_code") else "passed")
+    snapshot["state"] = counts["state"]
+    snapshot["totals"] = counts
+    snapshot["unit_count"] = len(units)
+    snapshot["units"] = units[:test_progress.MAX_VISIBLE_UNITS]
+    if state.get("finished_at"):
+        snapshot["finished_at"] = state["finished_at"]
+        snapshot["result"] = f"exit {state.get('exit_code')}"
+    test_progress.write(root, snapshot, expected_execution_id=execution_id)
 
 
 def _unittest_names(argv: list[str]) -> list[str]:
@@ -343,18 +408,42 @@ def _totals(state: dict) -> dict:
 def run_battery_results(root: Path, label: str, commands: list[str], *, timeout: int,
                         request_id: str | None = None, command_sha256: str | None = None,
                         max_shards: int = DEFAULT_SHARDS) -> list[dict]:
+    try:
+        cfg = lib.load_config(root)
+        run_id = lib.feature_hash(lib.load_unique_json(lib.status_path(root, cfg)), lib.read_events(root, cfg))
+    except (lib.HandsoffError, OSError):
+        run_id = hashlib.sha256(str(Path(root).resolve()).encode("utf-8")).hexdigest()
+    approved_hash = command_sha256 or lib.command_sha256(commands)
+    normalized = test_progress.start(
+        root, run_id=run_id, source="regression", label=label,
+        units=[f"Command {index}" for index in range(1, len(commands) + 1)],
+        request_id=request_id, command_hash=approved_hash,
+    )
     state = {"label": label, "started_at": _now(), "finished_at": None, "exit_code": None,
              "commands": [], "current_command": None, "totals": {}, "root": str(root),
-             "request_id": request_id, "command_sha256": command_sha256,
-             "worker_limit": max_shards}
+             "request_id": request_id, "command_sha256": approved_hash,
+             "execution_id": normalized["execution_id"], "run_id": run_id,
+             "planned_commands": list(commands), "worker_limit": max_shards}
+    heartbeat_stop = threading.Event()
+
+    def keep_alive() -> None:
+        while not heartbeat_stop.wait(test_progress.HEARTBEAT_SECONDS):
+            test_progress.heartbeat(root, normalized["execution_id"])
+
+    heartbeat_thread = threading.Thread(target=keep_alive, name="handsoff-regression-heartbeat", daemon=True)
+    heartbeat_thread.start()
     _write(root, state)
-    results = [run_command(root, command, state, timeout=timeout, command_index=index,
-                           max_shards=max_shards) for index, command in enumerate(commands, 1)]
-    worst = next((result["exit_code"] for result in results if result["exit_code"] != 0), 0)
-    state["finished_at"] = _now()
-    state["exit_code"] = worst
-    state["current_command"] = None
-    _write(root, state)
+    try:
+        results = [run_command(root, command, state, timeout=timeout, command_index=index,
+                               max_shards=max_shards) for index, command in enumerate(commands, 1)]
+        worst = next((result["exit_code"] for result in results if result["exit_code"] != 0), 0)
+        state["finished_at"] = _now()
+        state["exit_code"] = worst
+        state["current_command"] = None
+        _write(root, state)
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
     return results
 
 
