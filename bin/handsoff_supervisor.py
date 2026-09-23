@@ -28,6 +28,7 @@ import handsoff_lib as lib  # noqa: E402
 import handsoff_close_transaction as close_transaction  # noqa: E402
 import handsoff_regress as regress  # noqa: E402
 import handsoff_release_runtime as release_runtime  # noqa: E402
+import handsoff_runtime_control as runtime_control  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
 # One inventory for the command line, broker, and Mission Control. A command
@@ -100,7 +101,23 @@ OPERATION_REGISTRY = {
     "run-reopen": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "advance": {"class": "agent-only", "surface": "phase-rail"},
     "deployment-gate": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "monitor-poll": {"class": "automatic", "surface": "live-status"},
+    "evidence-refresh-plan": {"class": "diagnostic", "surface": "verification-list"},
+    "performance-status": {"class": "diagnostic", "surface": "metrics-panel"},
+    "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
 }
+
+RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
+MONITOR_RECORD = "monitor.json"
+PERFORMANCE_RECORD = "performance.json"
+EVIDENCE_AUDIT_RECORD = "evidence-audit.json"
+PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
+    "status", "validate", "verify-log", "doctor", "dashboard", "design-timing",
+    "monitor-poll", "evidence-refresh-plan", "performance-status",
+})
+PERFORMANCE_PAUSE_COMMANDS = frozenset({
+    "performance-resume", "regression-cancel", "run-close",
+})
 
 
 def _load(root: Path, cfg: dict):
@@ -120,6 +137,164 @@ def _load_all(root: Path, cfg: dict):
     status, acceptance = _load(root, cfg)
     verifications, verification_problems = lib.load_verifications(root, cfg)
     return status, acceptance, verifications, verification_problems
+
+
+def _runtime_path(root: Path, name: str) -> Path:
+    return root / RUNTIME_CONTROL_DIR / name
+
+
+def _runtime_write(root: Path, name: str, payload: dict) -> None:
+    path = _runtime_path(root, name)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lib.atomic_write_json(path, payload)
+
+
+def _runtime_read(root: Path, name: str, schema: str) -> dict | None:
+    path = _runtime_path(root, name)
+    if not path.exists():
+        return None
+    access = runtime_control.load_versioned_record(
+        lib.load_unique_json(path), expected_schema=schema, for_mutation=True,
+    )
+    if access.migrated:
+        _runtime_write(root, name, access.record)
+    return access.record
+
+
+def _runtime_run_id(root: Path, events: list[dict]) -> str:
+    seed = next((event.get("hash") for event in events if isinstance(event.get("hash"), str)), None)
+    seed = seed or hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()
+    return f"run-{seed[:32]}"
+
+
+def _event_datetime(value: object, fallback: datetime) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _sync_performance_holds(history: dict, events: list[dict]) -> dict:
+    """Import persisted human pauses once; concurrent background work still counts."""
+    updated = deepcopy(history)
+    episode = updated["episodes"][-1]
+    episode_start = _event_datetime(episode["started_at"], datetime.now(timezone.utc))
+    existing = {item["hold_id"] for item in episode["holds"]}
+    open_holds: list[tuple[str, datetime, str]] = []
+    completed: list[dict] = []
+    for index, event in enumerate(events):
+        kind = event.get("kind")
+        at = _event_datetime(event.get("at"), episode_start)
+        if at < episode_start:
+            continue
+        if kind == "human_pause_started":
+            hold_id = f"pilot-{str(event.get('hash') or index)[:64]}"
+            open_holds.append((hold_id, at, runtime_control.content_hash({
+                "kind": kind, "at": at.isoformat(), "by": event.get("by"),
+            })))
+        elif kind == "human_pause_ended" and open_holds:
+            hold_id, started, evidence_hash = open_holds.pop(0)
+            completed.append({"hold_id": hold_id, "kind": "pilot", "started_at": started.isoformat(),
+                              "ended_at": at.isoformat(), "evidence_hash": evidence_hash})
+    for hold_id, started, evidence_hash in open_holds:
+        completed.append({"hold_id": hold_id, "kind": "pilot", "started_at": started.isoformat(),
+                          "ended_at": None, "evidence_hash": evidence_hash})
+    episode["holds"].extend(item for item in completed if item["hold_id"] not in existing)
+    runtime_control.validate_performance_history(updated)
+    return updated
+
+
+def refresh_performance_state(
+    root: Path,
+    *,
+    status: dict | None = None,
+    events: list[dict] | None = None,
+    metrics: dict | None = None,
+    now: datetime | None = None,
+    persist: bool = True,
+) -> dict:
+    """Refresh durable 90/120-minute state and return content-free telemetry."""
+    root = Path(root)
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    cfg = lib.load_config(root)
+    status = status or lib.load_unique_json(lib.status_path(root, cfg))
+    events = events if events is not None else lib.read_events(root, cfg)
+    run_id = _runtime_run_id(root, events)
+    history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
+    if history is None or history.get("run_id") != run_id:
+        started = _event_datetime(events[0].get("at") if events else status.get("updated_at"), now)
+        history = runtime_control.new_performance_history(run_id, "episode-1", now=min(started, now))
+    history = _sync_performance_holds(history, events)
+    live_sessions = [
+        {"operation_id": session_id, "kind": "agent", "location": "local",
+         "cancellable": True, "bounded": True, "state": "running"}
+        for session_id, session in (status.get("agent_sessions") or {}).items()
+        if isinstance(session, dict) and session.get("state") in getattr(lib, "AGENT_SESSION_LIVE_STATES", set())
+    ]
+    history, decision = runtime_control.transition_performance(history, now=now, in_flight=live_sessions)
+    if persist:
+        _runtime_write(root, PERFORMANCE_RECORD, history)
+    episode = history["episodes"][-1]
+    active_seconds = runtime_control.episode_active_seconds(episode, now=now)
+    progress = max(0, min(100, int(float(status.get("progress", 0) or 0))))
+    forecast_total = (active_seconds * 100 / progress) if progress else None
+    forecast_remaining = max(0.0, forecast_total - active_seconds) if forecast_total is not None else None
+    phase_seconds = (metrics or {}).get("phase_seconds") or {}
+    bottleneck = None
+    if phase_seconds:
+        phase, seconds = max(phase_seconds.items(), key=lambda item: float(item[1] or 0))
+        bottleneck = {"phase": str(phase), "seconds": float(seconds or 0)}
+    return {
+        "schema": "handsoff.performance_view", "version": 1,
+        "run_id": run_id, "episode_id": episode["episode_id"], "state": episode["state"],
+        "overall_percent": progress, "active_seconds": active_seconds,
+        "warning_seconds": 90 * 60, "pause_seconds": 120 * 60,
+        "warning_at": episode["warning_at"], "paused_at": episode["paused_at"],
+        "block_new_work": decision["block_new_work"], "transition": decision["action"],
+        "forecast_total_seconds": forecast_total, "forecast_remaining_seconds": forecast_remaining,
+        "forecast_variance_seconds": (forecast_total - 120 * 60) if forecast_total is not None else None,
+        "bottleneck": bottleneck, "breaches": history["breaches"],
+    }
+
+
+def performance_mutation_refusal(root: Path, operation: str) -> str | None:
+    """Return the deterministic pause refusal used by CLI and dashboard launchers."""
+    try:
+        view = refresh_performance_state(root)
+    except (lib.HandsoffError, OSError):
+        return None
+    if not view["block_new_work"]:
+        return None
+    if operation in PERFORMANCE_READ_ONLY_COMMANDS or operation in PERFORMANCE_PAUSE_COMMANDS:
+        return None
+    return (f"{operation} is blocked: active run time reached 120 minutes and the run is "
+            "paused_for_performance_review; record an explicit performance-resume decision")
+
+
+def _runtime_snapshot(status: dict, events: list[dict], performance: dict) -> dict:
+    terminal = status.get("status") == "complete" and int(status.get("progress", 0) or 0) >= 100
+    live = [item for item in (status.get("agent_sessions") or {}).values()
+            if isinstance(item, dict) and item.get("state") in getattr(lib, "AGENT_SESSION_LIVE_STATES", set())]
+    failures = [item for item in (status.get("agent_failures") or {}).values() if isinstance(item, dict)]
+    regressions = status.get("regression_requests") or []
+    gate = "performance_pause" if performance["block_new_work"] else (
+        "regression" if any(item.get("state") in {"accepted", "launched"} for item in regressions if isinstance(item, dict)) else "none"
+    )
+    worker_state = "healthy" if live else ("failed" if failures else "quiet")
+    if terminal:
+        worker_state = "none"
+    return {
+        "schema": "handsoff.run_snapshot", "version": 1, "run_id": performance["run_id"],
+        "state": "completed" if terminal else ("blocked" if status.get("status") == "blocked" else "in_progress"),
+        "percent": performance["overall_percent"], "verified_complete": terminal, "gate": gate,
+        "worker_state": worker_state, "failure_category": failures[-1].get("category") if failures else None,
+        "recovery_attempts": len(status.get("recovery_attempts") or []),
+        "escalation_recorded": bool(status.get("escalation")),
+        "result_adoptable": any(isinstance(item.get("result"), dict) for item in failures),
+    }
 
 
 def _criterion(acceptance: dict, criterion_id: str) -> dict | None:
@@ -4899,6 +5074,96 @@ def cmd_run_reopen(args) -> int:
     return 0
 
 
+def cmd_performance_status(args) -> int:
+    root = lib.resolve_root(args.root)
+    with lib.project_lock(root):
+        print(json.dumps(refresh_performance_state(root), indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_performance_resume(args) -> int:
+    root = lib.resolve_root(args.root)
+    with lib.project_lock(root):
+        history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
+        if history is None:
+            raise lib.HandsoffError("no performance episode exists to resume")
+        at = datetime.now(timezone.utc)
+        decision = {
+            "decision_id": f"resume-{uuid.uuid4().hex}", "action": "resume", "actor": args.by,
+            "reason": args.reason, "evidence_hash": args.evidence_hash, "at": at.isoformat(),
+        }
+        resumed = runtime_control.resume_performance(
+            history, decision, f"episode-{len(history['episodes']) + 1}",
+        )
+        _runtime_write(root, PERFORMANCE_RECORD, resumed)
+    print("PERFORMANCE_RESUMED")
+    return 0
+
+
+def cmd_monitor_poll(args) -> int:
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    now = datetime.now(timezone.utc)
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        events = lib.read_events(root, cfg)
+        performance = refresh_performance_state(root, status=status, events=events, now=now)
+        record = _runtime_read(root, MONITOR_RECORD, "handsoff.monitor")
+        if record is None or record.get("run_id") != performance["run_id"]:
+            record = runtime_control.new_monitor(performance["run_id"], args.owner, now=now,
+                                                 lease_seconds=args.lease_seconds)
+        else:
+            record = runtime_control.claim_monitor(
+                record, args.owner, now=now, lease_seconds=args.lease_seconds,
+                expected_epoch=record["lease_epoch"], expected_cursor=record["cursor"],
+            )
+        cursor = len(events)
+        if cursor > record["cursor"]:
+            record = runtime_control.advance_monitor_cursor(
+                record, owner_instance=args.owner, lease_epoch=record["lease_epoch"],
+                expected_cursor=record["cursor"], new_cursor=cursor, now=now,
+            )
+        snapshot = _runtime_snapshot(status, events, performance)
+        policy = {"same_task_retry_cap": 2, "equivalent_quota_fallback": True,
+                  "safe_result_adoption": True}
+        decision = runtime_control.decide_monitor_action(snapshot, policy)
+        if decision["action"] == "complete_monitor":
+            record = runtime_control.finish_monitor(
+                record, owner_instance=args.owner, lease_epoch=record["lease_epoch"],
+                expected_cursor=record["cursor"], now=now,
+            )
+        _runtime_write(root, MONITOR_RECORD, record)
+    print(json.dumps({"monitor": record, "decision": decision, "performance": performance}, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_evidence_refresh_plan(args) -> int:
+    root = lib.resolve_root(args.root)
+    def read_bounded(path_text: str) -> dict | list:
+        path = Path(path_text)
+        if not path.is_absolute():
+            path = root / path
+        if path.stat().st_size > 1_000_000:
+            raise lib.HandsoffError(f"runtime-control input is too large: {path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+    mapping = read_bounded(args.map)
+    changes = read_bounded(args.changes)
+    hashes = read_bounded(args.hashes)
+    regenerated = read_bounded(args.regenerated) if args.regenerated else None
+    assessment = runtime_control.assess_dependency_drift(
+        mapping, args.subject, changes, hashes, current_input_hash=args.input_hash,
+        regenerated_outputs=regenerated,
+    )
+    event = runtime_control.dependency_audit_event(assessment, at=datetime.now(timezone.utc))
+    with lib.project_lock(root):
+        path = _runtime_path(root, EVIDENCE_AUDIT_RECORD)
+        audit = lib.load_unique_json(path) if path.exists() else {"schema": 1, "events": []}
+        audit["events"] = (audit.get("events") or [])[-4095:] + [event]
+        _runtime_write(root, EVIDENCE_AUDIT_RECORD, audit)
+    print(json.dumps(assessment, indent=2, sort_keys=True))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Project Handsoff supervisor and gatekeeper")
     p.add_argument("--root", default=None, help="project root (default: nearest ancestor with handsoff.toml, else cwd)")
@@ -5385,6 +5650,24 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--by", default=None)
     gate.add_argument("--reason", default=None)
 
+    monitor = sub.add_parser("monitor-poll", help="model-free durable monitor poll")
+    monitor.add_argument("--owner", required=True)
+    monitor.add_argument("--lease-seconds", type=int, default=30)
+
+    evidence_refresh = sub.add_parser("evidence-refresh-plan", help="conservatively assess evidence drift")
+    evidence_refresh.add_argument("--map", required=True)
+    evidence_refresh.add_argument("--subject", required=True)
+    evidence_refresh.add_argument("--changes", required=True)
+    evidence_refresh.add_argument("--hashes", required=True)
+    evidence_refresh.add_argument("--input-hash", required=True)
+    evidence_refresh.add_argument("--regenerated")
+
+    sub.add_parser("performance-status", help="refresh and print the 90/120-minute run state")
+    performance_resume = sub.add_parser("performance-resume", help="open a new episode after explicit reevaluation")
+    performance_resume.add_argument("--by", required=True)
+    performance_resume.add_argument("--reason", required=True)
+    performance_resume.add_argument("--evidence-hash", required=True)
+
     return p
 
 
@@ -5452,8 +5735,17 @@ def main() -> int:
         "design-decline": cmd_design_decline,
         "run-close": cmd_run_close,
         "run-reopen": cmd_run_reopen,
+        "monitor-poll": cmd_monitor_poll,
+        "evidence-refresh-plan": cmd_evidence_refresh_plan,
+        "performance-status": cmd_performance_status,
+        "performance-resume": cmd_performance_resume,
     }
     try:
+        if args.command != "init":
+            root = lib.resolve_root(args.root)
+            refusal = performance_mutation_refusal(root, args.command)
+            if refusal:
+                raise lib.HandsoffError(refusal)
         return handlers[args.command](args)
     except lib.HandsoffError as e:
         print(f"SHIP_FEATURE_BLOCKED: {e}")

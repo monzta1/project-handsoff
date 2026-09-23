@@ -1603,6 +1603,7 @@ function renderClocks() {
 
 function renderMetrics(metrics) {
   if (!metrics) return;
+  const performance = state.performance || null;
   const currentPhase = String(state.phaseNumber ?? "");
   state.clocks = { startedAt: metrics.started_at || null, endedAt: metrics.ended_at || null, phaseStartedAt: metrics.phase_started_at || null,
     asleepSeconds: metrics.asleep_seconds || 0, phaseAsleepSeconds: (metrics.phase_asleep_seconds || {})[currentPhase] || 0 };
@@ -1619,6 +1620,14 @@ function renderMetrics(metrics) {
   $("metrics-reviews").textContent = `${metrics.design_review_attempts || 0} / ${metrics.implementation_review_attempts || 0}`;
   $("metrics-verification").textContent = metricDuration(metrics.verification_seconds);
   $("metrics-pilot-wait").textContent = metricDuration(metrics.pilot_wait_seconds);
+  if (performance) {
+    $("metrics-performance-state").textContent = performance.block_new_work ? "PAUSED · 120M" : String(performance.state || "active").replaceAll("_", " ").toUpperCase();
+    $("metrics-overall-percent").textContent = `${Number(performance.overall_percent || 0)}%`;
+    $("metrics-forecast").textContent = performance.forecast_remaining_seconds == null ? "n/a" : metricDuration(performance.forecast_remaining_seconds);
+    $("metrics-bottleneck").textContent = performance.bottleneck ? `Phase ${performance.bottleneck.phase} · ${metricDuration(performance.bottleneck.seconds)}` : "n/a";
+    const variance = performance.forecast_variance_seconds;
+    $("metrics-variance").textContent = variance == null ? "n/a" : `${variance > 0 ? "+" : ""}${metricDuration(Math.abs(variance))}`;
+  }
   const total = metrics.tokens?.total;
   // #184: until a session reports usage the token cell is one quiet line
   // naming who did not report, not a grid of UNKNOWN.
@@ -1817,6 +1826,7 @@ function render(snapshot) {
   renderAgentOutput(snapshot.runtime?.agent_output || null);
   renderOperation(snapshot.runtime?.operation || null);
   state.phaseNumber = snapshot.status?.phase_number ?? null;
+  state.performance = snapshot.performance || null;
   renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);

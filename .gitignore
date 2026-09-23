@@ -27,6 +27,7 @@ build/
 dist/
 *.egg-info/
 .handsoff-digests/
+.handsoff-runtime-control/
 .handsoff-regression.json
 web/dist/
 web/.dev.vars

@@ -1175,6 +1175,12 @@ def build_snapshot(root: Path) -> dict:
         item["to_profile"] = session_view(sessions.get(replacement.get("to_session_id")))
         replacements.append(item)
     metrics = lib.build_run_metrics(status, events, verifications)
+    try:
+        performance = supervisor.refresh_performance_state(
+            root, status=status, events=events, metrics=metrics,
+        )
+    except (lib.HandsoffError, OSError, ValueError) as exc:
+        performance = {"state": "unavailable", "block_new_work": False, "error": str(exc)}
     engine_identity, engine_error = _engine_identity(root)  # #185
     host = lib.host_identity(status, events)  # #186
     host_wait = lib.host_wait_view(status, events, cfg, pilot_input_required=bool(input_request.get("required")))  # #194
@@ -1241,6 +1247,7 @@ def build_snapshot(root: Path) -> dict:
             "operation": operation,
         },
         "metrics": metrics,
+        "performance": performance,
         "adaptive_routing": lib.adaptive_routing_snapshot(status, cfg, host=host, events=events),
         "model_policy": deepcopy(status.get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))),
         "launch_preflight": lib.launch_preflight_snapshot(root),
@@ -1347,6 +1354,9 @@ class DashboardServer(ThreadingHTTPServer):
         /api/launch-role passes "Mission Control Pilot"; watchdog and
         orchestration launches keep the runtime default (adapter-role) so
         a machine reviewer is never recorded under the Pilot's name."""
+        refusal = supervisor.performance_mutation_refusal(self.project_root, "launch_agent")
+        if refusal:
+            raise lib.HandsoffError(refusal)
         import handsoff_agent
         spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
         return handsoff_agent.execute_with_recovery(spec, actor=actor)
