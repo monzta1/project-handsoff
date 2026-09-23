@@ -251,7 +251,8 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertIn("python3 tests/live_doctor_smoke.py", live)
         smoke = (ROOT / "tests" / "live_release_smoke.py").read_text()
         for check in ("ls-remote", "merge-base", "releases/tags/", "sha256", "version\", \"--json\"",
-                      "zipfile", "manifest_sha256", "installed.read_bytes() == wheel.read(name)"):
+                      "zipfile", "manifest_sha256", "assets_url",
+                      "installed.read_bytes() == wheel.read(name)"):
             self.assertIn(check, smoke)
         self.assertNotIn('"fetch"', smoke, "the live release check must not mutate the checkout")
 

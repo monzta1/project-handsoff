@@ -104,8 +104,11 @@ assert ancestry, f"tag {tag} commit {tag_commit} is not on origin main {origin_m
 local_wheel = ROOT / "dist" / wheel_name
 assert local_wheel.is_file(), f"local wheel missing: {local_wheel} (python3 -m build --wheel)"
 release = fetch_json(f"https://api.github.com/repos/{slug}/releases/tags/{tag}", "op-ghrel", "get_release_by_tag")
-asset = next((item for item in release.get("assets", []) if item.get("name") == wheel_name), None)
-assert asset is not None, f"release {tag} has no asset {wheel_name}: {[a.get('name') for a in release.get('assets', [])]}"
+assets = release.get("assets", [])
+if not assets and release.get("assets_url"):
+    assets = fetch_json(release["assets_url"], "op-ghassets", "list_release_assets")
+asset = next((item for item in assets if item.get("name") == wheel_name), None)
+assert asset is not None, f"release {tag} has no asset {wheel_name}: {[a.get('name') for a in assets]}"
 expected_url = f"https://github.com/{slug}/releases/download/{tag}/{wheel_name}"
 assert asset["browser_download_url"] == expected_url, (asset["browser_download_url"], expected_url)
 published = fetch_bytes(expected_url, "op-ghdl", "download_release_asset", timeout=120)
