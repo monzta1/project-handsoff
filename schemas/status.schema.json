@@ -659,6 +659,10 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
           },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1
+          },
           "state": {
             "enum": [
               "awaiting_approval",
