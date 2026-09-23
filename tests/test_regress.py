@@ -104,6 +104,7 @@ class TestParseLine(unittest.TestCase):
 
 class TestRunBattery(unittest.TestCase):
     def setUp(self):
+        self.assertEqual(regress.DEFAULT_SHARDS, 5)
         self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-regress-"))
         (self.tmp / "tests").mkdir()
         (self.tmp / "tests" / "__init__.py").write_text("")

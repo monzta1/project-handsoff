@@ -17,6 +17,13 @@ test("Mission Control renders an explicit regression Accept/Decline gate", () =>
   assert.match(html, /id="regression-progress"/);
   assert.match(html, /id="regression-progress-bar"[^>]*role="progressbar"/);
   assert.match(html, /id="regression-progress-workers"/);
+  assert.match(html, /id="progress-dock"/);
+  assert.match(html, /id="progress-dock-overall-bar"[^>]*role="progressbar"/);
+  assert.match(html, /id="progress-dock-regression-bar"[^>]*role="progressbar"/);
+  const css = fs.readFileSync(path.join(root, "dashboard", "styles.css"), "utf8");
+  assert.match(css, /\.progress-dock \{ position: fixed;/);
+  assert.match(app, /progress-dock-overall-fill/);
+  assert.match(app, /progress-dock-regression-fill/);
   assert.match(app, /fetch\("\/api\/regression-decision"/);
   assert.match(app, /command_sha256/);
   for (const field of ["content_sha256", "commit_pair", "requested_by", "expires_at", "completed_at"]) {

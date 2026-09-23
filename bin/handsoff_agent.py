@@ -48,6 +48,8 @@ class LaunchSpec:
     project_root: str | None = None
     # Opt-in adaptive selection, committed atomically with the session.
     adaptive_routing: dict | None = None
+    # Deterministic pre-launch sizing facts; estimates are not usage.
+    budget_decision: dict | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -63,6 +65,7 @@ READER_DRAIN_SECONDS = 60
 MAX_REPLACEMENT_INPUT_BYTES = 64 * 1024
 MAX_SUPERVISOR_REQUESTS = 8
 FOLLOWUP_DESIGN_TOKEN_BUDGET = 16_000
+IMPLEMENTATION_REVIEW_PACKET_HEADING = "# Implementation review delta"
 
 # Managed coding roles need the repository shell, not the user's entire
 # interactive Codex plugin/app/tool catalogue.  Disabling those optional
@@ -146,6 +149,46 @@ def applicable_design_review_packet(root: Path, cfg: dict, role: str) -> dict | 
     return lib.applicable_design_review_packet(status, cfg, acceptance.get("criteria", []))
 
 
+def _working_tree_changed_files(root: Path) -> list[str]:
+    changed = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"], cwd=str(root),
+        text=True, capture_output=True, check=False,
+    )
+    return sorted({line[3:].strip() for line in changed.stdout.splitlines()
+                   if len(line) > 3 and line[3:].strip()})[:32]
+
+
+def implementation_review_delta_packet(root: Path, cfg: dict, role: str) -> dict | None:
+    """Bounded follow-up facts; never resend the unchanged implementation context."""
+    if role != "reviewer":
+        return None
+    try:
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        acceptance = lib.load_unique_json(lib.acceptance_path(root, cfg))
+    except (lib.HandsoffError, OSError, ValueError):
+        return None
+    attempts = [item for item in (status.get("review_attempts") or []) if isinstance(item, dict)]
+    previous = next((item for item in reversed(attempts)
+                     if item.get("disposition") == "changes_requested"), None)
+    if int(status.get("phase_number", 0) or 0) < 5 or previous is None:
+        return None
+    changed_files = _working_tree_changed_files(root)
+    records, _problems = lib.load_verifications(root, cfg)
+    closed_at = previous.get("closed_at") or ""
+    evidence = [record.get("run_id") for record in records
+                if isinstance(record, dict) and (record.get("at") or "") > closed_at
+                and isinstance(record.get("run_id"), str)][-32:]
+    criteria = [item.get("id") for item in (acceptance.get("criteria") or [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)][:64]
+    findings = [{"code": item.get("code"), "summary": str(item.get("summary") or "")[:240]}
+                for item in (previous.get("findings") or []) if isinstance(item, dict)][:16]
+    return {
+        "schema": 1, "previous_attempt": previous.get("attempt"),
+        "changed_files": changed_files, "unresolved_findings": findings,
+        "affected_criteria": criteria, "new_evidence": evidence,
+    }
+
+
 def build_role_input(root: Path, role: str, task: str, topic: str | None = None) -> str:
     """Build the in-memory role prompt without persisting the assigned task.
 
@@ -166,8 +209,20 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
         raise lib.HandsoffError(f"task exceeds {MAX_AGENT_TASK_BYTES} UTF-8 bytes")
     root = root.resolve()
     cfg = lib.load_config(root)
+    implementation_delta = implementation_review_delta_packet(root, cfg, role)
     briefing = lib.briefing_section(root, cfg, topic)
     text = f"{_role_prompt(root, role)}\n\n# Assigned task\n\n{task}"
+    if role in {"implementer", "reviewer"}:
+        status_file = lib.status_path(root, cfg)
+        acceptance_file = lib.acceptance_path(root, cfg)
+        if status_file.is_file() and acceptance_file.is_file():
+            contract = lib.reviewer_implementation_contract(
+                lib.load_unique_json(status_file), lib.load_unique_json(acceptance_file),
+            )
+            if contract is not None:
+                text = ("# Reviewer-approved implementation contract\n\n"
+                        + json.dumps(contract, sort_keys=True, separators=(",", ":"))
+                        + "\n\n" + text)
     if role == "reviewer":
         text = (f"# Project root (read-only)\n\n{root}: use git as `git -C {root} ...` and tests as `cd {root} && python3 -m unittest ...`. "
                 "Write only inside the current directory.\n\n" + text)
@@ -185,7 +240,7 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
                 "HANDSOFF_REVIEW_RESULT for the Reviewer).\n\n" + text)
     if role in DESIGN_EVIDENCE_ROLES:
         cfg = lib.load_config(root)
-        context = lib.managed_design_context(root, role)
+        context = None if implementation_delta is not None else lib.managed_design_context(root, role)
         if context is not None:
             context_json = json.dumps(context, sort_keys=True, separators=(",", ":"))
             text = f"# Managed design context\n\n{context_json}\n\n{text}"
@@ -193,6 +248,9 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
         if packet is not None:
             packet_json = json.dumps(packet, sort_keys=True, separators=(",", ":"))
             text = f"{DESIGN_REVIEW_PACKET_HEADING}\n\n{packet_json}\n\n{text}"
+        if implementation_delta is not None:
+            delta_json = json.dumps(implementation_delta, sort_keys=True, separators=(",", ":"))
+            text = f"{IMPLEMENTATION_REVIEW_PACKET_HEADING}\n\n{delta_json}\n\n{text}"
         evidence = lib.design_evidence_prompt_section(root, cfg)
         if evidence:
             text = f"{text}\n\n{evidence}"
@@ -359,6 +417,10 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             phase = int(run_status.get("phase_number") or 0) or None
         except (ValueError, TypeError):
             phase = None
+    effective_model_policy = lib.validate_model_policy(
+        (run_status or {}).get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))
+    )
+    route_cfg = {**cfg, "model_policy": effective_model_policy}
     rule = lib.evaluate_launch_rules(root, cfg, role=role, phase=phase, amendment=amendment)
     if rule is not None:
         raise lib.HandsoffError(lib.rule_refusal(rule))
@@ -379,10 +441,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     if lib.agent_profiles(cfg)[role]["adapter"] == lib.HOST_AGENT_ADAPTER:
         raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
     context = lib.managed_design_context(root, role) or {}
-    context["followup_design_token_budget"] = cfg.get("followup_design_token_budget") or max(40_000, len(build_role_input(root, role, task, topic).encode()) // 3 + 30_000)
-    token_budget = _effective_token_budget(cfg["agent_token_budgets"][role], role, context)
     _refuse_reviewer_launch_over_budget(root, cfg, role)
-    selection = _phase2_design_reviewer_selection(root, cfg, role, which=which)
+    selection = _phase2_design_reviewer_selection(root, route_cfg, role, which=which)
     if selection is not None:
         adapter = selection["adapter"]
         model = lib.validate_agent_model(selection["model"])
@@ -419,7 +479,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         available_adapters = [candidate for candidate in lib.SELECTABLE_AGENT_ADAPTERS
                               if cfg.get("adapters", {}).get(candidate) or which(candidate)]
         routed = lib.route_adaptive_profile(
-            cfg, required_capabilities=("text", "tool_use"),
+            route_cfg, required_capabilities=("text", "tool_use"),
             available_adapters=available_adapters, risk_class=effective_risk_class,
             mission_usage=lib.adaptive_usage(run_status),
             fleet_usage=lib.adaptive_fleet_usage(root, current_status=run_status),
@@ -438,30 +498,49 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             "reviewer_required": routed["reviewer_required"],
             "human_gate_required": routed["human_gate_required"],
         }
+    if not lib.model_policy_allows(effective_model_policy, adapter, model):
+        raise lib.HandsoffError(
+            f"managed launch refused: {adapter}/{model} is denied by the mission model policy"
+        )
     stdin = build_role_input(root, role, task, topic)
+    implementation_delta = implementation_review_delta_packet(root, cfg, role)
     packet = applicable_design_review_packet(root, cfg, role)
+    criteria_count = 0
+    try:
+        criteria_count = len(lib.load_unique_json(lib.acceptance_path(root, cfg)).get("criteria") or [])
+    except (lib.HandsoffError, OSError, ValueError):
+        pass
+    budget_decision = lib.plan_role_token_budget(
+        configured_ceiling=cfg["agent_token_budgets"][role], role=role,
+        risk_class=(run_status or {}).get("risk_class"),
+        packet_bytes=len(stdin.encode("utf-8")), criteria_count=criteria_count,
+        changed_files=(len(implementation_delta["changed_files"])
+                       if implementation_delta is not None else len(_working_tree_changed_files(root))),
+        followup=implementation_delta is not None,
+    )
+    token_budget = budget_decision["ceiling"]
     executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
         # An auto-detected adapter is by construction installed, so only a
         # recommended default or an explicit selection can land here.
         raise lib.HandsoffError(lib.unavailable_adapter_message(role, adapter, model, resolution_source))
     executable = str(Path(executable).resolve())
-    if not skip_preflight:
-        try:
-            preflight = json.loads((root / lib.PREFLIGHT_FILE).read_text(encoding="utf-8"))
-            item = preflight.get(adapter, {})
-            checked = datetime.fromisoformat(item.get("checked_at", "")).astimezone(timezone.utc)
-            if item.get("state") == "unreachable" and datetime.now(timezone.utc) - checked < timedelta(hours=24):
-                raise lib.HandsoffError(f"{adapter} pre-flight unreachable: {item.get('reason')}")
-        except FileNotFoundError:
-            pass
-
     scratch = _reviewer_scratch(root, adapter, role, create=not inspection)
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
         allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(cfg, root, which)
         argv = lib.claude_argv(executable, role, allowed, model)
+    if not skip_preflight and not inspection \
+            and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
+        preflight = lib.launch_preflight(
+            root, adapter=adapter, model=model, executable=executable,
+            argv=argv, cwd=str(scratch or root),
+        )
+        if preflight["state"] != "ready":
+            raise lib.HandsoffError(
+                f"{adapter}/{model} launch preflight blocked ({preflight['category']}): {preflight['reason']}"
+            )
 
     return LaunchSpec(
         role=role,
@@ -479,11 +558,12 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         env_overrides={"TMPDIR": str(scratch)} if scratch else None,
         project_root=str(root),
         adaptive_routing=adaptive_routing,
+        budget_decision=budget_decision,
     )
 
 
 def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
-                              *, which=shutil.which) -> LaunchSpec:
+                              *, which=shutil.which, skip_preflight: bool = False) -> LaunchSpec:
     """Build a launch only from the exact fallback profile reserved by the host."""
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES or not isinstance(profile, dict) \
@@ -500,11 +580,17 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     model = lib.validate_agent_model(profile.get("model"))
     if adapter not in lib.SELECTABLE_AGENT_ADAPTERS:
         raise lib.HandsoffError("reserved fallback adapter is invalid")
+    cfg = lib.load_config(root)
+    status_file = lib.status_path(root, cfg)
+    status = lib.load_unique_json(status_file) if status_file.is_file() else {}
+    policy = status.get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))
+    if not lib.model_policy_allows(policy, adapter, model):
+        raise lib.HandsoffError(f"reserved fallback {adapter}/{model} is denied by the mission model policy")
     executable = which(adapter)
     if not executable:
         raise lib.HandsoffError(f"reserved {adapter} executable is no longer available")
     executable = str(Path(executable).resolve())
-    configured_budget = lib.load_config(root)["agent_token_budgets"][role]
+    configured_budget = cfg["agent_token_budgets"][role]
     token_budget = _effective_token_budget(
         configured_budget, role, lib.managed_design_context(root, role),
     )
@@ -512,13 +598,32 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
     else:
-        allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(lib.load_config(root), root)
+        allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(cfg, root)
         argv = lib.claude_argv(executable, role, allowed, model)
+    budget_decision = lib.plan_role_token_budget(
+        configured_ceiling=configured_budget, role=role,
+        risk_class=status.get("risk_class"), packet_bytes=len(task.encode("utf-8")),
+        followup=True,
+    )
+    token_budget = budget_decision["ceiling"]
+    if adapter == "codex":
+        argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
+    if not skip_preflight and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
+        preflight = lib.launch_preflight(
+            root, adapter=adapter, model=model, executable=executable,
+            argv=argv, cwd=str(scratch or root),
+        )
+        if preflight["state"] != "ready":
+            raise lib.HandsoffError(
+                f"reserved fallback {adapter}/{model} preflight blocked "
+                f"({preflight['category']}): {preflight['reason']}"
+            )
     return LaunchSpec(
         role, adapter, model, tuple(argv), str(scratch or root.resolve()), task, "fallback",
         token_budget=token_budget,
         env_overrides={"TMPDIR": str(scratch)} if scratch else None,
         project_root=str(root.resolve()),
+        budget_decision=budget_decision,
     )
 
 
@@ -905,6 +1010,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             id_factory=session_id_factory, packet_id=spec.packet_id, design_hash=spec.design_hash,
             tier=spec.tier, tier_reason=spec.tier_reason, amendment_id=spec.amendment_id,
             adaptive_routing=spec.adaptive_routing,
+            budget_decision=spec.budget_decision,
         )
     else:
         session = lib.claim_precreated_agent_session(
@@ -1496,36 +1602,32 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
                                       popen_factory=popen_factory)
             except AgentLaunchError as exc:
                 source_id = exc.session_id
+        prepared_spec = None
+
+        def preflight_replacement(proposed: dict) -> None:
+            nonlocal prepared_spec
+            safe_handoff = json.dumps(
+                proposed["handoff"], sort_keys=True, separators=(",", ":"),
+            )
+            completed = _completed_operations_section(root, source_id)
+            fallback_input = original_input + "\n\n# Trusted replacement handoff\n\n" + safe_handoff
+            if completed:
+                fallback_input += "\n\n" + completed
+            prepared_spec = build_profile_launch_spec(
+                root, proposed["role"], fallback_input,
+                proposed["selected_profile"], which=which,
+            )
+
         replacement = lib.reserve_agent_replacement(
             root, from_session_id=source_id, trigger=trigger,
             finding_id=quality_finding_id, which=which, snapshotter=snapshotter,
+            pre_reservation_check=preflight_replacement,
         )
         if replacement["action"] != "launch":
             raise lib.HandsoffError(f"agent replacement paused: {replacement['reason']}")
-        safe_handoff = json.dumps(replacement["handoff"], sort_keys=True, separators=(",", ":"))
-        completed = _completed_operations_section(root, source_id)
-        fallback_input = original_input + "\n\n# Trusted replacement handoff\n\n" + safe_handoff
-        if completed:
-            fallback_input += "\n\n" + completed
-        try:
-            current_spec = build_profile_launch_spec(
-                root, replacement["role"], fallback_input,
-                replacement["selected_profile"], which=which,
-            )
-        except lib.HandsoffError:
-            selected = replacement["selected_profile"]
-            lib.claim_precreated_agent_session(
-                root, replacement["to_session_id"], role=replacement["role"],
-                adapter=selected["adapter"], requested_model=selected["model"],
-            )
-            lib.transition_agent_session(
-                root, replacement["to_session_id"], "failed_to_start",
-                failure=lib.classify_runtime_failure(exit_code=-1),
-            )
-            source_id = replacement["to_session_id"]
-            trigger = "runtime_failure"
-            quality_finding_id = None
-            continue
+        if prepared_spec is None:
+            raise lib.HandsoffError("replacement reservation completed without an exact launch preflight")
+        current_spec = prepared_spec
         try:
             return execute_launch(
                 current_spec, timeout=timeout, popen_factory=popen_factory,

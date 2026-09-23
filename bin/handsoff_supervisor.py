@@ -375,6 +375,10 @@ def cmd_init(args) -> int:
             "events": [],
         }
         status["risk_class"] = risk_class
+        # Routing constraints are a run fact, not a mutable preference. A
+        # later settings edit cannot silently re-authorize a denied vendor
+        # or model for this mission.
+        status["model_policy"] = deepcopy(cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))
         if source_design is not None:
             status["design_review"] = source_design.get("design_review")
             status["design_approved"] = source_design.get("design_approved")

@@ -102,6 +102,11 @@
               <div class="routing-fact"><dt>OUTCOME</dt><dd><b id="routing-outcome">Pending</b><small>ROUTE STATE</small></dd></div>
             </dl>
           </div>
+          <div class="routing-policy-strip" aria-label="Routing constraints and launch readiness">
+            <div><span>MISSION CONSTRAINTS</span><strong id="routing-policy">ALL CONFIGURED PROVIDERS</strong></div>
+            <div><span>EXACT-LAUNCH PREFLIGHT</span><strong id="routing-preflight">NOT CHECKED</strong><small id="routing-preflight-detail"></small></div>
+            <div><span>AVOIDED RETRIES</span><strong id="routing-avoided-retries">0</strong></div>
+          </div>
           <section id="routing-assignments" class="routing-assignments hidden" aria-label="Agent model assignments">
             <div class="routing-assignments-head"><div><span>MODEL HANDOFF JOURNEY</span><small>CHRONOLOGICAL · LEDGER VERIFIED</small></div><strong id="routing-journey-summary">0 LEGS</strong></div>
             <div id="routing-journey-map" class="routing-journey-map" aria-label="Complete model handoff route">
@@ -336,6 +341,16 @@
       </div>
     </main>
   </div>
+  <aside id="progress-dock" class="progress-dock hidden" aria-label="Always-visible mission progress" aria-live="polite">
+    <div class="progress-dock-block progress-dock-mission">
+      <div class="progress-dock-copy"><span>MISSION</span><strong><b id="progress-dock-overall">0</b>%</strong><small id="progress-dock-phase">Phase 1 of 8</small></div>
+      <div id="progress-dock-overall-bar" class="progress-dock-bar" role="progressbar" aria-label="Overall mission progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress-dock-overall-fill"></i></div>
+    </div>
+    <div id="progress-dock-regression" class="progress-dock-block progress-dock-regression hidden">
+      <div class="progress-dock-copy"><span>REGRESSION</span><strong id="progress-dock-regression-percent">0%</strong><small id="progress-dock-regression-detail">Preparing workers</small></div>
+      <div id="progress-dock-regression-bar" class="progress-dock-bar" role="progressbar" aria-label="Regression progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress-dock-regression-fill"></i></div>
+    </div>
+  </aside>
   <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
     <form id="settings-form">
       <header class="settings-head">

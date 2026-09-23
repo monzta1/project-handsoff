@@ -1,5 +1,6 @@
 """REQ-001/REQ-004: default adaptive routing reaches real launch/session paths."""
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -130,11 +131,14 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
         result = run(["init", "Recovery", "--risk-class", "irreversible"], cwd=self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         with mock.patch.object(agent.lib, "validate_runtime_integrity"), \
-                mock.patch.object(agent, "build_role_input", return_value="task"):
+                mock.patch.object(agent, "build_role_input", return_value="task"), \
+                mock.patch.object(agent.lib, "launch_preflight", return_value={"state": "ready"}) as preflight, \
+                mock.patch.dict(os.environ, {"HANDSOFF_SKIP_PREFLIGHT": ""}):
             spec = agent.build_profile_launch_spec(
                 self.tmp, "implementer", "task", {"adapter": "codex", "model": "reserved-model"},
                 which=lambda name: f"/opt/test/{name}",
             )
+        preflight.assert_called_once()
         self.assertEqual((spec.adapter, spec.model, spec.resolution_source),
                          ("codex", "reserved-model", "fallback"))
         self.assertIsNone(spec.adaptive_routing)

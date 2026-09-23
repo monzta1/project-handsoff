@@ -26,6 +26,8 @@ const state = {
   fallbackDraft: {},
   live: null,
   liveReceivedAt: null,
+  modelPolicy: null,
+  launchPreflight: null,
   agentOutputSession: null,
   agentOutputCursor: 0,
 };
@@ -128,7 +130,14 @@ function routingHandoff(previous, current) {
   return { kind: "continued", label: "NEXT MISSION LEG", detail: toAdapter };
 }
 
-function renderAdaptiveRouting(routing) {
+function routingModelLabel(item) {
+  if (item?.model) return item.model;
+  return item?.model_source === "host_runtime_unavailable"
+    ? "HOST VARIANT NOT EXPOSED"
+    : "UNREPORTED";
+}
+
+function renderAdaptiveRouting(routing, modelPolicy = state.modelPolicy, launchPreflight = state.launchPreflight) {
   const panel = $("adaptive-routing-panel");
   if (!panel) return;
   const view = adaptiveRoutingView(routing);
@@ -137,6 +146,17 @@ function renderAdaptiveRouting(routing) {
   $("routing-details")?.classList.toggle("hidden", !view.used);
   $("routing-assignments")?.classList.toggle("hidden", view.selections.length === 0);
   const set = (id, value) => { const element = $(id); if (element) element.textContent = value; };
+  const allowed = Array.isArray(modelPolicy?.allowed_adapters) ? modelPolicy.allowed_adapters : [];
+  const denied = Array.isArray(modelPolicy?.denied_models) ? modelPolicy.denied_models : [];
+  set("routing-policy", allowed.length
+    ? `${allowed.map((item) => String(item).toUpperCase()).join(" + ")}${denied.length ? ` · DENY ${denied.join(", ")}` : ""}`
+    : "ALL CONFIGURED PROVIDERS");
+  const incident = launchPreflight?.incident && typeof launchPreflight.incident === "object" ? launchPreflight.incident : null;
+  set("routing-preflight", String(launchPreflight?.state || "not_checked").replaceAll("_", " ").toUpperCase());
+  set("routing-preflight-detail", incident
+    ? `${incident.adapter}/${incident.model} · ${incident.category} · ${incident.reason}`
+    : "Exact adapter/model check runs before session creation");
+  set("routing-avoided-retries", String(Number(launchPreflight?.avoided_retries) || 0));
   set("routing-tier", view.tier || "—");
   set("routing-model", view.model || "—");
   set("routing-tokens", view.token_usage.total.toLocaleString());
@@ -165,8 +185,8 @@ function renderAdaptiveRouting(routing) {
         const mapStop = document.createElement("div");
         const mapTransfer = index > 0 ? routingHandoff(view.selections[index - 1], item) : null;
         mapStop.className = `routing-map-stop adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}${mapTransfer?.kind === "handoff" ? " is-handoff" : ""}`;
-        mapStop.setAttribute("aria-label", `Leg ${item.journey_index}, ${friendlyActor}, ${item.purpose}, ${item.model || "model not reported"}`);
-        mapStop.title = `${friendlyActor} · ${item.purpose} · ${item.model || "Not reported by provider"}`;
+        mapStop.setAttribute("aria-label", `Leg ${item.journey_index}, ${friendlyActor}, ${item.purpose}, ${routingModelLabel(item)}`);
+        mapStop.title = `${friendlyActor} · ${item.purpose} · ${routingModelLabel(item)}`;
         const mapLeg = document.createElement("span");
         mapLeg.className = "routing-map-leg";
         mapLeg.textContent = String(item.journey_index).padStart(2, "0");
@@ -179,7 +199,7 @@ function renderAdaptiveRouting(routing) {
         const mapProvider = document.createElement("strong");
         mapProvider.textContent = String(item.adapter || "unknown").toUpperCase();
         const mapModel = document.createElement("small");
-        mapModel.textContent = item.model || "UNREPORTED";
+        mapModel.textContent = routingModelLabel(item);
         if (mapTransfer?.kind === "handoff") {
           const marker = document.createElement("span");
           marker.className = "routing-map-transfer";
@@ -209,7 +229,7 @@ function renderAdaptiveRouting(routing) {
       }
       const row = document.createElement("article");
       row.className = `routing-selection adapter-${String(item.adapter || "unknown").toLowerCase()} state-${String(item.state || "unknown").replaceAll("_", "-")}`;
-      row.setAttribute("aria-label", `Journey leg ${item.journey_index}: ${friendlyActor}, ${item.purpose}, ${item.model || "model not reported"}, ${item.state}`);
+      row.setAttribute("aria-label", `Journey leg ${item.journey_index}: ${friendlyActor}, ${item.purpose}, ${routingModelLabel(item)}, ${item.state}`);
       const node = (className, label) => {
         const element = document.createElement("div");
         element.className = `routing-selection-node ${className}`;
@@ -253,7 +273,9 @@ function renderAdaptiveRouting(routing) {
       purpose.append(purposeName, phase);
       const model = node("routing-selection-model", "EXACT MODEL");
       const modelName = document.createElement("strong");
-      modelName.textContent = item.model || "Not reported by provider";
+      modelName.textContent = item.model || (item.model_source === "host_runtime_unavailable"
+        ? "Codex host · exact variant unavailable"
+        : "Not reported by provider");
       modelName.classList.toggle("is-unknown", !item.model);
       const modelDetail = document.createElement("small");
       const sourceLabels = {
@@ -261,6 +283,9 @@ function renderAdaptiveRouting(routing) {
         adaptive_selection: "exact adaptive selection",
         exact_request: "exact requested model",
         not_reported: `requested ${item.requested_model || "provider default"}`,
+        host_runtime_unavailable: item.model
+          ? "known model class · exact deployment variant not exposed"
+          : "host runtime does not expose an exact model identifier",
       };
       modelDetail.textContent = sourceLabels[item.model_source] || String(item.reason || "selected").replaceAll("_", " ");
       if (item.model_consistency === "matched") modelDetail.textContent += " · matches route";
@@ -270,6 +295,22 @@ function renderAdaptiveRouting(routing) {
         model.classList.add("is-mismatch");
       }
       model.append(modelName, modelDetail);
+      const budget = document.createElement("div");
+      budget.className = "routing-selection-budget";
+      const budgetFacts = [
+        ["BUDGET", item.budget_decision ? `${Number(item.budget_decision.ceiling).toLocaleString()} ceiling` : "host/configured"],
+        ["PACKET", item.budget_decision ? `${Number(item.budget_decision.packet_bytes).toLocaleString()} bytes` : "not metered"],
+        ["USAGE", item.usage?.source === "adapter" && Number.isFinite(Number(item.usage.tokens_total)) ? `${Number(item.usage.tokens_total).toLocaleString()} actual` : "not reported"],
+        ["COST", "not exposed"],
+      ];
+      for (const [labelText, valueText] of budgetFacts) {
+        const fact = document.createElement("span");
+        fact.textContent = labelText;
+        const value = document.createElement("b");
+        value.textContent = valueText;
+        fact.append(value);
+        budget.append(fact);
+      }
       const footer = document.createElement("div");
       footer.className = "routing-selection-footer";
       const tier = document.createElement("small");
@@ -282,7 +323,7 @@ function renderAdaptiveRouting(routing) {
       time.textContent = `${started || "TIME UNAVAILABLE"} → ${ended || (item.state === "running" || item.state === "launching" ? "IN FLIGHT" : "END UNRECORDED")}`;
       if (item.started_at || item.ended_at) time.title = `${item.started_at || "unknown start"} → ${item.ended_at || "in flight"}`;
       footer.append(tier, time);
-      row.append(top, identity, purpose, model, footer);
+      row.append(top, identity, purpose, model, budget, footer);
       selections.append(row);
     }
   }
@@ -607,12 +648,14 @@ function releasePlanText(plan) {
 
 function renderRegressionProgress(regression, request) {
   const panel = $("regression-progress");
+  const dock = $("progress-dock-regression");
   if (!panel) return;
   const progress = regression?.progress;
   const matches = progress && request
     && progress.request_id === request.request_id
     && progress.command_sha256 === request.command_sha256;
   panel.classList.toggle("hidden", !matches);
+  if (dock) dock.classList.toggle("hidden", !matches);
   if (!matches) return;
   const totals = progress.totals || {};
   const total = Number.isInteger(totals.total) ? totals.total : null;
@@ -641,6 +684,16 @@ function renderRegressionProgress(regression, request) {
   bar.setAttribute("aria-valuenow", String(percent));
   bar.setAttribute("aria-valuetext", total ? `${done} of ${total} tests` : `${done} tests completed`);
   $("regression-progress-fill").style.width = `${percent}%`;
+  if (dock) {
+    $("progress-dock-regression-percent").textContent = total ? `${percent}%` : String(done);
+    $("progress-dock-regression-detail").textContent = total
+      ? `${done} / ${total} tests · ${active.length || shards.length} worker${(active.length || shards.length) === 1 ? "" : "s"}`
+      : `${done} tests complete`;
+    const dockBar = $("progress-dock-regression-bar");
+    dockBar.setAttribute("aria-valuenow", String(percent));
+    dockBar.setAttribute("aria-valuetext", total ? `${done} of ${total} tests` : `${done} tests completed`);
+    $("progress-dock-regression-fill").style.width = `${percent}%`;
+  }
   $("regression-progress-workers").innerHTML = shards.map((shard) => {
     const bad = Number(shard.failed || 0) + Number(shard.errors || 0);
     const workerState = !shard.finished_at ? "running" : (shard.exit_code === 0 ? "passed" : "failed");
@@ -1731,6 +1784,7 @@ function render(snapshot) {
     document.body.classList.remove("input-is-required");
     document.title = "Handsoff // E.V.E. Mission Control";
     $("active-state").classList.add("hidden");
+    $("progress-dock")?.classList.add("hidden");
     $("empty-state").classList.remove("hidden");
     $("empty-message").textContent = snapshot.error || "No Mission Objective detected. Initialize a Ship Feature to begin.";
     renderOperatorActions([]);
@@ -1740,6 +1794,7 @@ function render(snapshot) {
 
   $("empty-state").classList.add("hidden");
   $("active-state").classList.remove("hidden");
+  $("progress-dock")?.classList.remove("hidden");
   const status = snapshot.status;
   state.lastRunStatus = status.status;
   document.body.classList.toggle("is-closed", status.status === "closed");
@@ -1749,6 +1804,8 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
+  state.modelPolicy = snapshot.model_policy || null;
+  state.launchPreflight = snapshot.launch_preflight || null;
   renderAdaptiveRouting(snapshot.adaptive_routing || null);
   renderCi(snapshot.ci || null);
   const consistency = snapshot.status?.consistency_errors || [];
@@ -1792,6 +1849,14 @@ function render(snapshot) {
   $("mission-state").textContent = String(status.status || "unknown").replaceAll("_", " ").toUpperCase();
   const complete = progress >= 100;
   $("progress-value").textContent = Math.round(progress);
+  $("progress-dock-overall").textContent = Math.round(progress);
+  $("progress-dock-phase").textContent = complete
+    ? "Mission complete"
+    : `Phase ${status.phase_number} of 8 · ${status.phase}`;
+  const dockOverallBar = $("progress-dock-overall-bar");
+  dockOverallBar.setAttribute("aria-valuenow", String(Math.round(progress)));
+  dockOverallBar.setAttribute("aria-valuetext", `${Math.round(progress)} percent complete`);
+  $("progress-dock-overall-fill").style.width = `${progress}%`;
   $("progress-ring").style.setProperty("--progress", `${progress * 3.6}deg`);
   $("progress-ring").classList.toggle("is-complete", complete);
   $("phase-kicker").textContent = complete ? "MISSION COMPLETE" : `PHASE ${status.phase_number} OF 8`;

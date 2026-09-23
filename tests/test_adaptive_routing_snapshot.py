@@ -80,6 +80,8 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
             "requested_model": "claude-haiku-4-5-20251001", "model_source": "adaptive_selection",
             "model_consistency": "pending_verification",
             "reason": "qualified_profile", "state": "completed",
+            "usage": {"tokens_in": 1000, "tokens_out": 500,
+                      "tokens_total": 1500, "source": "adapter"},
         }])
         schema = json.loads((ROOT / "schemas" / "snapshot.schema.json").read_text())
         self.assertEqual(validate(snapshot, schema), [])

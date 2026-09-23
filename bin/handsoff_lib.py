@@ -149,6 +149,11 @@ DEFAULT_AGENT_TOKEN_BUDGETS = {
     "reviewer": 80_000,
 }
 PREFLIGHT_FILE = ".handsoff-preflight.json"
+PREFLIGHT_SCHEMA = 2
+PREFLIGHT_SUCCESS_TTL_SECONDS = 900
+PREFLIGHT_FAILURE_TTL_SECONDS = 60
+MAX_PREFLIGHT_ENTRIES = 16
+MAX_PREFLIGHT_REASON = 220
 MIN_AGENT_TOKEN_BUDGET = 8_000
 #: The pre-flight probe's own rollout ceiling. It used to borrow the 8,000
 #: token floor, and inside a real project the reviewer-shaped prompt alone
@@ -324,6 +329,7 @@ ADAPTIVE_DEFAULT_RISK_POLICY = {
                       "human_gate_required": True, "irreversible": True},
 }
 ADAPTIVE_MODEL_CATALOG_SOURCE = "https://platform.claude.com/docs/en/models/overview"
+OPENAI_MODEL_CATALOG_SOURCE = "https://developers.openai.com/api/docs/guides/latest-model"
 ADAPTIVE_PROFILE_FIELDS = ("adapter", "model", "capabilities", "limits", "pricing", "source")
 ADAPTIVE_ESCALATION_TERMINAL_OUTCOMES = ("accepted", "rejected", "human_pause")
 ADAPTIVE_ESCALATION_QUESTION_STATES = ("open", "resolved", "withdrawn")
@@ -357,11 +363,27 @@ ADAPTIVE_DEFAULT_PROFILES = {
         "source": ADAPTIVE_MODEL_CATALOG_SOURCE,
     },
 }
+ADAPTIVE_OPENAI_PROFILES = {
+    "PREMIUM": {
+        "adapter": "codex", "model": "gpt-6-astra",
+        "capabilities": ["text", "vision", "tool_use", "extended_thinking"],
+        "limits": {"context_tokens": 272000, "output_tokens": 128000},
+        # ChatGPT-account Codex usage does not expose an API price. Empty
+        # means unknown, never free.
+        "pricing": {}, "source": OPENAI_MODEL_CATALOG_SOURCE,
+    },
+}
+DEFAULT_MODEL_POLICY = {
+    "allowed_adapters": ["codex", "claude"],
+    "denied_models": [],
+    "quota_substitution": True,
+}
 
 DEFAULT_CONFIG = {
     "adaptive_routing_profiles": deepcopy(ADAPTIVE_DEFAULT_PROFILES),
     "adaptive_routing_budgets": deepcopy(ADAPTIVE_DEFAULT_BUDGETS),
     "risk_policy": deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY),
+    "model_policy": deepcopy(DEFAULT_MODEL_POLICY),
     "logo": None,
     "status_file": "handsoff-status.json",
     "acceptance_file": "handsoff-acceptance.json",
@@ -479,7 +501,7 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # the tiered selection, otherwise exactly "primary" or "followup".
 AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id", "usage",
                                  "adaptive_routing",
-                                 "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
+                                 "budget_decision", "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
 #: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
 PROGRESS_STATES = ("done", "partial", "untouched")
 PROGRESS_CRITERION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -1250,19 +1272,21 @@ def load_config(root: Path) -> dict:
     routing_profiles = raw.get("routing_profiles", {})
     routing_budgets = raw.get("routing_budgets", {})
     risk_policy = raw.get("risk_policy", {})
+    model_policy = raw.get("model_policy", {})
     digest = raw.get("digest", {})
     briefing = raw.get("briefing")
     regressions = raw.get("regressions", [])
     tickets = raw.get("tickets", [])
     if not isinstance(digest, dict):
         raise HandsoffError("handsoff.toml: digest must be a table")
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy)):
+    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, model_policy)):
         raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, and risk_policy must be tables"
+            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, and model_policy must be tables"
         )
     cfg["adaptive_routing_profiles"] = validate_adaptive_routing_profiles(routing_profiles or ADAPTIVE_DEFAULT_PROFILES)
     cfg["adaptive_routing_budgets"] = validate_adaptive_routing_budgets(routing_budgets or ADAPTIVE_DEFAULT_BUDGETS)
     cfg["risk_policy"] = validate_adaptive_risk_policy(risk_policy or ADAPTIVE_DEFAULT_RISK_POLICY)
+    cfg["model_policy"] = validate_model_policy(model_policy or DEFAULT_MODEL_POLICY)
     if briefing is not None:
         if not isinstance(briefing, dict):
             raise HandsoffError("handsoff.toml: briefing must be a table")
@@ -1815,6 +1839,53 @@ def validate_agent_model(value: object) -> str:
     return value
 
 
+def validate_model_policy(value: object) -> dict:
+    """Validate hard mission routing constraints.
+
+    These constraints are filters, never preferences: a route that cannot
+    satisfy them pauses instead of silently selecting another model.
+    """
+    if not isinstance(value, dict):
+        raise HandsoffError("model_policy must be a table")
+    allowed_fields = {"allowed_adapters", "denied_models", "quota_substitution"}
+    extra = set(value) - allowed_fields
+    if extra:
+        raise HandsoffError("model_policy has unknown fields: " + ", ".join(sorted(extra)))
+    adapters = value.get("allowed_adapters", ["codex", "claude"])
+    if not isinstance(adapters, list) or not adapters or len(adapters) > 2 \
+            or any(adapter not in {"codex", "claude"} for adapter in adapters) \
+            or len(set(adapters)) != len(adapters):
+        raise HandsoffError("model_policy.allowed_adapters must be a unique non-empty subset of codex and claude")
+    denied = value.get("denied_models", [])
+    if not isinstance(denied, list) or len(denied) > 32:
+        raise HandsoffError("model_policy.denied_models must be an array of at most 32 model ids")
+    denied = [validate_agent_model(model) for model in denied]
+    if len(set(model.casefold() for model in denied)) != len(denied):
+        raise HandsoffError("model_policy.denied_models must be unique")
+    quota = value.get("quota_substitution", True)
+    if not isinstance(quota, bool):
+        raise HandsoffError("model_policy.quota_substitution must be boolean")
+    return {"allowed_adapters": list(adapters), "denied_models": denied,
+            "quota_substitution": quota}
+
+
+def model_policy_allows(policy: object, adapter: str, model: str) -> bool:
+    normalized = validate_model_policy(policy or DEFAULT_MODEL_POLICY)
+    return adapter in normalized["allowed_adapters"] and model.casefold() not in {
+        item.casefold() for item in normalized["denied_models"]
+    }
+
+
+def adaptive_catalog_profile(adapter: str, model: str) -> tuple[str, dict] | None:
+    for tier, profile in ADAPTIVE_DEFAULT_PROFILES.items():
+        if profile["adapter"] == adapter and profile["model"] == model:
+            return tier, deepcopy(profile)
+    for tier, profile in ADAPTIVE_OPENAI_PROFILES.items():
+        if profile["adapter"] == adapter and profile["model"] == model:
+            return tier, deepcopy(profile)
+    return None
+
+
 def validate_fallback_entries(value: object, *, field: str = "fallbacks") -> list[dict]:
     """Validate and copy one role's bounded, ordered fallback profiles."""
     if not isinstance(value, list):
@@ -1866,7 +1937,11 @@ def validate_adaptive_routing_profiles(value: object) -> dict:
     unknown = set(value) - set(ADAPTIVE_ROUTING_TIERS)
     if unknown:
         raise HandsoffError("routing_profiles has unknown tier(s): " + ", ".join(sorted(unknown)))
-    catalog = {profile["model"]: profile for profile in ADAPTIVE_DEFAULT_PROFILES.values()}
+    catalog = {
+        (profile["adapter"], profile["model"]): (tier, profile)
+        for source in (ADAPTIVE_DEFAULT_PROFILES, ADAPTIVE_OPENAI_PROFILES)
+        for tier, profile in source.items()
+    }
     result = {}
     for tier in ADAPTIVE_ROUTING_TIERS:
         raw = value.get(tier, ADAPTIVE_DEFAULT_PROFILES[tier])
@@ -1882,21 +1957,20 @@ def validate_adaptive_routing_profiles(value: object) -> dict:
             raise HandsoffError(f"routing_profiles.{tier}.model must be a non-empty string")
         model = model.strip()
         if model == DEFAULT_AGENT_MODEL:
-            if set(raw) - {"adapter", "model"}:
+            metadata = {key: raw.get(key) for key in set(raw) - {"adapter", "model"}}
+            if any(value not in ({}, [], None) for value in metadata.values()):
                 raise HandsoffError(
                     f"routing_profiles.{tier} default deferral cannot claim capabilities, limits, pricing, or source"
                 )
             result[tier] = {"adapter": adapter, "model": model, "capabilities": [],
                             "limits": {}, "pricing": {}, "source": None}
             continue
-        expected_model = ADAPTIVE_DEFAULT_PROFILES[tier]["model"]
-        if model != expected_model:
+        entry = catalog.get((adapter, model))
+        if entry is None or entry[0] != tier:
             raise HandsoffError(
-                f"routing_profiles.{tier}.model must be {expected_model}; adaptive tiers are cost-bound"
+                f"routing_profiles.{tier} must name its documented cost-bound adapter/model pair"
             )
-        documented = catalog.get(model)
-        if documented is None or documented["adapter"] != adapter:
-            raise HandsoffError(f"routing_profiles.{tier} must name a documented adapter/model pair")
+        _documented_tier, documented = entry
         profile = deepcopy(documented)
         profile.update(raw)
         capabilities = profile.get("capabilities")
@@ -1906,16 +1980,16 @@ def validate_adaptive_routing_profiles(value: object) -> dict:
         if not isinstance(limits, dict) or not limits or any(not isinstance(k, str) or not isinstance(v, int) or isinstance(v, bool) or v < 0 for k, v in limits.items()):
             raise HandsoffError(f"routing_profiles.{tier}.limits must map names to non-negative integers")
         pricing = profile.get("pricing")
-        if not isinstance(pricing, dict) or set(pricing) != {"input_per_mtok", "output_per_mtok"} \
+        if not isinstance(pricing, dict) or (pricing and set(pricing) != {"input_per_mtok", "output_per_mtok"}) \
                 or any(not isinstance(number, (int, float)) or isinstance(number, bool) or number < 0
                        for number in pricing.values()):
-            raise HandsoffError(f"routing_profiles.{tier}.pricing must contain non-negative input_per_mtok and output_per_mtok")
+            raise HandsoffError(f"routing_profiles.{tier}.pricing must be empty or contain non-negative input_per_mtok and output_per_mtok")
         normalized = {"adapter": adapter, "model": model,
                       "capabilities": sorted(set(x.strip() for x in capabilities)),
                       "limits": dict(limits), "pricing": dict(pricing), "source": profile.get("source")}
         expected = {**documented, "capabilities": sorted(documented["capabilities"])}
         if normalized != expected:
-            raise HandsoffError(f"routing_profiles.{tier} metadata does not match {ADAPTIVE_MODEL_CATALOG_SOURCE}")
+            raise HandsoffError(f"routing_profiles.{tier} metadata does not match its documented source")
         result[tier] = normalized
     return result
 
@@ -2017,6 +2091,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     phases, not prerequisites for launching the worker that performs the job.
     """
     profiles = adaptive_routing_profiles(cfg)
+    model_policy = validate_model_policy((cfg or {}).get("model_policy", DEFAULT_MODEL_POLICY))
     risk_class = classify_adaptive_risk(risk_class)
     policy = adaptive_risk_policy(cfg)
     risk = policy[risk_class]
@@ -2037,11 +2112,20 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     start = ADAPTIVE_ROUTING_TIERS.index(minimum_tier) if minimum_tier else 0
     candidates = []
     for tier in ADAPTIVE_ROUTING_TIERS[start:]:
-        profile = profiles[tier]
-        missing = sorted(set(required) - set(profile["capabilities"]))
-        if tier in allowed and profile["adapter"] in adapters and profile["model"] != DEFAULT_AGENT_MODEL and not missing:
-            candidates.append((ADAPTIVE_ROUTING_TIERS.index(tier), tier, profile))
+        tier_profiles = [profiles[tier]]
+        alternate = ADAPTIVE_OPENAI_PROFILES.get(tier)
+        if alternate and (alternate["adapter"], alternate["model"]) != \
+                (profiles[tier]["adapter"], profiles[tier]["model"]):
+            tier_profiles.append(alternate)
+        for preference, profile in enumerate(tier_profiles):
+            missing = sorted(set(required) - set(profile["capabilities"]))
+            if tier in allowed and profile["adapter"] in adapters and profile["model"] != DEFAULT_AGENT_MODEL \
+                    and model_policy_allows(model_policy, profile["adapter"], profile["model"]) and not missing:
+                # Configured profile wins ties; hard constraints can expose an
+                # equivalent documented cross-vendor candidate.
+                candidates.append((ADAPTIVE_ROUTING_TIERS.index(tier), preference, tier, profile))
     routing_metadata = {"risk_class": risk_class, "risk_policy": deepcopy(risk),
+                        "model_policy": deepcopy(model_policy),
                         "reviewer_required": risk["reviewer_required"],
                         "human_gate_required": risk["human_gate_required"]}
     if budget["state"] != "allowed":
@@ -2049,17 +2133,21 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
                 "required_capabilities": required, "reason": budget["reason"],
                 "budget": budget, **routing_metadata}
     if candidates:
-        _, tier, profile = min(candidates)
+        _, _, tier, profile = min(candidates)
         return {"state": "selected", "tier": tier, "profile": deepcopy(profile),
                 "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
-    available = [tier for tier in ADAPTIVE_ROUTING_TIERS
-                 if tier in allowed and profiles[tier]["adapter"] in adapters]
+    available = [tier for tier in ADAPTIVE_ROUTING_TIERS if tier in allowed and any(
+        profile["adapter"] in adapters and model_policy_allows(model_policy, profile["adapter"], profile["model"])
+        for profile in ([profiles[tier]] + ([ADAPTIVE_OPENAI_PROFILES[tier]]
+                                            if tier in ADAPTIVE_OPENAI_PROFILES else []))
+    )]
     reason_kind = "required_capability_unavailable" if not any(
         not (set(required) - set(profiles[tier]["capabilities"])) for tier in available
     ) else "required_tier_unavailable"
     return {"state": "paused", "tier": None, "profile": None,
             "required_capabilities": required, "reason": reason_kind,
-            "detail": "No available configured profile satisfies the required policy",
+            "detail": "No available configured profile satisfies the required policy and hard model constraints",
+            "model_policy": deepcopy(model_policy),
             **routing_metadata}
 
 
@@ -2194,7 +2282,9 @@ def _agent_assignment(session: dict) -> dict:
         purpose = "Mission supervision"
     else:
         purpose = PHASES.get(phase, "Managed task")
-    return {
+    budget = session.get("budget_decision") if isinstance(session.get("budget_decision"), dict) else None
+    usage = session.get("usage") if isinstance(session.get("usage"), dict) else None
+    assignment = {
         "session_id": session.get("session_id"), "role": role,
         "actor": session.get("actor"), "purpose": purpose, "phase_number": phase,
         "started_at": session.get("started_at"), "ended_at": session.get("ended_at"),
@@ -2205,10 +2295,21 @@ def _agent_assignment(session: dict) -> dict:
         "reason": (route or {}).get("reason", session.get("resolution_source")),
         "state": session.get("state"),
     }
+    # Preserve the historical snapshot shape for sessions created before
+    # budget/usage telemetry existed. New sessions carry both facts.
+    if budget is not None:
+        assignment["budget_decision"] = deepcopy(budget)
+    if usage is not None:
+        assignment["usage"] = deepcopy(usage)
+    return assignment
 
 
-def adaptive_routing_snapshot(status: dict, cfg: dict | None = None) -> dict:
+def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict | None = None,
+                              events: list[dict] | None = None) -> dict:
     """Build the total dashboard shape from recorded routing/session facts."""
+    effective_cfg = dict(cfg or {})
+    if isinstance(status.get("model_policy"), dict):
+        effective_cfg["model_policy"] = status["model_policy"]
     sessions = (status or {}).get("agent_sessions") or {}
     routed = [session for session in sessions.values()
               if isinstance(session, dict) and isinstance(session.get("adaptive_routing"), dict)]
@@ -2245,7 +2346,7 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None) -> dict:
     latest = routed[-1]["adaptive_routing"] if routed else {}
     if not latest and risk_class:
         ready = route_adaptive_profile(
-            cfg, required_capabilities=("text", "tool_use"),
+            effective_cfg, required_capabilities=("text", "tool_use"),
             risk_class=risk_class, deterministic_checks_complete=True,
         )
         if ready.get("state") == "selected":
@@ -2257,6 +2358,50 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None) -> dict:
     escalation = status.get("adaptive_escalation") if isinstance(status.get("adaptive_escalation"), dict) else {}
     repairs = sum(1 for attempt in (status.get("review_attempts") or [])
                   if isinstance(attempt, dict) and attempt.get("disposition") == "changes_requested")
+    selections = [_agent_assignment(session) for session in sessions.values()
+                  if isinstance(session, dict)]
+    live_managed = any(session.get("state") in AGENT_SESSION_LIVE_STATES
+                       for session in sessions.values() if isinstance(session, dict))
+    phase = int(status.get("phase_number", 0) or 0)
+    host_role = {1: "architect", 3: "supervisor", 4: "implementer", 6: "implementer",
+                 7: "supervisor", 8: "supervisor"}.get(phase)
+    host = host if isinstance(host, dict) else {}
+    model_class = host.get("model_class") if isinstance(host.get("model_class"), str) else None
+    events = [event for event in (events or []) if isinstance(event, dict)]
+    implemented_by = status.get("implemented_by")
+    managed_phase4 = any(
+        item.get("role") == "implementer" and item.get("phase_number") == 4
+        for item in selections
+    )
+    if model_class and isinstance(implemented_by, str) and implemented_by and not managed_phase4:
+        phase4 = next((event for event in events
+                       if event.get("kind") == "phase_advanced" and event.get("phase_number") == 4), None)
+        phase5 = next((event for event in events
+                       if event.get("kind") == "phase_advanced" and event.get("phase_number") == 5), None)
+        family = actor_family(implemented_by) or host.get("family") or "host"
+        selections.append({
+            "session_id": "host-phase-4", "role": "implementer", "actor": implemented_by,
+            "purpose": PHASES[4], "phase_number": 4,
+            "started_at": (phase4 or {}).get("at"), "ended_at": (phase5 or {}).get("at"),
+            "adaptive": False, "tier": None, "adapter": family, "model": model_class,
+            "requested_model": None, "model_source": "host_runtime",
+            "model_consistency": "not_applicable", "reason": "host_runtime",
+            "state": "completed" if phase5 else "running",
+        })
+    if host_role and model_class and not live_managed and status.get("status") not in {"complete", "blocked"} \
+            and not isinstance(status.get("human_pause"), dict):
+        family = host.get("family") if host.get("family") in {"codex", "claude"} else "host"
+        selections.append({
+            "session_id": f"host-phase-{phase}", "role": host_role,
+            "actor": host.get("actor") or f"{family}-host", "purpose": PHASES.get(phase, "Host work"),
+            "phase_number": phase, "started_at": status.get("updated_at"), "ended_at": None,
+            "adaptive": False, "tier": None, "adapter": family, "model": model_class,
+            "requested_model": None, "model_source": "host_runtime",
+            "model_consistency": "not_applicable", "reason": "host_runtime",
+            "state": "running", "budget_decision": None, "usage": None,
+        })
+    selections.sort(key=lambda item: (item.get("started_at") is None, item.get("started_at") or "",
+                                      item.get("session_id") or ""))
     return {
         # `used` means the run is governed by adaptive routing. Calls remain
         # separately auditable in calls_by_tier and selections, so a newly
@@ -2272,8 +2417,7 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None) -> dict:
             session.get("state") in AGENT_SESSION_LIVE_STATES
             and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in routed) else None,
         "outcome": escalation.get("outcome"), "calls_by_tier": calls,
-        "selections": [_agent_assignment(session) for session in sessions.values()
-                       if isinstance(session, dict)],
+        "selections": selections,
         "pause": ({"reason": escalation.get("reason"), "scope": "mission"}
                   if escalation.get("outcome") == "human_pause" else None),
     }
@@ -2512,6 +2656,83 @@ def budget_warning(cfg: dict, role: str) -> str | None:
     return f"budget for {role} ({value}) is below 20000 tokens (5000 per turn times 4 turns)" if isinstance(value, int) and value < 20000 else None
 
 
+ROLE_BUDGET_FLOORS = {"architect": 20_000, "supervisor": 12_000,
+                      "implementer": 24_000, "reviewer": 20_000}
+RISK_BUDGET_BASES = {
+    "routine": 0, "elevated": 4_000, "security_sensitive": 12_000,
+    "persistence_migration": 14_000, "shared_infrastructure": 16_000,
+    "irreversible": 20_000,
+}
+
+
+def plan_role_token_budget(*, configured_ceiling: int, role: str,
+                           risk_class: str | None, packet_bytes: int = 0,
+                           criteria_count: int = 0, changed_files: int = 0,
+                           followup: bool = False) -> dict:
+    """Return a deterministic ceiling and its auditable, non-usage basis."""
+    if role not in ROLE_BUDGET_FLOORS:
+        raise HandsoffError("token budget role is invalid")
+    if not isinstance(configured_ceiling, int) or isinstance(configured_ceiling, bool) or configured_ceiling <= 0:
+        raise HandsoffError("configured token ceiling must be a positive integer")
+    for label, value in (("packet_bytes", packet_bytes), ("criteria_count", criteria_count),
+                         ("changed_files", changed_files)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise HandsoffError(f"{label} must be a non-negative integer")
+    if risk_class is None:
+        return {"ceiling": configured_ceiling, "configured_ceiling": configured_ceiling,
+                "floor": ROLE_BUDGET_FLOORS[role], "risk_class": None,
+                "role": role, "packet_bytes": packet_bytes,
+                "criteria_count": criteria_count, "changed_files": changed_files,
+                "followup": bool(followup), "basis": "legacy_configured_ceiling"}
+    risk_class = classify_adaptive_risk(risk_class)
+    floor = ROLE_BUDGET_FLOORS[role]
+    # Packet bytes are converted conservatively: roughly four bytes/token,
+    # plus output/tool headroom. Follow-ups receive less discovery headroom
+    # because unchanged bulk context is deliberately absent.
+    packet_allowance = min(16_000, math.ceil(packet_bytes / 4) + (6_000 if followup else 12_000))
+    scope_allowance = min(12_000, criteria_count * 750 + changed_files * 1_000)
+    role_allowance = 8_000 if role in {"architect", "implementer"} else 4_000
+    calculated = floor + RISK_BUDGET_BASES[risk_class] + role_allowance + packet_allowance + scope_allowance
+    # A review of a broad high-risk change is the quality gate, not a cheap
+    # discovery turn. Reducing it below the configured ceiling
+    # caused the reviewer to exhaust after doing the work but before issuing
+    # its verdict twice. Lower-risk follow-up reviews remain packet-sized.
+    broad_high_risk_review = (
+        role == "reviewer" and criteria_count >= 8
+        and risk_class in {"security_sensitive", "persistence_migration",
+                           "shared_infrastructure", "irreversible"}
+    )
+    if broad_high_risk_review:
+        calculated = configured_ceiling
+    ceiling = min(configured_ceiling, max(floor, calculated))
+    return {"ceiling": ceiling, "configured_ceiling": configured_ceiling,
+            "floor": floor, "risk_class": risk_class, "role": role,
+            "packet_bytes": packet_bytes, "criteria_count": criteria_count,
+            "changed_files": changed_files, "followup": bool(followup),
+            "basis": "risk_role_packet_scope"}
+
+
+def validate_session_budget_decision(value: object) -> dict:
+    required = {"ceiling", "configured_ceiling", "floor", "risk_class", "role",
+                "packet_bytes", "criteria_count", "changed_files", "followup", "basis"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise HandsoffError("budget_decision has invalid fields")
+    if value.get("role") not in ROLE_BUDGET_FLOORS:
+        raise HandsoffError("budget_decision role is invalid")
+    if value.get("risk_class") is not None:
+        classify_adaptive_risk(value["risk_class"])
+    for field in ("ceiling", "configured_ceiling", "floor", "packet_bytes", "criteria_count", "changed_files"):
+        number = value.get(field)
+        if not isinstance(number, int) or isinstance(number, bool) or number < 0:
+            raise HandsoffError(f"budget_decision {field} must be a non-negative integer")
+    if value["ceiling"] <= 0 or value["ceiling"] > value["configured_ceiling"]:
+        raise HandsoffError("budget_decision ceiling must be positive and capped by configuration")
+    if not isinstance(value.get("followup"), bool) or value.get("basis") not in {
+            "legacy_configured_ceiling", "risk_role_packet_scope"}:
+        raise HandsoffError("budget_decision followup or basis is invalid")
+    return deepcopy(value)
+
+
 def adapter_availability(cfg: dict | None = None, *, which=None) -> dict:
     """Executable discovery only; callers must not imply runtime readiness."""
     result = {}
@@ -2583,6 +2804,161 @@ def _preflight_outcome(completed) -> dict:
         return {"state": "reachable", "reason": PREFLIGHT_OK_BEFORE_BUDGET_REASON}
     tail = re.sub(r"(?i)(api[_ -]?key|token|password)\s*[:=]\s*\S+", r"\1=[redacted]", stderr[:200])
     return {"state": "unreachable", "reason": f"exit code {completed.returncode}: {tail}"}
+
+
+def _preflight_runtime_dir(adapter: str) -> Path:
+    if adapter == "codex":
+        return Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+
+
+def _path_can_create(path: Path) -> bool:
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe.is_dir() and os.access(probe, os.W_OK | os.X_OK)
+
+
+def _launch_preflight_fingerprint(*, adapter: str, model: str, executable: str,
+                                  cwd: str, state_dir: Path) -> str:
+    facts = {"adapter": adapter, "model": model, "executable": str(Path(executable).resolve()),
+             "cwd": str(Path(cwd).resolve()), "state_dir": str(state_dir.resolve())}
+    for label, path in (("executable", Path(executable)), ("state_dir", state_dir)):
+        try:
+            stat = path.stat()
+            facts[label + "_stat"] = [stat.st_dev, stat.st_ino, stat.st_mode, stat.st_mtime_ns]
+        except OSError:
+            facts[label + "_stat"] = None
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _bounded_preflight_reason(text: object) -> str:
+    value = redact_output_text(str(text or "")).replace("\n", " ").strip()
+    return value[:MAX_PREFLIGHT_REASON] or "preflight failed without diagnostic output"
+
+
+def launch_preflight(root: Path, *, adapter: str, model: str, executable: str,
+                     argv: list[str] | tuple[str, ...], cwd: str,
+                     runner=subprocess.run, timeout: int = 45,
+                     state_dir: Path | None = None,
+                     now: datetime | None = None) -> dict:
+    """Validate the exact adapter/model before a session or budget exists.
+
+    A fingerprinted success/failure cache coalesces equivalent failures into
+    one incident. Local state and login checks run before the launch-shaped
+    model probe, so predictable failures make no provider call.
+    """
+    if adapter not in SELECTABLE_AGENT_ADAPTERS:
+        raise HandsoffError("launch preflight adapter must be codex or claude")
+    model = validate_agent_model(model)
+    root = root.resolve()
+    now = now or datetime.now(timezone.utc)
+    runtime_dir = Path(state_dir) if state_dir is not None else _preflight_runtime_dir(adapter)
+    fingerprint = _launch_preflight_fingerprint(
+        adapter=adapter, model=model, executable=executable, cwd=cwd, state_dir=runtime_dir,
+    )
+    path = root / PREFLIGHT_FILE
+    try:
+        store = load_unique_json(path)
+    except HandsoffError:
+        store = {}
+    if not isinstance(store, dict) or store.get("schema") != PREFLIGHT_SCHEMA:
+        store = {"schema": PREFLIGHT_SCHEMA, "entries": {}, "incident": None}
+    entries = store.get("entries") if isinstance(store.get("entries"), dict) else {}
+    cached = entries.get(fingerprint)
+    if isinstance(cached, dict):
+        try:
+            fresh = datetime.fromisoformat(cached["expires_at"]) > now
+        except (KeyError, TypeError, ValueError):
+            fresh = False
+        if fresh:
+            result = deepcopy(cached)
+            result["cached"] = True
+            if result.get("state") == "blocked":
+                result["coalesced_count"] = min(int(result.get("coalesced_count", 0)) + 1, 1_000_000)
+                entries[fingerprint] = {k: v for k, v in result.items() if k != "cached"}
+                store["entries"] = entries
+                store["incident"] = deepcopy(entries[fingerprint])
+                atomic_write_json(path, store)
+            return result
+
+    checked_at = now.isoformat()
+    category = None
+    reason = None
+    probe_calls = 0
+    if not runtime_dir.exists() and not _path_can_create(runtime_dir):
+        category, reason = "runtime_environment", f"runtime state directory is not writable: {runtime_dir}"
+    elif runtime_dir.exists() and (not runtime_dir.is_dir() or not os.access(runtime_dir, os.W_OK | os.X_OK)):
+        category, reason = "runtime_environment", f"runtime state directory is not writable: {runtime_dir}"
+    else:
+        login_argv = ([executable, "login", "status"] if adapter == "codex"
+                      else [executable, "auth", "status"])
+        try:
+            login = runner(login_argv, text=True, capture_output=True, timeout=min(timeout, 15), cwd=cwd)
+        except subprocess.TimeoutExpired:
+            login = None
+            category, reason = "auth_failure", "adapter login status timed out"
+        if login is not None and login.returncode != 0:
+            category = "auth_failure"
+            reason = "adapter is not authenticated: " + _bounded_preflight_reason(
+                (login.stderr or login.stdout or "login status failed")
+            )
+        if category is None:
+            try:
+                probe_calls = 1
+                completed = runner(list(argv), input="Reply with OK", text=True,
+                                   capture_output=True, timeout=timeout, cwd=cwd)
+                outcome = _preflight_outcome(completed)
+                if outcome["state"] != "reachable":
+                    raw = (completed.stderr or "") + (completed.stdout or "")
+                    if re.search(r"model.+(?:not supported|unavailable|not found)|unsupported model", raw, re.I):
+                        category = "model_unavailable"
+                    else:
+                        category = classify_runtime_failure(
+                            exit_code=completed.returncode,
+                            stderr_tail=(completed.stderr or "")[-2000:],
+                            stdout_tail=(completed.stdout or "")[-2000:],
+                        )["category"]
+                    reason = outcome["reason"]
+            except subprocess.TimeoutExpired:
+                probe_calls = 1
+                category, reason = "timeout", "exact-model reachability probe timed out"
+
+    ttl = PREFLIGHT_FAILURE_TTL_SECONDS if category else PREFLIGHT_SUCCESS_TTL_SECONDS
+    entry = {
+        "fingerprint": fingerprint, "adapter": adapter, "model": model,
+        "state": "blocked" if category else "ready", "category": category,
+        "reason": _bounded_preflight_reason(reason) if category else None,
+        "checked_at": checked_at, "expires_at": (now + timedelta(seconds=ttl)).isoformat(),
+        "provider_probe_calls": probe_calls, "coalesced_count": 0,
+    }
+    entries[fingerprint] = entry
+    ordered = sorted(entries.values(), key=lambda item: item.get("checked_at", ""), reverse=True)
+    store["entries"] = {item["fingerprint"]: item for item in ordered[:MAX_PREFLIGHT_ENTRIES]}
+    store["incident"] = deepcopy(entry) if category else None
+    atomic_write_json(path, store)
+    return {**deepcopy(entry), "cached": False}
+
+
+def launch_preflight_snapshot(root: Path) -> dict:
+    """Bounded, content-free Mission Control view of exact-launch readiness."""
+    path = Path(root) / PREFLIGHT_FILE
+    try:
+        store = load_unique_json(path)
+    except HandsoffError:
+        return {"state": "not_checked", "incident": None, "entries": [], "avoided_retries": 0}
+    if not isinstance(store, dict) or store.get("schema") != PREFLIGHT_SCHEMA:
+        return {"state": "legacy", "incident": None, "entries": [], "avoided_retries": 0}
+    safe_fields = ("fingerprint", "adapter", "model", "state", "category", "reason",
+                   "checked_at", "expires_at", "provider_probe_calls", "coalesced_count")
+    entries = [{field: item.get(field) for field in safe_fields}
+               for item in (store.get("entries") or {}).values() if isinstance(item, dict)]
+    entries.sort(key=lambda item: item.get("checked_at") or "", reverse=True)
+    incident = store.get("incident") if isinstance(store.get("incident"), dict) else None
+    incident_view = ({field: incident.get(field) for field in safe_fields} if incident else None)
+    return {"state": "blocked" if incident else (entries[0]["state"] if entries else "not_checked"),
+            "incident": incident_view, "entries": entries[:MAX_PREFLIGHT_ENTRIES],
+            "avoided_retries": sum(int(item.get("coalesced_count") or 0) for item in entries)}
 
 
 #: Providers surfaced read-only in the Agent Settings UI so a user can see
@@ -3596,7 +3972,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          design_hash: str | None = None, tier: str | None = None,
                          tier_reason: str | None = None,
                          amendment_id: str | None = None,
-                         adaptive_routing: dict | None = None) -> dict:
+                         adaptive_routing: dict | None = None,
+                         budget_decision: dict | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
@@ -3618,6 +3995,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         raise HandsoffError("agent session resolution source is invalid")
     adaptive_routing = (validate_session_adaptive_routing(adaptive_routing)
                         if adaptive_routing is not None else None)
+    budget_decision = (validate_session_budget_decision(budget_decision)
+                       if budget_decision is not None else None)
     packet_id = _validate_session_reference(packet_id, "packet_id")
     design_hash = _validate_session_reference(design_hash, "design_hash")
     if tier is not None and tier not in DESIGN_REVIEWER_TIERS:
@@ -3639,13 +4018,17 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         _assert_agent_telemetry_integrity(root, cfg, status)
         legacy_risk_defaulted = False
         if adaptive_routing is not None:
+            policy = status.get("model_policy", cfg.get("model_policy", DEFAULT_MODEL_POLICY))
+            if not model_policy_allows(policy, adapter, requested_model):
+                raise HandsoffError("adaptive launch refused by the mission model policy")
+            route_cfg = {**cfg, "model_policy": validate_model_policy(policy)}
             status_risk_class = status.get("risk_class")
             if status_risk_class is None and adaptive_routing["risk_class"] == "routine":
                 legacy_risk_defaulted = True
             elif status_risk_class != adaptive_routing["risk_class"]:
                 raise HandsoffError("adaptive routing selection is stale for the run risk class")
             refreshed = route_adaptive_profile(
-                cfg, risk_class=adaptive_routing["risk_class"],
+                route_cfg, risk_class=adaptive_routing["risk_class"],
                 available_tiers=[adaptive_routing["tier"]],
                 available_adapters=[adaptive_routing["adapter"]],
                 mission_usage=adaptive_usage(status),
@@ -3752,6 +4135,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         }
         if adaptive_routing is not None:
             session["adaptive_routing"] = deepcopy(adaptive_routing)
+        if budget_decision is not None:
+            session["budget_decision"] = deepcopy(budget_decision)
         sessions[session_id] = session
         current[role] = session_id
         accepted_regression = active_regression_request(proposed)
@@ -4368,8 +4753,17 @@ def _derive_replacement_handoff(status: dict, acceptance: dict, repository: dict
 def reserve_agent_replacement(root: Path, *, from_session_id: str,
                               trigger: str = "runtime_failure", finding_id: str | None = None,
                               which=shutil.which, snapshotter=repository_snapshot,
-                              session_id_factory=None, replacement_id_factory=None) -> dict:
-    """Atomically reserve one trusted fallback; caller cannot supply failure category or handoff."""
+                              session_id_factory=None, replacement_id_factory=None,
+                              pre_reservation_check=None) -> dict:
+    """Atomically reserve one trusted fallback after its exact launch check.
+
+    ``pre_reservation_check`` receives the complete proposed replacement
+    record while the source-session CAS is still protected, but before a
+    managed session or replacement record is persisted.  Raising aborts the
+    reservation unchanged.  This lets the launcher preflight the exact
+    selected profile and handoff without manufacturing a failed session for
+    a launch that never became viable.
+    """
     if trigger not in AGENT_REPLACEMENT_TRIGGERS:
         raise HandsoffError("replacement trigger is invalid")
     with project_lock(root.resolve()):
@@ -4421,6 +4815,9 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
             plan_agent_fallback(
                 role, category, cfg["fallbacks"][role], availability, attempted,
                 failover_count, cfg["max_failovers_per_role"], implementer,
+                model_policy=status.get("model_policy", cfg.get("model_policy")),
+                required_tier=((source.get("adaptive_routing") or {}).get("tier")
+                               if isinstance(source.get("adaptive_routing"), dict) else None),
             )
         records = list(status.get("agent_replacements") or [])
         if len(records) >= MAX_AGENT_REPLACEMENTS:
@@ -4479,6 +4876,8 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
             "skipped": deepcopy(decision["skipped"]), "selected_profile": deepcopy(profile),
             "handoff": handoff, "state": "reserved", "at": now,
         }
+        if pre_reservation_check is not None:
+            pre_reservation_check(deepcopy(record))
         proposed = deepcopy(status)
         proposed["agent_sessions"] = sessions
         proposed["agent_sessions"][to_session_id] = session
@@ -5210,6 +5609,11 @@ def validate_status_schema(status: dict) -> list[str]:
             classify_adaptive_risk(status["risk_class"])
         except HandsoffError as exc:
             errors.append(f"status: {exc}")
+    if "model_policy" in status:
+        try:
+            validate_model_policy(status["model_policy"])
+        except HandsoffError as exc:
+            errors.append(f"status: {exc}")
     if "lane" in status:
         if status["lane"] not in RUN_LANES:
             errors.append("status: 'lane' must be one of full, design, review")
@@ -5752,6 +6156,13 @@ def validate_status_schema(status: dict) -> list[str]:
                             validate_session_adaptive_routing(value)
                         except HandsoffError as exc:
                             errors.append(f"{label}.adaptive_routing: {exc}")
+                    continue
+                if optional_field == "budget_decision":
+                    if value is not None:
+                        try:
+                            validate_session_budget_decision(value)
+                        except HandsoffError as exc:
+                            errors.append(f"{label}.budget_decision: {exc}")
                     continue
                 if optional_field == "phase_number":
                     if value is not None and (not isinstance(value, int) or isinstance(value, bool)
@@ -6666,6 +7077,10 @@ def select_design_reviewer_profile(cfg: dict, status: dict, acceptance: dict, *,
     tier, reason = select_design_reviewer_tier(cfg, status, acceptance)
     selected = design_reviewer_tier_profile(cfg, tier, which=lookup)
     adapter, model = selected["adapter"], selected["model"]
+    if not model_policy_allows(cfg.get("model_policy", DEFAULT_MODEL_POLICY), adapter, model):
+        raise HandsoffError(
+            f"{tier} reviewer profile {adapter}/{model} is denied by the mission model policy"
+        )
     tiering = followup_reviewer_profile(cfg) is not None
     if tiering:
         resolved = resolved_agent_profiles(cfg, which=lookup)
@@ -7263,6 +7678,45 @@ def managed_design_context(root: Path, role: str) -> dict | None:
                          "Inspect only files needed to resolve a named finding. "
                          "Judge only prior findings the revision leaves unanswered; a finding "
                          "answered by number with a concrete change is settled."),
+    }
+
+
+def reviewer_implementation_contract(status: dict, acceptance: dict) -> dict | None:
+    """Return the exact acceptance contract endorsed before implementation.
+
+    The Phase-2 Reviewer's approval is bound to ``design_hash``. Requiring
+    that hash to match the current registry gives the Implementer and the
+    later implementation Reviewer one identical scope instead of a host
+    paraphrase.
+    """
+    if not isinstance(status, dict) or not isinstance(acceptance, dict) \
+            or int(status.get("phase_number", 1) or 1) < 3:
+        return None
+    review = status.get("design_review")
+    criteria = acceptance.get("criteria")
+    if not isinstance(review, dict) or review.get("decision") != "approved" \
+            or not isinstance(criteria, list) or not criteria:
+        return None
+    current_hash = design_hash(criteria)
+    if review.get("design_hash") != current_hash:
+        return None
+    exact = [
+        {key: deepcopy(item.get(key)) for key in
+         ("id", "work_item", "work_item_tag", "type", "requirement", "verification", "tests")
+         if key in item}
+        for item in criteria[:64] if isinstance(item, dict)
+    ]
+    return {
+        "schema": 1,
+        "issued_by": review.get("by"),
+        "design_review_attempt": review.get("attempt"),
+        "design_hash": current_hash,
+        "criteria": exact,
+        "instructions": (
+            "Implement and verify every criterion exactly as written. Do not broaden, narrow, "
+            "or paraphrase the contract. Raise any ambiguity before editing; the implementation "
+            "review will judge this same packet."
+        ),
     }
 
 
@@ -11384,7 +11838,8 @@ RECOVERABLE_FAILURE_CATEGORIES = {
     "no_artifact", "protocol_silence",
 }
 FALLBACK_SKIP_REASONS = {
-    "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent", "environment_failure",
+    "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent",
+    "environment_failure", "model_policy_denied", "cross_vendor_not_allowed", "insufficient_capability",
 }
 
 
@@ -11415,7 +11870,8 @@ def _canonical_implementer_identity(profile: object) -> tuple[str, str] | None:
 def plan_agent_fallback(role: str, failure_category: str, fallback_entries: object,
                         adapter_availability: object, attempted_identities: object,
                         failover_count: object, max_failovers_per_role: object,
-                        implementer_profile: object = None) -> dict:
+                        implementer_profile: object = None, *, model_policy: object = None,
+                        required_tier: str | None = None) -> dict:
     """Purely choose the next eligible fallback; never launch or mutate state."""
     if not isinstance(failure_category, str) or failure_category not in FAILURE_CATEGORIES:
         return _fallback_decision("pilot_pause", "non_recoverable_failure")
@@ -11434,6 +11890,7 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
     if not isinstance(attempted_identities, (list, tuple)):
         raise HandsoffError("fallback planner attempted identities must be a sequence")
     attempted = set()
+    previous_adapter = None
     for identity in attempted_identities:
         if not isinstance(identity, (list, tuple)) or len(identity) != 2 \
                 or identity[0] not in SELECTABLE_AGENT_ADAPTERS:
@@ -11443,6 +11900,10 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
         except HandsoffError as exc:
             raise HandsoffError("fallback planner attempted identity is invalid") from exc
         attempted.add((identity[0], model))
+        previous_adapter = identity[0]
+    policy = validate_model_policy(model_policy or DEFAULT_MODEL_POLICY)
+    if required_tier is not None and required_tier not in ADAPTIVE_ROUTING_TIERS:
+        raise HandsoffError("fallback planner required_tier is invalid")
     cap = validate_max_failovers(max_failovers_per_role)
     if not isinstance(failover_count, int) or isinstance(failover_count, bool) \
             or not 0 <= failover_count <= MAX_FALLBACK_PROFILES:
@@ -11464,18 +11925,31 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
             skipped.append({"index": index, "reason": "invalid_profile"})
             continue
         identity = (profile["adapter"], profile["model"])
-        if failure_category == "runtime_environment":
+        catalog = adaptive_catalog_profile(*identity)
+        # Authentication and local runtime failures are not evidence that a
+        # different provider is required. Keep the skipped sequence for the
+        # incident UI, but never select or launch one of these profiles.
+        if failure_category in {"auth_failure", "runtime_environment"}:
             skipped.append({"index": index, "reason": "environment_failure"})
-            continue
-        if not adapter_availability[profile["adapter"]]:
+        elif not model_policy_allows(policy, *identity):
+            skipped.append({"index": index, "reason": "model_policy_denied"})
+        elif previous_adapter and profile["adapter"] != previous_adapter \
+                and (failure_category != "rate_limit" or not policy["quota_substitution"]):
+            skipped.append({"index": index, "reason": "cross_vendor_not_allowed"})
+        elif required_tier is not None and (catalog is None or
+                ADAPTIVE_ROUTING_TIERS.index(catalog[0]) < ADAPTIVE_ROUTING_TIERS.index(required_tier)):
+            skipped.append({"index": index, "reason": "insufficient_capability"})
+        elif not adapter_availability[profile["adapter"]]:
             skipped.append({"index": index, "reason": "adapter_unavailable"})
         elif identity in attempted:
             skipped.append({"index": index, "reason": "already_attempted"})
         elif role == "reviewer" and identity == implementer_identity:
             skipped.append({"index": index, "reason": "reviewer_not_independent"})
         else:
-            return _fallback_decision("select", "eligible_fallback", profile=profile, skipped=skipped)
-    return _fallback_decision("pilot_pause", "fallback_exhausted", skipped=skipped)
+            reason = "quota_substitution" if previous_adapter and profile["adapter"] != previous_adapter else "eligible_fallback"
+            return _fallback_decision("select", reason, profile=profile, skipped=skipped)
+    reason = "environment_failure" if failure_category in {"auth_failure", "runtime_environment"} else "fallback_exhausted"
+    return _fallback_decision("pilot_pause", reason, skipped=skipped)
 
 
 # --------------------------------------------------------------------------
@@ -12072,16 +12546,27 @@ def host_identity(status: dict, events: list[dict]) -> dict:
     host-side command event or status.implemented_by (source ledger);
     else unknown with source none. A family is only ever an actor prefix."""
     events = [e for e in events if isinstance(e, dict)]
+    # The host already knows the exact model serving the supervising session.
+    # Prefer the plainly named variable; retain the old CLASS spelling so a
+    # dashboard started by an older host keeps its identity after an upgrade.
+    model_class = str(
+        os.environ.get("HANDSOFF_HOST_MODEL")
+        or os.environ.get("HANDSOFF_HOST_MODEL_CLASS")
+        or ""
+    ).strip()[:64] or None
     for event in events:
         if event.get("kind") == "initialized" and actor_family(event.get("by")):
-            return {"family": actor_family(event["by"]), "actor": event["by"], "source": "initialized"}
+            return {"family": actor_family(event["by"]), "actor": event["by"],
+                    "source": "initialized", "model_class": model_class}
     for event in reversed(events):
         if event.get("kind") in HOST_COMMAND_EVENT_KINDS and actor_family(event.get("by")):
-            return {"family": actor_family(event["by"]), "actor": event["by"], "source": "ledger"}
+            return {"family": actor_family(event["by"]), "actor": event["by"],
+                    "source": "ledger", "model_class": model_class}
     implemented = status.get("implemented_by") if isinstance(status, dict) else None
     if actor_family(implemented):
-        return {"family": actor_family(implemented), "actor": implemented, "source": "ledger"}
-    return {"family": "unknown", "actor": None, "source": "none"}
+        return {"family": actor_family(implemented), "actor": implemented,
+                "source": "ledger", "model_class": model_class}
+    return {"family": "unknown", "actor": None, "source": "none", "model_class": model_class}
 
 
 def host_wait_view(status: dict, events: list[dict], cfg: dict, *, now: datetime | None = None,
