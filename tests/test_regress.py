@@ -176,7 +176,7 @@ class TestRunBattery(unittest.TestCase):
 
     def test_shards_use_unique_state_cache_temp_service_and_port_namespaces(self):
         (self.tmp / "tests" / "test_isolation.py").write_text(textwrap.dedent('''
-            import os, pathlib, socket, unittest
+            import os, pathlib, socket, subprocess, unittest
 
             class TestIsolation(unittest.TestCase):
                 def _exercise(self):
@@ -184,6 +184,11 @@ class TestRunBattery(unittest.TestCase):
                         self.assertTrue(os.environ[key])
                     marker = pathlib.Path(os.environ["XDG_STATE_HOME"]) / "shared-name"
                     marker.write_text(os.environ["HANDSOFF_SHARD_ID"])
+                    tracked = subprocess.run(
+                        ["git", "ls-files", "tests/test_isolation.py"],
+                        capture_output=True, text=True, check=True,
+                    ).stdout.splitlines()
+                    self.assertEqual(tracked, ["tests/test_isolation.py"])
                     sock = socket.socket()
                     try:
                         sock.bind(("127.0.0.1", int(os.environ["HANDSOFF_PORT_BASE"])))
