@@ -22,6 +22,12 @@ LOCAL_KB = Path.home() / "Projects" / "fm9-tone" / "kb" / "HANDSOFF.md"
 
 
 class PlaybookShipsWithTheEngineTests(unittest.TestCase):
+    def test_host_owns_continuous_monitoring_until_completion(self):
+        lanes = (PLAYBOOK / "lanes.md").read_text(encoding="utf-8")
+        self.assertIn("Continuous monitoring is a host obligation", lanes)
+        self.assertIn("until `advance\n8 100`", lanes)
+        self.assertIn("without a prompt or shorthand", lanes)
+
     def test_the_cli_prints_the_index_and_a_topic_from_a_thin_project(self):
         thin = Path(tempfile.mkdtemp(prefix="handsoff-thin-"))
         index = subprocess.run([sys.executable, str(ROOT / "bin" / "handsoff_cli.py"), "playbook"],

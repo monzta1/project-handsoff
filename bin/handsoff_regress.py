@@ -103,7 +103,7 @@ def count_event(entry: dict, event: dict) -> None:
     entry["current"] = event["name"]
 NODE_LINE = re.compile(r"^(?P<not>not )?ok (?P<num>\d+) - (?P<name>.*?)(?: # (?P<directive>SKIP|TODO).*)?$")
 MAX_RECENT = 64
-DEFAULT_SHARDS = 4
+DEFAULT_SHARDS = 5
 
 
 def progress_path(root: Path) -> Path:

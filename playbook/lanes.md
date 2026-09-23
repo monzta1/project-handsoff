@@ -1,68 +1,59 @@
 # Running a Handsoff lane
 
-The recipe every host (a person, Claude Code, Codex) follows for one issue
-in one repository: worktree off `main`, board first, criteria, a design the
-independent reviewer approves, implement, verify, an implementation review,
-land through a pull request, live-verify against the installed engine,
-close with the written result. Read this file before `init`; read
-`landing.md` before `advance 6`; read `lessons.md` once per session.
+The host recipe: worktree off `main`; board; criteria; independently approved
+design; implementation; verification; review; PR; release; installed-engine
+live check; written close. Read this before `init`, `landing.md` before Phase
+6, and `lessons.md` once per session.
 
-**One run, N tickets.** Open tickets that will land together are one run:
-`init --item "#1" --item "#2" ...`, one criterion per acceptance line with
-its `[#N]` tag, one worktree, one pull request, one release. Start a
-separate run only for a ticket that must land or release on its own.
+**One run, N tickets.** Tickets landing together use one `init`, worktree,
+PR, and release. Tag each criterion `[#N]`. Split only independent releases.
 
-**Board first.** "Board" means the Handsoff run dashboard: `init --by
-<you>`, then `dashboard --owned-by-run --port <free> --no-open` served from
-the engine that carries your change (in an engine checkout, `python3
-bin/handsoff_supervisor.py`, never the installed `handsoff`), confirm it
-answers 200, open it in the browser, then the issue comment "started", then
-criteria. The Pilot watches the dash, not the terminal.
+**Board first.** After `init --by <you>`, serve `dashboard --owned-by-run
+--port <free> --no-open` from the engine being changed, confirm HTTP 200,
+open it, post the issue's started comment, then apply criteria. The Pilot
+watches the dashboard, not the terminal.
+
+**Exact host identity is automatic.** Start the dashboard with
+`HANDSOFF_HOST_MODEL=<runtime's exact model>`. Never ask the Pilot or infer a
+variant from a family; record unavailable only when the runtime hides it.
 
 **Criteria.**
-- Every automated test string must already be in `handsoff.toml [checks]
-  commands`, verbatim, before `criteria-apply`; the transaction is refused
-  otherwise.
+- Automated test strings must already appear verbatim in `[checks] commands`.
 - `verify` always takes `--criterion REQ-00n --by <you>`; bare `verify` fails.
-- A criterion whose deliverable RUNS SOMEWHERE ELSE (a CI workflow, another
-  machine, a device) is `manual`, and its evidence is that place's own run:
-  the workflow URL and conclusion, the read-back, the times. A local build
-  plus a test that reads the workflow file is not evidence.
+- A remote CI/device criterion is `manual`; evidence is its own run/read-back,
+  not a local build or a test that merely reads its configuration.
 - A criterion that says "every reader" (every command, every page, every
   path) gets one test per reader, named in the criterion.
-- Proof that cannot run now is recorded as PENDING in the evidence text and
-  stated in the closing comment; never implied.
-- The registry reads one `[#N]` tag per criterion: a criterion tagged
-  `[#183] [#184]` scopes #183 only; give each issue its own criterion or mark
-  the other item optional at Phase 8.
+- Mark proof that cannot run now PENDING in evidence and the closing comment.
+- Use one `[#N]` per criterion; duplicate it or mark the item optional at
+  Phase 8 rather than combining tags.
 
-**Design proposal.** Six keys (summary, approach, tradeoffs, decisions,
-verification, constraints); every string at most 512 characters, at most
-eight items per array; one approach item begins "Data shape:". Write the
-JSON with a script that checks the lengths, and only then `design-propose`;
-never launch a reviewer until DESIGN_PROPOSAL_RECORDED has printed for the
-revision you want reviewed. Two autonomous review attempts; a third needs
-`design-review-authorize --by <pilot>` plus a `pilot-note`.
+**Design proposal.** Use the six required keys, strings <=512 characters,
+arrays <=8 entries, and one `Data shape:` approach item. Validate the JSON;
+launch review only after `DESIGN_PROPOSAL_RECORDED`. A third attempt needs
+`design-review-authorize --by <pilot>` and a `pilot-note`.
 
-**While you implement.** `advance 4 40` as soon as the design is approved
-and before building, so the phase strip says implementation during the work
-instead of a wait (the `heartbeat` command is bound to a managed session).
+**Reviewer first.** After design approval, `advance 4 40`. Approval issues
+the exact reviewer-bound acceptance registry as the Implementer's contract;
+never substitute a host paraphrase. Later review judges that same contract.
 
-**Reviewers.** A managed session (`handsoff agent --root <abs> launch
-reviewer --by <reviewer actor> --task "..."`) whose identity differs from
-yours, launched with the host session variables unset
-(`CLAUDE_CODE_SESSION_ID`, `CODEX_COMPANION_SESSION_ID`, `CLAUDECODE`,
-`CLAUDE_CODE_ENTRYPOINT`) and `TMPDIR` set to a scratch directory. Its cwd
-is empty: absolute paths in the task. Findings are at most 400 characters;
-`record-review-findings` wants `CODE: summary` with a supported code. A
-verdict that fails to dispatch is recovered with `session-result-adopt
---session hs-...`; a reviewer you killed stays "live" to the watchdog for
-`stall_minutes`, then `recover --by <you>` relaunches it.
+**Continuous monitoring is a host obligation.** From `init` until `advance
+8 100`, the host monitors sessions, shards, CI, merge, release, install, and live
+checks without a prompt or shorthand. Keep the dashboard live, report material
+progress, recover in-scope failures, and start each eligible step. Pause only
+for a new Pilot decision or unresolvable external blocker; state it once.
 
-**Provider quota is Supervisor discretion.** Route the same task to an explicit
-equivalent model from another vendor, preserving constraints and independence;
-ledger both models and `provider_quota`. Ask the Pilot only if no route is
-allowed. A per-session token ceiling pauses without fallback.
+**Reviewers.** Launch an independent managed reviewer with host session vars
+unset, scratch `TMPDIR`, and absolute project paths. Findings are <=400
+characters and use supported `CODE: summary` values. Adopt an undispatched
+verdict with `session-result-adopt`; recover a killed session after its stall
+window.
+
+**Provider quota is Supervisor discretion.** Route the unchanged task to an
+explicit equivalent model from another vendor, preserving independence and ledgering
+both models plus `provider_quota`. Ask only when no route is allowed. Auth,
+runtime, and per-session token-cap failures are not quota; size caps by role,
+risk, and packet.
 
 **Tree changes after verify are evidence drift.** Re-run every `verify`,
 then `record-review --by <reviewer> --reaffirm --tests-executed yes

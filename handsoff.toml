@@ -225,6 +225,12 @@ commands = [
   "python3 -m unittest tests.test_adaptive_routing_launch -v",
   "python3 -m unittest tests.test_adaptive_routing_snapshot -v",
   "node --test tests/dashboard/adaptive_routing.test.js",
+  "python3 -m unittest tests.test_model_constraints -v",
+  "node --test tests/dashboard/model_constraints.test.js",
+  "python3 -m unittest tests.test_launch_preflight -v",
+  "node --test tests/dashboard/launch_preflight.test.js",
+  "python3 -m unittest tests.test_token_efficiency -v",
+  "node --test tests/dashboard/token_efficiency.test.js",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

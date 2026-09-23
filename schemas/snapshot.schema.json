@@ -26,7 +26,9 @@
     "initialized",
     "input_required",
     "live",
+    "launch_preflight",
     "metrics",
+    "model_policy",
     "operations",
     "operator_actions",
     "phases",
@@ -88,12 +90,14 @@
               "session_id": {"type": "string"}, "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
               "actor": {"type": "string"}, "purpose": {"type": "string"}, "phase_number": {"type": ["integer", "null"], "minimum": 1, "maximum": 8},
               "started_at": {"type": ["string", "null"]}, "ended_at": {"type": ["string", "null"]},
-              "adaptive": {"type": "boolean"}, "tier": {"enum": [null, "FAST", "STANDARD", "PREMIUM"]}, "adapter": {"enum": ["codex", "claude"]},
-              "model": {"type": ["string", "null"]}, "requested_model": {"type": "string"},
-              "model_source": {"enum": ["adapter_reported", "adaptive_selection", "exact_request", "not_reported"]},
+              "adaptive": {"type": "boolean"}, "tier": {"enum": [null, "FAST", "STANDARD", "PREMIUM"]}, "adapter": {"enum": ["codex", "claude", "host"]},
+              "model": {"type": ["string", "null"]}, "requested_model": {"type": ["string", "null"]},
+              "model_source": {"enum": ["adapter_reported", "adaptive_selection", "exact_request", "not_reported", "host_runtime", "host_runtime_unavailable"]},
               "model_consistency": {"enum": ["not_applicable", "pending_verification", "matched", "mismatch"]},
               "reason": {"type": "string"},
-              "state": {"enum": ["launching", "running", "completed", "failed", "timed_out", "cancelled", "failed_to_start"]}
+              "state": {"enum": ["launching", "running", "completed", "failed", "timed_out", "cancelled", "failed_to_start"]},
+              "budget_decision": {"type": ["object", "null"]},
+              "usage": {"type": ["object", "null"]}
             }
           }
         },
@@ -107,6 +111,8 @@
     "initialized": {
       "type": "boolean"
     },
+    "model_policy": {"type": "object"},
+    "launch_preflight": {"type": "object"},
     "generated_at": {
       "type": "string"
     },

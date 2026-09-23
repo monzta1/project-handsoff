@@ -15,10 +15,11 @@ class ClaudeAdapterTests(TestCase):
         cfg['agents']['reviewer'] = 'claude'
         # The launch spec is computed against a fixture, never the repository's own run.
         with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), \
-                mock.patch.object(lib, "evaluate_launch_rules", return_value=None):
+                mock.patch.object(lib, "evaluate_launch_rules", return_value=None), \
+                mock.patch.object(lib, "status_path", return_value=Path("/nonexistent-handsoff-status")):
             # the launch rules read the repository's own run (#165); a checkout
             # at Phase 1 would refuse the reviewer here, which is not this test
-            spec = agent.build_launch_spec(Path('.'), 'reviewer', 'review', which=lambda x: '/bin/claude')
+            spec = agent.build_launch_spec(Path('.'), 'reviewer', 'review', which=lambda x: '/bin/claude', skip_preflight=True)
         self.assertIn('--output-format', spec.argv)
         self.assertIn('stream-json', spec.argv)
         self.assertIn('--permission-mode', spec.argv)
@@ -80,9 +81,9 @@ class ClaudeAdapterTests(TestCase):
         # both launch paths go through the helper
         cfg = lib.load_config(Path('.'))
         cfg['agents']['implementer'] = 'claude'
-        with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None):
-            spec = agent.build_launch_spec(Path('.'), 'implementer', 'build', which=lambda x: '/bin/claude')
-            fallback = agent.build_profile_launch_spec(Path('.'), 'implementer', 'build', {'adapter': 'claude', 'model': 'default'}, which=lambda x: '/bin/claude')
+        with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), mock.patch.object(lib, "status_path", return_value=Path("/nonexistent-handsoff-status")):
+            spec = agent.build_launch_spec(Path('.'), 'implementer', 'build', which=lambda x: '/bin/claude', skip_preflight=True)
+            fallback = agent.build_profile_launch_spec(Path('.'), 'implementer', 'build', {'adapter': 'claude', 'model': 'default'}, which=lambda x: '/bin/claude', skip_preflight=True)
         for argv in (spec.argv, fallback.argv):
             i = argv.index('--output-format')
             self.assertEqual(argv[i - 1], '--verbose', argv)

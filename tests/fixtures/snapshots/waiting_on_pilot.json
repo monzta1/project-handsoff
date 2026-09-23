@@ -7,7 +7,7 @@
      "kind": "none"
     },
     "evidence": [
-     "vr-eb147a65271b4543933adc93fbf47519"
+     "vr-1ef463caa51244a0be55c63f284c8ff3"
     ],
     "id": "REQ-001",
     "requirement": "State the exact observable outcome.",
@@ -52,7 +52,7 @@
  },
  "adaptive_routing": {
   "active_premium_scope": null,
-  "adapter": null,
+  "adapter": "claude",
   "calls_by_tier": {
    "FAST": 0,
    "PREMIUM": 0,
@@ -61,20 +61,20 @@
   "duration_ms": null,
   "escalation_reason": null,
   "estimated_cost": null,
-  "model": null,
+  "model": "claude-haiku-4-5-20251001",
   "outcome": null,
   "pause": null,
   "repair_rounds": 0,
   "review_rounds": 0,
-  "risk_class": null,
+  "risk_class": "routine",
   "selections": [],
-  "tier": null,
+  "tier": "FAST",
   "token_usage": {
    "input": 0,
    "output": 0,
    "total": 0
   },
-  "used": false
+  "used": true
  },
  "amendment": null,
  "audit": {
@@ -83,7 +83,7 @@
   "event_count": 6,
   "gate_errors": [],
   "healthy": true,
-  "verification_head": "c167c1a2f3ff245fbdccd85979cb2cfaa03bee6b29ed59449875cc95aa9b9883",
+  "verification_head": "e6bc1c8bc578838ce6fd97e6f0e0865a7112eb49a50f86c4d514d484367c146c",
   "verification_runs": 1
  },
  "ci": null,
@@ -129,18 +129,18 @@
  "design_evidence": [],
  "design_review_packet": null,
  "engine": {
-  "compatibility": "0.3.*",
-  "manifest_sha256": "46710aa370473dcaf872174eeb8e0f1a1ea537b5cba3444a37a9d6c8318a9d59",
-  "source": "installed-engine",
-  "source_root": "<home>/Projects/project-handsoff-lane-251",
-  "version": "v0.3.74"
+  "compatibility": "v0.3.76",
+  "manifest_sha256": "d090c81653658d55f3504a40ec7d06da9d939cdb35e76d86d3b1b4458d947639",
+  "source": "project-drop-in",
+  "source_root": "<root>",
+  "version": "v0.3.76"
  },
  "escalation": null,
  "events": [
   {
-   "acceptance_sha256": "83ad6811ec81bde10050b70d1cead1dc7b6e41347ad082bd6f9820511262958e",
+   "acceptance_sha256": "164ffa2a2a39d1fec3dff3f980a4424e39631c1bed5bbec7d59e64c8fee74691",
    "architect": "test-architect",
-   "at": "2026-09-22T18:32:08.689223+00:00",
+   "at": "2026-09-23T07:15:06.188007+00:00",
    "authorized": false,
    "by": "test-design-reviewer",
    "decision": "approved",
@@ -149,11 +149,11 @@
    "design_review_limit": 2,
    "escalation_consumed": false,
    "findings": 0,
-   "hash": "288dba53a6d2c538b9866d6f75821c8fd1d6133f1f1c90af9852e937b138a6fb",
+   "hash": "863dd68494c16661a1e4f1ee03bd42dacb9076f83003508c4dab4208c98bb68b",
    "head": null,
    "kind": "design_review_approved",
    "message": "Independent design review approved: Test-fixture independent design review",
-   "prev_hash": "4030de84907f09ab9d6af9395fed18dfae9996bc11ebced943502285c71a919b",
+   "prev_hash": "9fe51f3aac7e39901cca30aa1d5603279e799fbe3477da89692a347251a13ae4",
    "reviewer_profile": {
     "adapter": "codex",
     "model": "default"
@@ -161,24 +161,24 @@
    "reviewer_selection_reason": "first_review",
    "reviewer_session_id": null,
    "reviewer_tier": "primary",
-   "status_sha256": "69a5676b0c48369ef826a5a7cfc31a2605101e2dfe187cdd02e2c7cf51f972ce",
+   "status_sha256": "02b3f1f43f98bd476d241fe31b1a04ceb451396c9c62ec01e37182e0e5d05a6a",
    "structural_blocker": false
   },
   {
-   "acceptance_sha256": "83ad6811ec81bde10050b70d1cead1dc7b6e41347ad082bd6f9820511262958e",
-   "at": "2026-09-22T18:32:08.579462+00:00",
-   "hash": "4030de84907f09ab9d6af9395fed18dfae9996bc11ebced943502285c71a919b",
+   "acceptance_sha256": "164ffa2a2a39d1fec3dff3f980a4424e39631c1bed5bbec7d59e64c8fee74691",
+   "at": "2026-09-23T07:15:06.077089+00:00",
+   "hash": "9fe51f3aac7e39901cca30aa1d5603279e799fbe3477da89692a347251a13ae4",
    "kind": "phase_advanced",
    "message": "Advanced to Design debate",
    "phase_number": 2,
-   "prev_hash": "cde4171a7435ae1905b4adb4eb11a04322ce58a3e2f9e6f2db614163d0b49cec",
+   "prev_hash": "ccfc1a974002a93d3c2bd88d4c1849dd769e92aa78ab296c24912453bef72458",
    "progress": 20,
-   "status_sha256": "b6368e91c4d5e9e778ab89821deae8cc787cd21f802426bfe1e08a8032331d20"
+   "status_sha256": "e1fe7d401ab3284e63b91d8e51a279c9037e4b12071ac1cb59a13c4ee4bee698"
   },
   {
-   "acceptance_sha256": "83ad6811ec81bde10050b70d1cead1dc7b6e41347ad082bd6f9820511262958e",
+   "acceptance_sha256": "164ffa2a2a39d1fec3dff3f980a4424e39631c1bed5bbec7d59e64c8fee74691",
    "architect": "host-architect",
-   "at": "2026-09-22T18:32:08.476420+00:00",
+   "at": "2026-09-23T07:15:05.982693+00:00",
    "based_on_review_attempt": 0,
    "counts": {
     "approach": 1,
@@ -188,30 +188,30 @@
     "verification": 1
    },
    "design_hash": "ea262b2ef6b798e0555d5c9480d0fd52113ad5816f5910536f7983a20fcbf28c",
-   "hash": "cde4171a7435ae1905b4adb4eb11a04322ce58a3e2f9e6f2db614163d0b49cec",
+   "hash": "ccfc1a974002a93d3c2bd88d4c1849dd769e92aa78ab296c24912453bef72458",
    "kind": "design_proposal_recorded",
    "message": "Bounded Architect design proposal recorded",
-   "prev_hash": "413c57ca2c50e2e1c3d77daddd6f89b815fc5cfb6e121c71828aaf1e3d19516e",
+   "prev_hash": "487c7c80b9261e17ecbc2d21115bb0d3b3ba4065026c368a2fed0b206de29b6c",
    "proposal_hash": "32242a274301144a064dd07a74765d47c518cf1f2c0a18e46854fc230b02b5ae",
    "session_id": null,
-   "status_sha256": "f61cb995c2ee9aec1dcf3a2b8683b86fb748ed19e440c2ca47f4d0998a42df9c"
+   "status_sha256": "5ac84619340913a09a8db288e8389463c1aba739854bb90850ee228107d15d39"
   },
   {
-   "acceptance_sha256": "83ad6811ec81bde10050b70d1cead1dc7b6e41347ad082bd6f9820511262958e",
-   "at": "2026-09-22T18:32:08.371400+00:00",
+   "acceptance_sha256": "164ffa2a2a39d1fec3dff3f980a4424e39631c1bed5bbec7d59e64c8fee74691",
+   "at": "2026-09-23T07:15:05.882651+00:00",
    "criteria": {
     "REQ-001": {
      "executed": true,
      "ok": true,
      "reused_from": null,
-     "run_id": "vr-eb147a65271b4543933adc93fbf47519"
+     "run_id": "vr-1ef463caa51244a0be55c63f284c8ff3"
     }
    },
-   "hash": "413c57ca2c50e2e1c3d77daddd6f89b815fc5cfb6e121c71828aaf1e3d19516e",
+   "hash": "487c7c80b9261e17ecbc2d21115bb0d3b3ba4065026c368a2fed0b206de29b6c",
    "kind": "checks_run",
    "launched_count": 1,
    "message": "Ran and attached configured checks",
-   "prev_hash": "13837a1be33f926b5ae8f580b534fa1c28db72348cd7e6f3560d0517575ad8a2",
+   "prev_hash": "14c274b3d8a2cdb7c6f5163bfe436e3d6a4a4b4d78e51b93614083e6d0a4feb5",
    "results": [
     {
      "command": "true",
@@ -221,40 +221,40 @@
    ],
    "reused_count": 0,
    "review_attempt_refreshed": null,
-   "status_sha256": "4c351a62a70f4284e9b18f70a650db0caf8f12c2eecea765ee5bc0a44fa920e2"
+   "status_sha256": "e0bd4f22ff8d7c8b90f2a4f063afd9b9cc55b522e09b9fc5a2bad37af0726e51"
   },
   {
-   "acceptance_sha256": "9d0b6433095fd63d18b5b1481b3adcc6bd68c1fd0d627970971588caefdff1ba",
-   "at": "2026-09-22T18:32:08.239982+00:00",
+   "acceptance_sha256": "d16c0758fed0a71607f2fbbff973ce17e707a669398bd37201d4155f018f2e06",
+   "at": "2026-09-23T07:15:05.731936+00:00",
    "criterion": "REQ-001",
    "decisions_revoked": [],
-   "hash": "13837a1be33f926b5ae8f580b534fa1c28db72348cd7e6f3560d0517575ad8a2",
+   "hash": "14c274b3d8a2cdb7c6f5163bfe436e3d6a4a4b4d78e51b93614083e6d0a4feb5",
    "kind": "criterion_updated",
    "message": "Acceptance criterion updated",
-   "prev_hash": "cd4ab2448eba4e796d343170553d86bd9ae25a9015b13a3e1c35e266575dc295",
-   "status_sha256": "16afabbc60cc1a9851e42382e2ea422a0d6a4dfd35e4b18e45328cc4743231c3",
+   "prev_hash": "dab7a1fe98bbedd4694ba429845c98b77cd5baced99f1eb121a5375800d22411",
+   "status_sha256": "71205566a46638d235cc19c0d65cd4c7833b12d52a9c01969f3fe3be1c6a1d44",
    "work_item_scope_changed": false
   },
   {
-   "acceptance_sha256": "38b3f416b287975f8c8b1d621f70792c0bc8e53dfe9e17304ea40d85c8910754",
-   "at": "2026-09-22T18:32:08.141575+00:00",
+   "acceptance_sha256": "f3d7e807a825bc4bb599351e0e4acf16ae1d754214275058255d59dc1867e2e2",
+   "at": "2026-09-23T07:15:05.600002+00:00",
    "by": null,
    "engine": {
-    "manifest_sha256": "46710aa370473dcaf872174eeb8e0f1a1ea537b5cba3444a37a9d6c8318a9d59",
-    "source": "installed-engine",
-    "version": "v0.3.74"
+    "manifest_sha256": "d090c81653658d55f3504a40ec7d06da9d939cdb35e76d86d3b1b4458d947639",
+    "source": "project-drop-in",
+    "version": "v0.3.76"
    },
-   "hash": "cd4ab2448eba4e796d343170553d86bd9ae25a9015b13a3e1c35e266575dc295",
+   "hash": "dab7a1fe98bbedd4694ba429845c98b77cd5baced99f1eb121a5375800d22411",
    "kind": "initialized",
    "message": "Handsoff initialized for 'Snapshot contract'",
    "pin_written": null,
    "prev_hash": "GENESIS",
    "project_root": "<root>",
-   "status_sha256": "783ea166fb486a119a02d764453b4c3399b5a7dd0b1990eaff09b3ef5ae69c33",
+   "status_sha256": "e2ac1b467da117887d4b36ee747337a6ce7e1c539d38aa2a1812f3b1bf196023",
    "ticket_lock": "evaluated"
   }
  ],
- "generated_at": "2026-09-22T18:32:08.700271+00:00",
+ "generated_at": "2026-09-23T07:15:06.199049+00:00",
  "host": {
   "actor": null,
   "family": "unknown",
@@ -277,12 +277,18 @@
   "turn": "pilot"
  },
  "lane": null,
+ "launch_preflight": {
+  "avoided_retries": 0,
+  "entries": [],
+  "incident": null,
+  "state": "not_checked"
+ },
  "live": {
   "activity_source": "workflow",
   "detail": "Get explicit human approval of the independently reviewed design.",
   "ended_at": null,
   "exit_code": null,
-  "last_activity_at": "2026-09-22T18:32:08.688106+00:00",
+  "last_activity_at": "2026-09-23T07:15:06.186956+00:00",
   "process_signal": "none",
   "role": null,
   "seconds_since_activity": 0,
@@ -298,10 +304,10 @@
    "state": "unavailable"
   },
   "design_review_attempts": 1,
-  "elapsed_seconds": 0.601,
+  "elapsed_seconds": 0.643,
   "ended_at": null,
   "failed_sessions": 0,
-  "generated_at": "2026-09-22T18:32:08.742155+00:00",
+  "generated_at": "2026-09-23T07:15:06.242964+00:00",
   "implementation_review_attempts": 0,
   "largest_sessions": [],
   "managed_sessions": 0,
@@ -316,8 +322,8 @@
    "8": 0.0
   },
   "phase_seconds": {
-   "1": 0.438,
-   "2": 0.163,
+   "1": 0.477,
+   "2": 0.166,
    "3": 0.0,
    "4": 0.0,
    "5": 0.0,
@@ -325,12 +331,12 @@
    "7": 0.0,
    "8": 0.0
   },
-  "phase_started_at": "2026-09-22T18:32:08.579462+00:00",
+  "phase_started_at": "2026-09-23T07:15:06.077089+00:00",
   "pilot_wait_seconds": 0.0,
   "recovery_attempts": 0,
   "replacement_count": 0,
   "sessions": [],
-  "started_at": "2026-09-22T18:32:08.141575+00:00",
+  "started_at": "2026-09-23T07:15:05.600002+00:00",
   "tokens": {
    "cached": null,
    "coverage": "0/0 sessions",
@@ -341,6 +347,14 @@
   "verification_runs": 1,
   "verification_seconds": 0.0
  },
+ "model_policy": {
+  "allowed_adapters": [
+   "codex",
+   "claude"
+  ],
+  "denied_models": [],
+  "quota_substitution": true
+ },
  "operations": {
   "engine": {
    "commands": {
@@ -350,21 +364,21 @@
     "migrate_preview": "handsoff migrate <root> --dry-run",
     "rollback": "handsoff rollback <root>",
     "rollback_preview": "handsoff rollback <root> --dry-run",
-    "upgrade": "handsoff upgrade <root> --to v0.3.74",
-    "upgrade_preview": "handsoff upgrade <root> --to v0.3.74 --dry-run"
+    "upgrade": "handsoff upgrade <root> --to v0.3.76",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.76 --dry-run"
    },
-   "compatibility": "0.3.*",
+   "compatibility": "v0.3.76",
    "execution": "unavailable",
    "execution_reason": "execution is not offered while a dashboard is serving this root",
-   "pin": "0.3.*",
+   "pin": "v0.3.76",
    "reason": null,
-   "source": "installed-engine",
-   "source_root": "<home>/Projects/project-handsoff-lane-251",
-   "version": "v0.3.74"
+   "source": "project-drop-in",
+   "source_root": "<root>",
+   "version": "v0.3.76"
   },
   "inventory": [
    {
-    "action_id": "design_approve:66abf9534107c1cf",
+    "action_id": "design_approve:5981601580f1da51",
     "availability": "actionable",
     "consequence": "Authorize the reviewed design",
     "kind": "design_approve",
@@ -374,7 +388,7 @@
     "tone": "primary"
    },
    {
-    "action_id": "design_reject:66abf9534107c1cf",
+    "action_id": "design_reject:5981601580f1da51",
     "availability": "actionable",
     "consequence": "Request a design revision",
     "kind": "design_reject",
@@ -464,7 +478,7 @@
     "tone": "primary"
    },
    {
-    "action_id": "pause:66abf9534107c1cf",
+    "action_id": "pause:5981601580f1da51",
     "availability": "actionable",
     "consequence": "Pause the mission",
     "kind": "pause",
@@ -484,7 +498,7 @@
     "tone": "primary"
    },
    {
-    "action_id": "run_close:66abf9534107c1cf",
+    "action_id": "run_close:5981601580f1da51",
     "availability": "actionable",
     "consequence": "Close the run and release resources",
     "kind": "run_close",
@@ -571,9 +585,9 @@
    "in_flight": [],
    "latest": {
     "REQ-001": {
-     "at": "2026-09-22T18:32:08.355363+00:00",
+     "at": "2026-09-23T07:15:05.867355+00:00",
      "ok": true,
-     "run_id": "vr-eb147a65271b4543933adc93fbf47519"
+     "run_id": "vr-1ef463caa51244a0be55c63f284c8ff3"
     }
    },
    "live": {
@@ -587,10 +601,10 @@
  },
  "operator_actions": [
   {
-   "action_id": "design_approve:66abf9534107c1cf",
-   "binding": "66abf9534107c1cf",
+   "action_id": "design_approve:5981601580f1da51",
+   "binding": "5981601580f1da51",
    "consequence": "Opens Phase 3 for the exact reviewed design",
-   "created_at": "2026-09-22T18:32:08.688106+00:00",
+   "created_at": "2026-09-23T07:15:06.186956+00:00",
    "kind": "design_approve",
    "label": "Authorize design",
    "operation": "design-approve",
@@ -603,10 +617,10 @@
    "type": "design_approval"
   },
   {
-   "action_id": "design_reject:66abf9534107c1cf",
-   "binding": "66abf9534107c1cf",
+   "action_id": "design_reject:5981601580f1da51",
+   "binding": "5981601580f1da51",
    "consequence": "Returns the design to the Architect and Reviewer",
-   "created_at": "2026-09-22T18:32:08.688106+00:00",
+   "created_at": "2026-09-23T07:15:06.186956+00:00",
    "kind": "design_reject",
    "label": "Request design revision",
    "operation": "design-reject",
@@ -619,10 +633,10 @@
    "type": "design_approval"
   },
   {
-   "action_id": "run_close:66abf9534107c1cf",
-   "binding": "66abf9534107c1cf",
+   "action_id": "run_close:5981601580f1da51",
+   "binding": "5981601580f1da51",
    "consequence": "Records closure and releases run-owned resources",
-   "created_at": "2026-09-22T18:32:08.688106+00:00",
+   "created_at": "2026-09-23T07:15:06.186956+00:00",
    "kind": "run_close",
    "label": "Cleanly close run",
    "operation": "run-close",
@@ -722,7 +736,7 @@
  "project": {
   "feature": "Snapshot contract",
   "logo_url": null,
-  "name": "handsoff-test-x6npmrh7"
+  "name": "handsoff-test-q4k65inm"
  },
  "questions": {
   "answered": [],
@@ -751,6 +765,7 @@
   "history": [],
   "last": null,
   "pending": null,
+  "progress": null,
   "release_plan": null
  },
  "review": {
@@ -1068,7 +1083,7 @@
     "Data shape: none"
    ],
    "architect": "host-architect",
-   "at": "2026-09-22T18:32:08.475402+00:00",
+   "at": "2026-09-23T07:15:05.981828+00:00",
    "based_on_review_attempt": 0,
    "constraints": [],
    "decisions": [
@@ -1078,10 +1093,10 @@
    "proposal_hash": "32242a274301144a064dd07a74765d47c518cf1f2c0a18e46854fc230b02b5ae",
    "provenance": {
     "actor": "host-architect",
-    "executable": "<home>/Projects/project-handsoff-lane-251/bin/handsoff_supervisor.py",
+    "executable": "<home>/Projects/project-handsoff-lane-agent-efficiency/bin/handsoff_supervisor.py",
     "host_session_id": null,
-    "pid": 95387,
-    "recorded_at": "2026-09-22T18:32:08.475402+00:00"
+    "pid": 78897,
+    "recorded_at": "2026-09-23T07:15:05.981828+00:00"
    },
    "session_id": null,
    "summary": "s",
@@ -1092,7 +1107,7 @@
   },
   "design_review": {
    "architect": "test-architect",
-   "at": "2026-09-22T18:32:08.688106+00:00",
+   "at": "2026-09-23T07:15:06.186956+00:00",
    "attempt": 1,
    "by": "test-design-reviewer",
    "config_hash": "68ac056203741fdff6cbfb5493aac7ce78bea012620109b26fa6415f417b9c30",
@@ -1144,7 +1159,7 @@
    "detail": "Get explicit human approval of the independently reviewed design.",
    "ended_at": null,
    "exit_code": null,
-   "last_activity_at": "2026-09-22T18:32:08.688106+00:00",
+   "last_activity_at": "2026-09-23T07:15:06.186956+00:00",
    "process_signal": "none",
    "role": null,
    "seconds_since_activity": 0,
@@ -1152,6 +1167,14 @@
    "state": "waiting"
   },
   "live_verification_id": null,
+  "model_policy": {
+   "allowed_adapters": [
+    "codex",
+    "claude"
+   ],
+   "denied_models": [],
+   "quota_substitution": true
+  },
   "next_action": "Get explicit human approval of the independently reviewed design.",
   "original_symptom_evidence_id": null,
   "pending_questions": [],
@@ -1184,11 +1207,12 @@
    "symptom_reproduced": "not_verifiable",
    "symptom_resolved": "not_verifiable"
   },
+  "risk_class": "routine",
   "stall_warning": null,
   "status": "blocked",
   "summary": "",
-  "updated_at": "2026-09-22T18:32:08.688106+00:00",
-  "verification_head": "c167c1a2f3ff245fbdccd85979cb2cfaa03bee6b29ed59449875cc95aa9b9883",
+  "updated_at": "2026-09-23T07:15:06.186956+00:00",
+  "verification_head": "e6bc1c8bc578838ce6fd97e6f0e0865a7112eb49a50f86c4d514d484367c146c",
   "verification_progress": 20,
   "work_item_delivery": {
    "issue-218": {
@@ -1215,7 +1239,7 @@
   "headline": "Holding position. Awaiting your command, Pilot.",
   "label": "Pilot approval needed",
   "latest_event": {
-   "at": "2026-09-22T18:32:08.689223+00:00",
+   "at": "2026-09-23T07:15:06.188007+00:00",
    "kind": "design_review_approved",
    "message": "Independent design review approved: Test-fixture independent design review"
   },
@@ -1230,9 +1254,9 @@
   "in_flight": [],
   "latest": {
    "REQ-001": {
-    "at": "2026-09-22T18:32:08.355363+00:00",
+    "at": "2026-09-23T07:15:05.867355+00:00",
     "ok": true,
-    "run_id": "vr-eb147a65271b4543933adc93fbf47519"
+    "run_id": "vr-1ef463caa51244a0be55c63f284c8ff3"
    }
   },
   "live": {
@@ -1246,9 +1270,9 @@
  "verifications": [
   {
    "acceptance_hash": null,
-   "at": "2026-09-22T18:32:08.355363+00:00",
+   "at": "2026-09-23T07:15:05.867355+00:00",
    "binding": {
-    "true": "65cb6184fe5eac7f791d0464e4a1f6a2b22cf0910f507254c2c7883edbc1b534"
+    "true": "4d7b4d0e5a6700d3d318b55b946e46436da8f81efd3ab03ac9808e852186c1e1"
    },
    "by": "test-implementer",
    "commands": [
@@ -1263,12 +1287,12 @@
    },
    "description": "",
    "executed": true,
-   "feature_hash": "6b41c16f2e5953ecfcd57f15104986095f1e93cfaa2184bc22668f77e9a55c76",
-   "hash": "c167c1a2f3ff245fbdccd85979cb2cfaa03bee6b29ed59449875cc95aa9b9883",
+   "feature_hash": "92ab3db0daad35e3892aca309f22be02f17673538cb4730517a8d6053a67ff45",
+   "hash": "e6bc1c8bc578838ce6fd97e6f0e0865a7112eb49a50f86c4d514d484367c146c",
    "kind": "checks",
    "ok": true,
    "prev_hash": "GENESIS",
-   "repository_digest": "cb2c8bc66de0285d070a2e319181c2adcb0e6e890b98faca5061c57ef0d4f41b",
+   "repository_digest": "9c3e40a7de5065341dbea5e85d2f37165d68b9f4b648d4a68b283ab3ec751054",
    "results": [
     {
      "command": "true",
@@ -1281,7 +1305,7 @@
     }
    ],
    "reused_from": null,
-   "run_id": "vr-eb147a65271b4543933adc93fbf47519"
+   "run_id": "vr-1ef463caa51244a0be55c63f284c8ff3"
   }
  ],
  "work_items": {
@@ -1303,7 +1327,7 @@
   "items": [
    {
     "blocker": "Get explicit human approval of the independently reviewed design.",
-    "created_at": "2026-09-22T18:32:08.134685+00:00",
+    "created_at": "2026-09-23T07:15:05.592049+00:00",
     "criteria": [
      "REQ-001"
     ],
@@ -1323,7 +1347,7 @@
     "required": true,
     "status": "blocked",
     "title": "Issue #218",
-    "updated_at": "2026-09-22T18:32:08.134685+00:00",
+    "updated_at": "2026-09-23T07:15:05.592049+00:00",
     "url": ""
    }
   ],

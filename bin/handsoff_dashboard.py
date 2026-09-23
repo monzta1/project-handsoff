@@ -311,6 +311,7 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
                 # #58: every bounded log append invalidates Mission Control.
                 lib.agent_output_path(root),
                 lib.operations_path(root),
+                root / lib.PREFLIGHT_FILE,
                 root / ".handsoff-regression.json",
                 root / tranche.PROPOSAL_FILE,
             ]
@@ -1191,7 +1192,9 @@ def build_snapshot(root: Path) -> dict:
             "operation": operation,
         },
         "metrics": metrics,
-        "adaptive_routing": lib.adaptive_routing_snapshot(status, cfg),
+        "adaptive_routing": lib.adaptive_routing_snapshot(status, cfg, host=host, events=events),
+        "model_policy": deepcopy(status.get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))),
+        "launch_preflight": lib.launch_preflight_snapshot(root),
         "audit": {
             "healthy": audit_healthy,
             "gate_errors": gate_errors,

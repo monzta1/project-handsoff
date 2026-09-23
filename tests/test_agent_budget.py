@@ -55,6 +55,7 @@ class TestAgentTokenBudget(HandsoffTestCase):
         spec = runtime.build_launch_spec(
             self.tmp, "supervisor", "Dispatch the next governed action.",
             which=lambda name: "/usr/local/bin/codex" if name == "codex" else None,
+            skip_preflight=True,
         )
         self.assertEqual(spec.token_budget, 24_000)
         budget_arg = spec.argv[spec.argv.index("-c") + 1]
@@ -65,6 +66,59 @@ class TestAgentTokenBudget(HandsoffTestCase):
         disabled = [spec.argv[i + 1] for i, value in enumerate(spec.argv[:-1]) if value == "--disable"]
         self.assertEqual(tuple(disabled), runtime.CODEX_DISABLED_FEATURES)
         self.assertEqual(spec.argv[-1], "-")
+
+    def test_implementation_delta_drives_scope_and_followup_budget_facts(self):
+        self.init("Budget the actual implementation delta")
+        delta = {
+            "schema": 1, "previous_attempt": 1,
+            "changed_files": ["bin/a.py", "dashboard/a.js", "tests/test_a.py"],
+            "unresolved_findings": [], "affected_criteria": ["REQ-001"],
+            "new_evidence": ["vr-example"],
+        }
+        with mock.patch.object(runtime, "build_role_input", return_value="bounded packet"), \
+                mock.patch.object(runtime, "implementation_review_delta_packet", return_value=delta), \
+                mock.patch.object(lib, "evaluate_launch_rules", return_value=None):
+            spec = runtime.build_launch_spec(
+                self.tmp, "reviewer", "Review the delta.",
+                which=lambda name: f"/usr/local/bin/{name}", skip_preflight=True,
+            )
+        self.assertTrue(spec.budget_decision["followup"])
+        self.assertEqual(spec.budget_decision["changed_files"], 3)
+
+    def test_implementer_receives_the_exact_reviewer_approved_contract(self):
+        self.init("Reviewer first implementation contract")
+        acceptance = self.read_acceptance()
+        acceptance["criteria"][0].update({
+            "requirement": "Render the exact accepted outcome",
+            "verification": "automated",
+            "tests": ["python3 -m unittest tests.test_agent_budget -v"],
+        })
+        status = self.read_status()
+        status["phase_number"] = 3
+        status["phase"] = lib.PHASES[3]
+        status["design_review"] = {
+            "decision": "approved", "by": "independent-reviewer", "attempt": 1,
+            "design_hash": lib.design_hash(acceptance["criteria"]),
+        }
+        self.write_acceptance(acceptance)
+        (self.tmp / "handsoff-status.json").write_text(json.dumps(status))
+
+        text = runtime.build_role_input(self.tmp, "implementer", "Build the contract.")
+        self.assertIn("# Reviewer-approved implementation contract", text)
+        contract_text = text.split(
+            "# Reviewer-approved implementation contract\n\n", 1,
+        )[1].split("\n\n", 1)[0]
+        contract = json.loads(contract_text)
+        self.assertEqual(contract["issued_by"], "independent-reviewer")
+        self.assertEqual(contract["criteria"][0]["requirement"],
+                         "Render the exact accepted outcome")
+        self.assertEqual(contract["criteria"][0]["tests"],
+                         ["python3 -m unittest tests.test_agent_budget -v"])
+
+        acceptance["criteria"][0]["requirement"] = "Unreviewed replacement"
+        self.write_acceptance(acceptance)
+        stale = runtime.build_role_input(self.tmp, "implementer", "Build the contract.")
+        self.assertNotIn('\"issued_by\":\"independent-reviewer\"', stale)
 
     def test_config_is_bounded_and_tasks_cannot_become_context_dumps(self):
         config = self.tmp / "handsoff.toml"

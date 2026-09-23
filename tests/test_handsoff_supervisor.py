@@ -8269,7 +8269,7 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         self.assertEqual(self._authorize().returncode, 0)
         toml = self.tmp / "handsoff.toml"
         toml.write_text(toml.read_text().replace(
-            "reviewer = []", 'reviewer = [{ adapter = "claude", model = "independent" }]', 1))
+            "reviewer = []", 'reviewer = [{ adapter = "codex", model = "independent" }]', 1))
         # The reviewer fallback planner needs an implementer to stay
         # independent from; a completed implementer session provides it
         # and is itself never budgeted.
@@ -8291,7 +8291,7 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         self.assertEqual(record["action"], "launch", record)
         self.assertEqual(self.read_status()["design_review_authorization"]["launch_session_id"], self._sid(1))
         self.lib.claim_precreated_agent_session(
-            self.tmp, self._sid(2), role="reviewer", adapter="claude", requested_model="independent")
+            self.tmp, self._sid(2), role="reviewer", adapter="codex", requested_model="independent")
         status = self.read_status()
         self.assertEqual(status["design_review_authorization"]["launch_session_id"], self._sid(2))
         self.assertIsNone(status["design_review_authorization"]["consumed_at"])
@@ -10678,7 +10678,7 @@ class TestFallbackPolicy(HandsoffTestCase):
         self.assertEqual(decision["profile"], {"adapter": "codex", "model": "eligible"})
         self.assertEqual(decision["skipped"], [
             {"index": 0, "reason": "invalid_profile"},
-            {"index": 1, "reason": "adapter_unavailable"},
+            {"index": 1, "reason": "cross_vendor_not_allowed"},
             {"index": 2, "reason": "already_attempted"},
         ])
         serialized = json.dumps(decision)
@@ -11067,16 +11067,17 @@ class TestAgentReplacement(HandsoffTestCase):
             )
 
     def test_successful_running_replacement_launches_fresh_same_phase_session(self):
-        self._policy("implementer", [{"adapter": "claude", "model": "sonnet"}])
+        self._policy("implementer", [{"adapter": "codex", "model": "secondary"}])
         source = self._session()
         before = self.read_status()
         record = self._reserve(source)
         self.assertEqual(record["action"], "launch")
         self.assertNotEqual(record["to_session_id"], source)
-        self.assertEqual(record["selected_profile"], {"adapter": "claude", "model": "sonnet"})
+        self.assertEqual(record["selected_profile"], {"adapter": "codex", "model": "secondary"})
         fallback = self.runtime.build_profile_launch_spec(
             self.tmp, "implementer", "trusted in-memory task", record["selected_profile"],
             which=lambda adapter: f"/usr/local/bin/{adapter}",
+            skip_preflight=True,
         )
         claim_seen_before_spawn = []
         def popen_after_claim(*args, **kwargs):
@@ -11121,7 +11122,7 @@ class TestAgentReplacement(HandsoffTestCase):
 
     def test_failed_relaunch_tries_next_fallback_within_cap(self):
         self._policy("implementer", [
-            {"adapter": "claude", "model": "first"},
+            {"adapter": "codex", "model": "first"},
             {"adapter": "codex", "model": "second"},
         ], cap=2)
         spec = self.runtime.LaunchSpec(
@@ -11133,10 +11134,11 @@ class TestAgentReplacement(HandsoffTestCase):
             if isinstance(outcome, BaseException):
                 raise outcome
             return outcome
-        self.assertEqual(self.runtime.execute_with_recovery(
-            spec, popen_factory=launch, which=lambda adapter: f"/usr/local/bin/{adapter}",
-            snapshotter=lambda root: dict(self.repo),
-        ), 0)
+        with mock.patch.object(self.lib, "launch_preflight", return_value={"state": "ready"}):
+            self.assertEqual(self.runtime.execute_with_recovery(
+                spec, popen_factory=launch, which=lambda adapter: f"/usr/local/bin/{adapter}",
+                snapshotter=lambda root: dict(self.repo),
+            ), 0)
         status = self.read_status()
         self.assertEqual([r["selected_profile"]["model"] for r in status["agent_replacements"]],
                          ["first", "second"])
@@ -11147,6 +11149,41 @@ class TestAgentReplacement(HandsoffTestCase):
         self.assertEqual(len(status["agent_replacements"]), 2)
         self.assertEqual(status["agent_sessions"][status["current_agent_sessions"]["implementer"]]["state"],
                          "completed")
+
+    def test_blocked_recovery_preflight_stops_before_reservation_or_retry(self):
+        self._policy("implementer", [
+            {"adapter": "codex", "model": "first"},
+            {"adapter": "codex", "model": "second"},
+        ], cap=2)
+        source = self._session()
+        spec = self.runtime.LaunchSpec(
+            "implementer", "codex", "primary", ("/usr/local/bin/codex",),
+            str(self.tmp), "bounded task", "configured",
+        )
+        before = self.read_status()
+        spawn = mock.Mock(side_effect=AssertionError("blocked preflight must not spawn"))
+        with mock.patch.dict(os.environ, {"HANDSOFF_SKIP_PREFLIGHT": ""}), \
+             mock.patch.object(self.lib, "launch_preflight", return_value={
+                 "state": "blocked", "category": "auth_failure",
+                 "reason": "adapter is not authenticated",
+             }) as preflight, \
+             mock.patch.object(
+                 self.lib, "claim_precreated_agent_session",
+                 wraps=self.lib.claim_precreated_agent_session,
+             ) as claim:
+            with self.assertRaisesRegex(self.lib.HandsoffError, "auth_failure"):
+                self.runtime.execute_with_recovery(
+                    spec, from_session_id=source, popen_factory=spawn,
+                    which=lambda adapter: f"/usr/local/bin/{adapter}",
+                    snapshotter=lambda root: dict(self.repo),
+                )
+        after = self.read_status()
+        self.assertEqual(preflight.call_count, 1)
+        self.assertEqual(preflight.call_args.kwargs["model"], "first")
+        self.assertEqual(claim.call_count, 0)
+        spawn.assert_not_called()
+        self.assertEqual(after["agent_sessions"], before["agent_sessions"])
+        self.assertEqual(after.get("agent_replacements", []), before.get("agent_replacements", []))
 
     def test_nonrecoverable_and_unbounded_quality_requests_are_refused(self):
         self._policy("implementer", [{"adapter": "claude", "model": "fallback"}])
@@ -11212,7 +11249,7 @@ class TestAgentReplacement(HandsoffTestCase):
                 event_kind="test_acceptance_prepared",
                 event_message="Prepared trusted acceptance state for replacement handoff",
             )
-        self._policy("implementer", [{"adapter": "claude", "model": "safe"}])
+        self._policy("implementer", [{"adapter": "codex", "model": "safe"}])
         source = self._session()
         record = self._reserve(source)
         handoff = record["handoff"]
@@ -11229,16 +11266,16 @@ class TestAgentReplacement(HandsoffTestCase):
         self._session(role="implementer", adapter="codex", model="impl", state="completed")
         self._policy("reviewer", [
             {"adapter": "codex", "model": "impl"},
-            {"adapter": "claude", "model": "independent"},
+            {"adapter": "codex", "model": "independent"},
         ])
         reviewer = self._session(role="reviewer", model="review-primary")
         status_before = self.read_status()
         original_binding = status_before["reviewer_implementer_bindings"][reviewer]
         self.assertEqual((original_binding["adapter"], original_binding["model"]), ("codex", "impl"))
-        self._session(role="implementer", adapter="claude", model="independent", state="completed")
+        self._session(role="implementer", adapter="codex", model="independent", state="completed")
         acceptance_before = (self.tmp / "handsoff-acceptance.json").read_bytes()
         record = self._reserve(reviewer)
-        self.assertEqual(record["selected_profile"], {"adapter": "claude", "model": "independent"})
+        self.assertEqual(record["selected_profile"], {"adapter": "codex", "model": "independent"})
         status_after = self.read_status()
         copied_binding = status_after["reviewer_implementer_bindings"][record["to_session_id"]]
         self.assertEqual((copied_binding["adapter"], copied_binding["model"]), ("codex", "impl"))

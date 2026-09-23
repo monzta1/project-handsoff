@@ -6,6 +6,15 @@ is `claude-host`, and the reverse), launched through `handsoff agent`, never
 a subagent of the host's own session (the #112 gate refuses a shared host
 session id).
 
+**Reviewer first, one implementation contract.** Before any implementation,
+the design Reviewer validates every acceptance criterion, including its exact
+wording, verification policy and test commands. Approval binds that registry's
+design hash and issues it unchanged as `# Reviewer-approved implementation
+contract` to the Implementer. The Implementer codes to that packet exactly;
+the post-implementation Reviewer receives and judges the same packet. An
+ambiguous or incomplete criterion is fixed before coding, not discovered as a
+late review interpretation.
+
 The reviewer role is stable; its vendor is replaceable. When the selected
 provider/model is at or out of account quota, the Supervisor chooses an
 explicit equivalent-or-stronger model from another vendor without asking the
@@ -16,7 +25,8 @@ The ledger and MODEL HANDOFF JOURNEY name both exact adapter/model identities
 and `provider_quota` as the reason. Pause for the Pilot only when no eligible
 cross-vendor reviewer exists or project policy prohibits all eligible choices.
 An internal Handsoff per-session token-budget exhaustion is different: do not
-spend again automatically.
+spend again automatically. Authentication or local runtime failures are also
+not quota and do not trigger cross-vendor fallback.
 
 **A design review task** names: the kind and attempt (`Design review
 (kind: design), attempt 1`), the absolute root, the files the change will
