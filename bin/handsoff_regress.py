@@ -663,7 +663,7 @@ def _isolated_worker(root: Path, command_index: int, shard_index: int) -> tuple[
     source = base / "source"
     ignored = shutil.ignore_patterns(
         ".git", ".venv", "venv", "node_modules", "__pycache__", "*.pyc", "*.bak",
-        PROGRESS_FILE, INVENTORY_FILE, test_progress.PROGRESS_FILE,
+        ".handsoff-*", PROGRESS_FILE, INVENTORY_FILE, test_progress.PROGRESS_FILE,
     )
     shutil.copytree(root, source, symlinks=True, ignore=ignored)
     # Tests and build tools may legitimately inspect the tracked inventory.

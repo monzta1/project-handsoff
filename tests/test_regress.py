@@ -175,6 +175,10 @@ class TestRunBattery(unittest.TestCase):
         })
 
     def test_shards_use_unique_state_cache_temp_service_and_port_namespaces(self):
+        (self.tmp / ".handsoff-ci.json").write_text("{}\n")
+        fixture_runtime = self.tmp / ".handsoff-fixture"
+        fixture_runtime.mkdir()
+        (fixture_runtime / "criteria.json").write_text("{}\n")
         (self.tmp / "tests" / "test_isolation.py").write_text(textwrap.dedent('''
             import os, pathlib, socket, subprocess, unittest
 
@@ -189,6 +193,8 @@ class TestRunBattery(unittest.TestCase):
                         capture_output=True, text=True, check=True,
                     ).stdout.splitlines()
                     self.assertEqual(tracked, ["tests/test_isolation.py"])
+                    self.assertFalse(pathlib.Path(".handsoff-ci.json").exists())
+                    self.assertFalse(pathlib.Path(".handsoff-fixture").exists())
                     sock = socket.socket()
                     try:
                         sock.bind(("127.0.0.1", int(os.environ["HANDSOFF_PORT_BASE"])))

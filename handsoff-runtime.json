@@ -10,7 +10,7 @@
     "bin/handsoff_lib.py": "d6ccb9987cd7aa171d19e4cf24faf4471c1299f5f1c11ea8a36e8c8edd7fc32a",
     "bin/handsoff_manifest.py": "384bd29b88a1bf2ff60e7fc5448e008ab41e659875fc8b7aff0a9746c1a96c9d",
     "bin/handsoff_progress.py": "71ca3c940b40c1c717fe51b5d075b9dd93cf2ba7a005070bd8c28cc34acf998d",
-    "bin/handsoff_regress.py": "ba43518a2000bb94c072313d9e08e8546a7682b16ceba7e57e4c642f7350f640",
+    "bin/handsoff_regress.py": "1e3178a9ed466dd1ec98eccd0b5b1599f8b8626eee7932005167c8417154e589",
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",
     "bin/handsoff_release_transaction.py": "31318f55dc7f7e0d6d19903488164b81e3e458fdc54acc609c5de1b992fb6889",
     "bin/handsoff_runtime_control.py": "9e0e6c5b8bc849982f99f53287ff9925c5972883a4b37460a3d6bc3dadeedb1e",
