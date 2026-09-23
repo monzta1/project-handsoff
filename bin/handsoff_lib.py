@@ -14173,8 +14173,20 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
         has_report = any(isinstance(c, str) and c.lstrip().startswith(
             REPORT_MARKER.split("{head}")[0]) for c in existing)
+        report_heads = {
+            match.group(1) for comment in existing if isinstance(comment, str)
+            for match in re.finditer(r"<!--\s*handsoff-report\s+([0-9a-f]{64})\s*-->", comment)
+        }
+        closure_heads = {
+            match.group(1) for comment in existing if isinstance(comment, str)
+            for match in re.finditer(r"Closed by the Handsoff run report \(([0-9a-f]{12})\)", comment)
+        }
+        canonically_attributed = any(
+            any(report_head.startswith(close_head) for report_head in report_heads)
+            for close_head in closure_heads
+        )
         if str(issue.get("state")).upper() == "CLOSED" \
-                and not (number in known_handsoff_closed and has_report):
+                and not ((number in known_handsoff_closed and has_report) or canonically_attributed):
             return {"posted": [], "skipped": [], "reason": "issue_state",
                     "detail": f"issue #{number} is closed without attributable Handsoff ownership; nothing posted"}
         issue_views[number] = issue
@@ -14212,8 +14224,12 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
             # lost, a retry may safely reconcile this attempted operation
             # instead of misclassifying its own close as human/unknown.
             save(number, "closed", "intent")
-            _gh(["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
-                runner=runner, cwd=root)
+            close_result = _gh(
+                ["issue", "close", str(number), "-c", f"Closed by the Handsoff run report ({head[:12]})."],
+                runner=runner, cwd=root,
+            )
+            if close_result.returncode == 0:
+                save(number, "closed", "dispatched")
             close_readback = _gh(["issue", "view", str(number), "--json", "state"],
                                  runner=runner, cwd=root)
             try:

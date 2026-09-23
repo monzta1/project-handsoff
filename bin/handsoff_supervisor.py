@@ -5012,7 +5012,7 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
         rows = transaction.record.setdefault("items", {})
         known_closed = {int(number) for number, row in rows.items()
                         if str(number).isdigit()
-                        and (row.get("closed") is True or row.get("closed_intent") is True)}
+                        and (row.get("closed") is True or row.get("closed_dispatched") is True)}
         # Prior close episodes remain attributable through the authenticated
         # event ledger.  This permits a deliberate run-reopen to reconcile a
         # previously completed Handsoff closure without treating an arbitrary
@@ -5028,6 +5028,8 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
             row = rows.setdefault(str(number), {})
             if state == "intent":
                 row[f"{operation}_intent"] = True
+            elif state == "dispatched":
+                row[f"{operation}_dispatched"] = True
             elif state == "complete":
                 row[operation] = True
             transaction._persist()

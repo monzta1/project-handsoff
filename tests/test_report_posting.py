@@ -222,11 +222,35 @@ class ReportPostingTests(HandsoffTestCase):
         records = list((self.tmp / ".handsoff-archive" / "close-transactions").glob("*.json"))
         record = json.loads(records[0].read_text())
         self.assertTrue(record["items"]["40"]["closed_intent"])
+        self.assertTrue(record["items"]["40"]["closed_dispatched"])
 
         self._gh_state({**self._gh_state(), "fail_close_readback": False})
         retry = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
         self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
         self.assertNotIn("closed without attributable Handsoff ownership", retry.stdout)
+
+    def test_failed_close_intent_does_not_attribute_a_later_human_closure(self):
+        self._run()
+        self._gh_state({**self._gh_state(), "fail_close": True, "fail_edit": True})
+        first = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(first.returncode, 0)
+        records = list((self.tmp / ".handsoff-archive" / "close-transactions").glob("*.json"))
+        record = json.loads(records[0].read_text())
+        self.assertTrue(record["items"]["40"]["closed_intent"])
+        self.assertNotIn("closed_dispatched", record["items"]["40"])
+
+        state = self._gh_state()
+        state["issues"]["40"]["closed"] = True
+        state["fail_close"] = False
+        state["fail_edit"] = False
+        self._gh_state(state)
+        before = len(self._calls())
+        retry = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
+        self.assertNotEqual(retry.returncode, 0)
+        self.assertIn("closed without attributable Handsoff ownership", retry.stdout)
+        mutations = [call for call in self._calls()[before:]
+                     if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
+        self.assertEqual(mutations, [])
 
     def test_without_post_nothing_leaves_and_no_gh_auth_records_not_posted(self):
         self._run()
