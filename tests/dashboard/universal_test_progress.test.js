@@ -20,10 +20,12 @@ test("any normalized test execution gets a prominent accessible progress surface
 });
 
 test("overall and test progress stay visible with readable responsive sizing", () => {
-  assert.match(html, /id="progress-dock"[^>]*aria-label="Always-visible mission progress"/);
-  assert.match(html, /id="progress-dock-overall-bar"[^>]*role="progressbar"/);
-  assert.match(html, /id="progress-dock-regression-bar"[^>]*role="progressbar"/);
-  assert.match(css, /\.progress-dock \{ position: fixed;/);
+  assert.match(html, /id="topbar-progress"[^>]*aria-label="Always-visible mission progress"/);
+  assert.match(html, /id="topbar-overall-progress"[^>]*role="progressbar"/);
+  assert.match(html, /id="topbar-criteria"/);
+  assert.match(html, /id="topbar-test-state"/);
+  assert.match(css, /\.topbar \{[^}]*position: sticky;/);
+  assert.doesNotMatch(html, /id="progress-dock"/);
   assert.match(css, /\.regression-progress-head strong \{[^}]*30px/);
   assert.match(css, /@media \(max-width:/);
 });
