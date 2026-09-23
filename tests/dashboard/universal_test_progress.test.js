@@ -30,6 +30,13 @@ test("overall and test progress stay visible with readable responsive sizing", (
   assert.match(css, /@media \(max-width:/);
 });
 
+test("sticky progress stays proportional to the other topbar controls", () => {
+  assert.match(css, /\.settings-toggle \{[^}]*height: 34px;/);
+  assert.match(css, /\.topbar-progress \{[^}]*height: 34px;/);
+  assert.match(css, /\.topbar-progress-item strong \{[^}]*13px\/1 var\(--mono\)/);
+  assert.match(css, /\.topbar-progress-item small \{ display: none; \}/);
+});
+
 test("shard grid exposes state, counts, and bounded server-provided rows", () => {
   assert.match(html, /id="regression-progress-workers"/);
   assert.match(app, /unit\.state\.toUpperCase\(\)/);

@@ -168,14 +168,14 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 .settings-toggle:focus-visible, .console-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .settings-toggle { height: 34px; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: rgba(255, 255, 255, .02); font: 700 10.5px/1 var(--sans); letter-spacing: .08em; cursor: pointer; }
 .settings-toggle:hover { color: var(--accent); border-color: var(--accent-line); }
-.topbar-progress { display: flex; align-items: stretch; overflow: hidden; border: 1px solid rgba(95, 211, 255, .24); border-radius: 9px; background: rgba(2, 10, 16, .55); box-shadow: inset 0 1px rgba(255, 255, 255, .03), 0 0 18px rgba(95, 211, 255, .06); }
-.topbar-progress-item { position: relative; display: grid; grid-template-columns: auto auto; grid-template-rows: auto auto; align-content: center; column-gap: 8px; min-width: 92px; padding: 7px 12px 6px; border-left: 1px solid rgba(95, 211, 255, .12); }
+.topbar-progress { display: flex; align-items: stretch; height: 34px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: rgba(255, 255, 255, .02); }
+.topbar-progress-item { position: relative; display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0 10px; border-left: 1px solid var(--line); }
 .topbar-progress-item:first-child { border-left: 0; }
-.topbar-progress-item span { align-self: end; color: var(--faint); font: 850 9.5px/1 var(--mono); letter-spacing: .1em; }
-.topbar-progress-item strong { grid-row: 1 / 3; grid-column: 2; align-self: center; color: #f7fbff; font: 800 20px/1 var(--sans); letter-spacing: -.025em; white-space: nowrap; }
-.topbar-progress-item small { grid-column: 1 / 3; margin-top: 4px; color: var(--faint); font: 650 10px/1 var(--mono); white-space: nowrap; }
-.topbar-progress-item.is-overall strong { color: var(--accent); text-shadow: 0 0 12px rgba(95, 211, 255, .35); }
-.topbar-progress-item.is-tests { min-width: 148px; }
+.topbar-progress-item span { color: var(--faint); font: 800 9px/1 var(--mono); letter-spacing: .08em; }
+.topbar-progress-item strong { color: var(--ink); font: 750 13px/1 var(--mono); letter-spacing: .01em; white-space: nowrap; }
+.topbar-progress-item small { display: none; }
+.topbar-progress-item.is-overall strong { color: var(--accent); text-shadow: 0 0 9px rgba(95, 211, 255, .28); }
+.topbar-progress-item.is-tests { min-width: 104px; }
 .topbar-progress-item.is-tests[data-state="running"] strong { color: var(--amber); }
 .topbar-progress-item.is-tests[data-state="passed"] strong { color: var(--emerald); }
 .topbar-progress-item.is-tests[data-state="failed"] strong { color: var(--red); }
@@ -654,10 +654,9 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
   .shell { width: min(100% - 24px, 1560px); }
   .topbar { margin: 0 -12px; padding: 0 12px; gap: 12px; }
   .brand-copy, .last-sync { display: none; }
-  .topbar-progress-item { min-width: 62px; padding-inline: 8px; }
-  .topbar-progress-item.is-tests { min-width: 76px; }
-  .topbar-progress-item span, .topbar-progress-item small { display: none; }
-  .topbar-progress-item strong { grid-column: 1 / 3; font-size: 16px; }
+  .topbar-progress-item { padding-inline: 8px; }
+  .topbar-progress-item.is-tests { min-width: 0; }
+  .topbar-progress-item span { display: none; }
   .bridge { grid-template-columns: 1fr; }
   .signal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-grid { grid-template-columns: 1fr; gap: 2px; }
@@ -801,8 +800,7 @@ a.settings-toggle { display: inline-flex; align-items: center; text-decoration: 
   .topbar { height: 64px; }
   .brand-mark { width: 44px; height: 44px; }
   .settings-toggle { display: none; }
-  .topbar-progress-item { min-width: 58px; }
-  .topbar-progress-item.is-tests { min-width: 72px; }
+  .topbar-progress-item { padding-inline: 7px; }
 }
 /* #184: one line about tokens until a session reports them */
 .metrics-note { margin: 6px 0 0; color: var(--faint); font: 11px/1.4 var(--mono); }
