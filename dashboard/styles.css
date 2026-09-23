@@ -308,6 +308,7 @@ body.input-is-required .decisions-clear { display: none; }
 .regression-progress-head span { color: var(--cyan); font: 700 14px/1 var(--mono); letter-spacing: .12em; }
 .regression-progress-head strong { color: #fff; font: 700 30px/1 var(--display); letter-spacing: -.02em; }
 .regression-progress-head p { margin: 0; max-width: 58%; color: #d8eaf2; font: 14px/1.45 var(--mono); text-align: right; overflow-wrap: anywhere; }
+.regression-progress-mode { margin: -4px 0 12px; color: var(--cyan); font: 700 14px/1.4 var(--mono); letter-spacing: .06em; }
 .regression-progress-bar { height: 14px; overflow: hidden; border: 1px solid rgba(95, 211, 255, .28); border-radius: 999px; background: rgba(1, 8, 14, .82); }
 .regression-progress-bar i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #24a9df, #6ae6d0); box-shadow: 0 0 18px rgba(95, 211, 255, .55); transition: width .35s ease; }
 .regression-progress-stats { display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 8px; margin-top: 14px; }

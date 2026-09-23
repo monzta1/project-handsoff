@@ -547,6 +547,13 @@ def cmd_init(args) -> int:
             "regression_requests": [],
             "active_work_item": None,
             "implemented_by": None, "reviewed_by": None, "deployment_approved": None,
+            "approval_posture": {
+                "profile": cfg.get("execution_profile", "safe"),
+                "require_design_approval": bool(cfg.get("require_design_approval", True)),
+                "require_deployment_approval": bool(cfg.get("deployment_requires_explicit_approval", True)),
+                "waivers_active": (not bool(cfg.get("require_design_approval", True))
+                                   or not bool(cfg.get("deployment_requires_explicit_approval", True))),
+            },
             # #159: a project may waive the Pilot's design click in handsoff.toml;
             # the independent design review below is required regardless.
             "requires_design_approval": bool(cfg.get("require_design_approval", True)), "design_approved": None,
@@ -606,6 +613,13 @@ def cmd_init(args) -> int:
                        "the independent design review remains required",
                        "config_key": "require_design_approval",
         }]
+        waived.insert(0, {
+            "kind": "approval_posture_recorded",
+            "message": (f"Execution profile {status['approval_posture']['profile']}: "
+                        f"design approval {'required' if status['approval_posture']['require_design_approval'] else 'waived'}, "
+                        f"deployment approval {'required' if status['approval_posture']['require_deployment_approval'] else 'waived'}"),
+            **status["approval_posture"],
+        })
         if args.lane == "design":
             lane_actor = args.by.strip() if args.by and args.by.strip() else "unknown"
             waived.append({"kind": "lane_selected", "message": "Design lane selected",

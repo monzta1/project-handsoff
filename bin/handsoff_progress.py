@@ -6,13 +6,14 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+import handsoff_lib as lib
 
 PROGRESS_FILE = ".handsoff-test-progress.json"
 MAX_VISIBLE_UNITS = 16
@@ -50,20 +51,8 @@ def progress_path(root: Path) -> Path:
 
 
 def _atomic_write(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-    finally:
-        try:
-            os.unlink(name)
-        except FileNotFoundError:
-            pass
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    lib.durable_replace(path, rendered.encode("utf-8"))
 
 
 @contextmanager

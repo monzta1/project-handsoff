@@ -104,12 +104,16 @@ def _fleet_log(line: str, path: Path | None = None) -> None:
 
 
 def forget_missing_roots(path: Path | None = None, *, now: datetime | None = None,
-                         forget_after: float = FORGET_AFTER_SECONDS) -> list[dict]:
+                         forget_after: float = FORGET_AFTER_SECONDS,
+                         locked: bool = False) -> list[dict]:
     """#207: every registered root that no longer exists is marked
     missing_since on first sight and forgotten (unregistered, with one log
     line naming its last state and whether the run was ever closed) once it
     has been missing for `forget_after` seconds. A root that is back clears
     the mark. Returns the entries forgotten on this pass."""
+    if not locked:
+        with registry_lock(path):
+            return forget_missing_roots(path, now=now, forget_after=forget_after, locked=True)
     now = now or datetime.now(timezone.utc)
     projects = load_registry(path)
     changed = False
@@ -177,9 +181,12 @@ def install_blocked(path: Path | None = None) -> dict | None:
     return {"count": len(sessions), "sessions": [{k: s[k] for k in ("root", "role", "session_id")} for s in sessions]}
 
 
-def forget_project(root: Path, path: Path | None = None) -> dict:
+def forget_project(root: Path, path: Path | None = None, *, locked: bool = False) -> dict:
     """The FORGET button: removes exactly one entry whose root is gone;
     refuses a root that exists (close or unregister that one deliberately)."""
+    if not locked:
+        with registry_lock(path):
+            return forget_project(root, path, locked=True)
     if Path(str(root)).exists():
         raise lib.HandsoffError("the root exists; close the run or unregister it deliberately")
     projects = load_registry(path)
@@ -211,14 +218,27 @@ class registry_lock:
     """#166: one exclusive lock beside the register, held from the read
     through the write, so two inits on one ticket cannot both see it free."""
 
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, *, timeout: float = 5.0):
         self.path = (path or registry_path()).with_suffix(".lock")
         self.handle = None
+        self.timeout = timeout
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = open(self.path, "a+", encoding="utf-8")
-        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    self.handle.close()
+                    self.handle = None
+                    _fleet_log(f"registry_lock_timeout lock={self.path} timeout_seconds={self.timeout}", self.path)
+                    raise lib.HandsoffError(
+                        f"Fleet registry lock timed out after {self.timeout:g}s; retry the mutation")
+                time.sleep(0.01)
         return self
 
     def __exit__(self, *exc):
@@ -394,10 +414,13 @@ def save_registry(projects: list[dict], path: Path | None = None) -> None:
     lib.atomic_write_json(path, {"schema": 1, "projects": projects})
 
 
-def register_project(root: Path, path: Path | None = None) -> dict:
+def register_project(root: Path, path: Path | None = None, *, locked: bool = False) -> dict:
     root = root.expanduser().resolve()
     if not (root / "handsoff.toml").is_file():
         raise lib.HandsoffError(f"not a Handsoff project: {root}")
+    if not locked:
+        with registry_lock(path):
+            return register_project(root, path, locked=True)
     projects = load_registry(path)
     if not any(item["root"] == str(root) for item in projects):
         projects.append({"root": str(root), "registered_at": datetime.now(timezone.utc).isoformat()})
@@ -406,8 +429,11 @@ def register_project(root: Path, path: Path | None = None) -> dict:
     return next(item for item in projects if item["root"] == str(root))
 
 
-def unregister_project(root: Path, path: Path | None = None) -> bool:
+def unregister_project(root: Path, path: Path | None = None, *, locked: bool = False) -> bool:
     root = str(root.expanduser().resolve())
+    if not locked:
+        with registry_lock(path):
+            return unregister_project(Path(root), path, locked=True)
     projects = load_registry(path)
     retained = [item for item in projects if item["root"] != root]
     if len(retained) == len(projects):

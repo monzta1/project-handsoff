@@ -43,4 +43,19 @@ test("dashboard progress is fed by the shared versioned five-shard inventory", (
   assert.match(regressionRunner, /snapshot\["inventory_id"\]/);
   assert.match(regressionRunner, /DEFAULT_SHARDS = 5/);
   assert.match(regressionRunner, /def balanced_shards\(/);
+  assert.match(html, /id="regression-progress-mode"/);
+  assert.match(app, /progress\.worker_count/);
+  assert.match(app, /progress\.fallback_reason/);
+  assert.match(app, /progress\.mode/);
+  assert.match(regressionRunner, /"worker_count": max_shards if use_shards else 1/);
+  assert.match(regressionRunner, /HANDSOFF_REGRESS_PLAN: mode=/);
+});
+
+test("reviewer isolation is visible on the model handoff journey", () => {
+  assert.match(app, /item\.reviewer_isolation/);
+  assert.match(app, /REVIEWER ISOLATION/);
+  assert.match(app, /isolation\.enforcement/);
+  assert.match(app, /isolation\.project_access/);
+  assert.match(app, /isolation\.network_policy/);
+  assert.match(app, /isolation\.credentials/);
 });

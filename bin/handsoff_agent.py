@@ -50,6 +50,7 @@ class LaunchSpec:
     adaptive_routing: dict | None = None
     # Deterministic pre-launch sizing facts; estimates are not usage.
     budget_decision: dict | None = None
+    reviewer_isolation: dict | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -96,8 +97,8 @@ def _codex_argv(executable: str, role: str, model: str, token_budget: int,
 
 
 def _reviewer_scratch(root: Path, adapter: str, role: str, *, create: bool = True) -> Path | None:
-    """Create the per-session boundary required by a Codex Reviewer."""
-    if role != "reviewer" or adapter != "codex":
+    """Create the provider-neutral external scratch root for a Reviewer."""
+    if role != "reviewer":
         return None
     root = root.resolve()
     if not create:
@@ -517,6 +518,12 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         raise lib.HandsoffError(
             f"managed launch refused: {adapter}/{model} is denied by the mission model policy"
         )
+    isolation = lib.reviewer_isolation_contract(adapter, cfg) if role == "reviewer" else None
+    if isolation is not None and isolation["decision"] != "enforce":
+        raise lib.HandsoffError(
+            f"reviewer launch refused before session reservation: {isolation['reason']} "
+            f"(adapter={adapter}, enforcement={isolation['enforcement']}, decision={isolation['decision']})"
+        )
     stdin = build_role_input(root, role, task, topic)
     implementation_delta = implementation_review_delta_packet(root, cfg, role)
     packet = applicable_design_review_packet(root, cfg, role)
@@ -581,6 +588,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         project_root=str(root),
         adaptive_routing=adaptive_routing,
         budget_decision=budget_decision,
+        reviewer_isolation=isolation,
     )
 
 
@@ -616,6 +624,12 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     token_budget = _effective_token_budget(
         configured_budget, role, lib.managed_design_context(root, role),
     )
+    isolation = lib.reviewer_isolation_contract(adapter, cfg) if role == "reviewer" else None
+    if isolation is not None and isolation["decision"] != "enforce":
+        raise lib.HandsoffError(
+            f"reviewer fallback refused before session reservation: {isolation['reason']} "
+            f"(adapter={adapter}, decision={isolation['decision']})"
+        )
     scratch = _reviewer_scratch(root, adapter, role)
     if adapter == "codex":
         argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
@@ -653,6 +667,7 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         env_overrides={"TMPDIR": str(scratch)} if scratch else None,
         project_root=str(root.resolve()),
         budget_decision=budget_decision,
+        reviewer_isolation=isolation,
     )
 
 
@@ -873,6 +888,14 @@ def _sensitive_environment_values(environment: dict[str, str]) -> tuple[str, ...
     return tuple(sorted(values, key=len, reverse=True))
 
 
+def _reviewer_environment(environment: dict[str, str], overrides: dict[str, str] | None = None) -> dict[str, str]:
+    """Pass operational variables but strip every credential-shaped name."""
+    cleaned = {name: value for name, value in environment.items()
+               if not _SENSITIVE_ENV_NAME.search(str(name))}
+    cleaned.update(overrides or {})
+    return cleaned
+
+
 def _redact_output_line(line: str, prompt_lines: set[str], prompt_fragments: tuple[str, ...],
                         sensitive_values: tuple[str, ...]) -> str:
     """Host-side redaction before output can touch portable storage."""
@@ -1033,6 +1056,11 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     root = Path(spec.project_root or spec.cwd).resolve()
     actor = lib.validate_agent_actor(actor or lib.default_agent_actor(spec.adapter, spec.role))
     if precreated_session_id is None:
+        isolation = spec.reviewer_isolation
+        if spec.role == "reviewer" and isolation is None:
+            isolation = lib.reviewer_isolation_contract(spec.adapter, lib.load_config(root))
+            if isolation["decision"] != "enforce":
+                raise lib.HandsoffError(f"reviewer launch refused before session reservation: {isolation['reason']}")
         session = lib.create_agent_session(
             root, role=spec.role, actor=actor, adapter=spec.adapter,
             requested_model=spec.model, resolution_source=spec.resolution_source,
@@ -1040,6 +1068,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             tier=spec.tier, tier_reason=spec.tier_reason, amendment_id=spec.amendment_id,
             adaptive_routing=spec.adaptive_routing,
             budget_decision=spec.budget_decision,
+            reviewer_isolation=isolation,
         )
     else:
         session = lib.claim_precreated_agent_session(
@@ -1048,10 +1077,11 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         )
         actor = session["actor"]
     session_id = session["session_id"]
-    child_env = os.environ.copy()
+    child_env = (_reviewer_environment(os.environ.copy(), spec.env_overrides)
+                 if spec.role == "reviewer" else os.environ.copy())
     child_env[MANAGED_ROLE_ENV] = spec.role
     child_env[MANAGED_SESSION_ENV] = session_id
-    if spec.env_overrides:
+    if spec.env_overrides and spec.role != "reviewer":
         child_env.update(spec.env_overrides)
     portable_output = _PortableOutput(
         root, session_id, spec.role, spec.adapter, spec.stdin, child_env,

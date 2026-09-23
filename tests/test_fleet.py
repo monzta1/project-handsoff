@@ -1,5 +1,6 @@
 import http.client
 import json
+import multiprocessing
 import os
 import shutil
 import tempfile
@@ -17,6 +18,18 @@ sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard
 import handsoff_fleet as fleet
 import handsoff_lib as lib
+
+
+def _register_in_process(root, registry):
+    fleet.register_project(Path(root), Path(registry))
+
+
+def _lock_in_process(registry, queue):
+    try:
+        with fleet.registry_lock(Path(registry), timeout=0.1):
+            pass
+    except Exception as exc:
+        queue.put(str(exc))
 
 
 class _FleetFixture(unittest.TestCase):
@@ -50,6 +63,34 @@ class _FleetFixture(unittest.TestCase):
 
 
 class FleetMissionControlTests(_FleetFixture):
+    def test_process_concurrent_register_preserves_every_project(self):
+        roots = [self.project(f"concurrent-{index}") for index in range(4)]
+        context = multiprocessing.get_context("fork")
+        workers = [context.Process(target=_register_in_process,
+                                   args=(str(root), str(self.registry))) for root in roots]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(10)
+            self.assertEqual(worker.exitcode, 0)
+        saved = fleet.load_registry(self.registry)
+        self.assertEqual({item["root"] for item in saved}, {str(root.resolve()) for root in roots})
+        self.assertEqual(json.loads(self.registry.read_text())["schema"], 1)
+
+    def test_registry_lock_contention_fails_actionably_without_mutation(self):
+        root = self.project("lock-timeout")
+        fleet.register_project(root, self.registry)
+        before = self.registry.read_bytes()
+        context = multiprocessing.get_context("fork")
+        queue = context.Queue()
+        with fleet.registry_lock(self.registry):
+            worker = context.Process(target=_lock_in_process, args=(str(self.registry), queue))
+            worker.start()
+            worker.join(5)
+        self.assertEqual(worker.exitcode, 0)
+        self.assertIn("lock timed out", queue.get(timeout=2))
+        self.assertEqual(self.registry.read_bytes(), before)
+
     def test_registry_and_multi_project_snapshot_are_isolated(self):
         first = self.project("alpha")
         second = self.project("beta")
@@ -475,4 +516,3 @@ class DashboardOpenTests(unittest.TestCase):
         self.assertEqual(calls, ["http://x/", "http://x/"])
         self.assertIn("lib.open_dashboard_url(url)", (ROOT / "bin" / "handsoff_dashboard.py").read_text())
         self.assertIn("lib.open_dashboard_url(url)", (ROOT / "bin" / "handsoff_fleet.py").read_text())
-

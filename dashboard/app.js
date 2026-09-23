@@ -304,6 +304,13 @@ function renderAdaptiveRouting(routing, modelPolicy = state.modelPolicy, launchP
         ["USAGE", item.usage?.source === "adapter" && Number.isFinite(Number(item.usage.tokens_total)) ? `${Number(item.usage.tokens_total).toLocaleString()} actual` : "not reported"],
         ["WHY", decision ? String(decision.basis || "configured").replaceAll("_", " ") : "host/configured"],
       ];
+      const isolation = item.reviewer_isolation;
+      if (isolation) {
+        budgetFacts.push(
+          ["REVIEWER ISOLATION", `${String(isolation.decision || "unknown").replaceAll("_", " ")} · ${String(isolation.enforcement || "unknown").replaceAll("_", " ")}`],
+          ["BOUNDARY", `${String(isolation.project_access || "unknown").replaceAll("_", " ")} project · ${String(isolation.network_policy || "unknown").replaceAll("_", " ")} network · ${String(isolation.credentials || "unknown").replaceAll("_", " ")} credentials`],
+        );
+      }
       for (const [labelText, valueText] of budgetFacts) {
         const fact = document.createElement("span");
         fact.textContent = labelText;
@@ -686,6 +693,10 @@ function renderTestProgress(progress) {
   $("regression-progress-current").textContent = running
     ? (current.slice(0, 3).join(" · ") || "Preparing execution")
     : (progress.result || `Finished ${progress.state}`);
+  const mode = String(progress.mode || (progress.source === "regression" ? "preflight" : progress.source || "tests")).toUpperCase();
+  const workers = Number(progress.worker_count || unitTotal || 0);
+  $("regression-progress-mode").textContent = `${mode} · ${workers} WORKER${workers === 1 ? "" : "S"}`
+    + (progress.fallback_reason ? ` · FALLBACK: ${progress.fallback_reason}` : "");
   const bar = $("regression-progress-bar");
   bar.setAttribute("aria-valuenow", String(percent));
   bar.setAttribute("aria-valuetext", total != null ? `${done} of ${total} tests` : `${unitDone} of ${unitTotal} units`);

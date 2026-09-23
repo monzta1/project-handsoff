@@ -22,6 +22,37 @@ def record(**overrides):
 
 
 class TestOperations(HandsoffTestCase):
+    def test_durable_replace_fault_boundaries_never_leave_malformed_json(self):
+        target = self.tmp / "durable.json"
+        old = {"generation": 1}
+        new = {"generation": 2}
+        lib.atomic_write_json(target, old)
+        for stage in ("before_flush", "after_flush", "after_replace", "during_directory_sync"):
+            lib.atomic_write_json(target, old)
+            def interrupt(observed, expected=stage):
+                if observed == expected:
+                    raise RuntimeError(expected)
+            with self.assertRaisesRegex(RuntimeError, stage):
+                lib.durable_replace(target, (json.dumps(new) + "\n").encode(), fault=interrupt)
+            self.assertIn(json.loads(target.read_text()), (old, new))
+
+    def test_durable_replace_retains_and_restores_one_valid_backup(self):
+        target = self.tmp / "state.json"
+        lib.atomic_write_json(target, {"generation": 1})
+        lib.atomic_write_json(target, {"generation": 2})
+        backup = lib.durable_backup_path(target)
+        self.assertEqual(json.loads(backup.read_text()), {"generation": 1})
+        target.write_text("not-json")
+        restored = lib.restore_durable_backup(target)
+        self.assertTrue(restored["restored"])
+        self.assertEqual(json.loads(target.read_text()), {"generation": 1})
+
+    def test_durability_capability_is_honest_and_bounded(self):
+        capability = lib.durability_capability(self.tmp / "status.json")
+        self.assertIn(capability["level"], {"full", "best_effort"})
+        self.assertTrue(capability["file_fsync"])
+        self.assertEqual(capability["directory_fsync"], capability["level"] == "full")
+
     def test_current_operation_prefers_live_record(self):
         now = datetime.now(timezone.utc)
         lib.record_operation(self.tmp, "sess-operations", "implementer", record(operation_id="op-done", state="succeeded"), now)
