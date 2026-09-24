@@ -2888,11 +2888,28 @@ BROAD_REVIEW_PACKET_BYTES = 16_000
 #: unchanged from the risk-keyed guard it replaces.
 BROAD_REVIEW_CRITERIA = 8
 #: #290: held back from the limit handed to the provider so a session can
-#: still emit its verdict. Two parts, both measured rather than guessed:
-#: the protocol line itself, already sized at protocol_overhead_tokens
-#: (1,024), and the overshoot past a native rollout meter, observed at 764
-#: tokens on session hs-978fd700da4d42b3b9ca70545bc0ceb5 and rounded to the
-#: same order. A meter stops at an observation boundary, not at the limit.
+#: still emit its verdict. Sized for the protocol line itself, already
+#: costed as protocol_overhead_tokens (1,024), plus the overshoot of a
+#: read-only turn, measured at 764 tokens on session
+#: hs-978fd700da4d42b3b9ca70545bc0ceb5.
+#:
+#: It does NOT cover a tool-running turn, and #307 tracks the real fix.
+#: Session hs-d26f19a8a3754328ae26f3a156740692 ran test suites and reported
+#: 88,487 tokens against a 77,952 limit: 10,535 past the limit and 8,487
+#: past the whole 80,000 ceiling. No reserve could have saved that verdict,
+#: because a reserve carves headroom from BELOW the ceiling and that
+#: session did not stop below it:
+#:
+#:     reserve  2,048 -> limit 77,952 -> used 88,487 -> unreachable
+#:     reserve 12,000 -> limit 68,000 -> used 88,487 -> unreachable
+#:     reserve 20,000 -> limit 60,000 -> used 88,487 -> unreachable
+#:
+#: Raising it would only start the meter earlier while costing every
+#: well-behaved session real headroom, so it stays at 2,048 deliberately.
+#: The overshoot is a property of TURN SIZE, so the lever is turn size
+#: (#307), not reserve size. ceiling_overshoot_tokens is now recorded on
+#: every session that exceeds its limit so this can eventually be set from
+#: a measured distribution instead of two samples.
 PROTOCOL_RESERVE_TOKENS = 2_048
 
 

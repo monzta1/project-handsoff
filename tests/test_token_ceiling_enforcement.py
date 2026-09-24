@@ -294,6 +294,45 @@ class TheBoundsGranularityIsStated(unittest.TestCase):
                 "tail_sha256": "0" * 64, "ceiling_overshoot_tokens": -1})
 
 
+class TheReserveCannotSaveAToolHeavyTurn(unittest.TestCase):
+    """REQ-002 as amended, and #307.
+
+    The reserve carves headroom from BELOW the ceiling, so it only helps a
+    session that stops below the limit. Session
+    hs-d26f19a8a3754328ae26f3a156740692 used 88,487 tokens against an
+    80,000 ceiling: 8,487 past the whole allowance. No reserve value could
+    have made its verdict reachable, which is why PROTOCOL_RESERVE_TOKENS
+    stays at 2,048 instead of being enlarged to look adequate.
+    """
+
+    TOOL_HEAVY_USAGE = 88_487
+    CEILING = 80_000
+
+    def test_the_session_exceeded_the_whole_ceiling_not_just_the_limit(self):
+        self.assertGreater(self.TOOL_HEAVY_USAGE, self.CEILING)
+
+    def test_no_reserve_value_makes_that_verdict_reachable(self):
+        for reserve in (2_048, 10_535, 12_000, 20_000, 40_000):
+            provider_limit = self.CEILING - reserve
+            self.assertGreater(self.TOOL_HEAVY_USAGE, provider_limit,
+                               f"a {reserve}-token reserve is claimed to help and does not")
+
+    def test_enlarging_the_reserve_only_costs_well_behaved_sessions(self):
+        """The cost side of the trade the constant refuses to make."""
+        small = self.CEILING - lib.PROTOCOL_RESERVE_TOKENS
+        large = self.CEILING - 12_000
+        self.assertGreater(small, large,
+                           "a larger reserve strictly reduces the budget every session gets")
+
+    def test_the_read_only_overshoot_does_fit_the_reserve(self):
+        """Which is why the reserve is kept rather than removed: it covers
+        the case it was measured on."""
+        self.assertLess(764, lib.PROTOCOL_RESERVE_TOKENS)
+
+    def test_the_constant_is_unchanged_and_deliberate(self):
+        self.assertEqual(lib.PROTOCOL_RESERVE_TOKENS, 2_048)
+
+
 class TheFailureCauseIsNamed(unittest.TestCase):
     """REQ-001: "it ran out" is not a diagnosis."""
 
