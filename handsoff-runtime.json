@@ -1,6 +1,6 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "7a2adc6d5f692ec0a1bb12146018d90dcc08f2cfd7c46899966c055db4a48b65",
+    "bin/handsoff_agent.py": "fa1a18a8cb390d6b67183dc446c420ff0412a86a26ba3fb239ba77e34b5add79",
     "bin/handsoff_broker.py": "3adaa7a23c4e1d08077011088aef16451816dcfa1e66681c2e764b723e6f7463",
     "bin/handsoff_cli.py": "236468cf8c8c6227b39a31f8fed4d48221648b04f0a2bc5f63e8967d90948322",
     "bin/handsoff_close_transaction.py": "9ddeabb3b2c273c781300e1a1cff937bbd34bab93cabecfc837db1aaf82fe2b5",

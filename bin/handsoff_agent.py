@@ -645,9 +645,11 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
             f"(adapter={adapter}, decision={isolation['decision']})"
         )
     scratch = _reviewer_scratch(root, adapter, role)
-    if adapter == "codex":
-        argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
-    else:
+    # #290: the codex argv is built once, below, after the budget decision
+    # exists, so the meter can be set to the provider limit. Building it
+    # here as well left a second copy metered on the whole ceiling.
+    argv = []
+    if adapter != "codex":
         allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(cfg, root)
         argv = lib.claude_argv(executable, role, allowed, model)
     budget_decision = lib.plan_role_token_budget(
@@ -656,8 +658,9 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         followup=True,
     )
     token_budget = budget_decision["ceiling"]
+    provider_limit = budget_decision["provider_limit"]
     # #290: measured against what the provider is actually given.
-    if budget_decision["provider_limit"] < budget_decision["safe_minimum"]:
+    if provider_limit < budget_decision["safe_minimum"]:
         raise lib.HandsoffError(
             "managed fallback launch refused before reservation: rendered packet estimates "
             f"{budget_decision['estimated_input_tokens']} input tokens, reserves "
@@ -665,7 +668,13 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
             f"{budget_decision['safe_minimum']} tokens; selected ceiling is {token_budget}"
         )
     if adapter == "codex":
-        argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
+        # #290: the meter is set to the PROVIDER LIMIT, as codex_argv's
+        # contract requires. Passing the whole ceiling here left a fallback
+        # session free to spend the entire allowance before stopping, with
+        # nothing held back for its verdict: the very overshoot this lane
+        # exists to bound, on the path taken precisely when a session has
+        # already failed once.
+        argv = _codex_argv(executable, role, model, provider_limit, reviewer_sandbox=scratch is not None)
     if not skip_preflight and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
         preflight = lib.launch_preflight(
             root, adapter=adapter, model=model, executable=executable,
@@ -679,7 +688,7 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     return LaunchSpec(
         role, adapter, model, tuple(argv), str(scratch or root.resolve()), task, "fallback",
         token_budget=token_budget,
-        provider_limit=budget_decision["provider_limit"],
+        provider_limit=provider_limit,
         ceiling_enforcement=lib.adapter_ceiling_enforcement(adapter),
         env_overrides={"TMPDIR": str(scratch)} if scratch else None,
         project_root=str(root.resolve()),

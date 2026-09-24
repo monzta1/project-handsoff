@@ -194,6 +194,22 @@ class TheLaunchCarriesTheBound(HandsoffTestCase):
         self.assertEqual(spec.token_budget, spec.provider_limit + lib.PROTOCOL_RESERVE_TOKENS)
         self.assertEqual(spec.ceiling_enforcement, "native_rollout_meter")
 
+    def test_every_codex_launch_path_meters_the_provider_limit(self):
+        """The fallback path is taken precisely when a session has already
+        failed once, so an unreduced meter there is the worst place for it.
+        It shipped with the ceiling on the wire until a stop-time review
+        read the two builders side by side."""
+        import inspect
+        source = inspect.getsource(runtime)
+        calls = [line.strip() for line in source.splitlines() if "_codex_argv(" in line
+                 and "def " not in line and "return lib.codex_argv" not in line]
+        self.assertGreaterEqual(len(calls), 2, "expected a primary and a fallback launch path")
+        for call in calls:
+            self.assertIn("provider_limit", call,
+                          f"a codex launch meters something other than the provider limit: {call}")
+            self.assertNotIn("token_budget", call,
+                             f"a codex launch meters the whole ceiling: {call}")
+
 
 class TheWrapperStopsAnUnmeteredSession(HandsoffTestCase):
     """REQ-001: an adapter with no native meter is bounded by observation.
