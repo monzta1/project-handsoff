@@ -6,36 +6,27 @@ same session, with the refusal line it prevents; a bullet that gets broken
 twice becomes a refusal in the engine.
 
 - Regenerate the runtime manifest after the LAST edit to bin/, prompts/,
-  schemas/ or dashboard/ and BEFORE launching any reviewer or running any
-  suite. The engine now refuses with "the runtime manifest is stale (...):
-  run python3 bin/handsoff_manifest.py --version vX.Y.Z, then retry".
-- Never launch a reviewer until `design-propose` has printed
-  DESIGN_PROPOSAL_RECORDED for the revision you want reviewed. A launch you
-  then kill leaves a "live" session the watchdog holds for ten minutes.
+  schemas/ or dashboard/ and before any reviewer or suite. The engine and
+  `handsoff_preflight.py` both refuse and name the command.
+- Never launch a reviewer before `design-propose` prints
+  DESIGN_PROPOSAL_RECORDED: a killed launch leaves a "live" session the
+  watchdog holds for ten minutes.
 - Serve the lane's dashboard from the worktree's engine, not the installed
-  `handsoff`, or the page cannot show the lane's own changes. Copy the
-  version pin into a fresh worktree (`init` writes it from v0.3.51).
+  `handsoff`, or the page cannot show the lane's own changes.
 - A proof of the lane's own change runs the worktree's `bin/`, not the
   installed CLI; the installed engine predates the change by definition.
 - Run the WHOLE node suite (nine seconds) and the modules your files cite
   before pushing.
-- Landing order: merge, `advance 7`, release with an ANNOTATED tag on the
-  merged sha, install, kickstart Fleet, wait a minute, `verify-live`, then
-  `advance 8`; if it names engine:version, `record-review --reaffirm`.
-- A rerun on the same head greens a red CI watch by itself from v0.3.52.
+- Landing order is in `landing.md`; follow it rather than remembering it.
 - One `[#N]` tag per criterion scopes one item.
-- Local timings are not evidence: a laptop sleeps after a minute idle and a
-  50-second sleep once took 23 minutes of wall clock. `caffeinate -is` for
-  the session; read durations off the CI runner; the board subtracts sleep
-  from v0.3.56.
-- `init --by <actor>` so the page names the host; without it the family is
-  read from the ledger's actors.
-- Fixtures never inherit the dogfood `handsoff.toml` (normalize it) and never
-  share a fleet register; both made whole modules red on `main`.
-- Measure a new external call before it goes on a request path: `pmset -g
-  log` was 33,000 lines and three seconds, and a first snapshot waited for
-  it until the offline smoke caught the page unrendered. A shell command in a
-  snapshot needs a cache and a background read.
+- Local timings are not evidence: a laptop sleeps and a 50-second sleep once
+  took 23 minutes. `caffeinate -is`; read durations off the CI runner.
+- `init --by <actor>` so the page names the host.
+- Fixtures never inherit the dogfood `handsoff.toml` and never share a fleet
+  register; both made whole modules red on `main`.
+- Measure a new external call before it goes on a request path: `pmset -g log`
+  was 33,000 lines and three seconds and blocked a snapshot. Cache it, read it
+  in the background.
 - Two hosts release from one machine: read the next patch number from `gh
   release list` at bump time; the second lane to land rebases, checks every
   merged file parses, regenerates the manifest, re-verifies, reaffirms.
@@ -121,19 +112,29 @@ twice becomes a refusal in the engine.
 - Follow the value to where a person sees it. Twice this run a criterion was
   verified on a green suite plus an existing mechanism, and twice the value
   stopped before the page.
-- A command that prints SHIP_FEATURE_BLOCKED can still exit 0. Never gate a
-  check on `cmd >/dev/null && echo OK`: read the output, or compare the
-  digests yourself. A stale manifest passed that way and was one push from
-  main, where every engine command would have refused.
+- A command that prints SHIP_FEATURE_BLOCKED can still exit 0: read the
+  output, never `cmd >/dev/null && echo OK`.
 - Commit the regenerated manifest WITH the bin/ change that made it stale,
   in the same commit. Regenerating after the commit leaves main carrying a
   digest that matches neither the old file nor the new one.
-- Size a delta review task to the delta. A re-review of a two-file fix given
-  the full-feature task and three test commands burned an 80k budget with no
-  verdict; the same review scoped to `git diff A..B` and one command answered
-  in 12k. A budget-exhausted reviewer spends an attempt and returns nothing.
+- Size a delta review task to the delta: a budget-exhausted reviewer spends
+  an attempt and returns nothing.
 - Provider quota changes the vendor, not the role: route to another vendor and
   record `provider_quota`. A per-session token ceiling pauses without fallback.
 - A run approaching two active hours is a performance incident, not a reason to
   hide time in a wait state. Warn at 90 minutes; at 120 checkpoint, fence late
   results, pause visibly, and require an explicit reevaluation decision.
+- Bound the reviewer's exploration, not its budget. Five reviews, one lane:
+  unbounded 49,264 tokens and no verdict; scope-bounded 18,107 with one; a
+  delta packet 10,342; "run every suite" 88,487 and no verdict; "run one
+  named module" 27,364 with tests_executed yes. Raising a ceiling fixed none.
+- A native meter is evaluated BETWEEN turns, so it stops within one turn of
+  the limit, not at it: one tool-heavy turn went 8,487 past the whole ceiling,
+  which no protocol reserve can cover (a reserve carves from below it). State
+  a bound's granularity; never call a per-turn bound a cap.
+- Assert behaviour, not existence: a test that the clock thread existed passed
+  while it retired at the first pause, unwatching every resumed episode.
+- Quote the measurement that hurts, not the flattering one.
+- Board and CLI disagreeing: read the status FILE (#308).
+- Amending a criterion revokes design approval and resets the phase. Budget a
+  fresh design review before amending, or the lane stalls on a spent one.
