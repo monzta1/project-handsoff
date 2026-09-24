@@ -21,6 +21,22 @@ GOOD = {"kind": "design", "decision": "approved", "summary": "fine", "findings":
         "structural_blocker": False, "symptom_reproduced": "not_applicable"}
 
 
+
+def _proposed_snapshot(root):
+    """#311: what rules/proposed looks like, enough to catch a real change.
+
+    Existence, type, and the sorted names of its direct entries. A test that
+    asserted only on absence failed for anyone who had ever run
+    propose-rules, and passed on CI purely because a clone starts clean.
+    """
+    path = root / "rules" / "proposed"
+    if not path.exists():
+        return ("absent",)
+    if not path.is_dir():
+        return ("file",)
+    return ("dir", tuple(sorted(item.name for item in path.iterdir())))
+
+
 class LaunchRuleTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
@@ -203,13 +219,21 @@ class ProposeRulesTests(HandsoffTestCase):
                         "print(json.dumps({'written': [], 'skipped': [], 'proposed_dir': 'rules/proposed'}))\n")
         fake.chmod(0o755)
         try:
+            before = _proposed_snapshot(self.tmp)
             with mock.patch.dict(os.environ, {"HANDSOFF_MINER": str(fake)}):
                 r = run(["analyze-archives", "--propose-rules", "--archive-dir", str(archives)], cwd=self.tmp)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("HANDSOFF_RULES_PROPOSED: 0 draft(s) in rules/proposed", r.stdout)
             self.assertEqual(json.loads(log.read_text()),
                              ["propose-rules", "--root", str(self.tmp.resolve()), "--json", "--archive-dir", str(archives)])
-            self.assertFalse((self.tmp / "rules" / "proposed").exists())
+            # #311: assert on what the RUN changed, not on what the checkout
+            # already held. An empty untracked rules/proposed left by an
+            # earlier propose-rules made this fail locally while CI stayed
+            # green, because git cannot track an empty directory. Existence
+            # alone is also too weak: a pre-existing directory could gain a
+            # draft and still pass.
+            self.assertEqual(_proposed_snapshot(self.tmp), before,
+                             "the flag changed rules/proposed; it must evaluate nothing")
         finally:
             shutil.rmtree(shim_dir, ignore_errors=True)
 
