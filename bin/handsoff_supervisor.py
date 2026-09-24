@@ -104,6 +104,9 @@ OPERATION_REGISTRY = {
     "monitor-poll": {"class": "automatic", "surface": "live-status"},
     "evidence-refresh-plan": {"class": "diagnostic", "surface": "verification-list"},
     "performance-status": {"class": "diagnostic", "surface": "metrics-panel"},
+    # #295: the run's own clock. Automatic, not operator-facing: a host or
+    # the run-owned dashboard runs it, and it only reads and transitions.
+    "performance-watch": {"class": "automatic", "surface": "metrics-panel"},
     "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
 }
 

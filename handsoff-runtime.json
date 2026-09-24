@@ -15,7 +15,7 @@
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",
     "bin/handsoff_release_transaction.py": "31318f55dc7f7e0d6d19903488164b81e3e458fdc54acc609c5de1b992fb6889",
     "bin/handsoff_runtime_control.py": "9e0e6c5b8bc849982f99f53287ff9925c5972883a4b37460a3d6bc3dadeedb1e",
-    "bin/handsoff_supervisor.py": "962ad4df018730bdf8e26cd0cde52a36810ef9cdc88041e620ec042091421ebd",
+    "bin/handsoff_supervisor.py": "22f0b309e908b0caf61c137e85146178f60b3a33013ff41cdf87f28d8ef45380",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/handsoff_update.py": "e2ceb0ac37c35495344be13f27674129ad7a27250bd7cf30c2b8b81021455b48",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
