@@ -5,6 +5,14 @@ on:
     branches: ["main"]
   pull_request:
 
+# #298: a newer push to the same pull request cancels the prior revision, so
+# five shards never finish for a commit that is already obsolete. Pushes to
+# main get their own group per ref and are never cancelled: main's history of
+# green runs is the record a release reads.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # The two [[regressions]] from handsoff.toml. python-full's one versioned
 # inventory is dealt across five count-balanced runners by tests/shard.py;
 # collection and execution isolate modules that cannot share an interpreter.
@@ -14,6 +22,20 @@ jobs:
   # #227: a pull request that touches only Markdown (or docs/) is docs-only:
   # the docs job runs alone and the required `tests` check reports from it.
   # Anything else, and every push to main, runs the full matrix.
+  # #297: the one canonical preflight, and the first thing that runs. It is
+  # deliberately not gated on `changes`: playbook/*.md and prompts/*.md are
+  # covered runtime files but classify as docs-only, so a docs-only change can
+  # still stale the manifest. Three minutes here replaces a five-shard cycle.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The canonical release preflight
+        run: python3 bin/handsoff_preflight.py --root .
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -40,7 +62,7 @@ jobs:
           [ -n "$files" ] || docs_only=false
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
   docs:
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.docs_only == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -57,7 +79,7 @@ jobs:
         # the audit gates this job through the suite; there is no non-gating call.
         run: python3 -m unittest tests.test_landing_page tests.test_governance_docs tests.test_docs_only_path -v
   python:
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.docs_only != 'true'
     name: python (shard ${{ matrix.shard }} of 5)
     runs-on: ubuntu-latest
@@ -79,7 +101,7 @@ jobs:
       - name: python-full, one shard
         run: python3 tests/shard.py --all --total 5 --index ${{ matrix.shard }}
   dashboard:
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -91,14 +113,17 @@ jobs:
       - name: dashboard-full
         run: node --test tests/dashboard/*.test.js
   tests:
-    needs: [changes, python, dashboard, docs]
+    needs: [changes, preflight, python, dashboard, docs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: The docs job on a docs-only change; every shard, every module and the dashboard suite otherwise
         run: |
-          echo "docs_only: ${{ needs.changes.outputs.docs_only }}; docs: ${{ needs.docs.result }}; python: ${{ needs.python.result }}; dashboard: ${{ needs.dashboard.result }}"
+          echo "preflight: ${{ needs.preflight.result }}; docs_only: ${{ needs.changes.outputs.docs_only }}; docs: ${{ needs.docs.result }}; python: ${{ needs.python.result }}; dashboard: ${{ needs.dashboard.result }}"
+          # A cancelled or skipped job is not coverage. Only "success" passes,
+          # so a superseded revision can never report the later one's green.
+          test "${{ needs.preflight.result }}" = "success"
           if [ "${{ needs.changes.outputs.docs_only }}" = "true" ]; then
             test "${{ needs.docs.result }}" = "success"
           else

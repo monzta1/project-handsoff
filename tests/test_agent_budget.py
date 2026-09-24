@@ -57,10 +57,15 @@ class TestAgentTokenBudget(HandsoffTestCase):
             which=lambda name: "/usr/local/bin/codex" if name == "codex" else None,
             skip_preflight=True,
         )
+        # #290: the recorded ceiling is the whole allowance; the provider is
+        # told that minus the protocol reserve, so the meter stops with room
+        # left to emit a verdict instead of dying mid-sentence.
         self.assertEqual(spec.token_budget, 24_000)
+        self.assertEqual(spec.provider_limit, 24_000 - lib.PROTOCOL_RESERVE_TOKENS)
+        self.assertEqual(spec.ceiling_enforcement, "native_rollout_meter")
         budget_arg = spec.argv[spec.argv.index("-c") + 1]
         self.assertIn("features.rollout_budget={enabled=true", budget_arg)
-        self.assertIn("limit_tokens=24000", budget_arg)
+        self.assertIn(f"limit_tokens={24_000 - lib.PROTOCOL_RESERVE_TOKENS}", budget_arg)
         self.assertIn("sampling_token_weight=1.0", budget_arg)
         self.assertIn("prefill_token_weight=1.0", budget_arg)
         disabled = [spec.argv[i + 1] for i, value in enumerate(spec.argv[:-1]) if value == "--disable"]

@@ -104,6 +104,9 @@ OPERATION_REGISTRY = {
     "monitor-poll": {"class": "automatic", "surface": "live-status"},
     "evidence-refresh-plan": {"class": "diagnostic", "surface": "verification-list"},
     "performance-status": {"class": "diagnostic", "surface": "metrics-panel"},
+    # #295: the run's own clock. Automatic, not operator-facing: a host or
+    # the run-owned dashboard runs it, and it only reads and transitions.
+    "performance-watch": {"class": "automatic", "surface": "metrics-panel"},
     "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
 }
 
@@ -114,6 +117,9 @@ EVIDENCE_AUDIT_RECORD = "evidence-audit.json"
 PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
     "status", "validate", "verify-log", "doctor", "dashboard", "design-timing",
     "monitor-poll", "evidence-refresh-plan", "performance-status",
+    # #295: the clock is the thing that detects the pause; refusing it
+    # during a pause would make the pause un-observable from its own watcher.
+    "performance-watch",
 })
 PERFORMANCE_PAUSE_COMMANDS = frozenset({
     "performance-resume", "regression-cancel", "run-close",
@@ -4997,17 +5003,41 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
                 "run_closed": status.get("run_closed")}
 
     def close_action() -> None:
+        # #296: a run that never reached verified Phase 8 is aborted or
+        # released-unverified, never a clean close. The operator may still
+        # override with an explicit --outcome.
+        outcome = getattr(args, "outcome", None) or (
+            "closed" if lib.run_is_live_verified(close_status, cfg)
+            else lib.unverified_close_outcome(close_status))
         result.update(lib.close_run(
             root, by=args.by, reason=args.reason,
             expected_updated_at=getattr(args, "expected_updated_at", None),
             cancel_active=bool(getattr(args, "cancel_active", False)),
-            release_dashboard=False,
+            release_dashboard=False, outcome=outcome,
         ))
 
     started_at = transaction.record.get("created_at") or ""
 
     with lib.project_lock(root):
         close_status, close_acceptance = _load(root, cfg)
+    # #296: posting the report is the claim that the work was delivered, and
+    # it closes the issues. On 2026-09-23 that happened while the run sat at
+    # Phase 7, with the released wheel never installed and `verify-live`
+    # never run. The claim is only true once the INSTALLED artifact has been
+    # verified. The run may still be closed, as aborted or
+    # released_unverified; what is refused is the claim, so the work items
+    # stay open, which is exactly what REQ-006 asks for.
+    posting_requested = bool(getattr(args, "post", False))
+    delivery_unverified = posting_requested and not lib.run_is_live_verified(close_status, cfg)
+    unverified_reason = None
+    if delivery_unverified:
+        unverified_reason = (
+            "reporting the run as delivered requires verified installed-artifact Phase 8; this run "
+            f"is at phase {close_status.get('phase_number')} and progress {close_status.get('progress')} "
+            f"with live verification {'recorded' if close_status.get('live_verification_id') else 'absent'}. "
+            "Run verify-live and advance 8 100, then close again to post; the work items stay open."
+        )
+        print(f"HANDSOFF_REPORT_NOT_POSTED: {unverified_reason}")
     expected_issue_numbers = {
         item["number"] for item in lib.derive_work_items(close_status, close_acceptance, cfg).get("items", [])
         if item.get("kind") == "issue" and isinstance(item.get("number"), int)
@@ -5076,8 +5106,9 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
         "prepare": close_transaction.Operation(close_state, lambda value: value["closed"], close_action),
         "final_report_post": close_transaction.Operation(
             report_state, lambda value: value["items_complete"], report_action,
-            optional=not bool(getattr(args, "post", False)),
-            unavailable_reason=None if getattr(args, "post", False) else "--post was not requested",
+            optional=not posting_requested or delivery_unverified,
+            unavailable_reason=(unverified_reason if delivery_unverified
+                                else (None if posting_requested else "--post was not requested")),
         ),
         # This transaction file is the durable local close archive. The
         # existing retire_finished_run path moves the full ledgers at init.
@@ -5181,6 +5212,63 @@ def cmd_performance_status(args) -> int:
     with lib.project_lock(root):
         print(json.dumps(refresh_performance_state(root), indent=2, sort_keys=True))
     return 0
+
+
+#: #295: how often the run-owned clock re-evaluates its own deadline. The
+#: 90- and 120-minute boundaries are the thing being protected, so a minute
+#: of granularity bounds the overshoot at a minute while costing one cheap
+#: local read per tick.
+PERFORMANCE_TICK_SECONDS = 60
+
+
+def performance_tick(root: Path, *, now: datetime | None = None) -> dict:
+    """Evaluate the deadline once, from the run's own clock.
+
+    `transition_performance` is pure and only decides when something calls
+    it. Until #295 the only callers were the supervisor CLI dispatch and an
+    open dashboard, so during the v0.3.80 closeout the run spent an hour
+    past its ceiling with nothing evaluating it: the durable record's last
+    write was 21:57:57Z and the deadline was 22:01:36Z. This is the caller
+    that does not depend on anyone typing a command.
+    """
+    with lib.project_lock(root):
+        return refresh_performance_state(root, now=now)
+
+
+def cmd_performance_watch(args) -> int:
+    """Run the clock for the life of the run, across every episode.
+
+    It does NOT retire at the first pause. `performance-resume` opens a new
+    episode with its own deadlines, so a clock that stopped at the first
+    pause would leave every later episode unobserved: exactly the v0.3.80
+    shape where episode 1 paused on time and episode 2 never did.
+    """
+    root = lib.resolve_root(args.root)
+    interval = max(1, int(args.interval))
+    deadline_ticks = None if args.once else args.max_ticks
+    ticks = 0
+    announced: set[str] = set()
+    while True:
+        try:
+            view = performance_tick(root)
+        except (lib.HandsoffError, OSError) as exc:
+            # A run that has been closed or archived stops the watch rather
+            # than spinning on a file that will not come back.
+            print(f"HANDSOFF_PERFORMANCE_WATCH_STOPPED: {exc}")
+            return 0
+        ticks += 1
+        if view["transition"] != "none":
+            print(json.dumps({"transition": view["transition"], "state": view["state"],
+                              "episode_id": view["episode_id"],
+                              "active_seconds": view["active_seconds"]}, sort_keys=True))
+        # Announced once per episode, so a held pause does not spam, and the
+        # next episode's pause is still reported.
+        if view["state"] == "paused_for_performance_review" and view["episode_id"] not in announced:
+            announced.add(view["episode_id"])
+            print(f"HANDSOFF_PERFORMANCE_PAUSED: {view['episode_id']} reached the active-run ceiling")
+        if args.once or (deadline_ticks is not None and ticks >= deadline_ticks):
+            return 0
+        time.sleep(interval)
 
 
 def cmd_performance_resume(args) -> int:
@@ -5716,6 +5804,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_close.add_argument("--cancel-active", action="store_true")
     run_close.add_argument("--post", action="store_true",
                            help="#171: post the ledger's report to each issue work item, close it and tick its epic box before closing")
+    run_close.add_argument("--outcome", choices=lib.RUN_OUTCOMES, default=None,
+                           help="#296: name the outcome explicitly; without it a run that has "
+                                "not passed verified Phase 8 records aborted or released_unverified")
 
     run_reopen = sub.add_parser("run-reopen", help="reopen a non-complete cleanly closed run")
     run_reopen.add_argument("--by", required=True)
@@ -5765,6 +5856,14 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_refresh.add_argument("--regenerated")
 
     sub.add_parser("performance-status", help="refresh and print the 90/120-minute run state")
+    performance_watch = sub.add_parser(
+        "performance-watch",
+        help="run the clock that evaluates the 90/120-minute deadline without a CLI call")
+    performance_watch.add_argument("--interval", type=int, default=PERFORMANCE_TICK_SECONDS)
+    performance_watch.add_argument("--once", action="store_true",
+                                   help="evaluate exactly once and exit")
+    performance_watch.add_argument("--max-ticks", type=int, default=None,
+                                   help="stop after this many evaluations")
     performance_resume = sub.add_parser("performance-resume", help="open a new episode after explicit reevaluation")
     performance_resume.add_argument("--by", required=True)
     performance_resume.add_argument("--reason", required=True)
@@ -5840,6 +5939,7 @@ def main() -> int:
         "monitor-poll": cmd_monitor_poll,
         "evidence-refresh-plan": cmd_evidence_refresh_plan,
         "performance-status": cmd_performance_status,
+        "performance-watch": cmd_performance_watch,
         "performance-resume": cmd_performance_resume,
     }
     try:

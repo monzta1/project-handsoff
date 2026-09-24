@@ -97,14 +97,44 @@ class ReportPostingTests(HandsoffTestCase):
     def _calls(self):
         return [json.loads(l) for l in self.log.read_text().splitlines()] if self.log.exists() else []
 
-    def _run(self):
+    def _run(self, deliver=True):
+        """Build the fixture run. `deliver` walks it to verified Phase 8,
+        which #296 now requires before a report may be posted. A test that
+        only RENDERS the report does not need it, and passing False keeps
+        that test reading a mid-run ledger as it always has."""
         r = run(["init", "Ship the story", "--item", "#40 first story", "--item", "#41 second story"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         run(["criterion-update", "REQ-001", "--requirement", "[#40] the story works end to end and " + "x" * 200,
              "--test", "true"], cwd=self.tmp)
         toml = self.tmp / "handsoff.toml"
-        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]'))
+        toml.write_text(toml.read_text()
+                        .replace("commands = []", 'commands = ["true"]')
+                        .replace("live_commands = []", 'live_commands = ["true"]'))
         run(["verify", "--criterion", "REQ-001", "--by", "impl"], cwd=self.tmp)
+        # #296: posting the report is the claim that the work was delivered,
+        # so it now requires verified installed-artifact Phase 8. These tests
+        # are about the posting mechanics, so the fixture earns that state the
+        # way a real run does instead of being exempted from the gate.
+        if not deliver:
+            return
+        # The phase gates refuse while a declared item has no tagged
+        # criterion, and this fixture reports on two issues.
+        run(["criterion-add", "REQ-041", "--type", "supporting", "--verification", "automated",
+             "--requirement", "[#41] the second story works end to end and " + "y" * 200,
+             "--test", "true"], cwd=self.tmp)
+        run(["verify", "--criterion", "REQ-041", "--by", "impl"], cwd=self.tmp)
+        cfg = lib.load_config(self.tmp)
+        records, _ = lib.load_verifications(self.tmp, cfg)
+        evidence = next(r["run_id"] for r in records
+                        if r.get("ok") and "REQ-001" in (r.get("criteria") or []))
+        run(["record-symptom-resolved", "--by", "impl", "--evidence", evidence], cwd=self.tmp)
+        self.advance_to(7, implemented_by="impl", reviewed_by="reviewer")
+        self.assertEqual(self.read_status()["phase_number"], 7)
+        run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp)
+        live = run(["verify-live", "--by", "monitor"], cwd=self.tmp)
+        self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
+        done = run(["advance", "8", "100", "--implemented-by", "impl"], cwd=self.tmp)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     def _loaded(self):
         cfg = lib.load_config(self.tmp)
@@ -115,7 +145,7 @@ class ReportPostingTests(HandsoffTestCase):
         return cfg, status, acceptance, events, records
 
     def test_the_report_is_fixed_wording_from_ledger_fields_and_matches_the_golden_file(self):
-        self._run()
+        self._run(deliver=False)
         cfg, status, acceptance, events, records = self._loaded()
 
         def runner(args, **kw):
@@ -161,13 +191,19 @@ class ReportPostingTests(HandsoffTestCase):
         self.assertTrue(posted[0]["posted"][0]["ticked"])
         # nothing in the comment came from the pilot note or agent output
         self.assertNotIn("pilot", comment.lower())
-        # a second post finds the marker and posts nothing more
-        r = run(["run-reopen", "--by", "moncy", "--reason", "again"], cwd=self.tmp)
+        # #296: a run that satisfies the --post gate has passed verified
+        # Phase 8, so it is complete, and a completed archived run cannot be
+        # reopened. The property this guards is unchanged: a second close
+        # posts nothing more and no issue gains a duplicate comment.
+        reopened = run(["run-reopen", "--by", "moncy", "--reason", "again"], cwd=self.tmp)
+        self.assertNotEqual(reopened.returncode, 0)
+        self.assertIn("completed archived run cannot be reopened",
+                      reopened.stdout + reopened.stderr)
         r = run(["run-close", "--by", "moncy", "--reason", "shipped again", "--post"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self._gh_state()
         self.assertEqual(len(state["issues"]["40"]["comments"]), 1)
-        self.assertIn("skipped: #40, #41", r.stdout)
+        self.assertEqual(len(state["issues"]["41"]["comments"]), 1)
 
     def test_a_failed_close_or_tick_is_retried_on_the_next_post_without_a_second_comment(self):
         self._run()
@@ -252,12 +288,17 @@ class ReportPostingTests(HandsoffTestCase):
                      if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
         self.assertEqual(mutations, [])
 
-    def test_without_post_nothing_leaves_and_no_gh_auth_records_not_posted(self):
+    def test_without_post_nothing_leaves(self):
         self._run()
         r = run(["run-close", "--by", "moncy", "--reason", "quiet"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self._calls(), [], "no gh call without --post")
-        run(["run-reopen", "--by", "moncy", "--reason", "again"], cwd=self.tmp)
+
+    def test_no_gh_auth_records_not_posted(self):
+        # A quiet close persists the report step as skipped, and #296 makes
+        # the run complete, so it can no longer be reopened to join these
+        # two halves. Each half now owns its run.
+        self._run()
         self._gh_state({**self._gh_state(), "auth": False})
         r = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
         self.assertIn("HANDSOFF_REPORT_NOT_POSTED: gh is not authenticated", r.stdout)
@@ -266,7 +307,7 @@ class ReportPostingTests(HandsoffTestCase):
         self.assertEqual([c for c in self._calls() if c[:2] == ["issue", "comment"]], [])
 
     def test_a_credential_shape_in_a_criterion_or_gate_message_never_leaves(self):
-        self._run()
+        self._run(deliver=False)
         run(["criterion-add", "REQ-002", "--type", "supporting", "--verification", "automated", "--test", "true",
              "--requirement", "[#41] rotate the key ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab before release"], cwd=self.tmp)
         cfg, status, acceptance, events, records = self._loaded()

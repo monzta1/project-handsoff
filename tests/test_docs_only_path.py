@@ -53,7 +53,10 @@ class DocsOnlyPathTests(unittest.TestCase):
         text = CI.read_text()
         text = text[text.index("\njobs:\n"):]
         jobs = re.findall(r"(?m)^  ([a-z]+):\n", text)
-        self.assertEqual(jobs, ["changes", "docs", "python", "dashboard", "tests"])
+        # #297/#298 put the fast preflight first, ahead of the classifier:
+        # playbook and prompt files are covered runtime files that classify
+        # as docs-only, so a docs-only change can still stale the manifest.
+        self.assertEqual(jobs, ["preflight", "changes", "docs", "python", "dashboard", "tests"])
 
         def block(name):
             start = text.index(f"\n  {name}:\n")
@@ -64,9 +67,10 @@ class DocsOnlyPathTests(unittest.TestCase):
         self.assertIn("if: needs.changes.outputs.docs_only == 'true'", block("docs"))
         for name in ("python", "dashboard"):
             self.assertIn("if: needs.changes.outputs.docs_only != 'true'", block(name), name)
-            self.assertIn("needs: changes", block(name), name)
+            # #297/#298: every costly job waits for the fast preflight too.
+            self.assertIn("needs: [changes, preflight]", block(name), name)
         gather = block("tests")
-        self.assertIn("needs: [changes, python, dashboard, docs]", gather)
+        self.assertIn("needs: [changes, preflight, python, dashboard, docs]", gather)
         self.assertIn("if: always()", gather)
         self.assertIn('if [ "${{ needs.changes.outputs.docs_only }}" = "true" ]', gather)
         self.assertIn('test "${{ needs.docs.result }}" = "success"', gather)
