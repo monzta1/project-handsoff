@@ -94,9 +94,22 @@ class TheProviderIsToldTheReducedLimit(unittest.TestCase):
         with self.assertRaisesRegex(lib.HandsoffError, "meets or exceeds"):
             plan(configured_ceiling=lib.PROTOCOL_RESERVE_TOKENS - 1, packet_bytes=10)
 
-    def test_a_packet_that_leaves_too_little_after_the_reserve_is_refused(self):
-        with self.assertRaisesRegex(lib.HandsoffError, "protocol reserve"):
-            plan(configured_ceiling=lib.ROLE_BUDGET_FLOORS["reviewer"], packet_bytes=400_000)
+    def test_a_packet_that_leaves_too_little_records_the_shortfall_for_the_launch(self):
+        """REQ-012 says such a packet is refused AT LAUNCH. The planner is
+        pure: it records the numbers, and the launch sites own the refusal
+        with their established wording. Raising here instead pre-empted
+        those messages and turned three CI shards red."""
+        decision = plan(configured_ceiling=lib.ROLE_BUDGET_FLOORS["reviewer"], packet_bytes=400_000)
+        self.assertLess(decision["provider_limit"], decision["safe_minimum"],
+                        "the launch site needs this comparison to refuse on")
+        self.assertEqual(decision["ceiling"],
+                         decision["provider_limit"] + decision["reserved_protocol_tokens"])
+
+    def test_the_planner_still_stops_an_arithmetically_impossible_reserve(self):
+        """A ceiling smaller than the reserve has no provider limit at all,
+        so there is nothing for a launch site to compare."""
+        with self.assertRaisesRegex(lib.HandsoffError, "meets or exceeds"):
+            plan(configured_ceiling=lib.PROTOCOL_RESERVE_TOKENS - 1, packet_bytes=10)
 
     def test_the_refusal_names_how_many_tokens_short_it_is(self):
         with self.assertRaisesRegex(lib.HandsoffError, r"by at least \d+ tokens"):

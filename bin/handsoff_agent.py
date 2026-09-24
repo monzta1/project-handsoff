@@ -656,7 +656,8 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         followup=True,
     )
     token_budget = budget_decision["ceiling"]
-    if token_budget < budget_decision["safe_minimum"]:
+    # #290: measured against what the provider is actually given.
+    if budget_decision["provider_limit"] < budget_decision["safe_minimum"]:
         raise lib.HandsoffError(
             "managed fallback launch refused before reservation: rendered packet estimates "
             f"{budget_decision['estimated_input_tokens']} input tokens, reserves "

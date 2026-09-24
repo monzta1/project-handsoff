@@ -2929,14 +2929,12 @@ def _apply_protocol_reserve(decision: dict, *, role: str, safe_minimum: int) -> 
             f"ceiling for {role}; raise [agent_budget].{role} by at least "
             f"{reserved - ceiling + 1} tokens"
         )
+    # REQ-012 says a packet that leaves too little is "refused at launch",
+    # and the launch sites already own that refusal with their established
+    # wording (#290). The planner only records the numbers; raising here as
+    # well would pre-empt those messages and break every caller that reads
+    # them. Only the arithmetically impossible case stops the planner.
     provider_limit = ceiling - reserved
-    if provider_limit < safe_minimum:
-        raise HandsoffError(
-            f"a {role} needs at least {safe_minimum} tokens to read its packet and answer, "
-            f"but the {ceiling}-token ceiling leaves only {provider_limit} after the "
-            f"{reserved}-token protocol reserve; raise [agent_budget].{role} by at least "
-            f"{safe_minimum - provider_limit} tokens or send a smaller packet"
-        )
     decision["reserved_protocol_tokens"] = reserved
     decision["provider_limit"] = provider_limit
     return decision
