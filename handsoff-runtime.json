@@ -51,8 +51,8 @@
     "schemas/acceptance.schema.json": "80b910b8971861820fcec06b28531cdafc5871ef767211c24616803b13b896ec",
     "schemas/snapshot.schema.json": "67dc4f08c24bd2df758948a974b592d9707d970332231fdbf6c93eb2e845f281",
     "schemas/status.schema.json": "a393747722ac7021766bee5b64f6eeb17030e5ea815dc4d3f4029c6f7f59fc4e",
-    "templates/handsoff.toml": "d9cfe8d340e2f0b8587be38f990805686b7c4eae9df8530cc3037835249233ad"
+    "templates/handsoff.toml": "1a45dfb6f1bd4f254693aa2f31e40c3e0457f8dcdc410e18c29919a6179ce661"
   },
   "schema": 1,
-  "version": "v0.3.84"
+  "version": "v0.3.85"
 }

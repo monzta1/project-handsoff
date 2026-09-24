@@ -129,7 +129,12 @@ class LiveVerificationViewTests(HandsoffTestCase):
         snapshot = None
         while time.monotonic() < deadline:
             snapshot = dashboard.build_snapshot(self.tmp)
-            if snapshot["verification"]["live"]["in_flight"]:
+            # #327: wait for the condition actually asserted, not a weaker
+            # proxy. The record appears before `current` is filled in, so
+            # breaking on the record alone raced it and failed only where
+            # the timing differed, with (0, 1, None).
+            in_flight = snapshot["verification"]["live"]["in_flight"]
+            if in_flight and in_flight.get("current"):
                 break
             time.sleep(0.1)
         flight = snapshot["verification"]["live"]["in_flight"]
