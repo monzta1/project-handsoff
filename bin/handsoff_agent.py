@@ -1514,6 +1514,12 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         # #290: name why the budget ended, because the repairs differ. Most
         # specific first: our own bound, then output we could not parse, then
         # the provider's meter, then a session that never spoke at all.
+        # #290: measure the bound's real cost, on every path. A per-turn
+        # meter stops within one turn of the limit, and that turn's size is
+        # the overshoot; recording it is what lets the reserve be sized from
+        # evidence instead of assumption.
+        failure["ceiling_overshoot_tokens"] = lib.ceiling_overshoot(
+            usage_watcher.usage, spec.provider_limit)
         if ceiling_stop["tripped"]:
             failure["budget_cause"] = "wrapper_overrun"
         elif protocol_errors:

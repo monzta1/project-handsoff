@@ -102,6 +102,41 @@ class TheClockRunsWithoutACommand(HandsoffTestCase):
         self.assertTrue(hasattr(handsoff_dashboard.DashboardServer, "_performance_clock_loop"),
                         "the run-owned dashboard must tick the clock with no browser attached")
 
+    def test_the_clock_does_not_retire_at_the_first_pause(self):
+        """The bug this replaces: the thread returned on the first pause,
+        and `performance-resume` opens a NEW episode with its own deadline.
+        Every episode after the first would then be unobserved, which is
+        the exact v0.3.80 shape: episode 1 paused on time, episode 2 never
+        paused at all."""
+        import inspect as _inspect
+        import handsoff_dashboard
+        body = _inspect.getsource(handsoff_dashboard.DashboardServer._performance_clock_loop)
+        self.assertNotIn("paused_for_performance_review", body.split('"""')[-1],
+                         "the clock loop must not branch on the pause state and stop")
+
+    def test_a_second_episode_is_evaluated_after_a_resume(self):
+        """A resumed run gets a fresh episode and a fresh deadline, and the
+        clock must pause that one too."""
+        first = runtime_control.new_performance_history("run-test", "episode-1", now=EPISODE_2_START)
+        paused, decision = runtime_control.transition_performance(
+            first, now=EPISODE_2_START + timedelta(minutes=121))
+        self.assertEqual(decision["action"], "pause_for_performance_review")
+
+        resumed_at = EPISODE_2_START + timedelta(minutes=130)
+        resumed = runtime_control.resume_performance(
+            paused,
+            {"decision_id": "resume-1", "action": "resume", "actor": "moncy",
+             "reason": "reevaluated", "evidence_hash": "0" * 64, "at": resumed_at.isoformat()},
+            "episode-2")
+        self.assertEqual(resumed["episodes"][-1]["episode_id"], "episode-2")
+
+        # The second episode has its own ceiling, and it must fire.
+        _final, second = runtime_control.transition_performance(
+            resumed, now=resumed_at + timedelta(minutes=121))
+        self.assertEqual(second["action"], "pause_for_performance_review",
+                         "episode 2 must reach its own ceiling; this is the v0.3.80 failure")
+        self.assertEqual(second["episode_id"], "episode-2")
+
 
 class NothingStartsAfterThePause(HandsoffTestCase):
     """REQ-005."""

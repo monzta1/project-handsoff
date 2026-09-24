@@ -232,6 +232,68 @@ class AVerdictBeforeTheBudgetErrorIsAdoptedOnce(unittest.TestCase):
         self.assertTrue(errors)
 
 
+class TheBoundsGranularityIsStated(unittest.TestCase):
+    """REQ-001 as amended: the bound is real but it is not per-token, and
+    the difference is stated rather than implied.
+
+    Session hs-d26f19a8a3754328ae26f3a156740692 reported 88,487 tokens
+    against a 77,952 provider limit while running test suites, and printed
+    its usage exactly once, at exit. A meter evaluated between turns cannot
+    stop that sooner, and there was nothing to observe mid-session.
+    """
+
+    def test_every_enforcement_mode_states_its_granularity(self):
+        for mode in set(lib.CEILING_ENFORCEMENT.values()):
+            self.assertIn(mode, lib.CEILING_BOUND_GRANULARITY)
+
+    def test_a_native_meter_is_bounded_per_turn_not_per_token(self):
+        self.assertEqual(lib.CEILING_BOUND_GRANULARITY["native_rollout_meter"], "per_turn")
+
+    def test_wrapper_enforcement_is_bounded_per_observation(self):
+        self.assertEqual(lib.CEILING_BOUND_GRANULARITY["wrapper_enforced"], "per_observation")
+
+    def test_the_observed_overshoot_is_measured_exactly(self):
+        self.assertEqual(lib.ceiling_overshoot({"tokens_total": 88_487}, 77_952), 10_535)
+
+    def test_the_earlier_read_only_overshoot_is_measured_too(self):
+        """The first failure, before tools were involved: 49,264 against a
+        48,500 ceiling. Two measurements an order of magnitude apart are
+        why the reserve is not a guessed constant."""
+        self.assertEqual(lib.ceiling_overshoot({"tokens_total": 49_264}, 48_500), 764)
+
+    def test_a_session_inside_its_limit_overshoots_by_zero(self):
+        self.assertEqual(lib.ceiling_overshoot({"tokens_total": 10_342}, 77_952), 0)
+
+    def test_unmeasured_is_not_zero(self):
+        """An adapter that reported no usage has not been shown to be
+        within its limit; it has not been measured."""
+        for usage in ({"tokens_total": None}, {}, None, "88487"):
+            self.assertIsNone(lib.ceiling_overshoot(usage, 77_952))
+        self.assertIsNone(lib.ceiling_overshoot({"tokens_total": 1}, None))
+
+    def test_the_overshoot_is_recorded_on_the_failure(self):
+        result = lib._validate_failure_classification({
+            "category": "token_budget_exhaustion",
+            "reason": lib._FAILURE_REASON_LABELS["token_budget_exhaustion"],
+            "tail_sha256": "0" * 64, "budget_cause": "shared_budget_exhaustion",
+            "ceiling_overshoot_tokens": 10_535})
+        self.assertEqual(result["ceiling_overshoot_tokens"], 10_535)
+
+    def test_an_unmeasured_overshoot_is_recorded_as_null_not_dropped(self):
+        result = lib._validate_failure_classification({
+            "category": "token_budget_exhaustion",
+            "reason": lib._FAILURE_REASON_LABELS["token_budget_exhaustion"],
+            "tail_sha256": "0" * 64, "ceiling_overshoot_tokens": None})
+        self.assertIn("ceiling_overshoot_tokens", result)
+        self.assertIsNone(result["ceiling_overshoot_tokens"])
+
+    def test_a_negative_overshoot_is_refused(self):
+        with self.assertRaisesRegex(lib.HandsoffError, "ceiling overshoot"):
+            lib._validate_failure_classification({
+                "category": "timeout", "reason": lib._FAILURE_REASON_LABELS["timeout"],
+                "tail_sha256": "0" * 64, "ceiling_overshoot_tokens": -1})
+
+
 class TheFailureCauseIsNamed(unittest.TestCase):
     """REQ-001: "it ran out" is not a diagnosis."""
 

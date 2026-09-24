@@ -1360,16 +1360,27 @@ class DashboardServer(ThreadingHTTPServer):
         threading.Thread(target=self._performance_clock_loop, daemon=True).start()
 
     def _performance_clock_loop(self) -> None:
-        """Evaluate the deadline on a fixed interval until the run pauses."""
+        """Evaluate the deadline on a fixed interval for the server's life.
+
+        It must NOT stop at the first pause. `performance-resume` opens a
+        NEW episode with its own 90- and 120-minute deadlines, and a clock
+        that retired at the first pause would leave every episode after the
+        first unobserved. That is precisely the shape #295 was written to
+        eliminate: in the v0.3.80 run episode 1 paused on time and episode
+        2, opened by the resume, never paused at all.
+
+        Ticking during a pause is harmless and deliberate: a paused episode
+        is not in {active, warning}, so `transition_performance` makes no
+        transition, and the tick keeps watching for the resume that starts
+        the next episode's clock.
+        """
         while not self._watchdog_stop.wait(supervisor.PERFORMANCE_TICK_SECONDS):
             if self.stopping:
                 return
             try:
-                view = supervisor.performance_tick(self.project_root)
+                supervisor.performance_tick(self.project_root)
             except (lib.HandsoffError, OSError):
                 continue  # a closed or archived run simply has no clock
-            if view.get("state") == "paused_for_performance_review":
-                return  # the refusal is durable; the thread has done its work
 
     def _launch_managed_role(self, role: str, task: str, actor: str | None = None) -> int:
         """Launch a managed role. `actor` names who asked for the launch and

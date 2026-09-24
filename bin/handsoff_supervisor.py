@@ -5227,15 +5227,18 @@ def performance_tick(root: Path, *, now: datetime | None = None) -> dict:
 
 
 def cmd_performance_watch(args) -> int:
-    """Run the clock until it pauses the run, or the run ends.
+    """Run the clock for the life of the run, across every episode.
 
-    Exits after writing the pause: the state is durable, so holding a
-    process open adds nothing once the refusal is on disk.
+    It does NOT retire at the first pause. `performance-resume` opens a new
+    episode with its own deadlines, so a clock that stopped at the first
+    pause would leave every later episode unobserved: exactly the v0.3.80
+    shape where episode 1 paused on time and episode 2 never did.
     """
     root = lib.resolve_root(args.root)
     interval = max(1, int(args.interval))
     deadline_ticks = None if args.once else args.max_ticks
     ticks = 0
+    announced: set[str] = set()
     while True:
         try:
             view = performance_tick(root)
@@ -5247,10 +5250,13 @@ def cmd_performance_watch(args) -> int:
         ticks += 1
         if view["transition"] != "none":
             print(json.dumps({"transition": view["transition"], "state": view["state"],
+                              "episode_id": view["episode_id"],
                               "active_seconds": view["active_seconds"]}, sort_keys=True))
-        if view["state"] == "paused_for_performance_review":
-            print("HANDSOFF_PERFORMANCE_PAUSED: the run reached its active-run ceiling")
-            return 0
+        # Announced once per episode, so a held pause does not spam, and the
+        # next episode's pause is still reported.
+        if view["state"] == "paused_for_performance_review" and view["episode_id"] not in announced:
+            announced.add(view["episode_id"])
+            print(f"HANDSOFF_PERFORMANCE_PAUSED: {view['episode_id']} reached the active-run ceiling")
         if args.once or (deadline_ticks is not None and ticks >= deadline_ticks):
             return 0
         time.sleep(interval)

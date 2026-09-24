@@ -478,6 +478,31 @@ SELECTABLE_AGENT_ADAPTERS = ("codex", "claude")
 #: first observation past the limit. A wrapper bound is a bound, not an
 #: exact cap, and the overrun it permits is recorded rather than hidden.
 CEILING_ENFORCEMENT = {"codex": "native_rollout_meter", "claude": "wrapper_enforced"}
+#: #290: how tightly each bound actually holds, stated rather than implied.
+#: "per_turn": the provider evaluates its meter BETWEEN turns, so a session
+#: stops within one turn of its limit, and one tool-heavy turn can be large.
+#: Measured at 10,535 tokens over on session
+#: hs-d26f19a8a3754328ae26f3a156740692, which ran test suites and printed
+#: its usage exactly once, at exit, so nothing could observe it sooner.
+#: "per_observation": the adapter streams usage as it goes, so the wrapper
+#: stops it at the first report past the limit.
+CEILING_BOUND_GRANULARITY = {"native_rollout_meter": "per_turn",
+                             "wrapper_enforced": "per_observation"}
+
+
+def ceiling_overshoot(usage: object, provider_limit: object) -> int | None:
+    """Measure how far past its limit a session actually went.
+
+    Returns None when there is nothing to measure, which is different from
+    zero: an adapter that reported no usage has not been shown to be
+    within its limit, it has simply not been measured.
+    """
+    if not isinstance(usage, dict) or not isinstance(provider_limit, int) or isinstance(provider_limit, bool):
+        return None
+    total = usage.get("tokens_total")
+    if not isinstance(total, int) or isinstance(total, bool):
+        return None
+    return max(0, total - provider_limit)
 #: #290: why a bounded session ended, kept distinct because the repairs
 #: differ. The reviewer failures on 2026-09-23 were recorded only as
 #: "token_budget_exhaustion", which cannot tell a model that ignored its
@@ -4586,7 +4611,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 
 
 def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted", "progress_summary", "budget_cause"} \
+    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted", "progress_summary", "budget_cause", "ceiling_overshoot_tokens"} \
             or not {"category", "reason", "tail_sha256"} <= set(value):
         raise HandsoffError("agent failure classification is invalid")
     category = value.get("category")
@@ -4606,6 +4631,14 @@ def _validate_failure_classification(value: object) -> dict:
         if value["budget_cause"] not in BUDGET_FAILURE_CAUSES:
             raise HandsoffError("agent failure budget cause is not from the closed set")
         result["budget_cause"] = value["budget_cause"]
+    if "ceiling_overshoot_tokens" in value:
+        # #290: how far past its limit the session actually went. Null means
+        # unmeasured, which is not the same as zero.
+        overshoot = value["ceiling_overshoot_tokens"]
+        if overshoot is not None and (not isinstance(overshoot, int)
+                                      or isinstance(overshoot, bool) or overshoot < 0):
+            raise HandsoffError("agent failure ceiling overshoot must be a non-negative integer or null")
+        result["ceiling_overshoot_tokens"] = overshoot
     for key in ("dependency", "operation"):
         if key in value:
             if not isinstance(value[key], str) or not OPERATION_IDENTIFIER_PATTERN.fullmatch(value[key]):
@@ -6682,7 +6715,7 @@ def validate_status_schema(status: dict) -> list[str]:
                     continue
                 try:
                     normalized = _validate_failure_classification({
-                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes", "progress_summary", "budget_cause")
+                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes", "progress_summary", "budget_cause", "ceiling_overshoot_tokens")
                         if isinstance(failure, dict) and key in failure
                     }) if isinstance(failure, dict) else None
                 except HandsoffError as exc:
@@ -6690,7 +6723,7 @@ def validate_status_schema(status: dict) -> list[str]:
                     normalized = None
                 allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
                                   "changes", "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged",
-                                  "progress_summary", "budget_cause"}
+                                  "progress_summary", "budget_cause", "ceiling_overshoot_tokens"}
                 if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
                     errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
