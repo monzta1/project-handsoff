@@ -6,13 +6,11 @@ same session, with the refusal line it prevents; a bullet that gets broken
 twice becomes a refusal in the engine.
 
 - Regenerate the runtime manifest after the LAST edit to bin/, prompts/,
-  schemas/ or dashboard/ and before any reviewer or suite. The engine and
-  `handsoff_preflight.py` both refuse and name the command.
+  schemas/ or dashboard/. The engine and the preflight both refuse by name.
 - Never launch a reviewer before `design-propose` prints
-  DESIGN_PROPOSAL_RECORDED: a killed launch leaves a "live" session the
-  watchdog holds for ten minutes.
-- Serve the lane's dashboard from the worktree's engine, not the installed
-  `handsoff`, or the page cannot show the lane's own changes.
+  DESIGN_PROPOSAL_RECORDED; a killed launch leaves a live session for ten
+  minutes.
+- Serve the lane's dashboard from the worktree's engine, not the installed one.
 - A proof of the lane's own change runs the worktree's `bin/`, not the
   installed CLI; the installed engine predates the change by definition.
 - Run the WHOLE node suite (nine seconds) and the modules your files cite
@@ -132,9 +130,12 @@ twice becomes a refusal in the engine.
   the limit, not at it: one tool-heavy turn went 8,487 past the whole ceiling,
   which no protocol reserve can cover (a reserve carves from below it). State
   a bound's granularity; never call a per-turn bound a cap.
-- Assert behaviour, not existence: a test that the clock thread existed passed
-  while it retired at the first pause, unwatching every resumed episode.
-- Quote the measurement that hurts, not the flattering one.
-- Board and CLI disagreeing: read the status FILE (#308).
-- Amending a criterion revokes design approval and resets the phase. Budget a
-  fresh design review before amending, or the lane stalls on a spent one.
+- Assert behaviour, not existence: a test that a thread existed passed while it
+  retired at the first pause.
+- Quote the measurement that hurts.
+- Amending a criterion revokes design approval and resets the phase; budget a
+  fresh review first.
+- Board and CLI disagreeing: suspect the QUERY first. A granted authorization
+  read as None because the host polled the wrong key (#308).
+- A derived-set test must not pass vacuously: name what it analyses, refuse a
+  computed name, floor the count.
