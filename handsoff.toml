@@ -37,9 +37,14 @@ profile = "dogfood"
 # provider family. Setting one role never changes the other three.
 # "auto" is an explicit choice, not a placeholder: it keeps the older
 # first-installed auto-detect path (Codex, then Claude Code).
-# This lane: the host Architect writes the proposal because it is grounded in
-# run forensics a cold managed session would not have. Independence is
-# unchanged: the design reviewer is a separate managed Codex session (#112).
+# The Pilot chose "host" on 2026-09-24, overriding the README's recommended
+# "codex" for this repository. A lane's design proposal is usually grounded in
+# forensics from the run that motivated it, which a cold managed session does
+# not have, and the host Architect saves a managed session per lane. Reviewer
+# independence is unaffected: the design and implementation reviewers remain
+# separate managed Codex sessions, and #112 refuses a reviewer that shares the
+# host's session id. (It first reached main unintentionally on 2026-09-23 in a
+# commit that staged the whole tree; the decision above is the deliberate one.)
 architect = "host"
 supervisor = "host"
 implementer = "codex"
@@ -249,6 +254,8 @@ commands = [
   "python3 -m unittest tests.test_ci_staging -v",
   "node --test tests/dashboard/closeout_states.test.js",
   "python3 -m unittest tests.test_reported_model -v",
+  "python3 -m unittest tests.test_status_observability -v",
+  "python3 -m unittest tests.test_live_reported_model -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
