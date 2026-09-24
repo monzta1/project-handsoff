@@ -15,6 +15,7 @@ import http.client
 import json
 import os
 import shutil
+import stat
 import socket
 import subprocess
 import sys
@@ -194,6 +195,21 @@ def approve_design_review(cwd, architect="test-architect", reviewer="test-design
                 "--approve", "--summary", "Test-fixture independent design review"], cwd=cwd)
 
 
+def _make_writable(root: Path) -> None:
+    """#323: a fixture tree must be writable whatever the source mode was.
+
+    copyfile drops the source mode for files, but copytree still creates
+    directories with the source's, so a read-only project yields
+    directories the fixture cannot write into. This adds owner write to
+    everything it copied, and to nothing outside the temp tree.
+    """
+    for path in [root, *root.rglob("*")]:
+        try:
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+
+
 class HandsoffTestCase(unittest.TestCase):
     def setUp(self):
         # No fixture may spend a real model call on adapter pre-flight (#91).
@@ -208,19 +224,66 @@ class HandsoffTestCase(unittest.TestCase):
         self._registry_before = os.environ.get("HANDSOFF_FLEET_REGISTRY")
         self.registry_dir = Path(tempfile.mkdtemp(prefix="handsoff-registry-"))
         os.environ["HANDSOFF_FLEET_REGISTRY"] = str(self.registry_dir / "projects.json")
+        # #321: the same treatment for the run archive. Three suites
+        # (test_report_posting, test_offline_and_closed, test_snapshot_contract)
+        # reached an archive write without redirecting it and wrote nine files
+        # per run into the operator's real ~/Documents/Handsoff-Archive, which
+        # is the Miner's input. Redirecting here rather than in each suite
+        # means a subclass cannot leak by omitting it.
+        self._archive_before = os.environ.get("HANDSOFF_ARCHIVE_DIR")
+        self.base_archive_dir = Path(tempfile.mkdtemp(prefix="handsoff-archive-base-"))
+        os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.base_archive_dir)
+        self.documents_archive = Path.home() / "Documents" / "Handsoff-Archive"
+        # A managed reviewer's sandbox mounts the project READ-ONLY, and
+        # shutil.copy/copytree preserve the source mode, so the fixture
+        # copies inherited it and normalize_fixture_config below failed
+        # with PermissionError. Every HandsoffTestCase subclass errored in
+        # that sandbox while passing on a writable checkout, so a managed
+        # reviewer could not run any of them. copyfile takes the content
+        # and leaves the mode to the process umask.
         for name in ("handsoff.toml", "handsoff-runtime.json"):
-            shutil.copy(ROOT / name, self.tmp / name)
+            shutil.copyfile(ROOT / name, self.tmp / name)
         normalize_fixture_config(self.tmp / "handsoff.toml")
         for directory in ("schemas", "dashboard", "fleet", "templates", "bin", "rules", "playbook"):
-            shutil.copytree(ROOT / directory, self.tmp / directory)
+            shutil.copytree(ROOT / directory, self.tmp / directory,
+                            copy_function=shutil.copyfile)
+        _make_writable(self.tmp)
 
     def tearDown(self):
         if self._registry_before is None:
             os.environ.pop("HANDSOFF_FLEET_REGISTRY", None)
         else:
             os.environ["HANDSOFF_FLEET_REGISTRY"] = self._registry_before
+        if self._archive_before is None:
+            os.environ.pop("HANDSOFF_ARCHIVE_DIR", None)
+        else:
+            os.environ["HANDSOFF_ARCHIVE_DIR"] = self._archive_before
+        shutil.rmtree(self.base_archive_dir, ignore_errors=True)
         shutil.rmtree(self.registry_dir, ignore_errors=True)
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _documents_archive_names(self):
+        """#321: names, not a count.
+
+        A count says something appeared; it cannot say what. The guard
+        below brackets ONE test but the real directory is process-wide, so
+        a write from a parallel shard, or from a subprocess an earlier test
+        left running, lands inside this test's window and is reported
+        against it. Recording names lets the failure name the files that
+        appeared, and the message says the writer may be another process.
+        """
+        if not self.documents_archive.exists():
+            return frozenset()
+        return frozenset(entry.name for entry in self.documents_archive.iterdir())
+
+    def assertRealArchiveUnwritten(self, before):
+        appeared = self._documents_archive_names() - before
+        self.assertEqual(
+            sorted(appeared), [],
+            "the real ~/Documents/Handsoff-Archive must never be written during a test; "
+            f"these appeared: {sorted(appeared)}. The writer may be another process "
+            "(a parallel shard, or a subprocess an earlier test left running) rather "
+            "than the test reporting this failure.")
 
     def init(self, feature="Test feature"):
         r = run(["init", feature], cwd=self.tmp)
@@ -7997,6 +8060,16 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
+        # #320: this class proves budget MECHANICS (each record increments,
+        # the next is refused, the authorization reserves exactly once), not
+        # what the product default happens to be. Its scenarios are written
+        # around a limit of two, so the fixture pins two explicitly and the
+        # class stops moving whenever the default does. The default's own
+        # value is owned by tests/test_design_review_gate_control.py, which
+        # derives it from the measured distribution.
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace(
+            "stall_minutes = 10", "stall_minutes = 10\nmax_autonomous_design_reviews = 2"))
         sys.path.insert(0, str(BIN))
         import handsoff_agent
         import handsoff_broker
@@ -8057,9 +8130,17 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         return f"hs-{number:032x}"
 
     def test_default_budget_is_configured_and_governance_bound(self):
+        # This test is about the key being ABSENT: an unset governance key
+        # must leave config_hash byte-identical, or upgrading bin/ would
+        # invalidate in-flight runs. setUp pins the key for the mechanics
+        # tests, so remove it here to restore the condition under test.
+        toml_path = self.tmp / "handsoff.toml"
+        toml_path.write_text(toml_path.read_text().replace(
+            "\nmax_autonomous_design_reviews = 2", ""))
         cfg = self.lib.load_config(self.tmp)
-        self.assertEqual(cfg["max_autonomous_design_reviews"], 2)
-        self.assertEqual(self.lib.DEFAULT_CONFIG["max_autonomous_design_reviews"], 2)
+        # With the key absent the product default applies: the measured p90.
+        self.assertEqual(cfg["max_autonomous_design_reviews"], 3)
+        self.assertEqual(self.lib.DEFAULT_CONFIG["max_autonomous_design_reviews"], 3)
         self.assertIn("max_autonomous_design_reviews", self.lib.GOVERNANCE_CONFIG_KEYS)
         # Legacy compatibility: an absent (default) key must leave every
         # already-recorded decision's config_hash byte-identical, or
@@ -8089,7 +8170,8 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         self._prepare()
         self.assertEqual(self._review("--approve", summary="Design is sound").returncode, 0)
         toml = self.tmp / "handsoff.toml"
-        toml.write_text(toml.read_text().replace("stall_minutes = 10", "stall_minutes = 10\nmax_autonomous_design_reviews = 5"))
+        toml.write_text(toml.read_text().replace(
+            "max_autonomous_design_reviews = 2", "max_autonomous_design_reviews = 5"))
         approval = run(["design-approve", "--by", "moncy", "--architect", "architect-1",
                         "--summary", "Approved fixture design"], cwd=self.tmp)
         self.assertEqual(approval.returncode, 0, approval.stdout + approval.stderr)
@@ -8342,7 +8424,8 @@ class TestDesignReviewAttemptBudget(HandsoffTestCase):
         import handsoff_dashboard as dashboard
         policy = dashboard.build_snapshot(self.tmp)["policy"]
         self.assertEqual(policy["design_review_attempts"], 1)
-        self.assertEqual(policy["max_autonomous_design_reviews"], 2)
+        self.assertEqual(policy["max_autonomous_design_reviews"], 2,
+                         "the snapshot reports this fixture's pinned limit")
         self.assertIsNone(policy["design_review_authorization"])
 
     def test_hand_edited_decrement_is_refused_with_an_audit_block(self):
@@ -11344,7 +11427,7 @@ class TestVerificationCache(HandsoffTestCase):
         self._old_env = os.environ.get("HANDSOFF_ARCHIVE_DIR")
         os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
         self.documents_archive = Path.home() / "Documents" / "Handsoff-Archive"
-        self.documents_count_before = self._documents_archive_count()
+        self.documents_count_before = self._documents_archive_names()
         # The launch log lives OUTSIDE the project root: a file written into
         # the root would itself change the repository digest and hide what
         # the cache is being tested for.
@@ -11360,8 +11443,7 @@ class TestVerificationCache(HandsoffTestCase):
         self.supervisor = handsoff_supervisor
 
     def tearDown(self):
-        self.assertEqual(self._documents_archive_count(), self.documents_count_before,
-                         "the real ~/Documents/Handsoff-Archive must never be written by a test")
+        self.assertRealArchiveUnwritten(self.documents_count_before)
         if self._old_env is None:
             os.environ.pop("HANDSOFF_ARCHIVE_DIR", None)
         else:
@@ -11371,11 +11453,6 @@ class TestVerificationCache(HandsoffTestCase):
         super().tearDown()
 
     # -- fixture helpers ---------------------------------------------------
-
-    def _documents_archive_count(self):
-        if not self.documents_archive.exists():
-            return 0
-        return sum(1 for _ in self.documents_archive.iterdir())
 
     def _command(self, name, exit_code=0, delay=0, chars=0):
         parts = ["python3", "tests/count.py", str(self.counter_dir / f"{name}.log")]
@@ -11853,7 +11930,7 @@ class TestVerificationCache(HandsoffTestCase):
         written = self.lib.archive_run(self.tmp, cfg, status, acceptance, [], self.lib.read_events(self.tmp, cfg))
         self.assertEqual(written.parent, self.archive_dir)
         self.assertEqual(sum(1 for _ in self.archive_dir.iterdir()), 1)
-        self.assertEqual(self._documents_archive_count(), self.documents_count_before)
+        self.assertRealArchiveUnwritten(self.documents_count_before)
 
 
 class TestBenchmarkHarness(HandsoffTestCase):
@@ -11874,7 +11951,7 @@ class TestBenchmarkHarness(HandsoffTestCase):
         self._old_env = os.environ.get("HANDSOFF_ARCHIVE_DIR")
         os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
         self.documents_archive = Path.home() / "Documents" / "Handsoff-Archive"
-        self.documents_count_before = self._documents_archive_count()
+        self.documents_count_before = self._documents_archive_names()
         # A fixture repository of its own: prompts, one source file for the
         # design evidence to measure, one commit. The harness runs THIS
         # checkout's bin/ against a fresh clone of it per arm.
@@ -11901,8 +11978,7 @@ class TestBenchmarkHarness(HandsoffTestCase):
         self.harness = benchmark_design_phase
 
     def tearDown(self):
-        self.assertEqual(self._documents_archive_count(), self.documents_count_before,
-                         "the real ~/Documents/Handsoff-Archive must never be written by the harness")
+        self.assertRealArchiveUnwritten(self.documents_count_before)
         if self._old_env is None:
             os.environ.pop("HANDSOFF_ARCHIVE_DIR", None)
         else:
@@ -11910,11 +11986,6 @@ class TestBenchmarkHarness(HandsoffTestCase):
         for path in (self.archive_dir, self.fixture_repo, self.trap_dir, self.out_dir):
             shutil.rmtree(path, ignore_errors=True)
         super().tearDown()
-
-    def _documents_archive_count(self):
-        if not self.documents_archive.exists():
-            return 0
-        return sum(1 for _ in self.documents_archive.iterdir())
 
     def _write_fixture(self, **overrides):
         fixture = {
@@ -12831,11 +12902,16 @@ class TestDesignReviewBudgetAuthorizeControl(HandsoffTestCase):
         self.dashboard = handsoff_dashboard
         run(["criterion-update", "REQ-001", "--requirement", "A real criterion"], cwd=self.tmp)
         run(["advance", "2", "10"], cwd=self.tmp)
-        for n in (1, 2):
+        # #320: exhaust the real limit, whatever it is, rather than assuming
+        # two rounds still exhausts it.
+        import handsoff_lib
+        self.limit = handsoff_lib.DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS
+        for n in range(1, self.limit + 1):
             r = run(["record-design-review", "--by", f"rev-{n}", "--architect", "arch",
                      "--request-changes", "--summary", f"round {n}"], cwd=self.tmp)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r = run(["advance", "2", "10", "--status", "blocked", "--next-action", "authorize attempt 3",
+        r = run(["advance", "2", "10", "--status", "blocked",
+                 "--next-action", f"authorize attempt {self.limit + 1}",
                  "--authorization-hold", "design_review"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
@@ -12855,12 +12931,12 @@ class TestDesignReviewBudgetAuthorizeControl(HandsoffTestCase):
         try:
             code, snapshot = self._api(server, "GET", "/api/dashboard")
             self.assertEqual(snapshot["input_required"]["kind"], "design_review_budget")
-            self.assertIn("2 of 2", snapshot["input_required"]["message"])
+            self.assertIn(f"{self.limit} of {self.limit}", snapshot["input_required"]["message"])
             code, result = self._api(server, "POST", "/api/design-review-authorize", body="{}")
             self.assertEqual(code, 200, result)
             authorization = self.read_status()["design_review_authorization"]
             self.assertEqual(authorization["by"], "Mission Control Pilot")
-            self.assertEqual(authorization["attempt_permitted"], 3)
+            self.assertEqual(authorization["attempt_permitted"], self.limit + 1)
             code, again = self._api(server, "POST", "/api/design-review-authorize", body="{}")
             self.assertEqual(code, 409, again)
         finally:
@@ -13120,7 +13196,7 @@ print(json.dumps(report))
                          ("HANDSOFF_ARCHIVE_DIR", "HANDSOFF_RUN_KIND", "PATH", "HANDSOFF_MINER", "MINER_FAKE_LOG", "MINER_FAKE_MODE")}
         os.environ["HANDSOFF_ARCHIVE_DIR"] = str(self.archive_dir)
         self.documents_archive = Path.home() / "Documents" / "Handsoff-Archive"
-        self.documents_count_before = self._documents_archive_count()
+        self.documents_count_before = self._documents_archive_names()
         # A gh shim first on PATH: any real gh invocation from a subprocess
         # leaves a marker file, which tearDown asserts never appeared.
         self.shim_dir = Path(tempfile.mkdtemp(prefix="handsoff-gh-shim-"))
@@ -13147,8 +13223,7 @@ print(json.dumps(report))
         self.supervisor = handsoff_supervisor
 
     def tearDown(self):
-        self.assertEqual(self._documents_archive_count(), self.documents_count_before,
-                         "the real ~/Documents/Handsoff-Archive must never be written by a test")
+        self.assertRealArchiveUnwritten(self.documents_count_before)
         self.assertFalse(self.gh_marker.exists(), "a test invoked the real gh executable")
         for key, value in self._old_env.items():
             if value is None:
@@ -13159,11 +13234,6 @@ print(json.dumps(report))
         shutil.rmtree(self.shim_dir, ignore_errors=True)
         shutil.rmtree(self.miner_dir, ignore_errors=True)
         super().tearDown()
-
-    def _documents_archive_count(self):
-        if not self.documents_archive.exists():
-            return 0
-        return sum(1 for _ in self.documents_archive.iterdir())
 
     def _no_miner(self):
         """No HANDSOFF_MINER, no `miner` on PATH (the gh shim and the system
