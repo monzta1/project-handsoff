@@ -1183,6 +1183,25 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     #: unbounded. The step we could not prevent is recorded, never hidden.
     ceiling_stop: dict = {"tripped": False, "observed": None, "limit": spec.provider_limit}
 
+    #: #309: the observation boundary. The adapter announces its model once,
+    #: in its opening banner; this fires on the first feed that sets it, so a
+    #: RUNNING session names its model instead of naming it only once it has
+    #: ended. A failure to persist never disturbs the session: the model is
+    #: telemetry, and losing it must not cost the work.
+    model_recorded = {"done": False}
+
+    def record_model() -> None:
+        if model_recorded["done"]:
+            return
+        model = usage_watcher.reported_model
+        if not model:
+            return
+        model_recorded["done"] = True
+        try:
+            lib.record_reported_model(root, session_id, model)
+        except (lib.HandsoffError, OSError):
+            pass
+
     def enforce_ceiling() -> None:
         if spec.ceiling_enforcement != "wrapper_enforced" or ceiling_stop["tripped"]:
             return
@@ -1277,6 +1296,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         usage_watcher.feed(line)
+                        record_model()
                         enforce_ceiling()
                         if _raise_question_line(root, spec.role, session_id, line, question_errors):
                             question_lines[0] += 1
@@ -1300,6 +1320,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         discarding = True
                 if pending and not discarding:
                     usage_watcher.feed(pending)
+                    record_model()
                     enforce_ceiling()
                     if _raise_question_line(root, spec.role, session_id, pending, question_errors):
                         question_lines[0] += 1
@@ -1351,6 +1372,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     while "\n" in stderr_pending[0]:
                         line, stderr_pending[0] = stderr_pending[0].split("\n", 1)
                         usage_watcher.feed(line)
+                        record_model()
                         enforce_ceiling()
             except BaseException as exc:
                 reader_errors.append(exc)

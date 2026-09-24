@@ -750,6 +750,26 @@ def cmd_status(args) -> int:
         "unattributed_criteria": lib.derive_work_items(status, acceptance, cfg)["unattributed_criteria"],
         "crew": lib.crew_view(cfg),
         "event_log_intact": not log_problems, "event_log_problems": log_problems,
+        # #308: the gate state a host polls during an unattended run. Every
+        # field a gate path consults is reachable from this payload, declared
+        # in bin/handsoff_observability.py and enforced by a test that derives
+        # the consulted set from the source. Before this, a host that polled
+        # `status` could not tell a deliberate derived view from an omission.
+        "review": status.get("review"),
+        "risk_class": status.get("risk_class"),
+        "updated_at": status.get("updated_at"),
+        "regression_requests": status.get("regression_requests") or [],
+        "recovery_lease": status.get("recovery_lease"),
+        "deployment_approved": status.get("deployment_approved"),
+        "design_approved": status.get("design_approved"),
+        "design_review_authorization": status.get("design_review_authorization"),
+        "implemented_by": status.get("implemented_by"),
+        "lane": status.get("lane"),
+        "model_policy": status.get("model_policy"),
+        "original_symptom_evidence_id": status.get("original_symptom_evidence_id"),
+        "requirement_coverage": status.get("requirement_coverage"),
+        "verification_head": status.get("verification_head"),
+        "work_item_delivery": status.get("work_item_delivery"),
     }, indent=2))
     return 1 if errors or log_problems else 0
 

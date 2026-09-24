@@ -4868,6 +4868,55 @@ def usage_totals(status: dict) -> dict:
             "sessions_reported": reported, "sessions_not_reported": not_reported}
 
 
+def record_reported_model(root: Path, session_id: str, model: str) -> dict:
+    """#309: persist the provider's model the moment the adapter announces it.
+
+    `UsageWatcher` parses the model from the adapter's banner within the
+    first second, but until now the only writer was `end_session`, which
+    runs on a terminal transition. A running session therefore always
+    reported no model, which is precisely the window in which an operator
+    can still act on it: the fact was available exactly when it could no
+    longer be used.
+
+    The write is deliberately narrow. It changes `reported_model` and
+    nothing else, so a session's state, usage, exit code and timestamps are
+    untouched; it refuses a session that has already ended rather than
+    reopening a record that is evidence; and it is idempotent, so repeated
+    observations of the same model cost one write. A later announcement of
+    a DIFFERENT model does not overwrite the first: that disagreement is
+    for `_adaptive_model_reconciliation` to judge, not for this writer to
+    silently resolve.
+    """
+    if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
+        raise HandsoffError("agent session id is invalid")
+    model = validate_agent_model(model)
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        session = (status.get("agent_sessions") or {}).get(session_id)
+        if not isinstance(session, dict):
+            raise HandsoffError(f"agent session {session_id} is unknown")
+        if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
+            raise HandsoffError(
+                f"agent session {session_id} already ended as {session.get('state')}; its record "
+                "is evidence and a late announcement does not reopen it")
+        existing = session.get("reported_model")
+        if existing is not None:
+            # Idempotent for a repeat, and silent about a disagreement: the
+            # first announcement stands and reconciliation judges the rest.
+            return {"session_id": session_id, "reported_model": existing,
+                    "written": False, "reason": "already recorded"}
+        proposed = deepcopy(status)
+        proposed["agent_sessions"][session_id]["reported_model"] = model
+        errors = validate_status_schema(proposed)
+        if errors:
+            raise HandsoffError(errors[0])
+        commit(root, cfg, status=proposed, event_kind="agent_model_reported",
+               event_message=f"{session_id} reported model {model}", by="runtime",
+               session_id=session_id, reported_model=model)
+    return {"session_id": session_id, "reported_model": model, "written": True, "reason": None}
+
+
 def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
                              failure: dict | None = None, usage: dict | None = None,
