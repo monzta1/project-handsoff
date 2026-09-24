@@ -61,7 +61,9 @@ class RunnerAndModulesTests(unittest.TestCase):
         self.assertEqual(plan[0], sorted(fixture_ids)[:3], "contiguous module-friendly slices")
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
         self.assertIn("python3 tests/shard.py --all --total 5 --index ${{ matrix.shard }}", workflow)
-        self.assertIn("needs: [changes, python, dashboard, docs]", workflow)  # #227 adds the docs path
+        # #227 added the docs path; #297/#298 put the fast preflight ahead of
+        # every costly job, so the required check gathers it too.
+        self.assertIn("needs: [changes, preflight, python, dashboard, docs]", workflow)
         self.assertNotIn("needs.modules", workflow)
         helper = (ROOT / "tests" / "shard.py").read_text()
         self.assertIn('"-m", "unittest", "-v", *selected', helper)
