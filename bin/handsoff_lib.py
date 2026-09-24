@@ -463,6 +463,50 @@ FIXTURE_ROOT_PREFIXES = (
     "handsoff-test-", "handsoff-selfcheck", "handsoff-dropin", "handsoff-benchmark", "handsoff-fixture",
 )
 RUN_KINDS = ("test", "product")
+
+#: #317: the ONE rule that decides what an archive is. Three readers used to
+#: disagree about the same files. The Miner's answer was the correct one and
+#: is adopted here: an explicit run_kind wins, and without one the repo name,
+#: or the file name when the repo is absent, decides by prefix.
+#:
+#: The leniency it replaces mattered. `tokens_per_ticket` excluded only an
+#: exact run_kind of "test", so the 100 archives written before #49 added the
+#: field all passed as product, including the 81 that were fixture runs, and
+#: those figures ride on every Fleet card.
+#:
+#: An unexpected value is NOT honoured. Trusting it would let a typo or a
+#: hand-edited archive declare itself product; falling through to the name
+#: rule keeps the decision on evidence the archive cannot fake about itself.
+def classify_archive_record(record: object, file_name: str = "") -> str:
+    """Return "test" or "product" for one archive record."""
+    kind = record.get("run_kind") if isinstance(record, dict) else None
+    if isinstance(kind, str) and kind in RUN_KINDS:
+        return kind
+    repo = record.get("repo") if isinstance(record, dict) else None
+    name = repo if isinstance(repo, str) and repo else (file_name or "")
+    if any(name.startswith(prefix) for prefix in FIXTURE_ROOT_PREFIXES):
+        return "test"
+    return "product"
+
+
+#: #317: every reader of an archive's kind, named rather than remembered.
+#: A reader that classifies without appearing here fails the build, so a
+#: fourth private answer cannot appear the way the third one did.
+ARCHIVE_CLASSIFICATION_READERS = {
+    "handsoff_lib.tokens_per_ticket": "classify_archive_record",
+    "miner.analyzer.classify_archive": "classify_archive_record",
+    "handsoff_analyzer.scan": "classify_archive_record",
+}
+
+#: #317: the one function that shares the prefix rule without being a
+#: reader. `run_kind_for` decides a run's kind as it STARTS and writes it
+#: into the archive; the readers above classify an archive that already
+#: exists. Declared rather than defaulted, so the exemption is a recorded
+#: decision and a second one cannot appear by accident.
+ARCHIVE_CLASSIFICATION_WRITERS = {
+    "handsoff_lib.run_kind_for": "decides a run's kind at start and writes it into the archive",
+    "handsoff_lib.archive_run": "stores run_kind_for(root) in the archive it writes",
+}
 MAX_PILOT_NOTE_LENGTH = 512
 
 AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
@@ -12584,7 +12628,11 @@ def tokens_per_ticket(archives_dir: Path | None = None) -> dict:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(record, dict) or record.get("run_kind") == "test":
+        # #317: the shared rule, not a local one. This used to exclude only
+        # an exact run_kind of "test", so the 100 archives written before #49
+        # added the field all counted as product, the 81 fixture runs among
+        # them included.
+        if not isinstance(record, dict) or classify_archive_record(record, path.name) == "test":
             continue
         usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
         total = usage.get("tokens_total") if usage and usage.get("sessions_reported") else None

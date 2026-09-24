@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import handsoff_lib as lib
+
 
 def scan(archive_dir: Path) -> list[dict]:
     """Return findings for applicable lane rules; never mutate an archive."""
@@ -12,7 +14,11 @@ def scan(archive_dir: Path) -> list[dict]:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(record, dict) or record.get("run_kind") == "test":
+        # The isinstance guard is load-bearing and separate from the
+        # classification: classify_archive_record tolerates a non-dict
+        # record, so without it a list-shaped archive with a product
+        # name reaches record.get("status") below and raises.
+        if not isinstance(record, dict) or lib.classify_archive_record(record, path.name) == "test":
             continue
         status = record.get("status") if isinstance(record.get("status"), dict) else {}
         lane = status.get("lane")
