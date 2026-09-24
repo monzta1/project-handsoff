@@ -235,8 +235,11 @@ class RecoveryTests(unittest.TestCase):
         architect["phase_number"] = 2
         status.update(
             phase_number=2, phase=lib.PHASES[2], status="in_progress",
-            design_review_attempts=2, design_review=None,
-            design_proposal={"based_on_review_attempt": 2},
+            # #320: derived, so raising the default does not silently leave
+            # this fixture un-exhausted and the assertion vacuous.
+            design_review_attempts=lib.DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
+            design_review=None,
+            design_proposal={"based_on_review_attempt": lib.DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS},
             agent_sessions={architect_id: architect},
             current_agent_sessions={"architect": architect_id},
         )

@@ -611,8 +611,14 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     budget_exhausted = (phase == 2 and budget.get("exhausted")
                         and not design_approval_missing
                         and not isinstance(status.get("run_closed"), dict))
+    # #319: budget_exhausted belongs in `required`, not only in the kind
+    # chain below. The return applies `kind if required else None`, so
+    # leaving it out computed the Pilot's control and then discarded it:
+    # no "Authorize one review" action, and POST /api/design-review-authorize
+    # refusing because it checks `input_required.kind`. The run genuinely
+    # cannot proceed without the Pilot, so it is input required.
     required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
-        or older_signal or bool(amendment) or bool(questions)
+        or older_signal or bool(amendment) or bool(questions) or budget_exhausted
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
     blockers: list[str] = []
     if regression:

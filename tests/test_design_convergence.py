@@ -97,6 +97,10 @@ class TestDesignConvergence(HandsoffTestCase):
         self.assertEqual(len(findings), 32)
         self.assertTrue(all(len(item["text"]) == 512 for item in findings))
 
-    def test_autonomous_design_review_default_is_unchanged(self):
-        self.assertEqual(lib.DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS, 2)
-        self.assertEqual(lib.load_config(self.tmp)["max_autonomous_design_reviews"], 2)
+    def test_autonomous_design_review_default_is_the_measured_percentile(self):
+        """#320: 2 became 3, the nearest-rank p90 of 100 measured product
+        runs. tests/test_design_review_gate_control.py holds the
+        distribution and derives the number from it; this asserts the
+        config and the constant agree."""
+        self.assertEqual(lib.DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS, 3)
+        self.assertEqual(lib.load_config(self.tmp)["max_autonomous_design_reviews"], 3)

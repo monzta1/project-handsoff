@@ -25,7 +25,10 @@ class TestDesignReviewHold(HandsoffTestCase):
         self.init("Design review hold")
         self.assertEqual(run(["criterion-update", "REQ-001", "--requirement", "A criterion"], self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "2", "10"], self.tmp).returncode, 0)
-        for number in (1, 2):
+        # #320: derived from the constant, not the number 2, so raising
+        # the default again does not silently stop exhausting the budget
+        # and leave these tests asserting against a run that is not held.
+        for number in range(1, handsoff_lib.DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS + 1):
             result = run(["record-design-review", "--by", f"reviewer-{number}",
                           "--architect", "architect-1", "--request-changes",
                           "--summary", f"Changes {number}"], self.tmp)
@@ -36,7 +39,8 @@ class TestDesignReviewHold(HandsoffTestCase):
         status = self.read_status()
         self.assertEqual(status["authorization_hold"], "design_review")
         self.assertEqual(status["status"], "blocked")
-        self.assertEqual(status["next_action"], "design review budget exhausted (2/2); "
+        limit = handsoff_lib.DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS
+        self.assertEqual(status["next_action"], f"design review budget exhausted ({limit}/{limit}); "
                          "Pilot must run handsoff_supervisor.py design-review-authorize --by <pilot> "
                          "to permit one more attempt")
 

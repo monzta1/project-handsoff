@@ -135,7 +135,13 @@ DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
 # #35: how many design-review attempts (approve or request-changes, every
 # record-design-review counts) a run may consume on its own before the
 # Pilot has to authorize each further attempt one at a time.
-DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS = 2
+#: #320: the nearest-rank p90 of 100 measured product runs. Attempts
+#: distribute 24/49/17/6/1/1/2 at 1,2,3,4,5,6,8. A limit of 2 interrupts
+#: 27% of runs and a limit of 3 interrupts 10%. The gate at 2 saved no
+#: tokens: 27 runs went past it, so authorization was granted and the
+#: attempt ran anyway. Kept rather than removed because four runs needed
+#: five to eight attempts, where the design is wrong and a human should look.
+DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS = 3
 DESIGN_REVIEW_AUTHORIZATION_COMMAND = "handsoff_supervisor.py design-review-authorize --by <pilot>"
 # Hard ceilings for one managed Codex session.  These are deliberately
 # conservative: a role that cannot finish inside its allowance must return a
