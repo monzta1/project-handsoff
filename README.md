@@ -24,7 +24,7 @@ One versioned engine in its own environment; a project keeps only
 `handsoff.toml` and `.handsoff-version`.
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.84/project_handsoff-0.3.84-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.3.85/project_handsoff-0.3.85-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
