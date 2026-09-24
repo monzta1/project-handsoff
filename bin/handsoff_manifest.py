@@ -17,6 +17,7 @@ RUNTIME_FILES = (
     "bin/handsoff_fleet_signals.py",
     "bin/handsoff_lib.py",
     "bin/handsoff_manifest.py",
+    "bin/handsoff_preflight.py",
     "bin/handsoff_progress.py",
     "bin/handsoff_regress.py",
     "bin/handsoff_release_runtime.py",

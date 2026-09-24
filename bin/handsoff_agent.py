@@ -44,6 +44,11 @@ class LaunchSpec:
     # Host-enforced native rollout ceiling when the selected adapter
     # supports it.  It is configuration, never inferred from output.
     token_budget: int | None = None
+    # #290: the limit actually handed to the provider (the ceiling minus the
+    # protocol reserve), and how that limit is imposed. Both are recorded so
+    # a session's bound can be audited without re-deriving it.
+    provider_limit: int | None = None
+    ceiling_enforcement: str | None = None
     env_overrides: dict[str, str] | None = None
     project_root: str | None = None
     # Opt-in adaptive selection, committed atomically with the session.
@@ -541,12 +546,19 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         followup=implementation_delta is not None,
     )
     token_budget = budget_decision["ceiling"]
-    if token_budget < budget_decision["safe_minimum"]:
+    # #290: the provider is told the ceiling minus the protocol reserve, so a
+    # session that spends everything still has room to emit its verdict. The
+    # planner already refused a reserve that cannot fit.
+    provider_limit = budget_decision["provider_limit"]
+    ceiling_enforcement = lib.adapter_ceiling_enforcement(adapter)
+    if provider_limit < budget_decision["safe_minimum"]:
         raise lib.HandsoffError(
             "managed launch refused before session creation: rendered packet estimates "
             f"{budget_decision['estimated_input_tokens']} input tokens, reserves "
             f"{budget_decision['response_reserve_tokens']} response tokens, and requires at least "
-            f"{budget_decision['safe_minimum']} tokens; selected ceiling is {token_budget}"
+            f"{budget_decision['safe_minimum']} tokens; selected ceiling is {token_budget} "
+            f"leaving {provider_limit} after the {budget_decision['reserved_protocol_tokens']}-token "
+            "protocol reserve"
         )
     executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
@@ -556,7 +568,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     executable = str(Path(executable).resolve())
     scratch = _reviewer_scratch(root, adapter, role, create=not inspection)
     if adapter == "codex":
-        argv = _codex_argv(executable, role, model, token_budget, reviewer_sandbox=scratch is not None)
+        argv = _codex_argv(executable, role, model, provider_limit, reviewer_sandbox=scratch is not None)
     else:
         allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(cfg, root, which)
         argv = lib.claude_argv(executable, role, allowed, model)
@@ -584,6 +596,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         tier=tier,
         tier_reason=tier_reason,
         token_budget=token_budget,
+        provider_limit=provider_limit,
+        ceiling_enforcement=ceiling_enforcement,
         env_overrides={"TMPDIR": str(scratch)} if scratch else None,
         project_root=str(root),
         adaptive_routing=adaptive_routing,
@@ -664,6 +678,8 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     return LaunchSpec(
         role, adapter, model, tuple(argv), str(scratch or root.resolve()), task, "fallback",
         token_budget=token_budget,
+        provider_limit=budget_decision["provider_limit"],
+        ceiling_enforcement=lib.adapter_ceiling_enforcement(adapter),
         env_overrides={"TMPDIR": str(scratch)} if scratch else None,
         project_root=str(root.resolve()),
         budget_decision=budget_decision,
@@ -1151,6 +1167,29 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     # #168: the adapter's own usage, watched per streamed line on both
     # streams, independent of the bounded tails above.
     usage_watcher = lib.UsageWatcher(spec.adapter)
+    #: #290: an adapter with no native meter is bounded here instead. The
+    #: session is stopped at the FIRST observation past its provider limit,
+    #: so the overrun is bounded by one reported usage step rather than
+    #: unbounded. The step we could not prevent is recorded, never hidden.
+    ceiling_stop: dict = {"tripped": False, "observed": None, "limit": spec.provider_limit}
+
+    def enforce_ceiling() -> None:
+        if spec.ceiling_enforcement != "wrapper_enforced" or ceiling_stop["tripped"]:
+            return
+        limit = spec.provider_limit
+        usage = usage_watcher.usage
+        if not isinstance(limit, int) or not isinstance(usage, dict):
+            return
+        total = usage.get("tokens_total")
+        if not isinstance(total, int) or total <= limit:
+            return
+        ceiling_stop.update(tripped=True, observed=total)
+        sys.stdout.write(
+            f"HANDSOFF_AGENT_WARNING: bounded termination at {total} tokens, past the "
+            f"{limit}-token provider limit for this {spec.role} session\n"
+        )
+        sys.stdout.flush()
+        _stop_process_group(process)
     usage_enabled = lib.feature_enabled(lib.load_config(root), "token_accounting")
 
     def end_session(state, **kw):
@@ -1228,6 +1267,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         usage_watcher.feed(line)
+                        enforce_ceiling()
                         if _raise_question_line(root, spec.role, session_id, line, question_errors):
                             question_lines[0] += 1
                         _parse_operation_line(line, root, session_id, spec.role)
@@ -1250,6 +1290,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         discarding = True
                 if pending and not discarding:
                     usage_watcher.feed(pending)
+                    enforce_ceiling()
                     if _raise_question_line(root, spec.role, session_id, pending, question_errors):
                         question_lines[0] += 1
                     _parse_operation_line(pending, root, session_id, spec.role)
@@ -1300,6 +1341,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     while "\n" in stderr_pending[0]:
                         line, stderr_pending[0] = stderr_pending[0].split("\n", 1)
                         usage_watcher.feed(line)
+                        enforce_ceiling()
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
@@ -1469,6 +1511,17 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             or (capture_supervisor and bool(supervisor_requests))
             or question_lines[0] > 0
         )
+        # #290: name why the budget ended, because the repairs differ. Most
+        # specific first: our own bound, then output we could not parse, then
+        # the provider's meter, then a session that never spoke at all.
+        if ceiling_stop["tripped"]:
+            failure["budget_cause"] = "wrapper_overrun"
+        elif protocol_errors:
+            failure["budget_cause"] = "model_noncompliance"
+        elif failure["category"] == "token_budget_exhaustion":
+            failure["budget_cause"] = "shared_budget_exhaustion"
+        elif not complete_protocol:
+            failure["budget_cause"] = "missing_protocol"
         if failure["category"] == "token_budget_exhaustion" and complete_protocol:
             # Codex may emit the complete final protocol line and then exit
             # non-zero while its rollout-budget wrapper accounts for the
@@ -1902,6 +1955,23 @@ def _parse_architect_line(line: str, results: list[dict], errors: list[str]) -> 
         errors.append(f"invalid Architect design proposal: {exc}")
 
 
+def _performance_refusal(root: Path, operation: str) -> str | None:
+    """Ask the supervisor's own gate, imported late to avoid a cycle.
+
+    A missing or unreadable performance record is not a refusal: the gate
+    exists to stop work during a recorded pause, never to block a run that
+    has no performance history yet.
+    """
+    try:
+        import handsoff_supervisor
+    except ImportError:
+        return None
+    try:
+        return handsoff_supervisor.performance_mutation_refusal(root, operation)
+    except (lib.HandsoffError, OSError):
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch a configured Handsoff role")
     parser.add_argument("--root", default=None)
@@ -1930,6 +2000,14 @@ def main() -> int:
             raise lib.HandsoffError(
                 "managed roles cannot launch nested agents; return a structured request to the host Supervisor"
             )
+        if args.command == "launch":
+            # #295: this entry point had no performance gate at all, so a
+            # paused run could still launch a model. The supervisor CLI and
+            # the dashboard both refused; `handsoff agent launch` did not,
+            # which is the path a host actually uses.
+            refusal = _performance_refusal(lib.resolve_root(args.root), f"launch_{args.role}")
+            if refusal:
+                raise lib.HandsoffError(refusal)
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False),
                                  inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)),
                                  topic=args.topic)

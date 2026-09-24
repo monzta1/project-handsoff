@@ -1350,6 +1350,26 @@ class DashboardServer(ThreadingHTTPServer):
             threading.Thread(target=self._watchdog_loop, daemon=True).start()
             if self.owned_by_run:
                 threading.Thread(target=self._orchestration_loop, daemon=True).start()
+        # #295: the run's own clock. The 90- and 120-minute transitions are
+        # pure functions that only decide when something calls them, and
+        # until now the only callers were a supervisor CLI command and an
+        # HTTP request to this server. During the v0.3.80 closeout neither
+        # happened for the hour that straddled the deadline, so the ceiling
+        # passed unobserved. This thread calls it whether or not anyone is
+        # typing commands or watching the page.
+        threading.Thread(target=self._performance_clock_loop, daemon=True).start()
+
+    def _performance_clock_loop(self) -> None:
+        """Evaluate the deadline on a fixed interval until the run pauses."""
+        while not self._watchdog_stop.wait(supervisor.PERFORMANCE_TICK_SECONDS):
+            if self.stopping:
+                return
+            try:
+                view = supervisor.performance_tick(self.project_root)
+            except (lib.HandsoffError, OSError):
+                continue  # a closed or archived run simply has no clock
+            if view.get("state") == "paused_for_performance_review":
+                return  # the refusal is durable; the thread has done its work
 
     def _launch_managed_role(self, role: str, task: str, actor: str | None = None) -> int:
         """Launch a managed role. `actor` names who asked for the launch and

@@ -469,6 +469,113 @@ AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
 SELECTABLE_AGENT_ROLES = AGENT_ROLES
 LEGACY_AGENT_ROLES = ("architect", "implementer", "reviewer")
 SELECTABLE_AGENT_ADAPTERS = ("codex", "claude")
+#: #290: how each adapter's recorded ceiling is actually imposed. An adapter
+#: absent from this map cannot bound a session and is refused at launch:
+#: recording a ceiling nothing enforces reads as a guarantee and is not one.
+#: "native_rollout_meter": the provider stops its own agent loop at a limit
+#: passed on the argv. "wrapper_enforced": the provider offers no limit, so
+#: Handsoff watches the usage it streams and terminates the session at the
+#: first observation past the limit. A wrapper bound is a bound, not an
+#: exact cap, and the overrun it permits is recorded rather than hidden.
+CEILING_ENFORCEMENT = {"codex": "native_rollout_meter", "claude": "wrapper_enforced"}
+#: #290: why a bounded session ended, kept distinct because the repairs
+#: differ. The reviewer failures on 2026-09-23 were recorded only as
+#: "token_budget_exhaustion", which cannot tell a model that ignored its
+#: scope from a wrapper that stopped it.
+BUDGET_FAILURE_CAUSES = ("model_noncompliance", "wrapper_overrun",
+                         "shared_budget_exhaustion", "missing_protocol")
+
+
+#: #290/REQ-003: the largest slice a single compact-review entry may carry.
+#: A compact review exists to make a bounded question cheap; an entry big
+#: enough to need discovery is not a compact review.
+MAX_COMPACT_SCOPE_LINES = 400
+MAX_COMPACT_SCOPE_ENTRIES = 16
+
+
+def validate_compact_review_scope(entries: object) -> list[dict]:
+    """Validate an explicit file-and-range review scope.
+
+    Each entry is {"path": str, "start": int, "end": int} with 1-based,
+    inclusive line numbers. Paths are repository-relative and may not
+    escape it: a scope is a narrowing, never a way to reach further.
+    """
+    if not isinstance(entries, (list, tuple)) or not entries:
+        raise HandsoffError("a compact review scope needs at least one file range")
+    if len(entries) > MAX_COMPACT_SCOPE_ENTRIES:
+        raise HandsoffError(
+            f"a compact review scope carries at most {MAX_COMPACT_SCOPE_ENTRIES} ranges; "
+            f"{len(entries)} were given, which is a full review")
+    scope = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"path", "start", "end"}:
+            raise HandsoffError("each compact scope entry needs exactly path, start and end")
+        path = entry["path"]
+        if not isinstance(path, str) or not path.strip() or path.startswith("/"):
+            raise HandsoffError("a compact scope path must be repository-relative")
+        if ".." in Path(path).parts:
+            raise HandsoffError("a compact scope path may not escape the repository")
+        start, end = entry["start"], entry["end"]
+        for label, value in (("start", start), ("end", end)):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise HandsoffError(f"a compact scope {label} must be a line number of 1 or more")
+        if end < start:
+            raise HandsoffError("a compact scope end precedes its start")
+        if end - start + 1 > MAX_COMPACT_SCOPE_LINES:
+            raise HandsoffError(
+                f"{path}:{start}-{end} is {end - start + 1} lines; a compact review range is at "
+                f"most {MAX_COMPACT_SCOPE_LINES}")
+        scope.append({"path": path, "start": start, "end": end})
+    return sorted(scope, key=lambda item: (item["path"], item["start"]))
+
+
+def materialize_compact_scope(root: Path, scope: list[dict], destination: Path) -> dict:
+    """Write only the scoped slices into the reviewer's scratch directory.
+
+    This is what makes a compact review a constraint rather than a request.
+    #290 showed a reviewer told in prose to review only the final delta
+    spend its whole budget grepping unrelated test files. A reviewer whose
+    working directory contains nothing but the slices cannot do that: there
+    is nothing else to find, and no test suite to run.
+    """
+    root, destination = Path(root).resolve(), Path(destination).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    written = []
+    for entry in scope:
+        source = (root / entry["path"]).resolve()
+        if root not in source.parents and source != root:
+            raise HandsoffError(f"{entry['path']} resolves outside the repository")
+        try:
+            lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+        except (OSError, FileNotFoundError) as exc:
+            raise HandsoffError(f"compact scope cannot read {entry['path']}: {exc}") from exc
+        slice_lines = lines[entry["start"] - 1:entry["end"]]
+        # The slice is labelled with its real coordinates so a finding can
+        # still cite file and line without the whole file being present.
+        header = f"# {entry['path']} lines {entry['start']}-{entry['end']}\n"
+        target = destination / f"{entry['path'].replace('/', '__')}.{entry['start']}-{entry['end']}.slice"
+        target.write_text(header + "\n".join(slice_lines) + "\n", encoding="utf-8")
+        written.append({"path": entry["path"], "start": entry["start"], "end": entry["end"],
+                        "lines": len(slice_lines), "slice": target.name})
+    manifest = {"schema": "handsoff.compact_review_scope", "version": 1,
+                "entries": written, "total_lines": sum(item["lines"] for item in written),
+                # Nothing executable is materialized, so there is no test
+                # runner, no suite and no project configuration to invoke.
+                "tests_executable": False, "repository_visible": False}
+    (destination / "SCOPE.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                                            encoding="utf-8")
+    return manifest
+
+
+def adapter_ceiling_enforcement(adapter: str) -> str:
+    """Name how this adapter's ceiling is imposed, or refuse the launch."""
+    enforcement = CEILING_ENFORCEMENT.get(adapter)
+    if enforcement is None:
+        raise HandsoffError(
+            f"adapter {adapter!r} cannot impose a token ceiling on the wire and Handsoff "
+            "cannot bound it by observation; add it to CEILING_ENFORCEMENT before selecting it"
+        )
+    return enforcement
 HOST_AGENT_ADAPTER = "host"
 HOST_CAPABLE_ROLES = ("supervisor", "architect")
 AUTO_AGENT_ADAPTER = "auto"
@@ -1728,6 +1835,9 @@ def codex_argv(executable: str, role: str, model: str, token_budget: int, *, rev
     # including repeated tool/model turns.  Count both prefill and sampling
     # tokens at full weight so cached or repeated context is not free from
     # Handsoff's safety ceiling.
+    # #290: `token_budget` here is the PROVIDER LIMIT, already reduced by the
+    # protocol reserve, so the meter stops with room left to emit a verdict.
+    # The whole allowance stays on the session record as `ceiling`.
     argv.extend([
         "-c",
         ("features.rollout_budget={enabled=true,"
@@ -2744,6 +2854,50 @@ RISK_BUDGET_BASES = {
     "persistence_migration": 14_000, "shared_infrastructure": 16_000,
     "irreversible": 20_000,
 }
+#: #290: the packet allowance below saturates at 16,000 tokens, which it
+#: reaches at 16,000 packet bytes. Past that point the allowance stops
+#: growing while the packet keeps growing, so sizing decouples from the
+#: work. That decoupling, not the risk class, is what exhausts a reviewer.
+BROAD_REVIEW_PACKET_BYTES = 16_000
+#: Criteria breadth reaches the same decoupling sooner; this threshold is
+#: unchanged from the risk-keyed guard it replaces.
+BROAD_REVIEW_CRITERIA = 8
+#: #290: held back from the limit handed to the provider so a session can
+#: still emit its verdict. Two parts, both measured rather than guessed:
+#: the protocol line itself, already sized at protocol_overhead_tokens
+#: (1,024), and the overshoot past a native rollout meter, observed at 764
+#: tokens on session hs-978fd700da4d42b3b9ca70545bc0ceb5 and rounded to the
+#: same order. A meter stops at an observation boundary, not at the limit.
+PROTOCOL_RESERVE_TOKENS = 2_048
+
+
+def _apply_protocol_reserve(decision: dict, *, role: str, safe_minimum: int) -> dict:
+    """Hold back the protocol reserve, or refuse with the shortfall named.
+
+    #290/REQ-012, the whole invariant in one place so it cannot be applied
+    twice or skipped: `ceiling` is the entire session allowance and is what
+    usage is measured against; `provider_limit` is that minus the reserve
+    and is the only number the provider is told.
+    """
+    ceiling = decision["ceiling"]
+    reserved = PROTOCOL_RESERVE_TOKENS
+    if reserved >= ceiling:
+        raise HandsoffError(
+            f"the {reserved}-token protocol reserve meets or exceeds the {ceiling}-token "
+            f"ceiling for {role}; raise [agent_budget].{role} by at least "
+            f"{reserved - ceiling + 1} tokens"
+        )
+    provider_limit = ceiling - reserved
+    if provider_limit < safe_minimum:
+        raise HandsoffError(
+            f"a {role} needs at least {safe_minimum} tokens to read its packet and answer, "
+            f"but the {ceiling}-token ceiling leaves only {provider_limit} after the "
+            f"{reserved}-token protocol reserve; raise [agent_budget].{role} by at least "
+            f"{safe_minimum - provider_limit} tokens or send a smaller packet"
+        )
+    decision["reserved_protocol_tokens"] = reserved
+    decision["provider_limit"] = provider_limit
+    return decision
 
 
 def plan_role_token_budget(*, configured_ceiling: int, role: str,
@@ -2773,11 +2927,13 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
         "safe_minimum": safe_minimum,
     }
     if risk_class is None:
-        return {"ceiling": configured_ceiling, "configured_ceiling": configured_ceiling,
-                "floor": ROLE_BUDGET_FLOORS[role], "risk_class": None,
-                "role": role, "packet_bytes": packet_bytes,
-                "criteria_count": criteria_count, "changed_files": changed_files,
-                "followup": bool(followup), "basis": "legacy_configured_ceiling", **sizing}
+        return _apply_protocol_reserve(
+            {"ceiling": configured_ceiling, "configured_ceiling": configured_ceiling,
+             "floor": ROLE_BUDGET_FLOORS[role], "risk_class": None,
+             "role": role, "packet_bytes": packet_bytes,
+             "criteria_count": criteria_count, "changed_files": changed_files,
+             "followup": bool(followup), "basis": "legacy_configured_ceiling", **sizing},
+            role=role, safe_minimum=safe_minimum)
     risk_class = classify_adaptive_risk(risk_class)
     floor = ROLE_BUDGET_FLOORS[role]
     # Packet bytes are converted conservatively: roughly four bytes/token,
@@ -2787,23 +2943,28 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
     scope_allowance = min(12_000, criteria_count * 750 + changed_files * 1_000)
     role_allowance = 8_000 if role in {"architect", "implementer"} else 4_000
     calculated = floor + RISK_BUDGET_BASES[risk_class] + role_allowance + packet_allowance + scope_allowance
-    # A review of a broad high-risk change is the quality gate, not a cheap
-    # discovery turn. Reducing it below the configured ceiling
-    # caused the reviewer to exhaust after doing the work but before issuing
-    # its verdict twice. Lower-risk follow-up reviews remain packet-sized.
-    broad_high_risk_review = (
-        role == "reviewer" and criteria_count >= 8
-        and risk_class in {"security_sensitive", "persistence_migration",
-                           "shared_infrastructure", "irreversible"}
+    # A broad review is the quality gate, not a cheap discovery turn.
+    # Reducing it below the configured ceiling caused the reviewer to
+    # exhaust after doing the work but before issuing its verdict, three
+    # times now. #290: this keyed on risk class until 2026-09-23, when a
+    # ten-criterion review of a *routine* change fell through the guard and
+    # exhausted at 49,264 tokens against a 48,500 ceiling. Discovery cost
+    # tracks breadth, not risk, so breadth alone widens it. Lower-risk
+    # follow-up reviews stay packet-sized because a delta packet is small.
+    broad_review = role == "reviewer" and (
+        criteria_count >= BROAD_REVIEW_CRITERIA
+        or packet_bytes >= BROAD_REVIEW_PACKET_BYTES
     )
-    if broad_high_risk_review:
+    if broad_review:
         calculated = configured_ceiling
     ceiling = min(configured_ceiling, max(floor, calculated))
-    return {"ceiling": ceiling, "configured_ceiling": configured_ceiling,
-            "floor": floor, "risk_class": risk_class, "role": role,
-            "packet_bytes": packet_bytes, "criteria_count": criteria_count,
-            "changed_files": changed_files, "followup": bool(followup),
-            "basis": "risk_role_packet_scope", **sizing}
+    return _apply_protocol_reserve(
+        {"ceiling": ceiling, "configured_ceiling": configured_ceiling,
+         "floor": floor, "risk_class": risk_class, "role": role,
+         "packet_bytes": packet_bytes, "criteria_count": criteria_count,
+         "changed_files": changed_files, "followup": bool(followup),
+         "basis": "risk_role_packet_scope", **sizing},
+        role=role, safe_minimum=safe_minimum)
 
 
 def validate_session_budget_decision(value: object) -> dict:
@@ -2811,7 +2972,11 @@ def validate_session_budget_decision(value: object) -> dict:
                 "packet_bytes", "criteria_count", "changed_files", "followup", "basis"}
     sizing = {"estimator", "estimated_input_tokens", "input_guard_tokens",
               "protocol_overhead_tokens", "response_reserve_tokens", "safe_minimum"}
-    if not isinstance(value, dict) or set(value) not in {frozenset(legacy), frozenset(legacy | sizing)}:
+    # #290: sessions recorded before the protocol reserve existed keep their
+    # two older shapes, so archives stay readable.
+    reserve = {"reserved_protocol_tokens", "provider_limit"}
+    if not isinstance(value, dict) or set(value) not in {
+            frozenset(legacy), frozenset(legacy | sizing), frozenset(legacy | sizing | reserve)}:
         raise HandsoffError("budget_decision has invalid fields")
     if value.get("role") not in ROLE_BUDGET_FLOORS:
         raise HandsoffError("budget_decision role is invalid")
@@ -4421,7 +4586,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 
 
 def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted", "progress_summary"} \
+    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted", "progress_summary", "budget_cause"} \
             or not {"category", "reason", "tail_sha256"} <= set(value):
         raise HandsoffError("agent failure classification is invalid")
     category = value.get("category")
@@ -4433,6 +4598,14 @@ def _validate_failure_classification(value: object) -> dict:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise HandsoffError("agent failure classification digest is invalid")
     result = {"category": category, "reason": value["reason"], "tail_sha256": digest}
+    if "budget_cause" in value:
+        # #290: "the session ran out" is not a diagnosis. A model that
+        # ignored its scope, a wrapper that stopped it, a shared meter that
+        # stopped it, and a session that simply never spoke all need
+        # different repairs and were previously one label.
+        if value["budget_cause"] not in BUDGET_FAILURE_CAUSES:
+            raise HandsoffError("agent failure budget cause is not from the closed set")
+        result["budget_cause"] = value["budget_cause"]
     for key in ("dependency", "operation"):
         if key in value:
             if not isinstance(value[key], str) or not OPERATION_IDENTIFIER_PATTERN.fullmatch(value[key]):
@@ -4483,6 +4656,13 @@ def _validate_failure_classification(value: object) -> dict:
 USAGE_SOURCES = ("adapter", "not reported", "disabled")
 _CODEX_TOKENS_LINE = re.compile(r"^\s*tokens used\s*:?\s*([0-9][0-9,]*)?\s*$", re.IGNORECASE)
 _NUMBER_LINE = re.compile(r"^\s*([0-9][0-9,]*)\s*$")
+#: #306: Codex announces its resolved model in a plain-text banner, not in
+#: JSON, so it never reached the stream-json parser and every Codex session
+#: recorded reported_model null. The banner is fenced by rules; only a field
+#: inside that fence is the adapter's own word, because the packet echoed
+#: afterwards can contain the string "model:" in the task text.
+_CODEX_BANNER_RULE = re.compile(r"^\s*-{4,}\s*$")
+_CODEX_BANNER_MODEL = re.compile(r"^\s*model\s*:\s*(\S+)\s*$", re.IGNORECASE)
 
 
 class UsageWatcher:
@@ -4497,6 +4677,9 @@ class UsageWatcher:
         self.usage: dict | None = None
         self.reported_model: str | None = None
         self._awaiting_number = False
+        #: How many banner rules have gone by. The model field is only
+        #: trusted between the first and the second.
+        self._banner_rules = 0
 
     def feed(self, line: str) -> None:
         text = line.rstrip("\r\n")
@@ -4513,6 +4696,17 @@ class UsageWatcher:
             else:
                 self._awaiting_number = True
             return
+        if self.adapter == "codex" and self._banner_rules < 2:
+            if _CODEX_BANNER_RULE.match(text):
+                self._banner_rules += 1
+                return
+            banner = _CODEX_BANNER_MODEL.match(text) if self._banner_rules == 1 else None
+            if banner and self.reported_model is None:
+                try:
+                    self.reported_model = validate_agent_model(banner.group(1))
+                except HandsoffError:
+                    self.reported_model = None
+                return
         if text.startswith("{"):
             try:
                 event = json.loads(text)
@@ -4568,6 +4762,10 @@ def _find_reported_model(event: object, adapter: str | None) -> str | None:
     arbitrary nested `model` keys: task payloads may contain model names that
     were discussed but never used.
     """
+    # #306: this parser reads Claude's stream-json shapes. Codex reports its
+    # model in a plain-text banner, handled in UsageWatcher.feed. An adapter
+    # with no known shape reports nothing here, and the absence is recorded
+    # as unreported rather than mistaken for a match.
     if adapter != "claude" or not isinstance(event, dict):
         return None
     usage = event.get("modelUsage")
@@ -6484,7 +6682,7 @@ def validate_status_schema(status: dict) -> list[str]:
                     continue
                 try:
                     normalized = _validate_failure_classification({
-                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes", "progress_summary")
+                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes", "progress_summary", "budget_cause")
                         if isinstance(failure, dict) and key in failure
                     }) if isinstance(failure, dict) else None
                 except HandsoffError as exc:
@@ -6492,7 +6690,7 @@ def validate_status_schema(status: dict) -> list[str]:
                     normalized = None
                 allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
                                   "changes", "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged",
-                                  "progress_summary"}
+                                  "progress_summary", "budget_cause"}
                 if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
                     errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
                 if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
@@ -13535,7 +13733,42 @@ def _terminate_owned_session_process(root: Path, session: dict, *, wait: float =
     return {"session_id": session_id, "pid": pid, "signal": "SIGKILL"}
 
 
-RUN_OUTCOMES = ("closed", "not_planned")
+#: #296: the v0.3.80 release was published and its issues closed while the
+#: run sat at Phase 7, with the wheel never installed and `verify-live`
+#: never run. A run may always be abandoned, but abandoning it must say so.
+#: "aborted": stopped before the release was published.
+#: "released_unverified": published, but the installed artifact was never
+#: verified, so the release exists and the claim about it does not.
+RUN_OUTCOMES = ("closed", "not_planned", "aborted", "released_unverified")
+#: The outcomes that describe a run which did NOT reach verified Phase 8.
+UNVERIFIED_RUN_OUTCOMES = ("aborted", "released_unverified")
+
+
+def run_is_live_verified(status: dict, cfg: dict | None = None) -> bool:
+    """Has the installed artifact actually been verified where users meet it?
+
+    Phase 8 and 100% are claims the run makes about itself; the live
+    verification id is the evidence behind them. #296 exists because the
+    two came apart.
+    """
+    if not isinstance(status, dict):
+        return False
+    if (cfg or {}).get("require_live_verification", True) and not status.get("live_verification_id"):
+        return False
+    try:
+        phase = int(status.get("phase_number") or 0)
+        progress = int(status.get("progress") or 0)
+    except (TypeError, ValueError):
+        return False
+    return phase >= 8 and progress >= 100
+
+
+def unverified_close_outcome(status: dict) -> str:
+    """Name what an early close actually is, rather than calling it clean."""
+    published = bool((status or {}).get("release_published")
+                     or (status or {}).get("release_transaction")
+                     or (status or {}).get("deployment_approved"))
+    return "released_unverified" if published else "aborted"
 
 
 def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | None = None,

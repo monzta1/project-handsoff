@@ -13,7 +13,10 @@ const css = fs.readFileSync(path.join(root, "fleet/styles.css"), "utf8");
 test("fleet splits ongoing and finished runs", () => {
   // #218: the set lives in the shared vocabulary the page loads first
   const vocab = fs.readFileSync(path.join(__dirname, "..", "..", "dashboard", "lib", "run-vocabulary.js"), "utf8");
-  assert.match(vocab, /const FINISHED_STATES = new Set\(\["complete", "closed", "idle", "orphaned"\]\)/);
+  // #296 added "aborted" as finished, and deliberately kept "released",
+  // "installed" and "live_verified" OUT of the set: a published release
+  // whose artifact was never installed and verified is still in flight.
+  assert.match(vocab, /const FINISHED_STATES = new Set\(\["complete", "closed", "aborted", "idle", "orphaned"\]\)/);
   assert.match(vocab, /idle: "NO RUN"/);
   assert.match(app, /const ongoing = projects\.filter\(\(project\) => !FINISHED_STATES\.has\(project\.state\)\)/);
   assert.match(app, /const finished = projects\.filter\(\(project\) => FINISHED_STATES\.has\(project\.state\)\)/);
