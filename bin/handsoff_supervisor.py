@@ -5017,19 +5017,24 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
 
     with lib.project_lock(root):
         close_status, close_acceptance = _load(root, cfg)
-    # #296: a successful close reports the work done and closes its issues.
-    # On 2026-09-23 that happened while the run sat at Phase 7, with the
-    # released wheel never installed and `verify-live` never run. The claim
-    # is only true once the INSTALLED artifact has been verified.
-    if getattr(args, "post", False) and not lib.run_is_live_verified(close_status, cfg):
-        outcome = lib.unverified_close_outcome(close_status)
-        raise lib.HandsoffError(
-            "run-close --post reports the run as successfully delivered, which requires verified "
-            f"installed-artifact Phase 8; this run is at phase {close_status.get('phase_number')} "
-            f"and progress {close_status.get('progress')} with live verification "
-            f"{'recorded' if close_status.get('live_verification_id') else 'absent'}. "
-            f"Run verify-live and advance 8 100, or close it explicitly as {outcome} without --post."
+    # #296: posting the report is the claim that the work was delivered, and
+    # it closes the issues. On 2026-09-23 that happened while the run sat at
+    # Phase 7, with the released wheel never installed and `verify-live`
+    # never run. The claim is only true once the INSTALLED artifact has been
+    # verified. The run may still be closed, as aborted or
+    # released_unverified; what is refused is the claim, so the work items
+    # stay open, which is exactly what REQ-006 asks for.
+    posting_requested = bool(getattr(args, "post", False))
+    delivery_unverified = posting_requested and not lib.run_is_live_verified(close_status, cfg)
+    unverified_reason = None
+    if delivery_unverified:
+        unverified_reason = (
+            "reporting the run as delivered requires verified installed-artifact Phase 8; this run "
+            f"is at phase {close_status.get('phase_number')} and progress {close_status.get('progress')} "
+            f"with live verification {'recorded' if close_status.get('live_verification_id') else 'absent'}. "
+            "Run verify-live and advance 8 100, then close again to post; the work items stay open."
         )
+        print(f"HANDSOFF_REPORT_NOT_POSTED: {unverified_reason}")
     expected_issue_numbers = {
         item["number"] for item in lib.derive_work_items(close_status, close_acceptance, cfg).get("items", [])
         if item.get("kind") == "issue" and isinstance(item.get("number"), int)
@@ -5098,8 +5103,9 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
         "prepare": close_transaction.Operation(close_state, lambda value: value["closed"], close_action),
         "final_report_post": close_transaction.Operation(
             report_state, lambda value: value["items_complete"], report_action,
-            optional=not bool(getattr(args, "post", False)),
-            unavailable_reason=None if getattr(args, "post", False) else "--post was not requested",
+            optional=not posting_requested or delivery_unverified,
+            unavailable_reason=(unverified_reason if delivery_unverified
+                                else (None if posting_requested else "--post was not requested")),
         ),
         # This transaction file is the durable local close archive. The
         # existing retire_finished_run path moves the full ledgers at init.
