@@ -16,12 +16,13 @@ trimmed, so a file that grows is shortened by its author.
 | Topic | File | Read when |
 |---|---|---|
 | lanes | lanes.md | before `init`: board first, criteria, proposal, reviewers, drift, parallel lanes |
-| landing | landing.md | before `advance 6`: the pull request, the release, the install, verify-live, Phase 8, the archive |
-| reviewers | reviewers.md | before launching a reviewer: tasks, delta attempts, declines, cross-vendor quota routing |
+| landing | landing.md | before `advance 6`: PR, release, install, verify-live, Phase 8, archive |
+| reviewers | reviewers.md | before a reviewer launch: tasks, delta attempts, declines, quota routing |
 | lessons-lane | lessons-lane.md | phases, criteria, tickets, parallel lanes, releases |
 | lessons-agents | lessons-agents.md | launching, waiting on, and bounding managed roles |
-| lessons-evidence | lessons-evidence.md | manifests, tests, proofs and the claims they support |
-| protocol | protocol.md | when writing or reading a managed role's lines: every prefix with its exact fields, derived from the validators |
+| lessons-evidence | lessons-evidence.md | manifests, tests, proofs and their claims |
+| lessons-binding | lessons-binding.md | boundaries, bindings, tests that miss |
+| protocol | protocol.md | writing or reading a managed role's lines: every prefix and its fields |
 
 A managed launch's text is assembled in this order: the playbook (this
 index and `lanes.md`, plus one topic when asked), the project's knowledge

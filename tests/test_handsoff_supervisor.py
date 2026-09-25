@@ -27,6 +27,8 @@ import re
 from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tests.engine_patch import patch_engine
+from tests.fixture_state import force_acceptance
 
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
@@ -2616,7 +2618,13 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
         self.assertEqual(self.read_status(), before)
 
         factory = mock.Mock(return_value=self._process())
-        with mock.patch.object(self.lib, "commit", side_effect=OSError("write failed")):
+        # #284: `create_agent_session` moved to handsoff_agent_runtime, which
+        # binds `commit` at import time. Patching handsoff_lib.commit no
+        # longer reaches it: re-export keeps callers working, but it is not a
+        # shim for monkey-patching. Patch where the call now lives.
+        import handsoff_agent_runtime
+        with mock.patch.object(handsoff_agent_runtime, "commit",
+                               side_effect=OSError("write failed")):
             with self.assertRaises(OSError):
                 self.runtime.execute_launch(self._spec(), popen_factory=factory)
         factory.assert_not_called()
@@ -2637,7 +2645,7 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             if state == "running":
                 raise OSError("running commit failed")
             return real_transition(root, session_id, state, **kwargs)
-        with mock.patch.object(self.lib, "transition_agent_session", side_effect=fail_running):
+        with patch_engine("transition_agent_session", side_effect=fail_running):
             with self.assertRaises(OSError):
                 self.runtime.execute_launch(
                     self._spec(role="architect"), popen_factory=mock.Mock(return_value=process),
@@ -6332,7 +6340,7 @@ class TestOutputLiveness(HandsoffTestCase):
             id_factory=lambda: self._sid(61),
         )
         self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
-        with mock.patch.object(self.lib, "project_lock", side_effect=AssertionError("workflow lock used")):
+        with patch_engine("project_lock", side_effect=AssertionError("workflow lock used")):
             recorder = self.runtime._PortableOutput(
                 self.tmp, session["session_id"], "implementer", "codex", "private task", {},
             )
@@ -6757,9 +6765,10 @@ class TestCriteriaTransaction(HandsoffTestCase):
         # A legacy registry flaw the field validator cannot see on the way
         # in: an untouched criterion with neither tests nor evidence.
         next(c for c in acceptance["criteria"] if c["id"] == "REQ-004")["tests"] = []
-        with self.lib.project_lock(self.tmp):
-            self.lib.commit(self.tmp, cfg, status=status, acceptance=acceptance,
-                            event_kind="test_legacy_flaw", event_message="legacy registry flaw fixture")
+        # Placed on disk, not committed: commit validates the registry now and
+        # would refuse exactly this flaw, which is the flaw the test needs to
+        # already be there. That is how a legacy registry really arrives.
+        force_acceptance(self.tmp, cfg, acceptance, anchor=True)
         before = self._snapshot()
         r = self._apply([self._add("REQ-005"), {"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 x"}}])
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
@@ -10760,7 +10769,7 @@ class TestFallbackPolicy(HandsoffTestCase):
             {"adapter": "codex", "model": "third"},
         ]
         with mock.patch.object(lib.shutil, "which", side_effect=AssertionError("planner discovered executables")), \
-                mock.patch.object(lib, "load_config", side_effect=AssertionError("planner read settings")):
+                patch_engine("load_config", side_effect=AssertionError("planner read settings")):
             decision = lib.plan_agent_fallback(
                 "implementer", "rate_limit", entries,
                 {"codex": True, "claude": False}, [], 0, 2,
@@ -11274,8 +11283,8 @@ class TestAgentReplacement(HandsoffTestCase):
                  "state": "blocked", "category": "auth_failure",
                  "reason": "adapter is not authenticated",
              }) as preflight, \
-             mock.patch.object(
-                 self.lib, "claim_precreated_agent_session",
+             patch_engine(
+                 "claim_precreated_agent_session",
                  wraps=self.lib.claim_precreated_agent_session,
              ) as claim:
             with self.assertRaisesRegex(self.lib.HandsoffError, "auth_failure"):
@@ -13153,6 +13162,7 @@ exits 2 with a message, 'garbage' prints text that is not JSON.\"\"\"
 import json, os, sys
 from datetime import datetime, timezone
 from pathlib import Path
+
 (Path(os.environ["MINER_FAKE_LOG"])).write_text(json.dumps(sys.argv[1:]))
 mode = os.environ.get("MINER_FAKE_MODE", "ok")
 if mode == "fail":

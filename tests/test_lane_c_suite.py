@@ -204,7 +204,17 @@ class DeclineTests(HandsoffTestCase):
         # a live managed session refuses the decline before anything is written (F1.1)
         status = self.read_status()
         status["phase_number"], status["phase"], status["design_approved"], status["design_review"] = 2, lib.PHASES[2], None, None
-        status["agent_sessions"] = {"hs-" + "1" * 32: {"session_id": "hs-" + "1" * 32, "role": "architect", "state": "running"}}
+        # A session record the engine would really write: commit validates the
+        # closed field set now, and a three-field stub is not a state it can
+        # reach. The claim under test is that a LIVE session refuses a decline.
+        sid = "hs-" + "1" * 32
+        status["agent_sessions"] = {sid: {
+            "session_id": sid, "role": "architect", "state": "running",
+            "actor": "claude-architect", "adapter": "claude", "requested_model": "default",
+            "reported_model": None, "resolution_source": "configured",
+            "started_at": "2026-09-25T00:00:00+00:00", "running_at": "2026-09-25T00:00:00+00:00",
+            "ended_at": None, "exit_code": None}}
+        status["current_agent_sessions"] = {"architect": sid}
         lib.commit(self.tmp, lib.load_config(self.tmp), status=status, event_kind="fixture", event_message="live session")
         r = run(["design-decline", "--by", "claude-architect", "--reason", "while live"], cwd=self.tmp)
         self.assertEqual(r.returncode, 1)
@@ -215,6 +225,7 @@ class DeclineTests(HandsoffTestCase):
         fresh = self.read_status()
         fresh["phase_number"], fresh["phase"], fresh["progress"] = 1, lib.PHASES[1], 10
         fresh["agent_sessions"] = {}
+        fresh["current_agent_sessions"] = {}
         lib.commit(self.tmp, lib.load_config(self.tmp), status=fresh, event_kind="fixture", event_message="back to 1")
         r = run(["design-decline", "--by", "claude-architect", "--reason", "early"], cwd=self.tmp)
         self.assertIn("only at Phase 2", r.stdout)

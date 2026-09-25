@@ -15,6 +15,7 @@ sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import force_status
 
 
 class FailedSessionSupersededTests(HandsoffTestCase):
@@ -64,8 +65,9 @@ class FailedSessionSupersededTests(HandsoffTestCase):
         status["agent_sessions"][sid]["result"]["adopted_at"] = "2026-09-20T22:12:25+00:00"
         status["agent_sessions"][sid]["result"]["adopted_by"] = "claude-supervisor"
         status.setdefault("agent_failures", {})
-        lib.commit(self.tmp, lib.load_config(self.tmp), status=status, event_kind="fixture_adopt",
-                   event_message="fixture", actor="test")
+        # result={} is the shape an older engine left behind; the claim is that
+        # the fleet card reads it as stopped, so it is placed on disk.
+        force_status(self.tmp, lib.load_config(self.tmp), status)
         live, card = self._states()
         self.assertEqual(live["state"], "stopped")
         self.assertIn("verdict adopted at 2026-09-20T22:12:25+00:00", live["detail"])
@@ -79,8 +81,8 @@ class FailedSessionSupersededTests(HandsoffTestCase):
         status["agent_failures"][sid]["adopted"] = True
         status["agent_sessions"][sid]["ended_at"] = "2026-09-20T22:11:43+00:00"
         status["updated_at"] = "2026-09-20T22:12:31+00:00"
-        lib.commit(self.tmp, lib.load_config(self.tmp), status=status, event_kind="fixture_adopt",
-                   event_message="fixture", actor="test")
+        # Same shape as above: result={} is what an older engine left behind.
+        force_status(self.tmp, lib.load_config(self.tmp), status)
         live, card = self._states()
         self.assertEqual(live["state"], "stopped")
         self.assertIn("status updated at 2026-09-20T22:12:31+00:00", live["detail"])

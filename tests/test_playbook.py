@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_agent as agent  # noqa: E402
@@ -49,7 +51,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
     def test_every_playbook_file_is_in_the_manifest_and_the_wheel(self):
         files = sorted(p.name for p in PLAYBOOK.iterdir() if p.is_file())
         self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md",
-                                 "lessons-agents.md", "lessons-evidence.md", "lessons-lane.md",
+                                 "lessons-agents.md", "lessons-binding.md",
+                                 "lessons-evidence.md", "lessons-lane.md",
                                  "protocol.md", "reviewers.md"])
         manifest = json.loads((ROOT / "handsoff-runtime.json").read_text())
         for name in files:
@@ -63,7 +66,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         index = json.loads((PLAYBOOK / "index.json").read_text())
         self.assertEqual(index["always_load"], ["INDEX.md", "lanes.md"])
         self.assertEqual(set(index["topics"]), {"lanes", "landing", "reviewers", "protocol",
-                                                "lessons-lane", "lessons-agents", "lessons-evidence"})
+                                                "lessons-lane", "lessons-agents",
+                                                "lessons-evidence", "lessons-binding"})
         for item in index["files"]:
             self.assertTrue((PLAYBOOK / item["file"]).is_file(), item["file"])
         for name in files:
@@ -99,8 +103,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         shutil.copytree(PLAYBOOK, copy)
         (copy / "huge.md").write_text("x" * (lib.MAX_PLAYBOOK_SECTION_BYTES + 1))
         big = {**index, "files": [*index["files"], {"file": "huge.md", "topics": ["lanes"]}]}
-        with mock.patch.object(lib, "playbook_index", return_value=big), \
-                mock.patch.object(lib, "playbook_root", return_value=copy):
+        with patch_engine("playbook_index", return_value=big), \
+                patch_engine("playbook_root", return_value=copy):
             with self.assertRaisesRegex(lib.HandsoffError, "over 16384"):
                 lib.playbook_section("lanes")
         # a project with its own [briefing] KB gets both, playbook first

@@ -1,0 +1,354 @@
+{
+  "amendment_freeze_errors_none": [],
+  "amendment_freeze_errors_open": [
+    "amendment gate: amendment AM-1 is open; record its review and Pilot approval first"
+  ],
+  "baseline_errors_off": [],
+  "baseline_errors_on": [
+    "baseline gate: REQ-001 passed without a recorded failing run; run handsoff_supervisor.py verify --criterion REQ-001 --expect-fail --by ACTOR on the tree before the feature, or mark it --baseline not_applicable --baseline-reason TEXT"
+  ],
+  "baseline_errors_satisfied": [],
+  "ci_gate_errors_absent": [],
+  "ci_gate_errors_clean": [],
+  "ci_gate_errors_failed": [
+    "CI: tests failed on PR #335 (https://example.invalid/pr/335); rerun or push, then ci-watch --pr 335 again"
+  ],
+  "compute_errors": [],
+  "compute_errors_empty": [
+    "status: missing required field 'feature'",
+    "status: missing required field 'phase_number'",
+    "status: missing required field 'phase'",
+    "status: missing required field 'progress'",
+    "status: missing required field 'status'",
+    "status: missing required field 'updated_at'",
+    "status: missing required field 'next_action'",
+    "status: missing required field 'events'",
+    "status: missing required field 'requirement_coverage'",
+    "status: missing required field 'verification_head'",
+    "status: requirement_coverage missing 'passing'",
+    "status: requirement_coverage missing 'failing'",
+    "status: requirement_coverage missing 'not_tested'",
+    "status: requirement_coverage missing 'blocked'",
+    "status: requirement_coverage missing 'original_symptom_resolved'",
+    "acceptance: missing 'feature'",
+    "acceptance: 'criteria' must be a non-empty array",
+    "verification ledger: tail does not match the anchored head; evidence was deleted or an append was interrupted"
+  ],
+  "configured_regression_commands_none": [],
+  "configured_regression_commands_set": [
+    "python3 -m unittest tests.test_x"
+  ],
+  "coverage_for": {
+    "blocked": 0,
+    "failing": 1,
+    "not_tested": 0,
+    "original_symptom_resolved": false,
+    "passing": 0
+  },
+  "coverage_for_resolved": {
+    "blocked": 0,
+    "failing": 1,
+    "not_tested": 0,
+    "original_symptom_resolved": true,
+    "passing": 0
+  },
+  "criterion_baseline": {
+    "criteria": [
+      "REQ-001"
+    ],
+    "criterion_hashes": {
+      "REQ-001": "a1b9bd773934466b65ebe5f222847b9d8a6b96ce92220f55eb4a4a857d56dd06"
+    },
+    "kind": "baseline",
+    "ok": true,
+    "run_id": "r-REQ-001-baseline"
+  },
+  "criterion_baseline_absent": null,
+  "derive_work_items": {
+    "aggregate": {
+      "counts": {
+        "awaiting_approval": 0,
+        "blocked": 0,
+        "done": 0,
+        "in_progress": 0,
+        "in_review": 0,
+        "not_started": 1,
+        "recovering": 0,
+        "unscoped": 0
+      },
+      "done": 0,
+      "progress": 5,
+      "total": 1
+    },
+    "items": [
+      {
+        "blocker": "",
+        "created_at": "2026-09-25T17:56:02.968762+00:00",
+        "criteria": [
+          "REQ-001"
+        ],
+        "discrepancy": null,
+        "github_checked_at": null,
+        "github_state": null,
+        "id": "ask-contract-capture",
+        "kind": "ask",
+        "lane": "full",
+        "lane_confirmed": false,
+        "lane_escalation": null,
+        "lane_facts": null,
+        "notes": "",
+        "number": null,
+        "phase_or_next": "Read the project rules and reproduce the original symptom.",
+        "progress": 5,
+        "required": true,
+        "status": "not_started",
+        "title": "Contract capture",
+        "updated_at": "2026-09-25T17:56:02.968762+00:00",
+        "url": ""
+      }
+    ],
+    "multi": false,
+    "registry": "persisted",
+    "tickets_config_deprecated": false,
+    "unattributed_criteria": []
+  },
+  "feature_hash": "ddd4e78d4e84e9b81ebc2037bde7f9b7ba8fe14df28e53a676ae0c0fa5c8864d",
+  "feature_hash_with_event": "ef998eca3efd3ddbdf3a9c365ac80e43d64fa9dddc7f1d7439f9f6cecbedb9d1",
+  "full_design_required": true,
+  "gate_progress": {
+    "cleared": [
+      "initialized"
+    ],
+    "percent": 5
+  },
+  "gate_progress_empty": {
+    "cleared": [],
+    "percent": 0
+  },
+  "lane_gate_refusal_design_lane": "design lane refuses record-review",
+  "lane_gate_refusal_empty": null,
+  "lane_gate_refusal_none": null,
+  "lane_gate_refusal_review_lane": "review lane refuses advance_1",
+  "load_launch_rules": [
+    {
+      "cause": {
+        "at": "2026-09-19",
+        "event": "agent_session_failed",
+        "failure_category": "dispatch_failed",
+        "note": "A reviewer launched at Phase 1 returned a full design verdict that had nowhere to land: the design gate opens at Phase 2. The session cost a complete Codex review and the ledger said only 'agent replacement paused'.",
+        "root": "ir-command"
+      },
+      "id": "reviewer-launch-phase-1",
+      "refuse": "reviewer launch refused: the run is at Phase 1 and there is no design gate to receive a verdict; advance to Phase 2 first (or launch with --amendment for an open amendment)",
+      "source": "/Users/moncyabraham/Projects/pho-split/rules/reviewer-launch-phase-1.json",
+      "when": {
+        "amendment": false,
+        "command": "launch",
+        "phase_in": [
+          1
+        ],
+        "role": "reviewer"
+      }
+    },
+    {
+      "cause": {
+        "at": "2026-09-20",
+        "event": "agent_session_failed",
+        "failure_category": "orchestration_noop",
+        "note": "The tranche-2 implementation reviewer wrote one finding of about 700 characters. The packet parser's 512-character bound refused the whole result, the session was recorded as orchestration_noop and the verdict, a real defect in report posting, had to be read out of the log by hand.",
+        "root": "project-handsoff"
+      },
+      "id": "reviewer-packet-finding-length",
+      "max_chars": 512,
+      "recover": "truncate",
+      "refuse": "reviewer packet refused: each finding must be 512 characters or fewer",
+      "source": "/Users/moncyabraham/Projects/pho-split/rules/reviewer-packet-finding-length.json",
+      "when": {
+        "command": "packet",
+        "field": "findings",
+        "role": "reviewer"
+      }
+    },
+    {
+      "allowed": [
+        "yes",
+        "no",
+        "unknown"
+      ],
+      "cause": {
+        "at": "2026-09-19",
+        "event": "agent_session_failed",
+        "failure_category": "orchestration_noop",
+        "note": "Two reviewer packets carried a command line in tests_executed instead of the bare word. Each was recorded as orchestration_noop and the verdict was lost; the review had to be run again.",
+        "root": "ir-command"
+      },
+      "id": "reviewer-packet-tests-executed",
+      "recover_as": "unknown",
+      "refuse": "reviewer packet refused: tests_executed must be the bare string yes, no or unknown",
+      "source": "/Users/moncyabraham/Projects/pho-split/rules/reviewer-packet-tests-executed.json",
+      "when": {
+        "command": "packet",
+        "field": "tests_executed",
+        "role": "reviewer"
+      }
+    }
+  ],
+  "pending_design_decline_none": null,
+  "pending_design_decline_open": {
+    "by": "reviewer",
+    "decision": "pending"
+  },
+  "plan_criteria_transaction_add_supporting": {
+    "criteria_after": [
+      {
+        "evidence": [],
+        "id": "REQ-001",
+        "requirement": "State the exact observable outcome.",
+        "state": "failing",
+        "tests": [
+          "name_or_path_of_test"
+        ],
+        "type": "primary_fix",
+        "verification": "automated"
+      },
+      {
+        "evidence": [],
+        "id": "REQ-909",
+        "requirement": "a new one",
+        "state": "not_tested",
+        "tests": [
+          "look at it"
+        ],
+        "type": "supporting",
+        "verification": "manual"
+      }
+    ],
+    "design_hash_after": "6ec66b62dcbc42fbb07b5754387b65e9eba2df3b8f9e555685d21f02cf0e0a5c",
+    "design_hash_before": "92c489d887656a16c1319f67ff021b555e776fed7b4dc84cb2d93f7888edf446",
+    "operation_count": 1,
+    "operations": [
+      {
+        "id": "REQ-909",
+        "op": "add",
+        "previous_hash": null,
+        "resulting_hash": "980ef78595814d608924a6939ce82d7441ea2342be54306827ed99be2888ea8f"
+      }
+    ],
+    "registry_hash_after": "ce2a9940d19f3280ccf3008cc6eb582642bfe3465caf08c45a4033dbbd997ca0",
+    "registry_hash_before": "485cd64fe825ea755ecd699fd9e27618fbf5e91247b343cd25d496971de3c76c",
+    "resets_original_symptom": false,
+    "work_item_scope_changed": false,
+    "work_items_after": [
+      "ask-contract-capture"
+    ],
+    "work_items_registry_after": [
+      {
+        "created_at": "2026-09-25T17:56:02.968762+00:00",
+        "github_checked_at": null,
+        "github_state": null,
+        "id": "ask-contract-capture",
+        "kind": "ask",
+        "notes": "",
+        "number": null,
+        "required": true,
+        "title": "Contract capture",
+        "updated_at": "2026-09-25T17:56:02.968762+00:00",
+        "url": ""
+      }
+    ]
+  },
+  "plan_criteria_transaction_add_then_remove": {
+    "__raised__": "CriteriaTransactionError",
+    "message": "operation 2 (remove REQ-909): criterion id appears in an earlier operation"
+  },
+  "plan_criteria_transaction_add_then_update": {
+    "__raised__": "CriteriaTransactionError",
+    "message": "operation 2 (update REQ-909): criterion id appears in an earlier operation"
+  },
+  "plan_criteria_transaction_missing_field": {
+    "__raised__": "CriteriaTransactionError",
+    "message": "operation 1 (add REQ-911): an add criterion has exactly id, type, requirement, verification, tests"
+  },
+  "plan_criteria_transaction_remove_only_primary": {
+    "__raised__": "CriteriaTransactionError",
+    "message": "operation 1 (remove REQ-001): acceptance registry must retain at least one criterion"
+  },
+  "plan_criteria_transaction_second_primary": {
+    "__raised__": "CriteriaTransactionError",
+    "message": "operation 1 (add REQ-909): the resulting registry would have 2 primary_fix criteria; exactly one is required"
+  },
+  "plan_criteria_transaction_too_many": {
+    "__raised__": "HandsoffError",
+    "message": "transaction: 'operations' must contain 1 to 64 entries"
+  },
+  "plan_criteria_transaction_unknown_id": {
+    "__raised__": "CriteriaTransactionError",
+    "message": "operation 1 (update REQ-999): unknown criterion"
+  },
+  "plan_criteria_transaction_unknown_op": {
+    "__raised__": "CriteriaTransactionError",
+    "message": "operation 1 (nope REQ-001): 'op' must be one of add, update, remove"
+  },
+  "rules_binding_errors_current": [],
+  "rules_binding_errors_no_decision": [],
+  "rules_binding_errors_stale": [
+    "design: the rules set changed since it was recorded (.claude/settings.json, .claude/settings.local.json, .codex/config.toml, AGENTS.md, CLAUDE.md, engine:prompts/reviewer.md, engine:reviewer-launch-phase-1.json, engine:reviewer-packet-finding-length.json (+3 more)); record it again"
+  ],
+  "rules_set_diff_none": [
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".codex/config.toml",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "engine:prompts/reviewer.md",
+    "engine:reviewer-launch-phase-1.json",
+    "engine:reviewer-packet-finding-length.json",
+    "engine:reviewer-packet-tests-executed.json",
+    "engine:version",
+    "handsoff.toml"
+  ],
+  "rules_set_diff_stale": [
+    "engine:prompts/reviewer.md",
+    "engine:reviewer-launch-phase-1.json",
+    "engine:reviewer-packet-finding-length.json",
+    "engine:reviewer-packet-tests-executed.json",
+    "engine:version",
+    "handsoff.toml",
+    "rules/a.md"
+  ],
+  "rules_set_entries": {
+    ".claude/settings.json": null,
+    ".claude/settings.local.json": null,
+    ".codex/config.toml": null,
+    "AGENTS.md": null,
+    "CLAUDE.md": null,
+    "engine:prompts/reviewer.md": "867dd751167f31d67edcf104a6ff75c4b67a2f4bd9855776f8b4e96f3d0319db",
+    "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+    "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+    "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+    "engine:version": "v0.3.87",
+    "handsoff.toml": "539fe8b56cb892f40e5af0fa0228c75b522beede5de9a88460373988fcf72aa6"
+  },
+  "rules_set_hash": "01b41ebae01d075a8d1038f8f5a05355c78557e9fdc6fd288c7fcb2dc46a49ca",
+  "sync_work_item_registry_appends": {
+    "changed": true,
+    "ids": [
+      "ask-contract-capture",
+      "issue-42"
+    ]
+  },
+  "sync_work_item_registry_unchanged": [
+    false
+  ],
+  "valid_evidence_kinds": [
+    "automated"
+  ],
+  "valid_evidence_kinds_wrong_hash": [],
+  "validate_criterion_fields_bad_type": [
+    "'type' must be one of primary_fix, supporting"
+  ],
+  "validate_criterion_fields_ok": [],
+  "validate_criterion_fields_require_all": [
+    "missing criterion field(s): id, type, verification, tests"
+  ]
+}

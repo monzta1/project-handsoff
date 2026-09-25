@@ -10,6 +10,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
@@ -143,14 +145,14 @@ class ReleaseRuntimeIntegrationTests(unittest.TestCase):
                   "deployment_approved": {"by": "pilot"}}
         evidence = {"tag": "v1.2.3", "manifest_verified": True}
         with mock.patch.object(supervisor.lib, "resolve_root", return_value=self.root), \
-                mock.patch.object(supervisor.lib, "load_config", return_value={}), \
-                mock.patch.object(supervisor.lib, "project_lock", return_value=nullcontext()), \
+                patch_engine("load_config", return_value={}), \
+                patch_engine("project_lock", return_value=nullcontext()), \
                 mock.patch.object(supervisor, "_load_all", return_value=(status, {}, [], [])), \
                 mock.patch.object(supervisor, "_audit_errors", return_value=[]), \
-                mock.patch.object(supervisor.lib, "adaptive_deployment_approval_required", return_value=False), \
+                patch_engine("adaptive_deployment_approval_required", return_value=False), \
                 mock.patch.object(supervisor.release_runtime, "reconcile_release", return_value=evidence) as run, \
                 mock.patch.object(supervisor, "_load", return_value=(status, {})), \
-                mock.patch.object(supervisor.lib, "commit") as commit:
+                patch_engine("commit") as commit:
             self.assertEqual(supervisor.cmd_release_reconcile(parsed), 0)
         run.assert_called_once()
         self.assertEqual(commit.call_args.kwargs["event_kind"], "release_reconciled")

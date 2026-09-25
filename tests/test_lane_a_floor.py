@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
 sys.path.insert(0, str(BIN))
@@ -30,7 +32,7 @@ class MissingPinTests(HandsoffTestCase):
 
     def test_a_pin_error_serves_a_full_snapshot_with_an_unknown_engine_and_the_reason(self):
         reason = f"Handsoff engine version pin is missing: {self.tmp / '.handsoff-version'}; run `handsoff init {self.tmp}`"
-        with mock.patch.object(lib, "runtime_identity", side_effect=lib.HandsoffError(reason)):
+        with patch_engine("runtime_identity", side_effect=lib.HandsoffError(reason)):
             snapshot = dashboard.build_snapshot(self.tmp)
         self.assertTrue(snapshot["initialized"], snapshot.get("error"))
         self.assertEqual(snapshot["status"]["phase_number"], 1)
@@ -52,7 +54,7 @@ class MissingPinTests(HandsoffTestCase):
     def test_the_api_answers_200_with_the_degraded_snapshot(self):
         import threading
         reason = "Handsoff engine version pin is missing: x"
-        with mock.patch.object(lib, "runtime_identity", side_effect=lib.HandsoffError(reason)):
+        with patch_engine("runtime_identity", side_effect=lib.HandsoffError(reason)):
             server = dashboard.DashboardServer(("127.0.0.1", 0), self.tmp)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -155,7 +157,7 @@ class ReaffirmAfterARulesChangeTests(HandsoffTestCase):
         recorded = status["review"]["rules_hash"]
         real_entries = lib.rules_set_entries
         bumped = {**real_entries(self.tmp), "engine:version": "v9.9.9"}
-        with mock.patch.object(lib, "rules_set_entries", return_value=bumped):
+        with patch_engine("rules_set_entries", return_value=bumped):
             errors = lib.rules_binding_errors(self.tmp, self.cfg, status["review"], "review gate")
             self.assertEqual(len(errors), 1)
             self.assertIn("engine:version", errors[0])

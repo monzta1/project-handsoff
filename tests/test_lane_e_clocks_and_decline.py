@@ -15,6 +15,10 @@ import handsoff_agent as agent  # noqa: E402
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+# #284: the sleep accounting moved to handsoff_projection, which binds
+# _read_pmset_log at import time. Patching handsoff_lib would read the
+# real pmset log instead of the fixture and silently assert nothing.
+import handsoff_projection as projection  # noqa: E402
 
 NOW = datetime(2026, 9, 21, 16, 0, tzinfo=timezone.utc)
 LOG = """2026-09-21 03:20:00 -0400 Sleep               \tEntering Sleep state due to 'Idle Sleep'
@@ -58,7 +62,7 @@ class SleepLogTests(unittest.TestCase):
 
     def test_without_pmset_every_number_is_the_wall_clock_and_a_request_never_waits_for_the_log(self):
         lib._SLEEP_LOG_CACHE["at"] = None; lib._SLEEP_LOG_CACHE["intervals"] = []; lib._SLEEP_LOG_CACHE["thread"] = None
-        with mock.patch.object(lib.shutil, "which", return_value=None):
+        with mock.patch.object(projection.shutil, "which", return_value=None):
             self.assertEqual(lib.machine_sleep_intervals(now=NOW, wait=True), [])
         self.assertEqual(lib.machine_sleep_intervals(now=NOW, log_reader=lambda: None), [])
         self.assertEqual(len(lib.machine_sleep_intervals(now=NOW, log_reader=lambda: LOG)), 1)
@@ -69,7 +73,7 @@ class SleepLogTests(unittest.TestCase):
         def slow():
             time.sleep(0.5)
             return LOG
-        with mock.patch.object(lib, "_read_pmset_log", side_effect=slow):
+        with mock.patch.object(projection, "_read_pmset_log", side_effect=slow):
             started = time.time()
             first = lib.machine_sleep_intervals(now=NOW)
             self.assertLess(time.time() - started, 0.2)
@@ -129,7 +133,7 @@ class SleepAwareBoardTests(HandsoffTestCase):
         status = self.read_status()
         status["updated_at"] = (now - timedelta(minutes=31)).isoformat()
         lib.commit(self.tmp, self.cfg, status=status, event_kind="fixture", event_message="then silence")
-        with mock.patch.object(lib, "_read_pmset_log", return_value=log):
+        with mock.patch.object(projection, "_read_pmset_log", return_value=log):
             self._prime()
             snapshot = dashboard.build_snapshot(self.tmp)
             fleet.register_project(self.tmp, self.registry)
@@ -144,13 +148,13 @@ class SleepAwareBoardTests(HandsoffTestCase):
         self.assertIn("asleep_seconds", card, "the card carries the run's sleep")
         self.assertIn("phase_asleep_seconds", card)
         # without the sleep the same silence is a stall
-        with mock.patch.object(lib, "_read_pmset_log", return_value=""):
+        with mock.patch.object(projection, "_read_pmset_log", return_value=""):
             self._prime()
             plain = dashboard.build_snapshot(self.tmp)
         self._reset()
         self.assertIsNotNone(plain["activity"]["stall_warning"], "without the sleep the same silence is a stall")
         # the host-wait line (#194) reads awake silence too: 3 minutes is nobody waiting
-        with mock.patch.object(lib, "_read_pmset_log", return_value=log):
+        with mock.patch.object(projection, "_read_pmset_log", return_value=log):
             lib._SLEEP_LOG_CACHE["at"] = None
             self.assertIsNone(lib.host_wait_view(self.read_status(), self._events(), self.cfg))
         # and with a ledger whose newest write is 31 minutes old (the events
@@ -158,10 +162,10 @@ class SleepAwareBoardTests(HandsoffTestCase):
         then = (now - timedelta(minutes=31)).isoformat()
         old_status = {**self.read_status(), "updated_at": then}
         old_events = [{"kind": "initialized", "at": then, "by": "claude-host"}]
-        with mock.patch.object(lib, "_read_pmset_log", return_value=log):
+        with mock.patch.object(projection, "_read_pmset_log", return_value=log):
             self._prime()
             self.assertIsNone(lib.host_wait_view(old_status, old_events, self.cfg, now=now), "28 of the 31 minutes were asleep")
-        with mock.patch.object(lib, "_read_pmset_log", return_value=""):
+        with mock.patch.object(projection, "_read_pmset_log", return_value=""):
             self._prime()
             waiting = lib.host_wait_view(old_status, old_events, self.cfg, now=now)
         self._reset()

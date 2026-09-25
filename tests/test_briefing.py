@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_agent as agent  # noqa: E402
@@ -60,7 +62,7 @@ class BriefingTests(unittest.TestCase):
         self._config()
         (self.tmp / "index.json").unlink()
         (self.tmp / ".handsoff-version").write_text("0.3.*\n")
-        with mock.patch.object(lib, "create_agent_session") as reserve:
+        with patch_engine("create_agent_session") as reserve:
             with self.assertRaisesRegex(lib.HandsoffError, "briefing index is missing"):
                 agent.build_launch_spec(self.tmp, "implementer", "do the task",
                                         which=lambda _: "/bin/codex", skip_preflight=True)

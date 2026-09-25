@@ -1,0 +1,11 @@
+{
+  "acceptance_hash_empty": "bf9807cc9a583dfe45d17a28a2e6e567d511fd880cc6b6e64734e1ae8e57f2fa",
+  "acceptance_hash_two": "ed39d3ae29ca715935776d03d7880214197cc7b45d9540b16d1062abc8bcdc5d",
+  "criterion_spec_hash": "35fb1c23694c4424a1005f8f3aa827bcc35a7d5a7670d03bca14265624f31b76",
+  "design_hash_empty": "bf9807cc9a583dfe45d17a28a2e6e567d511fd880cc6b6e64734e1ae8e57f2fa",
+  "design_hash_two": "20bc75453e93e52e1abd9c4fc9aa406671444281fc96416d783ea708b7afb32d",
+  "event_log_name": "handsoff-events.jsonl",
+  "repository_digest_empty": "602e35a92eec4bc0a2ec6ae113f07bfc6933322fb69fe8dee416e5a67217e2a2",
+  "repository_digest_one_file": "24b9d86b10f1f43f3b0840b1222f7f2c7c5d52681e4006fbdf0673723b3972b1",
+  "verification_log_name": "handsoff-verifications.jsonl"
+}

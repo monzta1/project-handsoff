@@ -34,7 +34,12 @@ CONTRACT = Path(__file__).parent / "fixtures" / "routing_contract_v0386.json"
 
 #: What `handsoff_routing` may import. Anything else is a new responsibility
 #: arriving inside the boundary, which is the thing this rule exists to stop.
-ALLOWED_MODULE_IMPORTS = {"__future__", "json", "os", "re", "copy", "datetime", "pathlib"}
+#: `handsoff_core` is allowed at module level because it has zero outbound
+#: dependencies on the engine, so importing it cannot close a cycle. That is
+#: the whole point of stage 1: primitives it owns are ordinary imports here,
+#: not deferred ones.
+ALLOWED_MODULE_IMPORTS = {"__future__", "json", "os", "re", "copy", "datetime", "pathlib",
+                          "handsoff_core"}
 
 #: The one module it may import from inside a function body, and only by
 #: naming the primitives it needs. Declared so the deferred-import escape
@@ -44,12 +49,27 @@ ALLOWED_DEFERRED_IMPORTS = {"handsoff_lib"}
 #: The primitives the extraction left behind, named in
 #: docs/ARCHITECTURE-MIGRATION.md as what must move into a shared core
 #: before the deferred imports can become ordinary ones.
-DECLARED_DEFERRED_PRIMITIVES = {
-    "AGENT_SESSION_LIVE_STATES", "DEFAULT_AGENT_MODEL", "DEFAULT_MODEL_POLICY",
-    "HandsoffError", "PHASES", "SELECTABLE_AGENT_ADAPTERS", "_agent_assignment",
-    "_canonical_provider_model", "actor_family", "load_config",
-    "load_unique_json", "model_policy_allows", "status_path", "validate_model_policy",
+DECLARED_DEFERRED_PRIMITIVES = {"_agent_assignment", "_canonical_provider_model"}
+
+#: Deferred imports that now name the LAYER that defines the symbol rather than
+#: the monolith. Still deferred, because config sits above routing (DEFAULT_CONFIG
+#: embeds routing defaults) and a module-level import would close that cycle --
+#: but the dependency is on one layer, not on 8,346 lines. #284 criterion 2 asks
+#: for a subsystem extracted "without importing the entire monolith", and this is
+#: what closed the gap between that wording and the code: eleven monolith
+#: primitives became two.
+DECLARED_DEFERRED_BY_LAYER = {
+    "handsoff_config": {"DEFAULT_AGENT_MODEL", "DEFAULT_MODEL_POLICY", "load_config",
+                        "model_policy_allows", "validate_model_policy",
+                        "SELECTABLE_AGENT_ADAPTERS"},
+    "handsoff_schema": {"AGENT_SESSION_LIVE_STATES", "PHASES"},
+    "handsoff_projection": {"actor_family"},
 }
+
+#: Primitives stage 1 moved into the core, which routing now imports at module
+#: level. They must NOT reappear as deferred monolith imports: that would be a
+#: regression to the workaround the core exists to remove.
+CORE_OWNED_PRIMITIVES = {"HandsoffError", "load_unique_json", "status_path"}
 
 
 def _routing_tree():
@@ -169,6 +189,57 @@ class NothingUnrelatedEntersTheBoundary(unittest.TestCase):
         self.assertEqual(
             sorted(imported - DECLARED_DEFERRED_PRIMITIVES), [],
             "these primitives are imported from the monolith without being declared")
+
+
+    def test_every_deferred_layer_import_is_declared(self):
+        """Closed both ways, like the monolith list above. A deferred import
+        that names a layer is still coupling; it is just honest coupling."""
+        found = {}
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom) and node.module in DECLARED_DEFERRED_BY_LAYER:
+                found.setdefault(node.module, set()).update(a.name for a in node.names)
+        self.assertEqual(found, DECLARED_DEFERRED_BY_LAYER,
+                         "the per-layer deferred imports and their declaration disagree")
+
+    def test_no_deferred_import_names_a_symbol_the_monolith_no_longer_owns(self):
+        """The point of the change: importing `load_config` from the monolith
+        worked only because the monolith re-exports it. Naming the layer says
+        where it lives, so a later move surfaces here instead of silently
+        resolving through a re-export."""
+        lib_defined = set()
+        for node in ast.parse((BIN / "handsoff_lib.py").read_text(encoding="utf-8")).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                lib_defined.add(node.name)
+            elif isinstance(node, ast.Assign):
+                lib_defined |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "handsoff_lib":
+                for alias in node.names:
+                    self.assertIn(alias.name, lib_defined,
+                                  f"line {node.lineno} imports {alias.name} from the monolith, "
+                                  "which only re-exports it; name the module that defines it")
+
+    def test_core_primitives_are_imported_at_module_level_not_deferred(self):
+        """Stage 1's payoff, asserted rather than assumed.
+
+        The core has no outbound engine dependencies, so importing it cannot
+        close a cycle and there is no reason to defer it. If one of these
+        reappears as a `from handsoff_lib import ...` inside a function, the
+        workaround has crept back.
+        """
+        module_level = set()
+        for node in self.tree.body:
+            if isinstance(node, ast.ImportFrom) and node.module == "handsoff_core":
+                module_level |= {a.name for a in node.names}
+        self.assertEqual(sorted(CORE_OWNED_PRIMITIVES - module_level), [],
+                         "these core primitives are not imported at module level")
+        deferred = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "handsoff_lib":
+                deferred |= {a.name for a in node.names}
+        self.assertEqual(sorted(CORE_OWNED_PRIMITIVES & deferred), [],
+                         "these primitives moved to the core but are still pulled from "
+                         "the monolith inside a function body")
 
     def test_no_definition_is_unreachable_from_the_concern(self):
         """A definition nothing reaches is a responsibility that drifted in."""

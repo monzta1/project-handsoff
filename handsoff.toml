@@ -265,6 +265,10 @@ commands = [
   "python3 -m unittest tests.test_dashboard_orphan -v",
   "python3 -m unittest tests.test_turn_bound -v",
   "python3 -m unittest tests.test_routing_boundary -v",
+  "python3 -m unittest tests.test_core_layer -v",
+  "python3 -m unittest tests.test_ledger_layer -v",
+  "python3 -m unittest tests.test_module_layers -v",
+  "python3 -m unittest tests.test_transition_validation -v",
   "python3 -m unittest tests.test_extraction_plan -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these

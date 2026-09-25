@@ -84,30 +84,216 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None
 
-PHASES = {
-    1: "Orient",
-    2: "Design debate",
-    3: "Design approved",
-    4: "Implementation",
-    5: "Independent review",
-    6: "Checks & documentation",
-    7: "Awaiting deployment approval",
-    8: "Live verified",
-}
+from handsoff_schema import (  # noqa: E402,F401
+    AGENT_REPLACEMENT_STATES,
+    AGENT_REPLACEMENT_TRIGGERS,
+    AGENT_SESSION_FIELDS,
+    AGENT_SESSION_ID_PATTERN,
+    AGENT_SESSION_LIVE_STATES,
+    AGENT_SESSION_OPTIONAL_FIELDS,
+    AGENT_SESSION_RESOLUTION_SOURCES,
+    AGENT_SESSION_STATES,
+    AGENT_SESSION_TERMINAL_STATES,
+    AMENDMENT_CLASSIFICATIONS,
+    AMENDMENT_FIELDS,
+    AMENDMENT_ID_PATTERN,
+    AMENDMENT_PILOT_APPROVAL_FIELDS,
+    AMENDMENT_REVIEW_DECISIONS,
+    AMENDMENT_REVIEW_FIELDS,
+    AMENDMENT_REVIEW_OPTIONAL_FIELDS,
+    AMENDMENT_STATES,
+    BUDGET_FAILURE_CAUSES,
+    CRITERIA_TRANSACTION_OPS,
+    DESIGN_REVIEWER_ESCALATION_FIELDS,
+    DESIGN_REVIEWER_PROFILE_FIELDS,
+    DESIGN_REVIEWER_SELECTION_REASONS,
+    DESIGN_REVIEWER_TIERS,
+    DESIGN_REVIEW_DISPOSITIONS,
+    DESIGN_REVIEW_FINDING_ID_PATTERN,
+    DESIGN_REVIEW_HISTORY_FIELDS,
+    DESIGN_REVIEW_PACKET_ID_PATTERN,
+    ESCALATION_KINDS,
+    FAILURE_CATEGORIES,
+    MAX_AGENT_ACTOR_LENGTH,
+    MAX_AGENT_REPLACEMENTS,
+    MAX_AGENT_SESSIONS,
+    MAX_AGENT_SESSION_ID_LENGTH,
+    MAX_AMENDMENT_HISTORY,
+    MAX_AMENDMENT_LIST,
+    MAX_AMENDMENT_REVIEW_FINDINGS,
+    MAX_DESIGN_REVIEW_FINDINGS,
+    MAX_DESIGN_REVIEW_FINDING_LENGTH,
+    MAX_DESIGN_REVIEW_HISTORY,
+    MAX_PENDING_QUESTIONS,
+    MAX_PROGRESS_NOTE,
+    MAX_PROGRESS_RECORDS,
+    MAX_QUALITY_FINDINGS,
+    MAX_QUESTION_OPTIONS,
+    MAX_QUESTION_OPTION_TEXT,
+    MAX_QUESTION_TEXT,
+    MAX_RECOVERY_ATTEMPTS,
+    MAX_REGRESSION_REQUESTS,
+    MAX_REVIEW_ATTEMPTS,
+    MAX_REVIEW_CAP_OVERRIDES,
+    MAX_REVIEW_SESSION_IDS,
+    OPERATION_IDENTIFIER_PATTERN,
+    PHASES,
+    PROFILE_SOURCES,
+    PROGRESS_CRITERION_PATTERN,
+    PROGRESS_STATES,
+    QUALITY_FINDING_CODES,
+    QUALITY_FINDING_ID_PATTERN,
+    QUESTION_ANSWER_FIELDS,
+    QUESTION_FIELDS,
+    QUESTION_FORM_ERRORS,
+    QUESTION_FORM_FIELDS,
+    QUESTION_ID_PATTERN,
+    QUESTION_LEGACY_FIELDS,
+    RECOVERY_ID_PATTERN,
+    RECOVERY_LEASE_ID_PATTERN,
+    RECOVERY_STATES,
+    RECOVERY_TRIGGERS,
+    REGRESSION_REQUEST_ID_PATTERN,
+    REGRESSION_STATES,
+    RELEASE_VERSION_PATTERN,
+    REPLACEMENT_ID_PATTERN,
+    REQUIRED_COVERAGE_FIELDS,
+    REQUIRED_STATUS_FIELDS,
+    REVIEW_ATTEMPT_DISPOSITIONS,
+    REVIEW_ATTEMPT_ID_PATTERN,
+    REVIEW_ATTEMPT_TRIGGERS,
+    REVIEW_FINDING_CODES,
+    REVIEW_OVERRIDE_ID_PATTERN,
+    ROLE_BUDGET_FLOORS,
+    RUN_LANES,
+    STATUS_VALUES,
+    USAGE_SOURCES,
+    WORK_ITEM_ID_PATTERN,
+    WORK_ITEM_KINDS,
+    WORK_ITEM_LANES,
+    _FAILURE_REASON_LABELS,
+    _HEX64,
+    _amendment_record_errors,
+    _design_review_findings_errors,
+    _design_review_history_errors,
+    _design_review_packet_errors,
+    _design_reviewer_escalation_errors,
+    _design_reviewer_profile_errors,
+    _is_number,
+    _question_form_errors,
+    _validate_failure_classification,
+    amendment_status_errors,
+    classify_release_version,
+    question_status_errors,
+    validate_acceptance_schema,
+    validate_agent_actor,
+    validate_progress_line,
+    validate_release_plan,
+    validate_reviewer_isolation_contract,
+    validate_session_budget_decision,
+    validate_status_schema,
+    validate_usage,
+)
+from handsoff_agent_runtime import (  # noqa: E402,F401
+    AGENT_OUTPUT_FILE,
+    AGENT_OUTPUT_FLUSH_INTERVAL_SECONDS,
+    AGENT_OUTPUT_FLUSH_MAX_BYTES,
+    AGENT_OUTPUT_FLUSH_MAX_ENTRIES,
+    AGENT_OUTPUT_LOCK_FILE,
+    DEFAULT_AGENT_PREFERENCE,
+    DESIGN_REVIEW_AUTHORIZATION_COMMAND,
+    VERIFICATION_KINDS,
+    VERSION_PIN_FILE,
+    _assert_agent_telemetry_integrity,
+    _canonical_implementer_identity,
+    _implementer_binding,
+    _looks_like_runtime_drop_in,
+    _new_agent_session_id,
+    _new_bounded_id,
+    _prune_agent_sessions,
+    _review_cap_escalation,
+    _runtime_identity_with_manifest,
+    _validate_session_reference,
+    _version_tuple,
+    active_regression_request,
+    agent_profiles,
+    claim_precreated_agent_session,
+    create_agent_session,
+    current_agent_sessions,
+    current_review_attempt,
+    default_agent_adapter,
+    design_review_budget,
+    design_review_budget_exhausted_message,
+    design_review_launch_refusal,
+    effective_review_cap,
+    ensure_no_launched_regression,
+    event_log_chain_errors,
+    ledger_engine_identity,
+    load_verifications,
+    migrate_review_ledger,
+    open_review_attempt,
+    progress_summary,
+    read_session_liveness,
+    runtime_identity,
+    session_liveness_path,
+    stale_manifest_refusal,
+    transition_agent_session,
+    update_session_liveness,
+    verify_event_log,
+    version_satisfies,
+)
 
-RUN_LANES = {"full", "design", "review"}
 
 
-def lane_gate_refusal(status: dict, action: str) -> str | None:
-    """Return the refusal for an action unavailable to a design-lane run."""
-    lane = status.get("lane")
-    if lane == "design" and action in {"advance_4", "record-review", "deployment-gate", "verify-live"}:
-        return f"design lane refuses {action}"
-    if lane == "review" and action in {"advance_4", "deployment-gate", "verify-live"}:
-        return f"review lane refuses {action}"
-    if lane == "review" and action == "advance_1":
-        return "review lane refuses advance_1"
-    return None
+from handsoff_workflow import (  # noqa: E402,F401
+    BASELINE_NOT_APPLICABLE,
+    CHECKLIST_VALUES,
+    CRITERION_ADD_FIELDS,
+    CRITERION_SETTABLE_STATES,
+    CRITERION_TYPES,
+    CRITERION_UPDATE_FIELDS,
+    CriteriaTransactionError,
+    GATE_PROGRESS_WEIGHTS,
+    MAX_CRITERIA_TRANSACTION_OPERATIONS,
+    MAX_REPEAT,
+    MAX_RULE_BYTES,
+    PROJECT_RULES_DIR,
+    RULES_DIR,
+    RULES_SET_PROJECT_FILES,
+    RULE_COMMANDS,
+    RULE_WHEN_KEYS,
+    WORK_ITEM_STATES,
+    _evidence_errors,
+    _is_green,
+    _review_errors,
+    _transaction_test_gate,
+    _valid_review_anchor,
+    _valid_symptom_record,
+    _validate_rule,
+    amendment_freeze_errors,
+    append_verification,
+    baseline_errors,
+    ci_gate_errors,
+    compute_errors,
+    configured_regression_commands,
+    coverage_for,
+    criterion_baseline,
+    derive_work_items,
+    feature_hash,
+    full_design_required,
+    gate_progress,
+    lane_gate_refusal,
+    load_launch_rules,
+    pending_design_decline,
+    plan_criteria_transaction,
+    rules_binding_errors,
+    rules_set_diff,
+    rules_set_entries,
+    rules_set_hash,
+    sync_work_item_registry,
+    valid_evidence_kinds,
+    validate_criterion_fields,
+)
 
 #: Default next_action per phase, used whenever `advance` (or `init`) isn't
 #: given an explicit --next-action. Without this, next_action was set once
@@ -130,95 +316,191 @@ NEXT_ACTION_DEFAULTS = {
 #: drift apart into checking different text.
 PLACEHOLDER_REQUIREMENT = "State the exact observable outcome."
 PLACEHOLDER_TESTS = ["name_or_path_of_test"]
-MAX_FALLBACK_PROFILES = 8
-DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
-# #35: how many design-review attempts (approve or request-changes, every
-# record-design-review counts) a run may consume on its own before the
-# Pilot has to authorize each further attempt one at a time.
-#: #320: the nearest-rank p90 of 100 measured product runs. Attempts
-#: distribute 24/49/17/6/1/1/2 at 1,2,3,4,5,6,8. A limit of 2 interrupts
-#: 27% of runs and a limit of 3 interrupts 10%. The gate at 2 saved no
-#: tokens: 27 runs went past it, so authorization was granted and the
-#: attempt ran anyway. Kept rather than removed because four runs needed
-#: five to eight attempts, where the design is wrong and a human should look.
-DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS = 3
-DESIGN_REVIEW_AUTHORIZATION_COMMAND = "handsoff_supervisor.py design-review-authorize --by <pilot>"
-# Hard ceilings for one managed Codex session.  These are deliberately
-# conservative: a role that cannot finish inside its allowance must return a
-# bounded handoff or stop for the Pilot, never silently consume an unlimited
-# rollout.  Projects may lower or raise an individual role under
-# [agent_budget], but may not disable the ceiling.
-DEFAULT_AGENT_TOKEN_BUDGETS = {
-    "architect": 40_000,
-    "supervisor": 24_000,
-    "implementer": 80_000,
-    "reviewer": 80_000,
-}
-PREFLIGHT_FILE = ".handsoff-preflight.json"
-PREFLIGHT_SCHEMA = 2
+from handsoff_config import (  # noqa: E402,F401
+    AGENT_ROLES,
+    AGENT_SETTING_ADAPTERS,
+    ANALYSIS_FILING_MODES,
+    AUTO_AGENT_ADAPTER,
+    BRIEFING_CONFIG_KEYS,
+    DEFAULT_AGENT_MODEL,
+    DEFAULT_AGENT_TOKEN_BUDGETS,
+    DEFAULT_CONFIG,
+    DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
+    DEFAULT_MAX_FAILOVERS_PER_ROLE,
+    DEFAULT_MODEL_POLICY,
+    DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
+    DEFAULT_SMALL_FIX_MAX_CRITERIA,
+    DEFAULT_SMALL_FIX_MAX_FILES,
+    DESIGN_EVIDENCE_ID_PATTERN,
+    EXPLICIT_PROFILE_SOURCE,
+    FEATURES,
+    FOLLOWUP_REVIEWER_KEY,
+    HOST_AGENT_ADAPTER,
+    HOST_CAPABLE_ROLES,
+    LEGACY_UNCONFIGURED_AGENT_ADAPTER,
+    MAX_AGENT_MODEL_LENGTH,
+    MAX_AGENT_TOKEN_BUDGET,
+    MAX_DESIGN_EVIDENCE_ENTRIES,
+    MAX_FALLBACK_PROFILES,
+    MIN_AGENT_TOKEN_BUDGET,
+    PLAIN_COMMAND_MESSAGE,
+    RECOMMENDED_CREW,
+    RECOMMENDED_PROFILE_SOURCE,
+    RUNNER_DEFAULT_PROFILE_SOURCE,
+    SELECTABLE_AGENT_ADAPTERS,
+    SELECTABLE_AGENT_ROLES,
+    TICKET_STATES,
+    _validate_analysis_config,
+    _validate_design_evidence_config,
+    assert_plain_command,
+    ensure_regression_config_is_disjoint,
+    load_config,
+    model_policy_allows,
+    normalize_public_origins,
+    normalized_test_footprint,
+    validate_agent_model,
+    validate_fallback_entries,
+    validate_max_failovers,
+    validate_model_policy,
+)
+from handsoff_ledger import (  # noqa: E402,F401
+    ANALYSIS_DIR,
+    DESIGN_EVIDENCE_FILE,
+    GOVERNANCE_CONFIG_KEYS,
+    HANDSOFF_GENERATED_NAMES,
+    HANDSOFF_TEMP_COMPONENT,
+    LIVE_BEACON_FILE,
+    LIVE_INFLIGHT_FILE,
+    MAX_WORK_ITEMS,
+    OUTPUT_LIVENESS_FILE,
+    PREFLIGHT_FILE,
+    VERIFICATION_REQUIREMENTS,
+    VERIFY_INFLIGHT_DIR,
+    WORK_ITEM_TAG_PATTERN,
+    _LEGACY_OPTIONAL_GOVERNANCE_KEYS,
+    _design_errors,
+    _design_hash_current,
+    _design_review_errors,
+    _digest_entry,
+    _digest_excluded,
+    _digest_listing,
+    _file_sha256,
+    _last_hash,
+    _serialized_digest,
+    _work_item_slug,
+    append_event,
+    atomic_write_json,
+    clear_write_ahead,
+    commit,
+    config_hash,
+    criterion_work_item,
+    criterion_work_item_id,
+    derive_work_item_registry,
+    effective_work_items,
+    event_head_path,
+    event_log_path,
+    evidence_drift,
+    feature_enabled,
+    item_acceptance_hash,
+    item_criteria,
+    item_progress,
+    open_amendment,
+    overall_item_progress,
+    removed_work_item_ids,
+    repository_digest,
+    repository_digest_entries,
+    scope_hash_matches,
+    scoped_work_items,
+    verification_config_hash,
+    verification_log_path,
+    work_item_delivery,
+    work_item_scope_hash,
+    work_item_scope_hashes,
+    write_ahead,
+    write_ahead_path,
+)
+from handsoff_resources import (  # noqa: E402,F401
+    MAX_BRIEFING_FILE_BYTES,
+    MAX_BRIEFING_TOTAL_BYTES,
+    MAX_PREFLIGHT_ENTRIES,
+    PLAYBOOK_DIR,
+    PLAYBOOK_INDEX,
+    PREFLIGHT_SCHEMA,
+    RUNTIME_MANIFEST_FILE,
+    briefing_section,
+    engine_resource_path,
+    engine_root,
+    launch_preflight_snapshot,
+    playbook_index,
+    playbook_root,
+    repository_snapshot,
+)
 PREFLIGHT_SUCCESS_TTL_SECONDS = 900
 PREFLIGHT_FAILURE_TTL_SECONDS = 60
-MAX_PREFLIGHT_ENTRIES = 16
 MAX_PREFLIGHT_REASON = 220
-MIN_AGENT_TOKEN_BUDGET = 8_000
 #: The pre-flight probe's own rollout ceiling. It used to borrow the 8,000
 #: token floor, and inside a real project the reviewer-shaped prompt alone
 #: cost 13,008 tokens at prefill weight 1.0, so a working Codex reported
 #: `unreachable` (v0.3.25 field-note defect 1). Three times the floor bounds
 #: one "Reply with OK" turn without depending on any project's context.
 PREFLIGHT_TOKEN_BUDGET = 24_000
-MAX_AGENT_TOKEN_BUDGET = 500_000
-TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
-#: #38: cached, hash-bound design evidence. The side file is generated
-#: state (gitignored), never a ledger: it holds the bounded output of
-#: trusted configured commands, and the event log only ever carries hashes.
-DESIGN_EVIDENCE_FILE = "handsoff-design-evidence.json"
-DESIGN_EVIDENCE_ID_PATTERN = re.compile(r"^[a-z0-9-]{1,64}$")
-MAX_DESIGN_EVIDENCE_ENTRIES = 16
 MAX_DESIGN_EVIDENCE_OUTPUT_BYTES = 8192
-# #175: managed-session knowledge briefings are bounded so a project cannot
-# turn an indexed file into an unbounded launch prompt.
-MAX_BRIEFING_FILE_BYTES = 64 * 1024
-MAX_BRIEFING_TOTAL_BYTES = 256 * 1024
-BRIEFING_CONFIG_KEYS = frozenset({"index", "root"})
 DESIGN_EVIDENCE_STATES = ("current", "stale", "failed", "missing")
-#: #33: liveness beacon written by `handsoff_agent.execute_launch` while a
-#: managed child runs. Generated state (gitignored), never hashed, never
-#: read by any gate: identifiers, integers, and timestamps only. The
-#: ledger-bound session record stays the authority on lifecycle; the beacon
-#: only says whether the process that owns that session is still signalling.
-LIVE_BEACON_FILE = ".handsoff-live.json"
-LIVE_INFLIGHT_FILE = ".handsoff-live-inflight.json"
-LIVE_BEACON_KEYS = ("session_id", "role", "state", "pid", "beacon_at", "ended_at", "exit_code")
+from handsoff_projection import (  # noqa: E402,F401
+    ACTOR_FAMILY_PREFIXES,
+    HOST_COMMAND_EVENT_KINDS,
+    LIVE_BEACON_FRESH_SECONDS,
+    LIVE_BEACON_KEYS,
+    OUTPUT_LIVENESS_KEYS,
+    RECOVERABLE_FAILURE_CATEGORIES,
+    SLEEP_LOG_CACHE_SECONDS,
+    _READ_OUTPUT_LIVENESS,
+    _SLEEP_LINE,
+    _SLEEP_LOG_CACHE,
+    _SLEEP_LOG_LOCK,
+    _beacon_process_alive,
+    _iso_seconds,
+    _latest_event_kind,
+    _live_focus_session,
+    _minutes_since,
+    _output_seconds_ago,
+    _read_agent_output_store,
+    _read_pmset_log,
+    _refresh_sleep_cache,
+    _seconds_since,
+    activity_note,
+    actor_family,
+    agent_output_path,
+    asleep_seconds,
+    assigned_role,
+    bound_heartbeat_at,
+    failed_session_superseded,
+    host_identity,
+    host_wait_view,
+    implementation_evidence_complete,
+    live_beacon_path,
+    live_status,
+    machine_sleep_intervals,
+    operation_inventory,
+    output_liveness_for,
+    output_liveness_path,
+    parse_sleep_log,
+    profile_sources,
+    read_live_beacon,
+    read_output_liveness,
+    recovery_assessment,
+    resolved_agent_profiles,
+    verify_inflight_bindings,
+)
 LIVE_BEACON_INTERVAL_SECONDS = 5.0
-LIVE_BEACON_FRESH_SECONDS = 15.0
 LIVE_STATES = ("idle", "started", "running", "waiting", "stalled", "stopped", "failed", "complete")
-#: #41: output liveness. Every stdout/stderr chunk a managed child writes
-#: bumps this file (gitignored, never hashed, never logged, never read by
-#: a gate): identifiers, one timestamp, and two counters, never content.
-#: It is what lets `stall_warning` see a child that is streaming output
-#: while the workflow and heartbeat timestamps sit idle. Writes are rate
-#: limited to one per second per session; chunks in between only bump the
-#: counters. The file only counts while bound to the current session for
-#: its role in a live state, so a process exit expires the signal at once.
-OUTPUT_LIVENESS_FILE = ".handsoff-output-liveness.json"
-OUTPUT_LIVENESS_KEYS = ("session_id", "role", "output_at", "chunks", "bytes")
 OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS = 1.0
-# #58: portable, bounded managed-agent output. This generated side file is
-# deliberately separate from every audit ledger and is never consulted by a
-# gate. It contains only host-redacted child output and session metadata.
-AGENT_OUTPUT_FILE = ".handsoff-agent-output.json"
-AGENT_OUTPUT_LOCK_FILE = ".handsoff-agent-output.lock"
 OPERATION_STATES = ("started", "succeeded", "failed", "timed_out", "cancelled")
 OPERATION_ID_PATTERN = re.compile(r"^op-[a-z0-9]{4,32}$")
-OPERATION_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 OPERATIONS_FILE = ".handsoff-operations.json"
 MAX_AGENT_OUTPUT_SESSIONS = 8
 MAX_AGENT_OUTPUT_ENTRIES = 160
 MAX_AGENT_OUTPUT_LINE_CHARS = 2048
-AGENT_OUTPUT_FLUSH_INTERVAL_SECONDS = 0.25
-AGENT_OUTPUT_FLUSH_MAX_ENTRIES = 20
-AGENT_OUTPUT_FLUSH_MAX_BYTES = 32768
 ACTIVITY_SOURCES = ("workflow", "heartbeat", "output", "beacon", "session", "pause")
 #: #40: a dashboard launched with `--owned-by-run` writes this pointer file
 #: in the project root so run completion can find and release it. It is
@@ -229,23 +511,9 @@ ACTIVITY_SOURCES = ("workflow", "heartbeat", "output", "beacon", "session", "pau
 DASHBOARD_OWNER_FILE = ".handsoff-dashboard-owner.json"
 DASHBOARD_OWNER = "ship-feature"
 DASHBOARD_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-# #36: delta review packets. A recorded review may carry bounded findings;
-# every record appends a bounded history entry; a packet is the sorted,
-# canonical, size-capped delta a follow-up reviewer receives instead of
-# the full task.
-MAX_DESIGN_REVIEW_FINDINGS = 32
-MAX_DESIGN_REVIEW_FINDING_LENGTH = 512
-MAX_DESIGN_REVIEW_HISTORY = 8
 MAX_DESIGN_REVIEW_PACKET_BYTES = 65536
 MAX_DESIGN_REVIEW_PACKET_FILES = 200
 DESIGN_REVIEW_PACKET_TRIMMED_TEXT_LENGTH = 256
-DESIGN_REVIEW_DISPOSITIONS = ("resolved", "rejected", "unresolved")
-DESIGN_REVIEW_FINDING_ID_PATTERN = re.compile(r"^F[1-9][0-9]*\.[1-9][0-9]*$")
-DESIGN_REVIEW_PACKET_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
-DESIGN_REVIEW_HISTORY_FIELDS = (
-    "attempt", "decision", "by", "design_hash", "head", "criteria_ids", "criterion_hashes",
-    "structural_blocker", "findings",
-)
 DESIGN_REVIEW_PACKET_INSTRUCTIONS = (
     "Verify the revision: changed criteria, unresolved and rejected findings, new material. "
     "Repository access remains available to challenge any omission or stale fact."
@@ -255,62 +523,11 @@ DESIGN_EVIDENCE_RECORD_FIELDS = (
     "exit_code", "output", "output_sha256", "output_bytes", "truncated", "at", "by", "head", "branch", "dirty",
 )
 
-#: #39: the crew a role gets when handsoff.toml does not name one (or still
-#: carries the legacy "configure-me" placeholder). Architect, Supervisor,
-#: and Implementer share one premium reasoning profile: design needs the
-#: strongest reasoning available, and the operator keeps the same Opus
-#: profile for orchestration and implementation so one run has one
-#: consistent voice. The Reviewer runs on an independent provider family
-#: so the critique never comes from the model being critiqued. An explicit
-#: "auto" is NOT part of this table: it keeps the older first-installed
-#: auto-detect path (DEFAULT_AGENT_PREFERENCE) on purpose.
-RECOMMENDED_CREW = {
-    "architect": {"adapter": "claude", "model": "claude-opus-5"},
-    "supervisor": {"adapter": "claude", "model": "claude-opus-5"},
-    "implementer": {"adapter": "claude", "model": "claude-opus-5"},
-    "reviewer": {"adapter": "codex", "model": "default"},
-}
-#: Where a role's adapter or model came from: named in handsoff.toml
-#: ("explicit"), taken from RECOMMENDED_CREW because the key was absent or
-#: the placeholder ("recommended"), or the runner default because the
-#: adapter was overridden but no model was named, so the recommended model
-#: for the other adapter would be the wrong thing to pass ("runner_default").
-PROFILE_SOURCES = ("explicit", "recommended", "runner_default")
-RECOMMENDED_PROFILE_SOURCE = "recommended"
-EXPLICIT_PROFILE_SOURCE = "explicit"
-RUNNER_DEFAULT_PROFILE_SOURCE = "runner_default"
-#: #37: the optional economical follow-up reviewer profile. Both keys
-#: ([agents].reviewer_followup and [models].reviewer_followup) present
-#: enables tiering; both absent reproduces the single-profile behavior
-#: exactly; exactly one present is a config error. It is a cost knob, not
-#: a gate, so it is deliberately NOT in GOVERNANCE_CONFIG_KEYS.
-FOLLOWUP_REVIEWER_KEY = "reviewer_followup"
-DESIGN_REVIEWER_TIERS = ("primary", "followup")
-#: Selection precedence, evaluated in this order; the first match is the
-#: reason. Only `delta_check` selects the follow-up tier.
-DESIGN_REVIEWER_SELECTION_REASONS = (
-    "first_review", "no_followup_configured", "pilot_escalation",
-    "structural_blocker", "criteria_structure_changed", "delta_check",
-)
-DESIGN_REVIEWER_ESCALATION_FIELDS = ("by", "at", "note", "consumed_at")
-DESIGN_REVIEWER_PROFILE_FIELDS = ("adapter", "model", "tier", "reason")
 #: What crew_view's `available` actually proves, and nothing more: the
 #: adapter executable was found on PATH. Authentication, entitlement,
 #: network access, and whether the model id is valid for that adapter are
 #: never checked offline, so the view names its scope instead of implying it.
 CREW_AVAILABILITY_SCOPE = "executable discovery only"
-WORK_ITEM_KINDS = {"issue", "ask"}
-WORK_ITEM_STATES = {
-    "done", "blocked", "in_review", "awaiting_approval", "recovering",
-    "in_progress", "not_started", "unscoped",
-}
-WORK_ITEM_TAG_PATTERN = re.compile(r"^\[(#\d{1,9}|[a-z0-9][a-z0-9-]{0,39})\]\s")
-WORK_ITEM_ID_PATTERN = re.compile(r"^(?:issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$")
-MAX_WORK_ITEMS = 64
-WORK_ITEM_LANES = ("full", "small-fix", "escalated")
-DEFAULT_SMALL_FIX_MAX_CRITERIA = 3
-DEFAULT_SMALL_FIX_MAX_CHANGED_LINES = 200
-DEFAULT_SMALL_FIX_MAX_FILES = 6
 
 # #284: adaptive model routing now lives in bin/handsoff_routing.py, the
 # first bounded subsystem extracted from this module. Re-exported here so
@@ -355,90 +572,7 @@ from handsoff_routing import (  # noqa: E402,F401
     validate_adaptive_routing_profiles,
     validate_session_adaptive_routing,
 )
-DEFAULT_MODEL_POLICY = {
-    "allowed_adapters": ["codex", "claude"],
-    "denied_models": [],
-    "quota_substitution": True,
-}
 
-DEFAULT_CONFIG = {
-    "adaptive_routing_profiles": deepcopy(ADAPTIVE_DEFAULT_PROFILES),
-    "adaptive_routing_budgets": deepcopy(ADAPTIVE_DEFAULT_BUDGETS),
-    "risk_policy": deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY),
-    "model_policy": deepcopy(DEFAULT_MODEL_POLICY),
-    "reviewer_isolation": {"compatibility_mode": False, "compatibility_approved": False},
-    "execution_profile": "safe",
-    "logo": None,
-    "status_file": "handsoff-status.json",
-    "acceptance_file": "handsoff-acceptance.json",
-    "event_log": "handsoff-events.jsonl",
-    "verification_log": "handsoff-verifications.jsonl",
-    "max_design_rounds": 3,
-    "auto_handoff": True,
-    "max_review_rounds": 3,
-    "stall_minutes": 10,
-    "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
-    "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
-    "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
-    "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
-    "require_live_verification": True,
-    "deployment_requires_explicit_approval": True,
-    # #159: false lets a project waive the Pilot's design click; the
-    # independent design review stays mandatory either way.
-    "require_design_approval": True,
-    # #165 #167 #166: workflow features, each a switch under [features] that
-    # Mission Control's settings dialog edits. Defaults live in FEATURES.
-    "features": {},
-    "check_commands": [],
-    "briefing": None,
-    "digest_ignore": [],
-    "implementer_commands": [],
-    "documentation": {"files": [], "exclude": []},
-    # #124: exact browser origins (scheme://host[:port]) that may drive the
-    # run dashboard through a tunnel or private network; loopback is always
-    # accepted. Fleet reads HANDSOFF_PUBLIC_ORIGINS instead (no project).
-    "public_origins": [],
-    "live_check_commands": [],
-    "check_timeout_seconds": 600,
-    "tickets": [],
-    "design_evidence": [],
-    "regressions": [],
-    "regression_gate": {
-        "approval_timeout_minutes": 30, "launch_window_minutes": 10,
-        "full_regression_major_only": True,
-    },
-    "agents": {role: profile["adapter"] for role, profile in RECOMMENDED_CREW.items()},
-    "models": {role: profile["model"] for role, profile in RECOMMENDED_CREW.items()},
-    "fallbacks": {
-        "architect": [],
-        "supervisor": [],
-        "implementer": [],
-        "reviewer": [],
-    },
-    "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
-    "agent_token_budgets": dict(DEFAULT_AGENT_TOKEN_BUDGETS),
-    "adapters": {},
-    "followup_design_token_budget": None,
-    "reviewer_followup": None,
-    "recovery": {
-        "enabled": True, "max_attempts": 3, "lease_minutes": 15,
-        "worker_loss_grace_minutes": 2, "live_session_silence_minutes": 10,
-        "protocol_silence_minutes": {"architect": 0, "supervisor": 0, "implementer": 0, "reviewer": 0},
-        "liveness_seconds": 60, "dashboard_watchdog": True, "poll_seconds": 30,
-        "operation_grace_seconds": 120,
-    },
-    # #49: the archive analyzer. `filing` is "gh" (file through the gh CLI)
-    # or "report_only" (never construct a GitHub client; the report still
-    # lists every draft). archive_dir None means HANDSOFF_ARCHIVE_DIR or
-    # the default Documents archive.
-    "analysis": {
-        "enabled": True, "max_tickets_per_scan": 5, "dedupe_days": 30,
-        "design_phase_hours_threshold": 1.0, "archive_dir": None, "filing": "gh",
-        "framework_repo": "monzta1/project-handsoff",
-    },
-}
-ANALYSIS_FILING_MODES = ("gh", "report_only")
-ANALYSIS_DIR = ".handsoff-analysis"
 # #49: a run whose root name starts with one of these is a test fixture,
 # a self-check, a drop-in or a benchmark run, never a product run.
 FIXTURE_ROOT_PREFIXES = (
@@ -491,10 +625,7 @@ ARCHIVE_CLASSIFICATION_WRITERS = {
 }
 MAX_PILOT_NOTE_LENGTH = 512
 
-AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
-SELECTABLE_AGENT_ROLES = AGENT_ROLES
 LEGACY_AGENT_ROLES = ("architect", "implementer", "reviewer")
-SELECTABLE_AGENT_ADAPTERS = ("codex", "claude")
 #: #290: how each adapter's recorded ceiling is actually imposed. An adapter
 #: absent from this map cannot bound a session and is refused at launch:
 #: recording a ceiling nothing enforces reads as a guarantee and is not one.
@@ -658,12 +789,6 @@ def ceiling_overshoot(usage: object, provider_limit: object) -> int | None:
     if not isinstance(total, int) or isinstance(total, bool):
         return None
     return max(0, total - provider_limit)
-#: #290: why a bounded session ended, kept distinct because the repairs
-#: differ. The reviewer failures on 2026-09-23 were recorded only as
-#: "token_budget_exhaustion", which cannot tell a model that ignored its
-#: scope from a wrapper that stopped it.
-BUDGET_FAILURE_CAUSES = ("model_noncompliance", "wrapper_overrun",
-                         "shared_budget_exhaustion", "missing_protocol")
 
 
 #: #290/REQ-003: the largest slice a single compact-review entry may carry.
@@ -756,73 +881,12 @@ def adapter_ceiling_enforcement(adapter: str) -> str:
             "cannot bound it by observation; add it to CEILING_ENFORCEMENT before selecting it"
         )
     return enforcement
-HOST_AGENT_ADAPTER = "host"
-HOST_CAPABLE_ROLES = ("supervisor", "architect")
-AUTO_AGENT_ADAPTER = "auto"
-LEGACY_UNCONFIGURED_AGENT_ADAPTER = "configure-me"
-AGENT_SETTING_ADAPTERS = (AUTO_AGENT_ADAPTER, *SELECTABLE_AGENT_ADAPTERS)
-DEFAULT_AGENT_PREFERENCE = SELECTABLE_AGENT_ADAPTERS
-DEFAULT_AGENT_MODEL = "default"
-MAX_AGENT_MODEL_LENGTH = 128
-MAX_AGENT_ACTOR_LENGTH = 128
-MAX_AGENT_SESSION_ID_LENGTH = 64
-MAX_AGENT_SESSIONS = 64
-RUNTIME_MANIFEST_FILE = "handsoff-runtime.json"
-VERSION_PIN_FILE = ".handsoff-version"
 OVERRIDES_FILE = "handsoff-overrides.json"
 ROLE_PROTOCOL_PREFIXES = {"reviewer": "HANDSOFF_REVIEW_RESULT:",
                           "architect": "HANDSOFF_DESIGN_PROPOSAL:",
                           "supervisor": "HANDSOFF_BROKER_REQUEST:"}
-AGENT_SESSION_ID_PATTERN = re.compile(r"^hs-[0-9a-f]{32}$")
-AGENT_SESSION_LIVE_STATES = {"launching", "running"}
-AGENT_SESSION_TERMINAL_STATES = {
-    "completed", "failed", "timed_out", "cancelled", "failed_to_start",
-}
-AGENT_SESSION_STATES = AGENT_SESSION_LIVE_STATES | AGENT_SESSION_TERMINAL_STATES
-AGENT_SESSION_RESOLUTION_SOURCES = {
-    "configured", "recommended", "auto_detected", "legacy_auto_detected", "fallback", "adaptive",
-}
-# #36: packet_id and design_hash are written on every new session (null
-# unless a Phase-2 reviewer was launched with a delta packet) but stay
-# OPTIONAL on read, so a status.json written before they existed is still
-# valid; when present they must be null or a non-empty string. #37 adds
-# `tier` the same way: null unless a Phase-2 reviewer was launched through
-# the tiered selection, otherwise exactly "primary" or "followup".
-AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id", "usage",
-                                 "adaptive_routing",
-                                 "budget_decision", "reviewer_isolation", "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
-#: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
-PROGRESS_STATES = ("done", "partial", "untouched")
-PROGRESS_CRITERION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-MAX_PROGRESS_RECORDS = 64
-MAX_PROGRESS_NOTE = 200
-AGENT_SESSION_FIELDS = {
-    "session_id", "role", "actor", "adapter", "requested_model", "reported_model",
-    "resolution_source", "started_at", "running_at", "ended_at", "state", "exit_code",
-    *AGENT_SESSION_OPTIONAL_FIELDS,
-}
 
 
-def normalize_public_origins(value, label: str) -> list[str]:
-    """#124: an origin is scheme://host[:port], nothing else. Each entry is
-    canonicalised (lowercase scheme and host, explicit port dropped only
-    when it is the scheme default) so comparison is exact, never a prefix."""
-    from urllib.parse import urlsplit
-    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
-        raise HandsoffError(f"{label} must be a list of non-empty origin strings")
-    result = []
-    for item in value:
-        parts = urlsplit(item.strip())
-        if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path not in {"", "/"} \
-                or parts.query or parts.fragment or parts.username or parts.password:
-            raise HandsoffError(f"{label} entry {item!r} must be scheme://host[:port] with no path")
-        port = parts.port
-        default = 443 if parts.scheme == "https" else 80
-        host = parts.hostname.lower()
-        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port and port != default else "")
-        if canonical not in result:
-            result.append(canonical)
-    return result
 
 
 def origin_allowed(origin: str | None, server_port: int, public_origins: list[str]) -> bool:
@@ -903,109 +967,18 @@ def open_dashboard_url(url: str, *, platform: str | None = None, chrome: Path | 
     return "fallback"
 
 
-def engine_root() -> Path:
-    """Locate this engine's immutable resources in a checkout or installation."""
-    checkout = Path(__file__).resolve().parent.parent
-    if (checkout / RUNTIME_MANIFEST_FILE).is_file() and (checkout / "dashboard").is_dir():
-        return checkout
-    return Path(sysconfig.get_path("data")) / "share" / "handsoff"
 
 
-def engine_resource_path(relative: str) -> Path:
-    if not isinstance(relative, str) or relative.startswith(("/", "../")):
-        raise HandsoffError("engine resource path is invalid")
-    root = engine_root()
-    if relative.startswith("bin/") and not (root / relative).exists():
-        return Path(__file__).resolve().parent / Path(relative).name
-    return root / relative
 
 
-def _version_tuple(value: str) -> tuple[int, int, int]:
-    match = re.fullmatch(r"v?([0-9]+)\.([0-9]+)\.([0-9]+)", str(value).strip())
-    if not match:
-        raise HandsoffError(f"invalid Handsoff version: {value}")
-    return tuple(map(int, match.groups()))
 
 
-def version_satisfies(version: str, pin: str) -> bool:
-    actual = _version_tuple(version)
-    pin = str(pin).strip()
-    wildcard = re.fullmatch(r"v?([0-9]+)\.([0-9]+)\.\*", pin)
-    if wildcard:
-        return actual[:2] == tuple(map(int, wildcard.groups()))
-    if pin.startswith("=="):
-        pin = pin[2:]
-    return actual == _version_tuple(pin)
 
 
-def _runtime_identity_with_manifest(root: Path) -> dict:
-    """Exact engine source, pin, manifest identity, and compatibility."""
-    root = Path(root).resolve()
-    drop_in = _looks_like_runtime_drop_in(root)
-    source = "project-drop-in" if drop_in else "installed-engine"
-    path = root / RUNTIME_MANIFEST_FILE if drop_in else engine_root() / RUNTIME_MANIFEST_FILE
-    # #204: an engine checkout whose listed files changed after the manifest
-    # was written says so on every read of the identity, the dashboard's
-    # engine badge and the Fleet card included (they render the reason as
-    # ENGINE UNKNOWN, #185), not only when the pin is missing.
-    stale = stale_manifest_refusal(root)
-    if stale:
-        raise HandsoffError(stale)
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise HandsoffError(
-            f"Handsoff runtime manifest is missing: {path}; reinstall the complete Handsoff engine"
-        ) from exc
-    except (OSError, ValueError) as exc:
-        raise HandsoffError(f"Handsoff runtime manifest is unreadable: {type(exc).__name__}") from exc
-    if not isinstance(manifest, dict) or set(manifest) != {"schema", "version", "files"} \
-            or manifest.get("schema") != 1 or not isinstance(manifest.get("version"), str) \
-            or not manifest["version"].strip() or not isinstance(manifest.get("files"), dict) \
-            or not manifest["files"]:
-        raise HandsoffError("Handsoff runtime manifest is invalid; reinstall the complete Handsoff engine")
-    pin_path = root / VERSION_PIN_FILE
-    pin = manifest["version"] if drop_in else None
-    if not drop_in:
-        try:
-            pin = pin_path.read_text(encoding="utf-8").strip()
-        except FileNotFoundError as exc:
-            raise HandsoffError(f"Handsoff engine version pin is missing: {pin_path}; run `handsoff init {root}`") from exc
-        if not version_satisfies(manifest["version"], pin):
-            raise HandsoffError(
-                f"project requires Handsoff {pin}, but installed engine is {manifest['version']}; "
-                "install the compatible engine or update the pin deliberately"
-            )
-    return {
-        "version": manifest["version"], "source": source, "source_root": str(path.parent),
-        "compatibility": pin, "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "manifest": manifest,
-    }
 
 
-def _looks_like_runtime_drop_in(root: Path) -> bool:
-    """Recognize a copied engine from its signed runtime, never its names.
-
-    A project is allowed to have directories called ``bin`` or ``schemas``.
-    Those names alone are not evidence that an engine was copied into it.
-    """
-    manifest_path = Path(root) / RUNTIME_MANIFEST_FILE
-    library = Path(root) / "bin" / "handsoff_lib.py"
-    if not manifest_path.is_file() or not library.is_file():
-        return False
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        expected = manifest.get("files", {}).get("bin/handsoff_lib.py")
-        return isinstance(expected, str) and hashlib.sha256(library.read_bytes()).hexdigest() == expected
-    except (OSError, ValueError, AttributeError):
-        return False
 
 
-def runtime_identity(root: Path) -> dict:
-    """Public content-free engine identity; never return the manifest body."""
-    identity = _runtime_identity_with_manifest(root)
-    identity.pop("manifest", None)
-    return identity
 
 
 def engine_manifest_version() -> str | None:
@@ -1017,16 +990,6 @@ def engine_manifest_version() -> str | None:
         return None
 
 
-def ledger_engine_identity(root: Path) -> dict | None:
-    """#117: the three identity fields an event carries so an archive can
-    say which engine ran it; None when the identity cannot be read (the
-    event is still written, the field is just absent)."""
-    try:
-        identity = runtime_identity(Path(root))
-    except (HandsoffError, OSError, ValueError):
-        return None
-    return {"version": identity.get("version"), "source": identity.get("source"),
-            "manifest_sha256": identity.get("manifest_sha256")}
 
 
 def retire_finished_run(root: Path, cfg: dict) -> Path | None:
@@ -1067,53 +1030,6 @@ def engine_history(events: list[dict]) -> list[dict]:
     return seen
 
 
-def stale_manifest_refusal(root: Path) -> str | None:
-    """#204: an engine checkout (bin/handsoff_manifest.py beside
-    handsoff-runtime.json) whose runtime files changed after the manifest
-    was written. Returns the one line that names the changed files and
-    the exact command; None for a thin project or a checkout in step.
-    Three hosts in one day edited bin/ or prompts/, launched a reviewer or
-    ran verify, and read 'override not declared' or 'runtime files do not
-    match; reinstall the engine', both of which point at the wrong place."""
-    root = Path(root).resolve()
-    manifest_path = root / RUNTIME_MANIFEST_FILE
-    generator = root / "bin" / "handsoff_manifest.py"
-    pyproject = root / "pyproject.toml"
-    if not manifest_path.is_file() or not generator.is_file() or not pyproject.is_file():
-        return None
-    try:
-        if 'name = "project-handsoff"' not in pyproject.read_text(encoding="utf-8"):
-            return None  # a thin project that happens to carry the generator
-    except OSError:
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        files = manifest.get("files") or {}
-    except (OSError, ValueError, AttributeError):
-        return None
-    changed = []
-    for relative, expected in sorted(files.items()):
-        if not isinstance(relative, str) or relative.startswith(("/", "../")):
-            continue
-        target = root / relative
-        try:
-            actual = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
-        except OSError:
-            actual = None
-        if actual != expected:
-            changed.append(relative)
-    if not changed:
-        return None
-    version = None
-    try:
-        match = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
-        version = match.group(1) if match else None
-    except OSError:
-        pass
-    shown = ", ".join(changed[:6]) + (f" (+{len(changed) - 6} more)" if len(changed) > 6 else "")
-    tag = f"v{version}" if version else "vX.Y.Z"
-    return (f"the runtime manifest is stale ({shown} changed after it was written): "
-            f"run python3 bin/handsoff_manifest.py --version {tag}, then retry")
 
 
 def validate_runtime_integrity(root: Path) -> dict:
@@ -1189,28 +1105,13 @@ def project_resource_path(root: Path, relative: str) -> Path:
     return engine_resource_path(relative)
 
 
-PLAYBOOK_DIR = "playbook"
-PLAYBOOK_INDEX = "index.json"
 #: the playbook part of a launch stays small enough to ride every launch;
 #: a topic that would push it past this is refused at launch, never trimmed
 MAX_PLAYBOOK_SECTION_BYTES = 16 * 1024  # #217: room for the protocol topic (8 KB) beside the index and the lanes
 
 
-def playbook_root() -> Path:
-    """The engine's own playbook: the checkout's copy in a drop-in, else the
-    installed engine's (#208). Engine knowledge, shipped with the engine."""
-    return engine_resource_path(PLAYBOOK_DIR)
 
 
-def playbook_index() -> dict:
-    path = playbook_root() / PLAYBOOK_INDEX
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HandsoffError(f"the engine playbook index is missing or unreadable: {path}; reinstall the Handsoff engine") from exc
-    if not isinstance(manifest, dict) or manifest.get("version") != 1 or not isinstance(manifest.get("topics"), dict):
-        raise HandsoffError("the engine playbook index must be a version 1 object with topics")
-    return manifest
 
 
 def playbook_text(topic: str | None = None) -> str:
@@ -1250,102 +1151,6 @@ def playbook_section(topic: str | None = None) -> str:
     return text
 
 
-def briefing_section(root: Path, cfg: dict, topic: str | None = None) -> str:
-    """Resolve the bounded knowledge briefing for one managed launch.
-
-    A missing [briefing] block is deliberately a no-op. When configured, the
-    index is authoritative: always_load files are included first, followed by
-    files whose declared topics match the optional one-launch topic. Every
-    selected path must remain inside the project root and exist as a regular
-    file before a managed session can be reserved.
-    """
-    briefing = cfg.get("briefing")
-    if briefing is None:
-        if topic is not None and topic not in playbook_index()["topics"]:
-            raise HandsoffError("--topic requires a [briefing] block in handsoff.toml, or a playbook topic")
-        return ""
-    if topic is not None and (not isinstance(topic, str) or not topic.strip()):
-        raise HandsoffError("--topic must be a non-empty topic name")
-    root = Path(root).resolve()
-    index_path = (root / briefing["index"]).resolve()
-    if not index_path.is_file():
-        raise HandsoffError(f"briefing index is missing: {index_path}")
-    kb_root = (root / briefing.get("root", "")).resolve() if briefing.get("root") else index_path.parent
-    try:
-        index_path.relative_to(root)
-        kb_root.relative_to(root)
-    except ValueError as exc:
-        raise HandsoffError("briefing paths must remain inside the project root") from exc
-    try:
-        manifest = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HandsoffError(f"cannot read briefing index {index_path}: {exc}") from exc
-    if not isinstance(manifest, dict) or manifest.get("version") != 1:
-        raise HandsoffError("briefing index must be a version 1 object")
-    topics = manifest.get("topics")
-    always_load = manifest.get("always_load")
-    files = manifest.get("files")
-    if not isinstance(topics, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in topics.items()):
-        raise HandsoffError("briefing index topics must map strings to strings")
-    if not isinstance(always_load, list) or not all(isinstance(item, str) and item.strip() for item in always_load):
-        raise HandsoffError("briefing index always_load must be a list of file names")
-    if not isinstance(files, list):
-        raise HandsoffError("briefing index files must be a list")
-    declared = {}
-    for item in files:
-        if not isinstance(item, dict) or not isinstance(item.get("file"), str) or not item["file"].strip():
-            raise HandsoffError("briefing index files must contain a file name")
-        item_topics = item.get("topics", [])
-        if not isinstance(item_topics, list) or not all(isinstance(value, str) and value in topics for value in item_topics):
-            raise HandsoffError(f"briefing index topics are invalid for {item['file']}")
-        declared[item["file"]] = tuple(item_topics)
-    selected = list(always_load)
-    if topic is not None:
-        topic = topic.strip()
-        # A topic is looked up in both indexes (#208): a playbook topic rides
-        # from the playbook, a project topic from the project's KB, and a name
-        # declared in both rides from both. Only a name in neither is refused.
-        if topic not in topics:
-            if topic in playbook_index()["topics"]:
-                topic = None  # carried by playbook_section
-            else:
-                raise HandsoffError(f"briefing topic is not declared in the index: {topic}")
-        else:
-            selected.extend(name for name, item_topics in declared.items() if topic in item_topics)
-    unique = []
-    for name in selected:
-        if name not in unique:
-            unique.append(name)
-    sections = []
-    total = 0
-    for name in unique:
-        relative = Path(name)
-        if relative.is_absolute():
-            raise HandsoffError(f"briefing file must be relative: {name}")
-        path = (kb_root / relative).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError as exc:
-            raise HandsoffError(f"briefing file escapes the project root: {name}") from exc
-        if not path.is_file():
-            raise HandsoffError(f"briefing file is missing: {path}")
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            raise HandsoffError(f"cannot read briefing file {path}: {exc}") from exc
-        if len(data) > MAX_BRIEFING_FILE_BYTES:
-            raise HandsoffError(f"briefing file is larger than {MAX_BRIEFING_FILE_BYTES} bytes: {path}")
-        total += len(data)
-        if total > MAX_BRIEFING_TOTAL_BYTES:
-            raise HandsoffError(f"briefing exceeds {MAX_BRIEFING_TOTAL_BYTES} bytes")
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HandsoffError(f"briefing file is not UTF-8: {path}") from exc
-        sections.append(f"## {name}\n\n{text.rstrip()}")
-    if not sections:
-        raise HandsoffError("briefing index selected no files")
-    return "# Knowledge base briefing\n\n" + "\n\n".join(sections)
 
 
 def prompt_override_diagnosis(root: Path) -> list[dict]:
@@ -1419,76 +1224,28 @@ def run_triage(root: Path, cfg: dict) -> dict | None:
                 {"action": "reopen", "command": f"handsoff supervisor --root {root_text} run-reopen --by ACTOR --reason TEXT",
                  "preserves": "Reopen restores a closed run at its recorded phase."},
             ]}
-MAX_AGENT_REPLACEMENTS = 32
-MAX_QUALITY_FINDINGS = 32
-AGENT_REPLACEMENT_TRIGGERS = {"runtime_failure", "quality_finding"}
-AGENT_REPLACEMENT_STATES = {"reserved", "claimed", "running", "failed", "recovered", "pilot_pause"}
-QUALITY_FINDING_CODES = {
-    "acceptance_not_met", "incorrect_implementation", "review_changes_requested",
-}
-REPLACEMENT_ID_PATTERN = re.compile(r"^hr-[0-9a-f]{32}$")
-QUALITY_FINDING_ID_PATTERN = re.compile(r"^hq-[0-9a-f]{32}$")
-MAX_RECOVERY_ATTEMPTS = 16
-RECOVERY_ID_PATTERN = re.compile(r"^hv-[0-9a-f]{32}$")
-RECOVERY_LEASE_ID_PATTERN = re.compile(r"^hl-[0-9a-f]{32}$")
-RECOVERY_STATES = {"reserved", "launched", "recovered", "failed", "escalated"}
-RECOVERY_TRIGGERS = {"worker_terminal", "worker_silent", "silent_run"}
-MAX_REVIEW_ATTEMPTS = 64
-MAX_REVIEW_SESSION_IDS = 160
-MAX_REVIEW_CAP_OVERRIDES = 8
-REVIEW_ATTEMPT_ID_PATTERN = re.compile(r"^ha-[0-9a-f]{32}$")
-REVIEW_OVERRIDE_ID_PATTERN = re.compile(r"^ho-[0-9a-f]{32}$")
-REVIEW_ATTEMPT_TRIGGERS = {
-    "initial", "changes_requested", "acceptance_changed",
-    "implementation_changed", "supervisor_remediation", "manual_override",
-}
-REVIEW_ATTEMPT_DISPOSITIONS = {
-    "open", "approved", "changes_requested", "abandoned", "unrecorded",
-}
-REVIEW_FINDING_CODES = {
-    "acceptance_not_met", "incorrect_implementation", "review_changes_requested", "other",
-}
-REGRESSION_STATES = {
-    "awaiting_approval", "accepted", "declined", "expired", "invalidated",
-    "launched", "completed", "failed", "cancelled",
-}
-REGRESSION_REQUEST_ID_PATTERN = re.compile(r"^rg-[0-9a-f]{32}$")
-MAX_REGRESSION_REQUESTS = 16
-ESCALATION_KINDS = {"review_cap_exhausted", "recovery_exhausted", "recovery_paused"}
 
-REQUIRED_STATUS_FIELDS = (
-    "feature", "phase_number", "phase", "progress", "status", "updated_at",
-    "next_action", "events", "requirement_coverage", "verification_head",
+
+
+
+# #284 stage 1: the core primitives now live in bin/handsoff_core.py, a
+# layer with zero outbound dependencies on the rest of the engine.
+# Re-exported here so no caller changed.
+from handsoff_core import (  # noqa: E402,F401
+    HandsoffError,
+    _atomic_write_text,
+    _canonical,
+    acceptance_hash,
+    acceptance_path,
+    criterion_spec_hash,
+    design_hash,
+    durable_backup_path,
+    durable_replace,
+    load_unique_json,
+    lock_path,
+    project_lock,
+    status_path,
 )
-REQUIRED_COVERAGE_FIELDS = (
-    "passing", "failing", "not_tested", "blocked", "original_symptom_resolved",
-)
-
-STATUS_VALUES = {"in_progress", "blocked", "ready_to_deploy", "awaiting_approval", "complete", "design_complete", "review_complete"}
-#: "baseline" (#165): a criterion's own commands run BEFORE the feature,
-#: recorded as ok=True when every one of them failed (a valid red) and
-#: ok=False when any passed (baseline_invalid). It never satisfies the
-#: checks requirement; it is what the failing-first gate asks for behind
-#: the later green run.
-VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline"}
-BASELINE_NOT_APPLICABLE = "not_applicable"
-VERIFICATION_REQUIREMENTS = {
-    "automated": {"checks"},
-    "manual": {"manual"},
-    "browser": {"browser"},
-    "automated_and_browser": {"checks", "browser"},
-}
-CHECKLIST_VALUES = {
-    "symptom_reproduced": {"yes", "not_applicable"},
-    "symptom_resolved": {"yes"},
-    "all_criteria_verified": {"yes"},
-    "evidence_attached": {"yes"},
-}
-
-
-class HandsoffError(Exception):
-    """A config or state file problem that stops us before any gate logic
-    runs, distinct from a gate simply refusing a transition."""
 
 
 # --------------------------------------------------------------------------
@@ -1512,415 +1269,6 @@ def resolve_root(explicit: str | None = None) -> Path:
     return here
 
 
-def load_config(root: Path) -> dict:
-    """handsoff.toml, actually read this time. Missing keys fall back to
-    DEFAULT_CONFIG rather than erroring, since a fresh project may not have
-    customised every field yet."""
-    cfg = dict(DEFAULT_CONFIG)
-    cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
-    cfg["models"] = dict(DEFAULT_CONFIG["models"])
-    cfg["adaptive_routing_profiles"] = deepcopy(ADAPTIVE_DEFAULT_PROFILES)
-    cfg["adaptive_routing_budgets"] = deepcopy(ADAPTIVE_DEFAULT_BUDGETS)
-    cfg["risk_policy"] = deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY)
-    cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
-    cfg["agent_token_budgets"] = dict(DEFAULT_AGENT_TOKEN_BUDGETS)
-    cfg["adapters"] = {}
-    cfg["design_evidence"] = []
-    cfg["profile_sources"] = {
-        role: {"adapter": RECOMMENDED_PROFILE_SOURCE, "model": RECOMMENDED_PROFILE_SOURCE}
-        for role in AGENT_ROLES
-    }
-    cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
-    cfg["recovery"]["protocol_silence_minutes"] = dict(DEFAULT_CONFIG["recovery"]["protocol_silence_minutes"])
-    cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
-    cfg["analysis"] = dict(DEFAULT_CONFIG["analysis"])
-    cfg["documentation"] = {key: list(value) for key, value in DEFAULT_CONFIG["documentation"].items()}
-    path = root / "handsoff.toml"
-    if not path.is_file():
-        return cfg
-    if tomllib is None:
-        raise HandsoffError("handsoff.toml present but no TOML parser available (need Python 3.11+)")
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HandsoffError(f"cannot load {path}: {exc}") from exc
-    project = raw.get("project", {})
-    workflow = raw.get("workflow", {})
-    agents = raw.get("agents", {})
-    models = raw.get("models", {})
-    fallback_policy = raw.get("fallback_policy", {})
-    agent_budget = raw.get("agent_budget", {})
-    adapters = raw.get("adapters", {})
-    checks = raw.get("checks", {})
-    implementer = raw.get("implementer", {})
-    documentation = raw.get("documentation", {})
-    dashboard_table = raw.get("dashboard", {})
-    recovery = raw.get("recovery", {})
-    regression_gate = raw.get("regression_gate", {})
-    analysis = raw.get("analysis", {})
-    routing_profiles = raw.get("routing_profiles", {})
-    routing_budgets = raw.get("routing_budgets", {})
-    risk_policy = raw.get("risk_policy", {})
-    model_policy = raw.get("model_policy", {})
-    reviewer_isolation = raw.get("reviewer_isolation", {})
-    execution = raw.get("execution", {})
-    digest = raw.get("digest", {})
-    briefing = raw.get("briefing")
-    regressions = raw.get("regressions", [])
-    tickets = raw.get("tickets", [])
-    if not isinstance(digest, dict):
-        raise HandsoffError("handsoff.toml: digest must be a table")
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, model_policy, reviewer_isolation, execution)):
-        raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, and model_policy must be tables"
-        )
-    cfg["adaptive_routing_profiles"] = validate_adaptive_routing_profiles(routing_profiles or ADAPTIVE_DEFAULT_PROFILES)
-    cfg["adaptive_routing_budgets"] = validate_adaptive_routing_budgets(routing_budgets or ADAPTIVE_DEFAULT_BUDGETS)
-    cfg["risk_policy"] = validate_adaptive_risk_policy(risk_policy or ADAPTIVE_DEFAULT_RISK_POLICY)
-    cfg["model_policy"] = validate_model_policy(model_policy or DEFAULT_MODEL_POLICY)
-    unknown_isolation = set(reviewer_isolation) - {"compatibility_mode", "compatibility_approved"}
-    if unknown_isolation:
-        raise HandsoffError("handsoff.toml: reviewer_isolation has unknown keys: "
-                            + ", ".join(sorted(unknown_isolation)))
-    for key in ("compatibility_mode", "compatibility_approved"):
-        value = reviewer_isolation.get(key, False)
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: reviewer_isolation.{key} must be boolean")
-    if reviewer_isolation.get("compatibility_approved") and not reviewer_isolation.get("compatibility_mode"):
-        raise HandsoffError("handsoff.toml: reviewer isolation compatibility approval requires compatibility_mode")
-    cfg["reviewer_isolation"] = {
-        "compatibility_mode": bool(reviewer_isolation.get("compatibility_mode")),
-        "compatibility_approved": bool(reviewer_isolation.get("compatibility_approved")),
-    }
-    if set(execution) - {"profile"}:
-        raise HandsoffError("handsoff.toml: execution may contain only profile")
-    profile = execution.get("profile", "safe")
-    if profile not in {"safe", "dogfood", "unattended", "shared", "production"}:
-        raise HandsoffError("handsoff.toml: execution.profile must be safe, dogfood, unattended, shared, or production")
-    cfg["execution_profile"] = profile
-    if briefing is not None:
-        if not isinstance(briefing, dict):
-            raise HandsoffError("handsoff.toml: briefing must be a table")
-        unknown_briefing = set(briefing) - BRIEFING_CONFIG_KEYS
-        if unknown_briefing:
-            raise HandsoffError(
-                "handsoff.toml: briefing has unknown keys: " + ", ".join(sorted(unknown_briefing))
-            )
-        index = briefing.get("index")
-        if not isinstance(index, str) or not index.strip() or Path(index).is_absolute() or ".." in Path(index).parts:
-            raise HandsoffError("handsoff.toml: briefing.index must be a safe relative path")
-        kb_root = briefing.get("root", "")
-        if not isinstance(kb_root, str) or (kb_root and (Path(kb_root).is_absolute() or ".." in Path(kb_root).parts)):
-            raise HandsoffError("handsoff.toml: briefing.root must be a safe relative path when set")
-        cfg["briefing"] = {"index": index.strip(), "root": kb_root.strip()}
-    cfg["status_file"] = project.get("status_file", cfg["status_file"])
-    cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
-    cfg["event_log"] = project.get("event_log", cfg["event_log"])
-    cfg["verification_log"] = project.get("verification_log", cfg["verification_log"])
-    logo = project.get("logo")
-    if logo is not None and (not isinstance(logo, str) or not logo.strip()):
-        raise HandsoffError("handsoff.toml: project.logo must be a non-empty relative path when set")
-    cfg["logo"] = logo
-    ignore = digest.get("ignore", [])
-    if not isinstance(ignore, list) or not all(isinstance(item, str) for item in ignore):
-        raise HandsoffError("handsoff.toml: digest.ignore must be a list of strings")
-    cfg["digest_ignore"] = list(ignore)
-    if set(adapters) - set(SELECTABLE_AGENT_ADAPTERS):
-        raise HandsoffError("handsoff.toml: adapters may only contain codex and claude")
-    for adapter, value in adapters.items():
-        if not isinstance(value, str) or not value.strip():
-            raise HandsoffError(f"handsoff.toml: adapters.{adapter} must name an existing file")
-        path_value = Path(value).expanduser()
-        if not path_value.is_absolute(): path_value = root / path_value
-        if not path_value.is_file(): raise HandsoffError(f"handsoff.toml: adapters.{adapter} must name an existing file")
-        cfg["adapters"][adapter] = str(path_value.resolve())
-    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews",
-                "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
-        value = workflow.get(key, cfg[key])
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: workflow.{key} must be an integer")
-        cfg[key] = value
-    for key in ("auto_handoff", "require_live_verification", "deployment_requires_explicit_approval",
-                "require_design_approval"):
-        value = workflow.get(key, cfg[key])
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
-        cfg[key] = value
-    waived = not cfg["deployment_requires_explicit_approval"] or not cfg["require_design_approval"]
-    if waived and cfg["execution_profile"] != "dogfood":
-        raise HandsoffError(
-            "approval waivers require [execution] profile = \"dogfood\"; safe, unattended, shared, "
-            "and production profiles cannot inherit dogfood waivers"
-        )
-    features = raw.get("features", {})
-    if not isinstance(features, dict):
-        raise HandsoffError("handsoff.toml: [features] must be a table")
-    unknown = sorted(set(features) - set(FEATURES))
-    if unknown:
-        raise HandsoffError("handsoff.toml: unknown [features] key(s): " + ", ".join(unknown)
-                            + "; known: " + ", ".join(FEATURES))
-    for key, value in features.items():
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: features.{key} must be boolean")
-    cfg["features"] = {name: bool(features.get(name, default)) for name, (default, _text) in FEATURES.items()}
-    # #39: a role key absent from the TOML (or still holding the legacy
-    # "configure-me" placeholder) takes the recommended crew profile. Any
-    # explicit value, "auto" included, is kept as written and only ever
-    # affects its own role.
-    for role in AGENT_ROLES:
-        if role not in agents:
-            continue
-        value = agents[role]
-        if not isinstance(value, str) or not value.strip():
-            raise HandsoffError(f"handsoff.toml: agents.{role} must be a non-empty string")
-        value = value.strip()
-        if value == LEGACY_UNCONFIGURED_AGENT_ADAPTER:
-            continue
-        if value not in AGENT_SETTING_ADAPTERS and value != HOST_AGENT_ADAPTER:
-            raise HandsoffError(f"handsoff.toml: agents.{role} must be exactly 'auto', 'codex', 'claude', or 'host'")
-        cfg["agents"][role] = value
-        if value == HOST_AGENT_ADAPTER and role not in HOST_CAPABLE_ROLES:
-            raise HandsoffError(f"[agents].{role} cannot be host: only supervisor and architect may be host-driven")
-        cfg["profile_sources"][role]["adapter"] = EXPLICIT_PROFILE_SOURCE
-    for role in SELECTABLE_AGENT_ROLES:
-        if role in models:
-            cfg["models"][role] = validate_agent_model(models[role])
-            cfg["profile_sources"][role]["model"] = EXPLICIT_PROFILE_SOURCE
-        elif cfg["agents"][role] != RECOMMENDED_CREW[role]["adapter"]:
-            # The recommended model belongs to the recommended adapter. With
-            # the adapter overridden (or set to "auto") and no model named,
-            # passing that model id to a different runner would be wrong,
-            # so the runner's own default is used and labelled as such.
-            cfg["models"][role] = DEFAULT_AGENT_MODEL
-            cfg["profile_sources"][role]["model"] = RUNNER_DEFAULT_PROFILE_SOURCE
-    # #37: the follow-up reviewer profile is enabled only by BOTH keys.
-    # Half a profile is refused rather than guessed, and "auto" is not a
-    # profile (the follow-up must be a specific adapter so the independence
-    # check against the architect and implementer means something).
-    followup_adapter = agents.get(FOLLOWUP_REVIEWER_KEY)
-    followup_model = models.get(FOLLOWUP_REVIEWER_KEY)
-    if (followup_adapter is None) != (followup_model is None):
-        raise HandsoffError(
-            f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} and models.{FOLLOWUP_REVIEWER_KEY} "
-            "must be set together (both present enables the follow-up reviewer tier; both absent disables it)"
-        )
-    if followup_adapter is not None:
-        if not isinstance(followup_adapter, str) or not followup_adapter.strip():
-            raise HandsoffError(f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} must be a non-empty string")
-        followup_adapter = followup_adapter.strip()
-        if followup_adapter not in SELECTABLE_AGENT_ADAPTERS:
-            raise HandsoffError(
-                f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} must be exactly 'codex' or 'claude'"
-            )
-        try:
-            followup_model = validate_agent_model(followup_model)
-        except HandsoffError as exc:
-            raise HandsoffError(f"handsoff.toml: models.{FOLLOWUP_REVIEWER_KEY}: {exc}") from exc
-        cfg["reviewer_followup"] = {"adapter": followup_adapter, "model": followup_model}
-    else:
-        cfg["reviewer_followup"] = None
-    allowed_fallback_keys = {*SELECTABLE_AGENT_ROLES, "max_failovers_per_role"}
-    unknown_fallback_keys = set(fallback_policy) - allowed_fallback_keys
-    if unknown_fallback_keys:
-        raise HandsoffError(
-            f"handsoff.toml: fallback_policy has unknown keys: {', '.join(sorted(unknown_fallback_keys))}"
-        )
-    for role in SELECTABLE_AGENT_ROLES:
-        cfg["fallbacks"][role] = validate_fallback_entries(
-            fallback_policy.get(role, []), field=f"fallback_policy.{role}",
-        )
-    cfg["max_failovers_per_role"] = validate_max_failovers(
-        fallback_policy.get("max_failovers_per_role", DEFAULT_MAX_FAILOVERS_PER_ROLE)
-    )
-    unknown_budget_roles = set(agent_budget) - {*SELECTABLE_AGENT_ROLES, "followup_design"}
-    if unknown_budget_roles:
-        raise HandsoffError(
-            "handsoff.toml: agent_budget has unknown keys: "
-            + ", ".join(sorted(unknown_budget_roles))
-        )
-    for role in SELECTABLE_AGENT_ROLES:
-        value = agent_budget.get(role, DEFAULT_AGENT_TOKEN_BUDGETS[role])
-        if not isinstance(value, int) or isinstance(value, bool) \
-                or not MIN_AGENT_TOKEN_BUDGET <= value <= MAX_AGENT_TOKEN_BUDGET:
-            raise HandsoffError(
-                f"handsoff.toml: agent_budget.{role} must be an integer from "
-                f"{MIN_AGENT_TOKEN_BUDGET} to {MAX_AGENT_TOKEN_BUDGET}"
-            )
-        cfg["agent_token_budgets"][role] = value
-    followup_budget = agent_budget.get("followup_design")
-    if followup_budget is not None:
-        if not isinstance(followup_budget, int) or isinstance(followup_budget, bool) or followup_budget < MIN_AGENT_TOKEN_BUDGET:
-            raise HandsoffError("handsoff.toml: agent_budget.followup_design must be a positive integer")
-        cfg["followup_design_token_budget"] = followup_budget
-    for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
-        value = checks.get(toml_key, cfg[config_key])
-        if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
-            raise HandsoffError(f"handsoff.toml: checks.{toml_key} must be an array of non-empty command strings")
-        cfg[config_key] = list(value)
-    # Field-note defect 5: a live command with shell operators used to pass
-    # validate, status and doctor and fail only at verify-live, after
-    # deployment approval. Refuse it at load with verify-live's own message.
-    for index, command in enumerate(cfg["live_check_commands"]):
-        try:
-            assert_plain_command(command)
-        except HandsoffError as exc:
-            raise HandsoffError(f"handsoff.toml: checks.live_commands[{index}]: {exc}") from exc
-    implementer_commands = implementer.get("commands", [])
-    if not isinstance(implementer_commands, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in implementer_commands):
-        raise HandsoffError("handsoff.toml: implementer.commands must be an array of non-empty command strings")
-    cfg["implementer_commands"] = list(implementer_commands)
-    timeout_value = checks.get("timeout_seconds", cfg["check_timeout_seconds"])
-    if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
-        raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
-    cfg["check_timeout_seconds"] = timeout_value
-    for key in ("files", "exclude"):
-        value = documentation.get(key, [])
-        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
-            raise HandsoffError(f"handsoff.toml: documentation.{key} must be a list of non-empty strings")
-        cfg["documentation"][key] = list(value)
-    if not isinstance(dashboard_table, dict):
-        raise HandsoffError("handsoff.toml: dashboard must be a table")
-    cfg["public_origins"] = normalize_public_origins(dashboard_table.get("public_origins", []), "handsoff.toml: dashboard.public_origins")
-    unknown_gate = set(regression_gate) - set(DEFAULT_CONFIG["regression_gate"])
-    if unknown_gate:
-        raise HandsoffError(f"handsoff.toml: regression_gate has unknown keys: {', '.join(sorted(unknown_gate))}")
-    for key in ("approval_timeout_minutes", "launch_window_minutes"):
-        value = regression_gate.get(key, cfg["regression_gate"][key])
-        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 1440:
-            raise HandsoffError(f"handsoff.toml: regression_gate.{key} must be an integer from 1 to 1440")
-        cfg["regression_gate"][key] = value
-    major_only = regression_gate.get(
-        "full_regression_major_only", cfg["regression_gate"]["full_regression_major_only"],
-    )
-    if not isinstance(major_only, bool):
-        raise HandsoffError("handsoff.toml: regression_gate.full_regression_major_only must be boolean")
-    cfg["regression_gate"]["full_regression_major_only"] = major_only
-    if not isinstance(regressions, list):
-        raise HandsoffError("handsoff.toml: regressions must be an array of tables")
-    normalized_regressions = []
-    for index, item in enumerate(regressions):
-        allowed = {"name", "commands", "timeout_seconds"}
-        if not isinstance(item, dict) or not {"name", "commands"} <= set(item) or set(item) - allowed:
-            raise HandsoffError(
-                f"handsoff.toml: regressions[{index}] must contain name, commands, and optional timeout_seconds"
-            )
-        name, commands = item.get("name"), item.get("commands")
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
-            raise HandsoffError(f"handsoff.toml: regressions[{index}].name is invalid")
-        if not isinstance(commands, list) or not commands or not all(isinstance(cmd, str) and cmd.strip() for cmd in commands):
-            raise HandsoffError(f"handsoff.toml: regressions[{index}].commands must be non-empty strings")
-        normalized = {"name": name, "commands": list(commands)}
-        if "timeout_seconds" in item:
-            regression_timeout = item["timeout_seconds"]
-            if not isinstance(regression_timeout, int) or isinstance(regression_timeout, bool) \
-                    or regression_timeout <= 0:
-                raise HandsoffError(
-                    f"handsoff.toml: regressions[{index}].timeout_seconds must be a positive integer"
-                )
-            normalized["timeout_seconds"] = regression_timeout
-        normalized_regressions.append(normalized)
-    if len({item["name"] for item in normalized_regressions}) != len(normalized_regressions):
-        raise HandsoffError("handsoff.toml: regression names must be unique")
-    cfg["regressions"] = normalized_regressions
-    allowed_recovery = set(DEFAULT_CONFIG["recovery"])
-    unknown_recovery = set(recovery) - allowed_recovery
-    if unknown_recovery:
-        raise HandsoffError(
-            f"handsoff.toml: recovery has unknown keys: {', '.join(sorted(unknown_recovery))}"
-        )
-    for key in ("enabled", "dashboard_watchdog"):
-        value = recovery.get(key, cfg["recovery"][key])
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: recovery.{key} must be boolean")
-        cfg["recovery"][key] = value
-    bounds = {
-        "max_attempts": (0, 16), "lease_minutes": (1, 1440),
-        "worker_loss_grace_minutes": (1, 1440), "live_session_silence_minutes": (1, 1440),
-        "liveness_seconds": (1, 3600), "poll_seconds": (1, 3600),
-        "operation_grace_seconds": (0, 3600),
-    }
-    for key, (minimum, maximum) in bounds.items():
-        value = recovery.get(key, cfg["recovery"][key])
-        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
-            raise HandsoffError(
-                f"handsoff.toml: recovery.{key} must be an integer from {minimum} to {maximum}"
-            )
-        cfg["recovery"][key] = value
-    protocol_limits = recovery.get("protocol_silence_minutes", cfg["recovery"]["protocol_silence_minutes"])
-    if not isinstance(protocol_limits, dict):
-        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes must be a per-role table")
-    unknown_roles = set(protocol_limits) - set(AGENT_ROLES)
-    if unknown_roles:
-        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes has unknown roles: " + ", ".join(sorted(unknown_roles)))
-    for role_name in AGENT_ROLES:
-        value = protocol_limits.get(role_name, 0)
-        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1440:
-            raise HandsoffError(f"handsoff.toml: recovery.protocol_silence_minutes.{role_name} must be an integer from 0 to 1440")
-        cfg["recovery"]["protocol_silence_minutes"][role_name] = value
-    cfg["analysis"] = _validate_analysis_config(analysis)
-    if not isinstance(tickets, list):
-        raise HandsoffError("handsoff.toml: tickets must be an array of tables")
-    normalized_tickets = []
-    for index, ticket in enumerate(tickets):
-        if not isinstance(ticket, dict):
-            raise HandsoffError(f"handsoff.toml: tickets[{index}] must be a table")
-        unknown = set(ticket) - {"number", "title", "status", "url"}
-        if unknown:
-            raise HandsoffError(
-                f"handsoff.toml: tickets[{index}] has unknown keys: {', '.join(sorted(unknown))}"
-            )
-        number, title, state, url = (
-            ticket.get("number"), ticket.get("title"), ticket.get("status"), ticket.get("url", "")
-        )
-        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
-            raise HandsoffError(f"handsoff.toml: tickets[{index}].number must be a positive integer")
-        if not isinstance(title, str) or not title.strip():
-            raise HandsoffError(f"handsoff.toml: tickets[{index}].title must be a non-empty string")
-        if state not in TICKET_STATES:
-            raise HandsoffError(
-                f"handsoff.toml: tickets[{index}].status must be one of {', '.join(sorted(TICKET_STATES))}"
-            )
-        if not isinstance(url, str):
-            raise HandsoffError(f"handsoff.toml: tickets[{index}].url must be a string")
-        normalized_tickets.append({
-            "number": number, "title": title.strip(), "status": state, "url": url.strip(),
-        })
-    if len({ticket["number"] for ticket in normalized_tickets}) != len(normalized_tickets):
-        raise HandsoffError("handsoff.toml: ticket numbers must be unique")
-    cfg["tickets"] = normalized_tickets
-    cfg["design_evidence"] = _validate_design_evidence_config(raw.get("design_evidence", []))
-    resolved_root = root.resolve()
-    for key in ("status_file", "acceptance_file", "event_log", "verification_log", "logo"):
-        value = cfg[key]
-        if key == "logo" and value is None:
-            continue
-        if not isinstance(value, str) or not value.strip() or Path(value).is_absolute() or ".." in Path(value).parts:
-            raise HandsoffError(f"handsoff.toml: project.{key} must be a safe relative path")
-        # The string-only check above rejects ".." and absolute paths, but
-        # a symlinked PARENT DIRECTORY defeats it just as completely: the
-        # string never says ".." while the real file still lands outside
-        # the project. Resolve the full path and confirm it is still a
-        # descendant of the root after that resolution, not just lexically.
-        try:
-            (root / value).resolve().relative_to(resolved_root)
-        except ValueError:
-            raise HandsoffError(
-                f"handsoff.toml: project.{key} resolves outside the project root "
-                f"(a parent directory may be a symlink)") from None
-    for key in ("max_design_rounds", "stall_minutes", "max_autonomous_design_reviews",
-                "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
-        if cfg[key] < 0:
-            raise HandsoffError(f"handsoff.toml: {key} must not be negative")
-    if not 1 <= cfg["max_review_rounds"] <= 56:
-        raise HandsoffError("handsoff.toml: workflow.max_review_rounds must be an integer from 1 to 56")
-    if not 1 <= cfg["small_fix_max_criteria"] <= 64:
-        raise HandsoffError("handsoff.toml: workflow.small_fix_max_criteria must be an integer from 1 to 64")
-    if not 1 <= cfg["small_fix_max_changed_lines"] <= 100000:
-        raise HandsoffError("handsoff.toml: workflow.small_fix_max_changed_lines must be an integer from 1 to 100000")
-    if not 1 <= cfg["small_fix_max_files"] <= 1000:
-        raise HandsoffError("handsoff.toml: workflow.small_fix_max_files must be an integer from 1 to 1000")
-    ensure_regression_config_is_disjoint(cfg, root)
-    return cfg
 
 
 #: The two supervisor operations an implementer may run, in every form the
@@ -1982,24 +1330,6 @@ def reviewer_isolation_contract(adapter: str, cfg: dict | None = None) -> dict:
     return contract
 
 
-def validate_reviewer_isolation_contract(value: object) -> dict:
-    fields = {"adapter", "enforcement", "project_access", "scratch_root", "subprocess_policy",
-              "credentials", "network_policy", "decision", "reason", "contract_digest"}
-    if not isinstance(value, dict) or set(value) != fields:
-        raise HandsoffError("reviewer_isolation has invalid fields")
-    if value.get("adapter") not in SELECTABLE_AGENT_ADAPTERS \
-            or value.get("enforcement") not in {"native", "os_wrapper", "unavailable", "approved_compatibility"} \
-            or value.get("project_access") != "read_only" or value.get("scratch_root") != "external" \
-            or value.get("subprocess_policy") != "bounded" or value.get("credentials") != "sanitized" \
-            or value.get("network_policy") not in {"denied", "loopback", "declared"} \
-            or value.get("decision") not in {"enforce", "refuse", "approval_required"} \
-            or not isinstance(value.get("reason"), str) or not value["reason"]:
-        raise HandsoffError("reviewer_isolation values are invalid")
-    unsigned = {key: value[key] for key in fields - {"contract_digest"}}
-    expected = hashlib.sha256(_canonical(unsigned).encode()).hexdigest()
-    if value.get("contract_digest") != expected:
-        raise HandsoffError("reviewer_isolation contract digest is invalid")
-    return deepcopy(value)
 
 
 def codex_argv(executable: str, role: str, model: str, token_budget: int, *, reviewer_sandbox: bool = False) -> list[str]:
@@ -2077,9 +1407,6 @@ def implementer_permissions_section(root: Path | None, which=shutil.which) -> st
     return "\n".join(lines)
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Durably replace a UTF-8 text file using the shared state primitive."""
-    durable_replace(path, text.encode("utf-8"))
 
 
 def render_review_report(status: dict, acceptance: dict) -> str:
@@ -2110,185 +1437,24 @@ def render_review_report(status: dict, acceptance: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _validate_analysis_config(analysis: dict) -> dict:
-    """#49: the [analysis] table. Every key is optional; an invalid value is
-    a load error like every other section."""
-    cfg = dict(DEFAULT_CONFIG["analysis"])
-    unknown = set(analysis) - set(cfg)
-    if unknown:
-        raise HandsoffError(f"handsoff.toml: analysis has unknown keys: {', '.join(sorted(unknown))}")
-    enabled = analysis.get("enabled", cfg["enabled"])
-    if not isinstance(enabled, bool):
-        raise HandsoffError("handsoff.toml: analysis.enabled must be boolean")
-    cfg["enabled"] = enabled
-    for key, (minimum, maximum) in (("max_tickets_per_scan", (0, 50)), ("dedupe_days", (0, 365))):
-        value = analysis.get(key, cfg[key])
-        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
-            raise HandsoffError(f"handsoff.toml: analysis.{key} must be an integer from {minimum} to {maximum}")
-        cfg[key] = value
-    threshold = analysis.get("design_phase_hours_threshold", cfg["design_phase_hours_threshold"])
-    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) \
-            or not math.isfinite(threshold) or threshold <= 0:
-        raise HandsoffError("handsoff.toml: analysis.design_phase_hours_threshold must be a number greater than 0")
-    cfg["design_phase_hours_threshold"] = float(threshold)
-    archive = analysis.get("archive_dir", cfg["archive_dir"])
-    if archive is not None and (not isinstance(archive, str) or not archive.strip()):
-        raise HandsoffError("handsoff.toml: analysis.archive_dir must be a non-empty string when set")
-    cfg["archive_dir"] = archive.strip() if isinstance(archive, str) else None
-    framework_repo = analysis.get("framework_repo", cfg["framework_repo"])
-    if not isinstance(framework_repo, str) or not re.fullmatch(
-            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", framework_repo.strip()):
-        raise HandsoffError("handsoff.toml: analysis.framework_repo must be an owner/repository slug")
-    cfg["framework_repo"] = framework_repo.strip()
-    filing = analysis.get("filing", cfg["filing"])
-    if filing not in ANALYSIS_FILING_MODES:
-        raise HandsoffError("handsoff.toml: analysis.filing must be exactly 'gh' or 'report_only'")
-    cfg["filing"] = filing
-    return cfg
-
-
-def _validate_design_evidence_config(value: object) -> list[dict]:
-    """#38: `[[design_evidence]]` entries, each {id, command, inputs}. An
-    absent section is an empty list and changes nothing. Commands are
-    trusted configuration at the same level as [checks].commands; the
-    input globs are relative to the project root and may not escape it."""
-    if not isinstance(value, list):
-        raise HandsoffError("handsoff.toml: design_evidence must be an array of tables")
-    if len(value) > MAX_DESIGN_EVIDENCE_ENTRIES:
-        raise HandsoffError(
-            f"handsoff.toml: design_evidence may hold at most {MAX_DESIGN_EVIDENCE_ENTRIES} entries"
-        )
-    entries = []
-    for index, entry in enumerate(value):
-        if not isinstance(entry, dict):
-            raise HandsoffError(f"handsoff.toml: design_evidence[{index}] must be a table")
-        unknown = set(entry) - {"id", "command", "inputs"}
-        if unknown:
-            raise HandsoffError(
-                f"handsoff.toml: design_evidence[{index}] has unknown keys: {', '.join(sorted(unknown))}"
-            )
-        artifact_id, command, inputs = entry.get("id"), entry.get("command"), entry.get("inputs")
-        if not isinstance(artifact_id, str) or not DESIGN_EVIDENCE_ID_PATTERN.match(artifact_id):
-            raise HandsoffError(
-                f"handsoff.toml: design_evidence[{index}].id must match [a-z0-9-]{{1,64}}"
-            )
-        if not isinstance(command, str) or not command.strip():
-            raise HandsoffError(f"handsoff.toml: design_evidence[{index}].command must be a non-empty string")
-        if not isinstance(inputs, list) or not inputs \
-                or not all(isinstance(pattern, str) and pattern.strip() for pattern in inputs):
-            raise HandsoffError(
-                f"handsoff.toml: design_evidence[{index}].inputs must be a non-empty array of glob strings"
-            )
-        for pattern in inputs:
-            if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-                raise HandsoffError(
-                    f"handsoff.toml: design_evidence[{index}].inputs must be relative globs inside the project root"
-                )
-        entries.append({"id": artifact_id, "command": command.strip(), "inputs": [p.strip() for p in inputs]})
-    if len({entry["id"] for entry in entries}) != len(entries):
-        raise HandsoffError("handsoff.toml: design_evidence ids must be unique")
-    return entries
-
-
-def validate_agent_model(value: object) -> str:
-    """Validate a literal runner model ID without interpreting it.
-
-    The value is passed as one argv element only after validation. Leading
-    dashes are rejected so a model can never be confused for another CLI
-    option even if a runner changes how it parses option values.
-    """
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise HandsoffError("agent model must be a non-empty string without surrounding whitespace")
-    if len(value) > MAX_AGENT_MODEL_LENGTH:
-        raise HandsoffError(f"agent model must be at most {MAX_AGENT_MODEL_LENGTH} characters")
-    if value.startswith("-"):
-        raise HandsoffError("agent model must not begin with '-'")
-    if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise HandsoffError("agent model must not contain control characters")
-    return value
-
-
-def validate_model_policy(value: object) -> dict:
-    """Validate hard mission routing constraints.
-
-    These constraints are filters, never preferences: a route that cannot
-    satisfy them pauses instead of silently selecting another model.
-    """
-    if not isinstance(value, dict):
-        raise HandsoffError("model_policy must be a table")
-    allowed_fields = {"allowed_adapters", "denied_models", "quota_substitution"}
-    extra = set(value) - allowed_fields
-    if extra:
-        raise HandsoffError("model_policy has unknown fields: " + ", ".join(sorted(extra)))
-    adapters = value.get("allowed_adapters", ["codex", "claude"])
-    if not isinstance(adapters, list) or not adapters or len(adapters) > 2 \
-            or any(adapter not in {"codex", "claude"} for adapter in adapters) \
-            or len(set(adapters)) != len(adapters):
-        raise HandsoffError("model_policy.allowed_adapters must be a unique non-empty subset of codex and claude")
-    denied = value.get("denied_models", [])
-    if not isinstance(denied, list) or len(denied) > 32:
-        raise HandsoffError("model_policy.denied_models must be an array of at most 32 model ids")
-    denied = [validate_agent_model(model) for model in denied]
-    if len(set(model.casefold() for model in denied)) != len(denied):
-        raise HandsoffError("model_policy.denied_models must be unique")
-    quota = value.get("quota_substitution", True)
-    if not isinstance(quota, bool):
-        raise HandsoffError("model_policy.quota_substitution must be boolean")
-    return {"allowed_adapters": list(adapters), "denied_models": denied,
-            "quota_substitution": quota}
-
-
-def model_policy_allows(policy: object, adapter: str, model: str) -> bool:
-    normalized = validate_model_policy(policy or DEFAULT_MODEL_POLICY)
-    return adapter in normalized["allowed_adapters"] and model.casefold() not in {
-        item.casefold() for item in normalized["denied_models"]
-    }
 
 
 
 
-def validate_fallback_entries(value: object, *, field: str = "fallbacks") -> list[dict]:
-    """Validate and copy one role's bounded, ordered fallback profiles."""
-    if not isinstance(value, list):
-        raise HandsoffError(f"{field} must be an array")
-    if len(value) > MAX_FALLBACK_PROFILES:
-        raise HandsoffError(f"{field} must contain at most {MAX_FALLBACK_PROFILES} profiles")
-    result = []
-    for index, profile in enumerate(value):
-        if not isinstance(profile, dict) or set(profile) != {"adapter", "model"}:
-            raise HandsoffError(f"{field}[{index}] must contain exactly adapter and model")
-        adapter = profile.get("adapter")
-        if adapter not in SELECTABLE_AGENT_ADAPTERS:
-            raise HandsoffError(f"{field}[{index}].adapter must be exactly 'codex' or 'claude'")
-        result.append({"adapter": adapter, "model": validate_agent_model(profile.get("model"))})
-    return result
 
 
-def validate_max_failovers(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= MAX_FALLBACK_PROFILES:
-        raise HandsoffError(
-            f"fallback_policy.max_failovers_per_role must be an integer from 0 to {MAX_FALLBACK_PROFILES}"
-        )
-    return value
 
 
-def validate_agent_actor(value: object) -> str:
-    """Validate a display/audit identity without interpreting it."""
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise HandsoffError("agent actor must be a non-empty string without surrounding whitespace")
-    if len(value) > MAX_AGENT_ACTOR_LENGTH:
-        raise HandsoffError(f"agent actor must be at most {MAX_AGENT_ACTOR_LENGTH} characters")
-    if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise HandsoffError("agent actor must not contain control characters")
-    return value
 
 
-def agent_profiles(cfg: dict) -> dict:
-    return {
-        role: {"adapter": cfg["agents"][role],
-               "model": None if cfg["agents"][role] == HOST_AGENT_ADAPTER else cfg["models"][role]}
-        for role in SELECTABLE_AGENT_ROLES
-    }
+
+
+
+
+
+
+
+
 
 
 
@@ -2414,56 +1580,14 @@ def unavailable_adapter_message(role: str, adapter: str, model: str, resolution_
     )
 
 
-def profile_sources(cfg: dict) -> dict:
-    """Per-role adapter/model provenance (see PROFILE_SOURCES). A cfg built
-    without load_config, or one predating #39, reads as fully explicit."""
-    recorded = cfg.get("profile_sources") if isinstance(cfg, dict) else None
-    result = {}
-    for role in SELECTABLE_AGENT_ROLES:
-        entry = recorded.get(role) if isinstance(recorded, dict) else None
-        entry = entry if isinstance(entry, dict) else {}
-        result[role] = {
-            "adapter": entry.get("adapter", EXPLICIT_PROFILE_SOURCE),
-            "model": entry.get("model", EXPLICIT_PROFILE_SOURCE),
-        }
-    return result
 
 
 def fallback_profiles(cfg: dict) -> dict:
     return {role: deepcopy(cfg.get("fallbacks", {}).get(role, [])) for role in SELECTABLE_AGENT_ROLES}
 
 
-def default_agent_adapter(*, which=None) -> str | None:
-    """Return the first installed runnable adapter in documented order."""
-    lookup = which or shutil.which
-    return next((adapter for adapter in DEFAULT_AGENT_PREFERENCE if lookup(adapter)), None)
 
 
-def resolved_agent_profiles(cfg: dict, *, which=None, require_available: bool = False) -> dict:
-    """Resolve auto/unconfigured roles without changing explicit selections.
-
-    Each entry also carries ``source`` (adapter/model provenance, see
-    PROFILE_SOURCES) so a recommended default is never mistaken for a
-    choice the operator made.
-    """
-    configured = agent_profiles(cfg)
-    sources = profile_sources(cfg)
-    automatic = default_agent_adapter(which=which)
-    resolved = {}
-    for role, profile in configured.items():
-        adapter = profile["adapter"]
-        if adapter == HOST_AGENT_ADAPTER:
-            resolved[role] = {"adapter": adapter, "model": None, "source": dict(sources[role])}
-            continue
-        if adapter in {AUTO_AGENT_ADAPTER, LEGACY_UNCONFIGURED_AGENT_ADAPTER}:
-            if automatic is None and require_available:
-                raise HandsoffError(
-                    "no supported agent adapter is available on PATH; install Codex or Claude Code, "
-                    "or choose an explicit installed adapter"
-                )
-            adapter = automatic
-        resolved[role] = {"adapter": adapter, "model": profile["model"], "source": dict(sources[role])}
-    return resolved
 
 
 def audited_agent_profile(cfg: dict, role: str) -> dict:
@@ -2513,8 +1637,6 @@ def budget_warning(cfg: dict, role: str) -> str | None:
     return f"budget for {role} ({value}) is below 20000 tokens (5000 per turn times 4 turns)" if isinstance(value, int) and value < 20000 else None
 
 
-ROLE_BUDGET_FLOORS = {"architect": 20_000, "supervisor": 12_000,
-                      "implementer": 24_000, "reviewer": 20_000}
 RISK_BUDGET_BASES = {
     "routine": 0, "elevated": 4_000, "security_sensitive": 12_000,
     "persistence_migration": 14_000, "shared_infrastructure": 16_000,
@@ -2648,38 +1770,6 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
         role=role, safe_minimum=safe_minimum)
 
 
-def validate_session_budget_decision(value: object) -> dict:
-    legacy = {"ceiling", "configured_ceiling", "floor", "risk_class", "role",
-                "packet_bytes", "criteria_count", "changed_files", "followup", "basis"}
-    sizing = {"estimator", "estimated_input_tokens", "input_guard_tokens",
-              "protocol_overhead_tokens", "response_reserve_tokens", "safe_minimum"}
-    # #290: sessions recorded before the protocol reserve existed keep their
-    # two older shapes, so archives stay readable.
-    reserve = {"reserved_protocol_tokens", "provider_limit"}
-    if not isinstance(value, dict) or set(value) not in {
-            frozenset(legacy), frozenset(legacy | sizing), frozenset(legacy | sizing | reserve)}:
-        raise HandsoffError("budget_decision has invalid fields")
-    if value.get("role") not in ROLE_BUDGET_FLOORS:
-        raise HandsoffError("budget_decision role is invalid")
-    if value.get("risk_class") is not None:
-        classify_adaptive_risk(value["risk_class"])
-    for field in ("ceiling", "configured_ceiling", "floor", "packet_bytes", "criteria_count", "changed_files"):
-        number = value.get(field)
-        if not isinstance(number, int) or isinstance(number, bool) or number < 0:
-            raise HandsoffError(f"budget_decision {field} must be a non-negative integer")
-    if value["ceiling"] <= 0 or value["ceiling"] > value["configured_ceiling"]:
-        raise HandsoffError("budget_decision ceiling must be positive and capped by configuration")
-    if not isinstance(value.get("followup"), bool) or value.get("basis") not in {
-            "legacy_configured_ceiling", "risk_role_packet_scope"}:
-        raise HandsoffError("budget_decision followup or basis is invalid")
-    if sizing <= set(value):
-        if value.get("estimator") != "ceil_utf8_bytes_over_3":
-            raise HandsoffError("budget_decision estimator is invalid")
-        for field in sizing - {"estimator"}:
-            number = value.get(field)
-            if not isinstance(number, int) or isinstance(number, bool) or number < 0:
-                raise HandsoffError(f"budget_decision {field} must be a non-negative integer")
-    return deepcopy(value)
 
 
 def adapter_availability(cfg: dict | None = None, *, which=None) -> dict:
@@ -2889,25 +1979,6 @@ def launch_preflight(root: Path, *, adapter: str, model: str, executable: str,
     return {**deepcopy(entry), "cached": False}
 
 
-def launch_preflight_snapshot(root: Path) -> dict:
-    """Bounded, content-free Mission Control view of exact-launch readiness."""
-    path = Path(root) / PREFLIGHT_FILE
-    try:
-        store = load_unique_json(path)
-    except HandsoffError:
-        return {"state": "not_checked", "incident": None, "entries": [], "avoided_retries": 0}
-    if not isinstance(store, dict) or store.get("schema") != PREFLIGHT_SCHEMA:
-        return {"state": "legacy", "incident": None, "entries": [], "avoided_retries": 0}
-    safe_fields = ("fingerprint", "adapter", "model", "state", "category", "reason",
-                   "checked_at", "expires_at", "provider_probe_calls", "coalesced_count")
-    entries = [{field: item.get(field) for field in safe_fields}
-               for item in (store.get("entries") or {}).values() if isinstance(item, dict)]
-    entries.sort(key=lambda item: item.get("checked_at") or "", reverse=True)
-    incident = store.get("incident") if isinstance(store.get("incident"), dict) else None
-    incident_view = ({field: incident.get(field) for field in safe_fields} if incident else None)
-    return {"state": "blocked" if incident else (entries[0]["state"] if entries else "not_checked"),
-            "incident": incident_view, "entries": entries[:MAX_PREFLIGHT_ENTRIES],
-            "avoided_retries": sum(int(item.get("coalesced_count") or 0) for item in entries)}
 
 
 #: Providers surfaced read-only in the Agent Settings UI so a user can see
@@ -3233,11 +2304,6 @@ def update_agent_settings(root: Path, payload: object) -> dict:
 # #167: launch rules, distilled from run history
 # --------------------------------------------------------------------------
 
-RULE_COMMANDS = ("launch", "packet")
-RULE_WHEN_KEYS = {"command", "role", "phase_in", "amendment", "field"}
-RULES_DIR = "rules"
-PROJECT_RULES_DIR = "handsoff-rules"
-MAX_RULE_BYTES = 16 * 1024
 
 
 class PacketRuleViolation(HandsoffError):
@@ -3250,82 +2316,8 @@ class PacketRuleViolation(HandsoffError):
         self.rule_id, self.field, self.value, self.recovered = rule_id, field, value, recovered
 
 
-def _validate_rule(rule: object, source: str) -> dict:
-    if not isinstance(rule, dict):
-        raise HandsoffError(f"rule {source}: not an object")
-    for key in ("id", "cause", "when", "refuse"):
-        if key not in rule:
-            raise HandsoffError(f"rule {source}: missing {key}")
-    if not isinstance(rule["id"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", rule["id"]):
-        raise HandsoffError(f"rule {source}: id must be a short lowercase slug")
-    if not isinstance(rule["refuse"], str) or not rule["refuse"].strip() or len(rule["refuse"]) > 512:
-        raise HandsoffError(f"rule {source}: refuse must be 1 to 512 characters")
-    cause = rule["cause"]
-    if not isinstance(cause, dict) or not isinstance(cause.get("event"), str) or not isinstance(cause.get("at"), str):
-        raise HandsoffError(f"rule {source}: cause needs at least event and at")
-    when = rule["when"]
-    if not isinstance(when, dict) or set(when) - RULE_WHEN_KEYS or when.get("command") not in RULE_COMMANDS:
-        raise HandsoffError(f"rule {source}: when.command must be launch or packet and keys limited to "
-                            + ", ".join(sorted(RULE_WHEN_KEYS)))
-    if "role" in when and when["role"] not in AGENT_ROLES:
-        raise HandsoffError(f"rule {source}: when.role must be a managed role")
-    if when["command"] == "launch":
-        phases = when.get("phase_in")
-        if phases is not None and (not isinstance(phases, list) or not phases
-                                   or not all(isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 8 for p in phases)):
-            raise HandsoffError(f"rule {source}: when.phase_in must be a non-empty list of phase numbers")
-        if "amendment" in when and not isinstance(when["amendment"], bool):
-            raise HandsoffError(f"rule {source}: when.amendment must be boolean")
-        if "field" in when:
-            raise HandsoffError(f"rule {source}: when.field belongs to packet rules")
-    else:
-        if not isinstance(when.get("field"), str) or not when["field"].strip():
-            raise HandsoffError(f"rule {source}: a packet rule needs when.field")
-        allowed = rule.get("allowed")
-        max_chars = rule.get("max_chars")
-        if allowed is None and max_chars is None:
-            raise HandsoffError(f"rule {source}: a packet rule needs allowed (exact values) or max_chars")
-        if allowed is not None and (not isinstance(allowed, list) or not allowed or not all(isinstance(a, str) for a in allowed)):
-            raise HandsoffError(f"rule {source}: allowed must be a non-empty list of strings")
-        if max_chars is not None and (not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars < 1):
-            raise HandsoffError(f"rule {source}: max_chars must be a positive integer")
-        if "recover_as" in rule and (allowed is None or rule["recover_as"] not in allowed):
-            raise HandsoffError(f"rule {source}: recover_as must be one of allowed")
-        if "recover" in rule and rule["recover"] != "truncate":
-            raise HandsoffError(f"rule {source}: recover may only be truncate")
-        if rule.get("recover") == "truncate" and max_chars is None:
-            raise HandsoffError(f"rule {source}: recover truncate needs max_chars")
-        for key in ("phase_in", "amendment"):
-            if key in when:
-                raise HandsoffError(f"rule {source}: when.{key} belongs to launch rules")
-    return rule
 
 
-def load_launch_rules(root: Path | None = None) -> list[dict]:
-    """Every rule the engine ships (rules/*.json in the runtime manifest)
-    plus a project's own handsoff-rules/*.json. Ids are unique across both;
-    rules/proposed/ is never read. A malformed file is an error, never a
-    silently skipped rule."""
-    rules: list[dict] = []
-    seen: set[str] = set()
-    directories = [engine_resource_path(RULES_DIR)]
-    if root is not None:
-        directories.append(Path(root) / PROJECT_RULES_DIR)
-    for directory in directories:
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.glob("*.json")):
-            if path.stat().st_size > MAX_RULE_BYTES:
-                raise HandsoffError(f"rule {path.name}: larger than {MAX_RULE_BYTES} bytes")
-            try:
-                rule = _validate_rule(json.loads(path.read_text(encoding="utf-8")), path.name)
-            except ValueError as exc:
-                raise HandsoffError(f"rule {path.name}: invalid JSON ({exc})") from exc
-            if rule["id"] in seen:
-                raise HandsoffError(f"rule {path.name}: duplicate rule id {rule['id']}")
-            seen.add(rule["id"])
-            rules.append({**rule, "source": str(path)})
-    return rules
 
 
 def rule_refusal(rule: dict) -> str:
@@ -3397,54 +2389,12 @@ def evaluate_packet_rules(root: Path | None, cfg: dict | None, value: dict, *, r
 # #170: the rules set a review ran under
 # --------------------------------------------------------------------------
 
-#: Project files that decide what a reviewer saw and could run. Contents
-#: are hashed, never stored; .env and credential files are never in the set.
-RULES_SET_PROJECT_FILES = ("handsoff.toml", ".claude/settings.json", ".claude/settings.local.json",
-                           ".codex/config.toml", "AGENTS.md", "CLAUDE.md")
 
 
-def rules_set_entries(root: Path) -> dict[str, str | None]:
-    """Path -> sha256 of contents, or None when absent. Engine entries
-    (reviewer prompt, rules/*.json, manifest version) are keyed 'engine:'."""
-    root = Path(root).resolve()
-    entries: dict[str, str | None] = {}
-    for relative in RULES_SET_PROJECT_FILES:
-        path = root / relative
-        try:
-            entries[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-        except OSError:
-            entries[relative] = None
-    prompt = engine_resource_path("prompts/reviewer.md")
-    try:
-        entries["engine:prompts/reviewer.md"] = hashlib.sha256(prompt.read_bytes()).hexdigest() if prompt.is_file() else None
-    except OSError:
-        entries["engine:prompts/reviewer.md"] = None
-    for rule in load_launch_rules(root):
-        try:
-            entries[f"engine:{Path(rule['source']).name}" if "/rules/" in rule["source"].replace(str(root), "")
-                    else f"project:{Path(rule['source']).name}"] = hashlib.sha256(Path(rule["source"]).read_bytes()).hexdigest()
-        except OSError:
-            continue
-    try:
-        entries["engine:version"] = json.loads((engine_root() / RUNTIME_MANIFEST_FILE).read_text(encoding="utf-8")).get("version")
-    except (OSError, ValueError):
-        entries["engine:version"] = None
-    return entries
 
 
-def rules_set_hash(root: Path, cfg: dict | None = None) -> str:
-    return hashlib.sha256(_canonical(rules_set_entries(root)).encode("utf-8")).hexdigest()
 
 
-def rules_set_diff(root: Path, recorded_entries: dict | None) -> list[str]:
-    """Which entries differ from a recorded snapshot; every entry when no
-    snapshot was recorded (an older decision carries the hash only)."""
-    current = rules_set_entries(root)
-    if not isinstance(recorded_entries, dict):
-        return sorted(current)
-    changed = [key for key in sorted(set(current) | set(recorded_entries))
-               if current.get(key) != recorded_entries.get(key)]
-    return changed
 
 
 def rules_binding(root: Path, cfg: dict) -> dict:
@@ -3454,20 +2404,6 @@ def rules_binding(root: Path, cfg: dict) -> dict:
             "rules_entries": entries}
 
 
-def rules_binding_errors(root: Path | None, cfg: dict, decision: dict | None, label: str) -> list[str]:
-    """#170: refuse when the rules set changed since `decision` was recorded.
-    A decision without rules_hash (recorded before the field existed) is
-    accepted as it stands. With the switch off nothing is checked."""
-    if root is None or not isinstance(decision, dict) or not feature_enabled(cfg, "review_binds_rules"):
-        return []
-    recorded = decision.get("rules_hash")
-    if not recorded:
-        return []
-    if recorded == rules_set_hash(root, cfg):
-        return []
-    changed = rules_set_diff(root, decision.get("rules_entries"))
-    shown = ", ".join(changed[:8]) + (f" (+{len(changed) - 8} more)" if len(changed) > 8 else "")
-    return [f"{label}: the rules set changed since it was recorded ({shown}); record it again"]
 
 
 def update_feature_settings(root: Path, payload: object) -> dict:
@@ -3504,74 +2440,26 @@ def update_feature_settings(root: Path, payload: object) -> dict:
     return {"features": dict(payload)}
 
 
-def status_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["status_file"]
 
 
-def acceptance_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["acceptance_file"]
 
 
-def event_log_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["event_log"]
 
 
-def verification_log_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["verification_log"]
 
 
-def lock_path(root: Path) -> Path:
-    return root / ".handsoff.lock"
 
 
-def event_head_path(root: Path) -> Path:
-    return root / ".handsoff-event-head.json"
 
 
-def write_ahead_path(root: Path) -> Path:
-    return root / ".handsoff-writeahead.json"
 
 
-@contextmanager
-def project_lock(root: Path):
-    """Advisory single-writer lock around a read-modify-write. Best effort:
-    on a platform without fcntl this is a no-op, which is a known
-    limitation (see README), not a silent claim of safety it cannot keep."""
-    if fcntl is None:
-        yield
-        return
-    lp = lock_path(root)
-    lp.touch(exist_ok=True)
-    with lp.open("r+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 # --------------------------------------------------------------------------
 # JSON I/O: duplicate-key detection, atomic writes
 # --------------------------------------------------------------------------
 
-def load_unique_json(path: Path) -> dict:
-    """Parse JSON, rejecting a duplicate top-level-or-nested key rather than
-    silently keeping the last one, the way plain json.loads would."""
-    def pairs(items):
-        out = {}
-        for key, value in items:
-            if key in out:
-                raise HandsoffError(f"duplicate JSON key '{key}' in {path}")
-            out[key] = value
-        return out
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise HandsoffError(f"cannot read {path}: {e}") from e
-    try:
-        return json.loads(text, object_pairs_hook=pairs)
-    except json.JSONDecodeError as e:
-        raise HandsoffError(f"invalid JSON in {path}: {e}") from e
 
 
 def durability_capability(path: Path) -> dict:
@@ -3595,61 +2483,8 @@ def durability_capability(path: Path) -> dict:
     return {"level": "full", "file_fsync": True, "directory_fsync": True, "reason": None}
 
 
-def durable_backup_path(path: Path) -> Path:
-    """One bounded last-known-good copy; a newer write replaces the old copy."""
-    return Path(path).with_name(f"{Path(path).name}.bak")
 
 
-def durable_replace(path: Path, payload: bytes, *, fault=None, keep_backup: bool = True) -> dict:
-    """Flush, atomically replace, and sync one durable record.
-
-    ``fault(stage)`` is a test-only interruption hook.  At every boundary the
-    target is either its prior complete bytes or the complete new payload.
-    This is filesystem durability, not a database transaction spanning files.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
-    try:
-        with tmp.open("wb") as handle:
-            handle.write(bytes(payload))
-            if fault:
-                fault("before_flush")
-            handle.flush()
-            os.fsync(handle.fileno())
-            if fault:
-                fault("after_flush")
-        try:
-            os.chmod(tmp, path.stat().st_mode)
-        except OSError:
-            pass
-        if keep_backup and path.is_file():
-            previous = path.read_bytes()
-            durable_replace(durable_backup_path(path), previous, keep_backup=False)
-        os.replace(tmp, path)
-        if fault:
-            fault("after_replace")
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        try:
-            descriptor = os.open(path.parent, flags)
-            try:
-                if fault:
-                    fault("during_directory_sync")
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            capability = {"level": "full", "file_fsync": True,
-                          "directory_fsync": True, "reason": None}
-        except OSError as exc:
-            capability = {"level": "best_effort", "file_fsync": True,
-                          "directory_fsync": False,
-                          "reason": f"directory fsync unavailable: {type(exc).__name__}"}
-        return capability
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
 
 
 def restore_durable_backup(path: Path) -> dict:
@@ -3666,47 +2501,16 @@ def restore_durable_backup(path: Path) -> dict:
             "durability": capability}
 
 
-def atomic_write_json(path: Path, data: object) -> None:
-    """Durably replace a JSON record and retain one last-known-good copy."""
-    durable_replace(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
 # --------------------------------------------------------------------------
 # write-ahead journal: lets `doctor` prove a crash, not launder a hand edit
 # --------------------------------------------------------------------------
 
-def _serialized_digest(data: dict) -> str:
-    """The sha256 of the exact bytes atomic_write_json would produce for
-    this value, in the same format, so a later comparison against the
-    real file on disk (hashed the same way _file_sha256 does) can never
-    mismatch on serialization alone."""
-    return hashlib.sha256((json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")).hexdigest()
 
 
-def write_ahead(root: Path, *, status: dict | None = None, acceptance: dict | None = None) -> None:
-    """Record, BEFORE any target file is touched, exactly which file(s)
-    this in-flight write intends to produce and their exact resulting
-    content. This is what lets `doctor` tell a genuinely interrupted
-    write apart from an unrelated hand edit that merely happens to still
-    validate: doctor will only re-anchor the event log to a state that
-    exactly matches a journal entry naming it as the intended result of
-    a real command, never to any state that simply passes the gates.
-    Caller must hold project_lock and call clear_write_ahead once the
-    matching commit (through its append_event) has completed; see
-    commit()."""
-    entry: dict = {"at": datetime.now(timezone.utc).isoformat()}
-    if status is not None:
-        entry["status_sha256"] = _serialized_digest(status)
-    if acceptance is not None:
-        entry["acceptance_sha256"] = _serialized_digest(acceptance)
-    atomic_write_json(write_ahead_path(root), entry)
 
 
-def clear_write_ahead(root: Path) -> None:
-    try:
-        write_ahead_path(root).unlink()
-    except Exception:
-        pass
 
 
 def read_write_ahead(root: Path) -> dict | None:
@@ -3719,51 +2523,6 @@ def read_write_ahead(root: Path) -> dict | None:
         return None
 
 
-def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dict | None = None,
-          event_kind: str, event_message: str, extra_events: list[dict] | None = None,
-          **event_extra) -> str:
-    """Write status and/or acceptance, and append the event(s) describing
-    them, as one write-ahead-journaled unit. Every mutating command uses
-    this instead of calling atomic_write_json/append_event directly, so
-    every real write leaves the journal `doctor` needs to recover it
-    safely. Caller must hold project_lock for the entire surrounding
-    read-validate-write, not just this call.
-
-    `extra_events`, if given, are appended (in list order) BEFORE the
-    primary event_kind/event_message, so a single state transition that is
-    really two consecutive facts (a design round ending because the next
-    one just started, say) can log both without a second write-ahead cycle
-    or a second caller of commit(). Each entry is {"kind": ..., "message":
-    ..., **extra}. Returns the hash of the PRIMARY event only; callers that
-    need an extra event's own hash should read it back from the log."""
-    # A scoped amendment deliberately freezes both phase and progress.
-    # Recomputing item progress while its changed criteria are temporarily
-    # reset would make the just-written amendment contradict its own frozen
-    # snapshot and render an otherwise valid run invalid.
-    preserve_progress = bool(status is not None and status.pop("_preserve_progress", False))
-    if status is not None and "work_item_delivery" in status and open_amendment(status) is None and not preserve_progress:
-        progress_acceptance = acceptance
-        if progress_acceptance is None and acceptance_path(root, cfg).is_file():
-            progress_acceptance = load_unique_json(acceptance_path(root, cfg))
-        if isinstance(progress_acceptance, dict):
-            # The derived value only ever raises progress here: an operator
-            # value written by advance (#100) is never fought by bookkeeping,
-            # and rollbacks set their own lower value explicitly.
-            derived = overall_item_progress(status, progress_acceptance, cfg)
-            status["progress"] = max(int(status.get("progress", 0) or 0), derived)
-    if status is not None and preserve_progress and "progress" in event_extra:
-        status["progress"] = event_extra["progress"]
-    write_ahead(root, status=status, acceptance=acceptance)
-    if acceptance is not None:
-        atomic_write_json(acceptance_path(root, cfg), acceptance)
-    if status is not None:
-        atomic_write_json(status_path(root, cfg), status)
-    for extra in extra_events or ():
-        rest = {k: v for k, v in extra.items() if k not in ("kind", "message")}
-        append_event(root, cfg, extra["kind"], extra["message"], **rest)
-    event_hash = append_event(root, cfg, event_kind, event_message, **event_extra)
-    clear_write_ahead(root)
-    return event_hash
 
 
 # --------------------------------------------------------------------------
@@ -3777,184 +2536,24 @@ def default_agent_actor(adapter: str, role: str) -> str:
     return f"{adapter}-{role}"
 
 
-def _new_agent_session_id(sessions: dict, *, id_factory=None) -> str:
-    factory = id_factory or (lambda: f"hs-{uuid.uuid4().hex}")
-    for _attempt in range(16):
-        candidate = factory()
-        if not isinstance(candidate, str) or len(candidate) > MAX_AGENT_SESSION_ID_LENGTH \
-                or not AGENT_SESSION_ID_PATTERN.fullmatch(candidate):
-            raise HandsoffError("generated agent session id is invalid")
-        if candidate not in sessions:
-            return candidate
-    raise HandsoffError("could not allocate a collision-free agent session id")
 
 
-def _prune_agent_sessions(sessions: dict, current: dict) -> set[str]:
-    """Bound status growth while retaining every role's current snapshot."""
-    protected = {value for value in current.values() if isinstance(value, str)}
-    removable = sorted(
-        (session for sid, session in sessions.items()
-         if sid not in protected and session.get("state") in AGENT_SESSION_TERMINAL_STATES),
-        key=lambda session: (session.get("started_at", ""), session.get("session_id", "")),
-    )
-    removed = set()
-    while len(sessions) >= MAX_AGENT_SESSIONS and removable:
-        session_id = removable.pop(0)["session_id"]
-        sessions.pop(session_id, None)
-        removed.add(session_id)
-    if len(sessions) >= MAX_AGENT_SESSIONS:
-        raise HandsoffError("agent session history is full; no terminal session can be retired safely")
-    return removed
 
 
-def _implementer_binding(status: dict, cfg: dict) -> dict | None:
-    sessions = status.get("agent_sessions") or {}
-    current = status.get("current_agent_sessions") or {}
-    implementer = sessions.get(current.get("implementer"))
-    identity = _canonical_implementer_identity(implementer)
-    implementer_session_id = implementer.get("session_id") if identity and isinstance(implementer, dict) else None
-    if identity is None:
-        review_profile = (status.get("review") or {}).get("implementer_profile")
-        identity = _canonical_implementer_identity(review_profile)
-    if identity is None:
-        configured = agent_profiles(cfg).get("implementer")
-        identity = _canonical_implementer_identity(configured)
-    if identity is None:
-        return None
-    return {
-        "implementer_session_id": implementer_session_id,
-        "adapter": identity[0], "model": identity[1],
-        "bound_at": datetime.now(timezone.utc).isoformat(),
-    }
 
 
-def _assert_agent_telemetry_integrity(root: Path, cfg: dict, status: dict) -> None:
-    """Refuse telemetry writes over stale or unauthenticated workflow state."""
-    problems = [f"event log: {problem}" for problem in verify_event_log(root, cfg)]
-    records, verification_problems = load_verifications(root, cfg)
-    problems.extend(f"verification ledger: {problem}" for problem in verification_problems)
-    actual_head = records[-1].get("hash") if records else "GENESIS"
-    if status.get("verification_head") != actual_head:
-        problems.append("verification ledger: tail does not match the anchored head")
-    if problems:
-        raise HandsoffError(problems[0])
 
 
-def _validate_session_reference(value: object, field: str) -> str | None:
-    """#36: a session's packet_id/design_hash is null or a bounded non-empty string."""
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip() or len(value) > 64:
-        raise HandsoffError(f"agent session {field} must be null or a non-empty string of at most 64 characters")
-    return value
 
 
-def migrate_review_ledger(status: dict) -> None:
-    """Attach the structured ledger to a pre-#31 status without inventing
-    per-attempt facts that the old format never recorded."""
-    if "review_attempts" in status:
-        status.setdefault("legacy_review_round_offset", 0)
-        status.setdefault("review_cap_overrides", [])
-        status.setdefault("escalation", None)
-        return
-    legacy = status.get("review_round", 0)
-    if not isinstance(legacy, int) or isinstance(legacy, bool) or legacy < 0:
-        raise HandsoffError("trusted review round is invalid")
-    status["legacy_review_round_offset"] = legacy
-    status["review_attempts"] = []
-    status["review_cap_overrides"] = []
-    status.setdefault("escalation", None)
 
 
-def effective_review_cap(status: dict, cfg: dict) -> int:
-    offset = int(status.get("legacy_review_round_offset", 0) or 0)
-    digest = config_hash(cfg)
-    overrides = sum(
-        1 for item in (status.get("review_cap_overrides") or [])
-        if isinstance(item, dict) and item.get("config_hash") == digest
-    )
-    return max(int(cfg.get("max_review_rounds", 3)), offset) + overrides
 
 
-def current_review_attempt(status: dict) -> dict | None:
-    attempts = status.get("review_attempts") or []
-    return attempts[-1] if attempts and attempts[-1].get("disposition") == "open" else None
 
 
-def _review_cap_escalation(status: dict, cfg: dict) -> None:
-    cap = effective_review_cap(status, cfg)
-    used = int(status.get("review_round", 0) or 0)
-    source = ((status.get("review_attempts") or [{}])[-1].get("attempt_id")
-              if status.get("review_attempts") else "review-ledger")
-    status["status"] = "blocked"
-    status["escalation"] = {
-        "kind": "review_cap_exhausted",
-        "at": datetime.now(timezone.utc).isoformat(),
-        "reason": f"review budget exhausted ({used} of {cap} attempts used)",
-        "required_action": "Run review-cap-override --by OPERATOR --reason TEXT",
-        "source": source,
-    }
-    status["next_action"] = status["escalation"]["required_action"]
 
 
-def open_review_attempt(status: dict, acceptance: dict, cfg: dict, *, by: str,
-                        trigger: str | None = None, detail: str = "",
-                        reviewer: str | None = None, session_id: str | None = None,
-                        id_factory=None) -> dict:
-    migrate_review_ledger(status)
-    if status.get("status") == "complete" or status.get("phase_number") == 8:
-        raise HandsoffError("review attempt cannot open on a completed run")
-    existing = current_review_attempt(status)
-    if existing is not None:
-        if session_id and session_id not in existing["session_ids"]:
-            if len(existing["session_ids"]) >= MAX_REVIEW_SESSION_IDS:
-                raise HandsoffError("review attempt session history is full")
-            existing["session_ids"].append(session_id)
-        if reviewer:
-            existing["reviewer"] = reviewer
-        return existing
-    used = int(status.get("review_round", 0) or 0)
-    if used >= effective_review_cap(status, cfg):
-        _review_cap_escalation(status, cfg)
-        raise HandsoffError(
-            f"review budget exhausted ({used} of {effective_review_cap(status, cfg)} attempts used)"
-        )
-    attempts = status["review_attempts"]
-    if len(attempts) >= MAX_REVIEW_ATTEMPTS:
-        raise HandsoffError("review attempt history is full")
-    previous = attempts[-1] if attempts else None
-    digest = acceptance_hash(acceptance.get("criteria", []))
-    if trigger is None:
-        if not previous and status.get("legacy_review_round_offset", 0) == 0:
-            trigger = "initial"
-        elif previous and previous.get("disposition") == "changes_requested":
-            trigger = "changes_requested"
-        elif previous and previous.get("acceptance_hash") != digest:
-            trigger = "acceptance_changed"
-        else:
-            trigger = "implementation_changed"
-    if trigger not in REVIEW_ATTEMPT_TRIGGERS:
-        raise HandsoffError("review attempt trigger is invalid")
-    attempt_id = _new_bounded_id(
-        "ha", REVIEW_ATTEMPT_ID_PATTERN,
-        {item.get("attempt_id") for item in attempts if isinstance(item, dict)}, id_factory,
-    )
-    now = datetime.now(timezone.utc).isoformat()
-    attempt = {
-        "attempt_id": attempt_id, "attempt": used + 1,
-        "opened_at": now, "closed_at": None, "opened_by": validate_agent_actor(by),
-        "reviewer": validate_agent_actor(reviewer) if reviewer else None,
-        "session_ids": [session_id] if session_id else [],
-        "trigger": trigger, "trigger_detail": str(detail or "")[:512],
-        "acceptance_hash": digest, "phase_number": int(status.get("phase_number", 1)),
-        "disposition": "open", "findings": [],
-        # the criterion specs this attempt judged; record-review --reaffirm
-        # re-binds only while these are unchanged
-        "design_hash": design_hash(acceptance.get("criteria", [])),
-    }
-    attempts.append(attempt)
-    status["review_round"] = used + 1
-    return attempt
 
 
 def abandon_stale_review_attempt(status: dict, acceptance: dict) -> bool:
@@ -3992,357 +2591,14 @@ def refresh_review_attempt_after_evidence(status: dict, acceptance: dict) -> dic
     }
 
 
-def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
-                         requested_model: str, resolution_source: str,
-                         id_factory=None, packet_id: str | None = None,
-                         design_hash: str | None = None, tier: str | None = None,
-                         tier_reason: str | None = None,
-                         amendment_id: str | None = None,
-                         adaptive_routing: dict | None = None,
-                         budget_decision: dict | None = None,
-                         reviewer_isolation: dict | None = None) -> dict:
-    """Commit the immutable launch snapshot before a managed child starts.
-
-    The task/prompt, environment, runner output, credentials, and token data
-    are deliberately not accepted by this API, so callers cannot accidentally
-    persist them as telemetry. `packet_id`/`design_hash` (#36) record which
-    delta review packet, if any, a Phase-2 reviewer was launched with.
-    `tier`/`tier_reason` (#37) record which reviewer tier the selection
-    chose and why; the session keeps `tier`, and a `design_reviewer_selected`
-    event carrying both is committed with the launch.
-    """
-    root = root.resolve()
-    if role not in SELECTABLE_AGENT_ROLES:
-        raise HandsoffError("agent session role must be architect, supervisor, implementer, or reviewer")
-    actor = validate_agent_actor(actor)
-    if adapter not in SELECTABLE_AGENT_ADAPTERS:
-        raise HandsoffError("agent session adapter must be codex or claude")
-    requested_model = validate_agent_model(requested_model)
-    if resolution_source not in AGENT_SESSION_RESOLUTION_SOURCES:
-        raise HandsoffError("agent session resolution source is invalid")
-    adaptive_routing = (validate_session_adaptive_routing(adaptive_routing)
-                        if adaptive_routing is not None else None)
-    budget_decision = (validate_session_budget_decision(budget_decision)
-                       if budget_decision is not None else None)
-    reviewer_isolation = (validate_reviewer_isolation_contract(reviewer_isolation)
-                          if reviewer_isolation is not None else None)
-    # Direct API callers may load/create legacy fixture sessions without the
-    # additive field; every managed reviewer launch supplies it below.
-    if role != "reviewer" and reviewer_isolation is not None:
-        raise HandsoffError("reviewer_isolation applies only to reviewer sessions")
-    if reviewer_isolation is not None and (reviewer_isolation["adapter"] != adapter
-                                            or reviewer_isolation["decision"] != "enforce"):
-        raise HandsoffError("reviewer isolation contract does not authorize this adapter launch")
-    packet_id = _validate_session_reference(packet_id, "packet_id")
-    design_hash = _validate_session_reference(design_hash, "design_hash")
-    if tier is not None and tier not in DESIGN_REVIEWER_TIERS:
-        raise HandsoffError(f"agent session tier must be null or one of {', '.join(DESIGN_REVIEWER_TIERS)}")
-    if tier is not None and role != "reviewer":
-        raise HandsoffError("agent session tier applies to reviewer sessions only")
-    if tier is not None and tier_reason not in DESIGN_REVIEWER_SELECTION_REASONS:
-        raise HandsoffError(
-            f"agent session tier_reason must be one of {', '.join(DESIGN_REVIEWER_SELECTION_REASONS)}"
-        )
-    with project_lock(root):
-        cfg = load_config(root)
-        status = load_unique_json(status_path(root, cfg))
-        acceptance = load_unique_json(acceptance_path(root, cfg))
-        ensure_no_launched_regression(status)
-        schema_errors = validate_status_schema(status) or validate_acceptance_schema(acceptance)
-        if schema_errors:
-            raise HandsoffError(schema_errors[0])
-        _assert_agent_telemetry_integrity(root, cfg, status)
-        legacy_risk_defaulted = False
-        if adaptive_routing is not None:
-            policy = status.get("model_policy", cfg.get("model_policy", DEFAULT_MODEL_POLICY))
-            if not model_policy_allows(policy, adapter, requested_model):
-                raise HandsoffError("adaptive launch refused by the mission model policy")
-            route_cfg = {**cfg, "model_policy": validate_model_policy(policy)}
-            status_risk_class = status.get("risk_class")
-            if status_risk_class is None and adaptive_routing["risk_class"] == "routine":
-                legacy_risk_defaulted = True
-            elif status_risk_class != adaptive_routing["risk_class"]:
-                raise HandsoffError("adaptive routing selection is stale for the run risk class")
-            refreshed = route_adaptive_profile(
-                route_cfg, risk_class=adaptive_routing["risk_class"],
-                available_tiers=[adaptive_routing["tier"]],
-                available_adapters=[adaptive_routing["adapter"]],
-                mission_usage=adaptive_usage(status),
-                fleet_usage=adaptive_fleet_usage(root, current_status=status),
-                # Initial launches are outside the repair/escalation drain;
-                # this lock-protected call exists to recheck usage budgets.
-                deterministic_checks_complete=True,
-            )
-            if refreshed.get("state") != "selected":
-                raise HandsoffError(f"adaptive launch refused before mutation: {refreshed.get('reason')}")
-            pair = (refreshed["tier"], refreshed["profile"]["adapter"], refreshed["profile"]["model"])
-            expected = (adaptive_routing["tier"], adaptive_routing["adapter"], adaptive_routing["model"])
-            if pair != expected:
-                raise HandsoffError("adaptive routing selection changed before session commit; rebuild the launch spec")
-        # #35: the sole authorization decision for a managed Phase-2
-        # reviewer launch, taken here on the status re-read inside the
-        # lock (build_launch_spec's pre-check is advisory only). At or
-        # past the autonomous budget the launch needs an unconsumed,
-        # unreserved Pilot authorization and takes it by writing this
-        # session's id into launch_session_id in the same commit() that
-        # records the launch, so a second concurrent launch finds the
-        # reservation and is refused before any session or event exists.
-        reservation = None
-        budget = None
-        if role == "reviewer" and status.get("phase_number") == 2:
-            budget = design_review_budget(status, cfg)
-            refusal = design_review_launch_refusal(budget, status)
-            if refusal:
-                raise HandsoffError(refusal)
-            if budget["attempts"] >= budget["limit"]:
-                reservation = deepcopy(status["design_review_authorization"])
-        sessions = deepcopy(status.get("agent_sessions") or {})
-        current = deepcopy(status.get("current_agent_sessions") or {})
-        active_id = current.get(role)
-        active = sessions.get(active_id) if isinstance(active_id, str) else None
-        if active and active.get("state") in AGENT_SESSION_LIVE_STATES:
-            raise HandsoffError(
-                f"role {role} already has live agent session {active_id} ({active.get('state')})"
-            )
-        removed_session_ids = _prune_agent_sessions(sessions, current)
-        session_id = _new_agent_session_id(sessions, id_factory=id_factory)
-        now = datetime.now(timezone.utc).isoformat()
-        if reservation is not None:
-            reservation["launch_session_id"] = session_id
-        proposed = deepcopy(status)
-        if legacy_risk_defaulted:
-            proposed["risk_class"] = "routine"
-        opened_attempt = None
-        # The convergence gate must run before a not-yet-launched session is
-        # inserted into canonical state. A refused fourth attempt may persist
-        # its escalation, but never a ghost `launching` worker.
-        if amendment_id is not None:
-            # #142: a reviewer launched FOR an open amendment reviews the
-            # amendment, not the phase. It opens no review attempt and
-            # spends no budget; the broker dispatches its verdict as
-            # amendment-review. The id must name the amendment that is open
-            # right now, or the launch is refused before a session exists.
-            if role != "reviewer":
-                raise HandsoffError("--amendment applies to reviewer sessions only")
-            open_record = open_amendment(status)
-            if not open_record or open_record.get("amendment_id") != amendment_id:
-                raise HandsoffError(
-                    f"reviewer launch refused: no open amendment {amendment_id}")
-        if role == "reviewer" and amendment_id is None \
-                and int(proposed.get("phase_number", 0) or 0) >= 4:
-            migrate_review_ledger(proposed)
-            before_id = (current_review_attempt(proposed) or {}).get("attempt_id")
-            try:
-                opened_attempt = open_review_attempt(
-                    proposed, acceptance, cfg, by=actor, reviewer=actor, session_id=session_id,
-                )
-            except HandsoffError as exc:
-                if isinstance(proposed.get("escalation"), dict) \
-                        and proposed["escalation"].get("kind") == "review_cap_exhausted":
-                    commit(
-                        root, cfg, status=proposed,
-                        event_kind="review_attempt_refused",
-                        event_message=str(exc), role=role, actor=actor,
-                        review_round=proposed.get("review_round"),
-                        effective_max_review_rounds=effective_review_cap(proposed, cfg),
-                    )
-                raise
-            if opened_attempt.get("attempt_id") == before_id:
-                opened_attempt = None
-        session = {
-            "session_id": session_id,
-            "role": role,
-            "actor": actor,
-            "adapter": adapter,
-            "requested_model": requested_model,
-            "reported_model": None,
-            "resolution_source": resolution_source,
-            "started_at": now,
-            "running_at": None,
-            "ended_at": None,
-            "state": "launching",
-            "exit_code": None,
-            "packet_id": packet_id,
-            "design_hash": design_hash,
-            "amendment_id": amendment_id,
-            "tier": tier,
-            "phase_number": int(status.get("phase_number", 1) or 1),
-            "host_session_id": os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_COMPANION_SESSION_ID"),
-        }
-        if adaptive_routing is not None:
-            session["adaptive_routing"] = deepcopy(adaptive_routing)
-        if budget_decision is not None:
-            session["budget_decision"] = deepcopy(budget_decision)
-        if reviewer_isolation is not None:
-            session["reviewer_isolation"] = deepcopy(reviewer_isolation)
-        sessions[session_id] = session
-        current[role] = session_id
-        accepted_regression = active_regression_request(proposed)
-        if accepted_regression and accepted_regression.get("state") == "accepted":
-            accepted_regression["state"] = "invalidated"
-            accepted_regression["completed_at"] = now
-        proposed["agent_sessions"] = sessions
-        proposed["current_agent_sessions"] = current
-        if reservation is not None:
-            proposed["design_review_authorization"] = reservation
-        failures = {
-            sid: deepcopy(failure) for sid, failure in (status.get("agent_failures") or {}).items()
-            if sid not in removed_session_ids
-        }
-        if failures:
-            proposed["agent_failures"] = failures
-        else:
-            proposed.pop("agent_failures", None)
-        bindings = {
-            sid: deepcopy(binding) for sid, binding in (status.get("reviewer_implementer_bindings") or {}).items()
-            if sid in sessions
-        }
-        binding = _implementer_binding(status, cfg) if role == "reviewer" else None
-        if binding is not None:
-            bindings[session_id] = {"reviewer_session_id": session_id, **binding}
-        if bindings:
-            proposed["reviewer_implementer_bindings"] = bindings
-        else:
-            proposed.pop("reviewer_implementer_bindings", None)
-        if tier is not None:
-            # #145: the selection is also PERSISTED on status, in this same
-            # commit, so design_reviewer_selection_view has a record to check
-            # the live session against. Before this the view read a key that
-            # nothing wrote and reported "no selection metadata" on every
-            # live design review.
-            proposed["design_reviewer_selection"] = {"current": {
-                "actor": actor, "session_id": session_id, "adapter": adapter,
-                "model": requested_model, "tier": tier, "reason": tier_reason,
-                "attempt": budget["next_attempt"] if budget else None,
-                "selected_at": now,
-            }}
-        schema_errors = validate_status_schema(proposed)
-        if schema_errors:
-            raise HandsoffError(schema_errors[0])
-        extra_events = []
-        if legacy_risk_defaulted:
-            extra_events.append({
-                "kind": "adaptive_risk_defaulted",
-                "message": "Legacy run defaulted to routine adaptive routing at managed launch",
-                "risk_class": "routine", "session_id": session_id,
-            })
-        if tier is not None:
-            # #37: the selection is a fact of its own, logged before the
-            # launch event it explains (extra_events precede the primary).
-            extra_events.append({
-                "kind": "design_reviewer_selected",
-                "message": f"Design reviewer tier {tier} selected ({tier_reason})",
-                "session_id": session_id, "role": role, "tier": tier, "reason": tier_reason,
-                "adapter": adapter, "requested_model": requested_model,
-                "design_review_attempt": budget["next_attempt"] if budget else None,
-            })
-        if opened_attempt:
-            extra_events.append({
-                "kind": "review_attempt_opened",
-                "message": f"Implementation review attempt {opened_attempt['attempt']} opened",
-                "attempt_id": opened_attempt["attempt_id"],
-                "attempt": opened_attempt["attempt"],
-                "trigger": opened_attempt["trigger"],
-                "reviewer": opened_attempt["reviewer"],
-            })
-        commit(
-            root, cfg, status=proposed,
-            extra_events=extra_events or None,
-            event_kind="agent_session_launching",
-            event_message=f"Managed {role} agent session is launching",
-            engine=ledger_engine_identity(root),
-            session_id=session_id, role=role, actor=actor, adapter=adapter,
-            requested_model=requested_model, reported_model=None,
-            resolution_source=resolution_source, state="launching",
-            implementer_binding={"adapter": binding["adapter"], "model": binding["model"]}
-            if binding else None,
-            design_review_attempt=budget["next_attempt"] if budget else None,
-            design_review_authorization_reserved=reservation is not None,
-            packet_id=packet_id, design_hash=design_hash, tier=tier,
-            # #167: whether the launch rules stood between this launch and
-            # the process; "disabled" is the project's own switch.
-            launch_rules="evaluated" if feature_enabled(cfg, "launch_rules") else "disabled",
-        )
-        return deepcopy(session)
 
 
-def _validate_failure_classification(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"category", "reason", "tail_sha256", "dependency", "operation", "changed_paths", "changes", "result_available", "adopted", "progress_summary", "budget_cause", "ceiling_overshoot_tokens"} \
-            or not {"category", "reason", "tail_sha256"} <= set(value):
-        raise HandsoffError("agent failure classification is invalid")
-    category = value.get("category")
-    if category not in FAILURE_CATEGORIES or (category != "dispatch_failed" and value.get("reason") != _FAILURE_REASON_LABELS.get(category)):
-        raise HandsoffError("agent failure classification is not from the closed set")
-    if category == "dispatch_failed" and (not isinstance(value.get("reason"), str) or not value["reason"].strip() or len(value["reason"]) > 200):
-        raise HandsoffError("dispatch failure reason must be 1 to 200 characters")
-    digest = value.get("tail_sha256")
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise HandsoffError("agent failure classification digest is invalid")
-    result = {"category": category, "reason": value["reason"], "tail_sha256": digest}
-    if "budget_cause" in value:
-        # #290: "the session ran out" is not a diagnosis. A model that
-        # ignored its scope, a wrapper that stopped it, a shared meter that
-        # stopped it, and a session that simply never spoke all need
-        # different repairs and were previously one label.
-        if value["budget_cause"] not in BUDGET_FAILURE_CAUSES:
-            raise HandsoffError("agent failure budget cause is not from the closed set")
-        result["budget_cause"] = value["budget_cause"]
-    if "ceiling_overshoot_tokens" in value:
-        # #290: how far past its limit the session actually went. Null means
-        # unmeasured, which is not the same as zero.
-        overshoot = value["ceiling_overshoot_tokens"]
-        if overshoot is not None and (not isinstance(overshoot, int)
-                                      or isinstance(overshoot, bool) or overshoot < 0):
-            raise HandsoffError("agent failure ceiling overshoot must be a non-negative integer or null")
-        result["ceiling_overshoot_tokens"] = overshoot
-    for key in ("dependency", "operation"):
-        if key in value:
-            if not isinstance(value[key], str) or not OPERATION_IDENTIFIER_PATTERN.fullmatch(value[key]):
-                raise HandsoffError("agent failure operation identifier is invalid")
-            result[key] = value[key]
-    if "changed_paths" in value:
-        if not isinstance(value["changed_paths"], list) or len(value["changed_paths"]) > 64 or not all(isinstance(item, str) for item in value["changed_paths"]):
-            raise HandsoffError("agent failure changed paths are invalid")
-        result["changed_paths"] = list(value["changed_paths"])
-    if "progress_summary" in value:
-        # #215: what the Implementer said it finished before the session ended
-        summary = value["progress_summary"]
-        if not isinstance(summary, dict) or set(summary) != {"done", "partial", "untouched"} \
-                or not all(isinstance(summary[k], list) and all(isinstance(c, str) for c in summary[k]) for k in summary):
-            raise HandsoffError("agent failure progress summary is invalid")
-        result["progress_summary"] = {k: list(summary[k]) for k in ("done", "partial", "untouched")}
-    if "changes" in value:
-        # #203: what the tree looked like when the reviewer was blamed
-        changes = value["changes"]
-        if not isinstance(changes, list) or len(changes) > 16:
-            raise HandsoffError("agent failure changes are invalid")
-        kept = []
-        for item in changes:
-            if not isinstance(item, dict) or not isinstance(item.get("path"), str) \
-                    or item.get("kind") not in {"appeared", "vanished", "changed"} \
-                    or not (item.get("mtime") is None or isinstance(item["mtime"], str)) \
-                    or not (item.get("seconds_after_session_start") is None
-                            or isinstance(item["seconds_after_session_start"], (int, float))):
-                raise HandsoffError("agent failure changes are invalid")
-            kept.append({"path": item["path"], "kind": item["kind"], "mtime": item.get("mtime"),
-                         "seconds_after_session_start": item.get("seconds_after_session_start")})
-        result["changes"] = kept
-    if "adopted" in value:
-        if value["adopted"] is not True:
-            raise HandsoffError("agent failure adopted flag is invalid")
-        result["adopted"] = True
-    if "result_available" in value:
-        if value["result_available"] is not True:
-            raise HandsoffError("agent failure result_available is invalid")
-        result["result_available"] = True
-    return result
 
 
 # --------------------------------------------------------------------------
 # #168: usage, from the adapter's own words
 # --------------------------------------------------------------------------
 
-USAGE_SOURCES = ("adapter", "not reported", "disabled")
 _CODEX_TOKENS_LINE = re.compile(r"^\s*tokens used\s*:?\s*([0-9][0-9,]*)?\s*$", re.IGNORECASE)
 _NUMBER_LINE = re.compile(r"^\s*([0-9][0-9,]*)\s*$")
 #: #306: Codex announces its resolved model in a plain-text banner, not in
@@ -4473,16 +2729,6 @@ def _find_reported_model(event: object, adapter: str | None) -> str | None:
     return None
 
 
-def validate_usage(value: object) -> dict:
-    if not isinstance(value, dict) or set(value) != {"tokens_in", "tokens_out", "tokens_total", "source"}:
-        raise HandsoffError("session usage must carry tokens_in, tokens_out, tokens_total and source")
-    if value["source"] not in USAGE_SOURCES:
-        raise HandsoffError("session usage source is invalid")
-    for key in ("tokens_in", "tokens_out", "tokens_total"):
-        number = value[key]
-        if number is not None and (not isinstance(number, int) or isinstance(number, bool) or number < 0):
-            raise HandsoffError(f"session usage {key} must be a non-negative integer or null")
-    return dict(value)
 
 
 def usage_totals(status: dict) -> dict:
@@ -4558,213 +2804,10 @@ def record_reported_model(root: Path, session_id: str, model: str) -> dict:
     return {"session_id": session_id, "reported_model": model, "written": True, "reason": None}
 
 
-def transition_agent_session(root: Path, session_id: str, state: str,
-                             *, exit_code: int | None = None,
-                             failure: dict | None = None, usage: dict | None = None,
-                             reported_model: str | None = None) -> dict:
-    """Apply a session-ID-matched lifecycle-only update under the lock."""
-    if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
-        raise HandsoffError("agent session id is invalid")
-    if state not in AGENT_SESSION_STATES - {"launching"}:
-        raise HandsoffError("agent session lifecycle state is invalid")
-    if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
-        raise HandsoffError("agent session exit code must be an integer or null")
-    terminal = state in AGENT_SESSION_TERMINAL_STATES
-    if not terminal and exit_code is not None:
-        raise HandsoffError("a non-terminal agent session cannot have an exit code")
-    if failure is not None:
-        failure = _validate_failure_classification(failure)
-        if not terminal or state == "completed" or failure["category"] == "still_running":
-            raise HandsoffError("failure classification requires a failed terminal session")
-    if usage is not None:
-        usage = validate_usage(usage)
-        if not terminal:
-            raise HandsoffError("session usage is recorded on the terminal transition only")
-    if reported_model is not None:
-        reported_model = validate_agent_model(reported_model)
-        if not terminal:
-            raise HandsoffError("reported model is recorded on the terminal transition only")
-    with project_lock(root.resolve()):
-        root = root.resolve()
-        cfg = load_config(root)
-        status = load_unique_json(status_path(root, cfg))
-        schema_errors = validate_status_schema(status)
-        if schema_errors:
-            raise HandsoffError(schema_errors[0])
-        _assert_agent_telemetry_integrity(root, cfg, status)
-        sessions = status.get("agent_sessions")
-        current = status.get("current_agent_sessions")
-        if not isinstance(sessions, dict) or not isinstance(current, dict):
-            raise HandsoffError("agent session telemetry is not present")
-        existing = sessions.get(session_id)
-        if not isinstance(existing, dict):
-            raise HandsoffError(f"agent session {session_id} was not found")
-        role = existing.get("role")
-        if current.get(role) != session_id:
-            raise HandsoffError(f"stale agent session {session_id} is no longer current for role {role}")
-        old_state = existing.get("state")
-        allowed = {
-            "launching": {"running", "failed_to_start"},
-            "running": {"completed", "failed", "timed_out", "cancelled"},
-        }
-        if state not in allowed.get(old_state, set()):
-            raise HandsoffError(f"agent session cannot transition from {old_state} to {state}")
-        proposed = deepcopy(status)
-        updated = proposed["agent_sessions"][session_id]
-        replacement = next((item for item in proposed.get("agent_replacements", [])
-                            if item.get("action") == "launch"
-                            and item.get("to_session_id") == session_id), None)
-        if replacement is not None and replacement.get("state") != (
-                "claimed" if state == "running" else "running" if old_state == "running" else "claimed"):
-            raise HandsoffError("replacement lifecycle does not match its claimed session")
-        now = datetime.now(timezone.utc).isoformat()
-        updated["state"] = state
-        if state == "running":
-            updated["running_at"] = now
-            if role == "reviewer":
-                warnings = proposed.setdefault("warnings", [])
-                if "a reviewer is live; do not edit the tree" not in warnings:
-                    warnings.append("a reviewer is live; do not edit the tree")
-            if replacement is not None:
-                replacement["state"] = "running"
-                replacement["running_at"] = now
-                replacement["handoff"]["state"] = "running"
-                replacement["handoff"]["running_at"] = now
-        else:
-            updated["ended_at"] = now
-            updated["exit_code"] = exit_code
-            if reported_model is not None:
-                updated["reported_model"] = reported_model
-            if usage is not None:
-                updated["usage"] = usage  # #168
-            if replacement is not None:
-                replacement_state = "recovered" if state == "completed" else "failed"
-                replacement["state"] = replacement_state
-                replacement["ended_at"] = now
-                replacement["handoff"]["state"] = replacement_state
-                replacement["handoff"]["ended_at"] = now
-            if failure is not None:
-                failures = proposed.setdefault("agent_failures", {})
-                if role == "implementer" and "progress_summary" not in failure:
-                    # #215: the account of what was finished, from the ledger
-                    try:
-                        acceptance = load_unique_json(acceptance_path(root, cfg))
-                    except (HandsoffError, OSError, ValueError):
-                        acceptance = {}
-                    failure = {**failure, "progress_summary": progress_summary(updated.get("progress"), acceptance)}
-                failures[session_id] = {"session_id": session_id, **failure, "at": now}
-            if role == "reviewer":
-                warnings = proposed.setdefault("warnings", [])
-                warnings[:] = [item for item in warnings
-                                if item != "a reviewer is live; do not edit the tree"]
-        schema_errors = validate_status_schema(proposed)
-        if schema_errors:
-            raise HandsoffError(schema_errors[0])
-        event_kind = f"agent_session_{state}"
-        commit(
-            root, cfg, status=proposed,
-            event_kind=event_kind,
-            event_message=f"Managed {role} agent session is {state.replace('_', ' ')}",
-            session_id=session_id, role=role, state=state, exit_code=exit_code,
-            failure_category=failure["category"] if failure else None,
-            failure_dependency=failure.get("dependency") if failure else None,
-            failure_operation=failure.get("operation") if failure else None,
-            replacement_id=replacement.get("replacement_id") if replacement else None,
-            replacement_state=replacement.get("state") if replacement else None,
-            usage=usage,
-            reported_model=reported_model,
-        )
-        result = deepcopy(updated)
-    if terminal:
-        update_session_liveness(root, session_id, remove=True)
-    return result
 
 
-def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
-    """Return bounded exact git identity without retaining porcelain text."""
-    def git(*args: str) -> str:
-        try:
-            result = runner(
-                ["git", *args], cwd=str(root.resolve()), shell=False, text=True,
-                capture_output=True, timeout=3, check=True,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            stderr = getattr(exc, "stderr", "") or ""
-            if "unborn branch" in stderr.lower() or "ambiguous argument 'head'" in stderr.lower():
-                raise HandsoffError("non-git root") from None
-            raise HandsoffError(f"cannot establish repository identity: {type(exc).__name__}") from exc
-        return result.stdout
-    head = git("rev-parse", "HEAD").strip()
-    parents = git("rev-list", "--parents", "-n", "1", "HEAD").strip().split()
-    branch = git("branch", "--show-current").strip() or "(detached)"
-    porcelain = git("status", "--porcelain=v1")
-    tracked_diff = git("diff", "--binary", "HEAD")
-    untracked = [line for line in git("ls-files", "--others", "--exclude-standard").splitlines() if line]
-    content = bytearray(tracked_diff.encode("utf-8", "replace"))
-    for relative in sorted(untracked):
-        path = (root / relative).resolve()
-        try:
-            path.relative_to(root.resolve())
-            if path.is_file():
-                content.extend(relative.encode("utf-8", "replace") + b"\0" + path.read_bytes())
-        except (OSError, ValueError):
-            raise HandsoffError("cannot establish repository content identity") from None
-    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head) or len(branch) > 256:
-        raise HandsoffError("cannot establish bounded repository identity")
-    # Bind the reviewed change range, not merely HEAD's immediate parent.
-    # Prefer the remote's declared default branch, then conventional local
-    # names. Repositories without one retain the safe parent fallback.
-    base = None
-    candidates = []
-    try:
-        symbolic = runner(
-            ["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-            cwd=str(root.resolve()), shell=False, text=True, capture_output=True,
-            timeout=3, check=False,
-        )
-        if symbolic.returncode == 0 and symbolic.stdout.strip():
-            candidates.append(symbolic.stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        pass
-    candidates.extend(["refs/remotes/origin/main", "main", "master"])
-    for candidate in dict.fromkeys(candidates):
-        try:
-            merged = runner(
-                ["git", "merge-base", "HEAD", candidate], cwd=str(root.resolve()),
-                shell=False, text=True, capture_output=True, timeout=3, check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if merged.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{40,64}", merged.stdout.strip()):
-            base = merged.stdout.strip().lower()
-            break
-    remote = ""
-    try:
-        remote_result = runner(["git", "remote", "get-url", "origin"], cwd=str(root.resolve()),
-                               shell=False, text=True, capture_output=True, timeout=3, check=False)
-        if remote_result.returncode == 0:
-            remote = remote_result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return {
-        "remote": remote,
-        "path": str(root.resolve()), "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
-        "status_sha256": hashlib.sha256(porcelain.encode("utf-8", "replace")).hexdigest(),
-        "content_sha256": hashlib.sha256(content).hexdigest(),
-        "commit_pair": {"before": base or (parents[1].lower() if len(parents) > 1 else head.lower()),
-                        "after": head.lower()},
-    }
 
 
-def _new_bounded_id(prefix: str, pattern: re.Pattern, existing: set[str], id_factory=None) -> str:
-    factory = id_factory or (lambda: f"{prefix}-{uuid.uuid4().hex}")
-    for _ in range(16):
-        candidate = factory()
-        if not isinstance(candidate, str) or not pattern.fullmatch(candidate):
-            raise HandsoffError(f"generated {prefix} id is invalid")
-        if candidate not in existing:
-            return candidate
-    raise HandsoffError(f"could not allocate a collision-free {prefix} id")
 
 
 def record_quality_finding(root: Path, *, session_id: str, finding_code: str,
@@ -5042,81 +3085,14 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
         return deepcopy(record)
 
 
-def claim_precreated_agent_session(root: Path, session_id: str, *, role: str,
-                                   adapter: str, requested_model: str) -> dict:
-    """One-way pre-spawn claim of the exact reserved session/profile."""
-    with project_lock(root.resolve()):
-        root = root.resolve()
-        cfg = load_config(root)
-        status = load_unique_json(status_path(root, cfg))
-        errors = validate_status_schema(status)
-        if errors:
-            raise HandsoffError(errors[0])
-        _assert_agent_telemetry_integrity(root, cfg, status)
-        session = (status.get("agent_sessions") or {}).get(session_id)
-        records = status.get("agent_replacements", [])
-        reservation_index = next((index for index, item in enumerate(records)
-                                  if item.get("action") == "launch"
-                                  and item.get("to_session_id") == session_id), None)
-        reservation = records[reservation_index] if reservation_index is not None else None
-        if not isinstance(session, dict) or session.get("state") != "launching" \
-                or (status.get("current_agent_sessions") or {}).get(role) != session_id \
-                or not isinstance(reservation, dict) \
-                or reservation.get("state") != "reserved" \
-                or not isinstance(reservation.get("handoff"), dict) \
-                or reservation["handoff"].get("state") != "reserved" \
-                or reservation.get("selected_profile") != {
-                    "adapter": adapter, "model": requested_model,
-                } \
-                or (session.get("role"), session.get("adapter"), session.get("requested_model")) \
-                != (role, adapter, requested_model):
-            raise HandsoffError("precreated replacement session does not match the exact reservation")
-        proposed = deepcopy(status)
-        claimed = proposed["agent_replacements"][reservation_index]
-        now = datetime.now(timezone.utc).isoformat()
-        claimed["state"] = "claimed"
-        claimed["claimed_at"] = now
-        claimed["handoff"]["state"] = "claimed"
-        claimed["handoff"]["claimed_at"] = now
-        # #35: a runtime-failure replacement continues the SAME authorized
-        # design-review attempt, so the reservation follows it to the new
-        # session id; it never becomes a second attempt.
-        authorization = proposed.get("design_review_authorization")
-        if isinstance(authorization, dict) and authorization.get("consumed_at") is None \
-                and authorization.get("launch_session_id") == claimed.get("from_session_id"):
-            authorization["launch_session_id"] = session_id
-        errors = validate_status_schema(proposed)
-        if errors:
-            raise HandsoffError(errors[0])
-        commit(
-            root, cfg, status=proposed,
-            event_kind="agent_replacement_claimed",
-            event_message=f"Managed {role} replacement reservation was claimed",
-            replacement_id=claimed["replacement_id"], from_session_id=claimed["from_session_id"],
-            to_session_id=session_id, role=role, state="claimed",
-        )
-        return deepcopy(session)
 
 
-def current_agent_sessions(status: dict) -> dict:
-    """Return each role's recorded current session, without inference."""
-    sessions = status.get("agent_sessions") if isinstance(status, dict) else None
-    pointers = status.get("current_agent_sessions") if isinstance(status, dict) else None
-    if not isinstance(sessions, dict) or not isinstance(pointers, dict):
-        return {role: None for role in SELECTABLE_AGENT_ROLES}
-    return {
-        role: deepcopy(sessions.get(pointers.get(role)))
-        if isinstance(sessions.get(pointers.get(role)), dict) else None
-        for role in SELECTABLE_AGENT_ROLES
-    }
 
 
 # --------------------------------------------------------------------------
 # tamper-evident event log
 # --------------------------------------------------------------------------
 
-def _canonical(record: dict) -> str:
-    return json.dumps(record, sort_keys=True, separators=(",", ":"))
 
 
 def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict) -> str:
@@ -5170,305 +3146,26 @@ def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict
         + readable + f'<script type="application/json" id="handsoff-design">{script_payload}</script></body></html>\n'
 
 
-def _file_sha256(path: Path) -> str | None:
-    if not path.exists():
-        return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _last_hash(path: Path) -> str:
-    if not path.exists() or path.stat().st_size == 0:
-        return "GENESIS"
-    last = ""
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                last = line
-    if not last:
-        return "GENESIS"
-    return json.loads(last)["hash"]
 
 
-def append_event(root: Path, cfg: dict, kind: str, message: str, **extra) -> str:
-    path = event_log_path(root, cfg)
-    prev_hash = _last_hash(path)
-    body = {"at": datetime.now(timezone.utc).isoformat(), "kind": kind, "message": message,
-            "prev_hash": prev_hash,
-            "status_sha256": _file_sha256(status_path(root, cfg)),
-            "acceptance_sha256": _file_sha256(acceptance_path(root, cfg)), **extra}
-    body["hash"] = hashlib.sha256((_canonical(body) + prev_hash).encode("utf-8")).hexdigest()
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(_canonical(body) + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    atomic_write_json(event_head_path(root), {"hash": body["hash"]})
-    return body["hash"]
 
 
-def event_log_chain_errors(root: Path, cfg: dict) -> tuple[list[str], dict | None]:
-    """Walk the chain and check only its own internal integrity: hash
-    linkage, tail anchor, parseable JSON. Deliberately excludes the
-    status/acceptance freshness cross-check (see verify_event_log) so a
-    caller like `doctor` can tell tampering (unrecoverable) apart from a
-    merely-stale anchor (recoverable). Returns (problems, last_record)."""
-    path = event_log_path(root, cfg)
-    head_path = event_head_path(root)
-    if not path.exists():
-        problems = ["event log is missing but its chain head exists"] if head_path.exists() else []
-        return problems, None
-    problems = []
-    prev_hash = "GENESIS"
-    last_record = None
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            problems.append(f"line {lineno}: not valid JSON")
-            continue
-        claimed_hash = record.get("hash")
-        last_record = record
-        recomputed_body = {k: v for k, v in record.items() if k != "hash"}
-        if record.get("prev_hash") != prev_hash:
-            problems.append(f"line {lineno}: prev_hash does not match the previous record, log was edited or reordered")
-        expected = hashlib.sha256((_canonical(recomputed_body) + recomputed_body.get("prev_hash", "")).encode("utf-8")).hexdigest()
-        if claimed_hash != expected:
-            problems.append(f"line {lineno}: hash does not match its own content, record was edited in place")
-        prev_hash = claimed_hash or prev_hash
-    if head_path.exists():
-        try:
-            anchored = load_unique_json(head_path).get("hash")
-            if anchored != prev_hash:
-                problems.append("event log tail does not match its anchored head; records were deleted or an append was interrupted")
-        except HandsoffError as exc:
-            problems.append(str(exc))
-    else:
-        problems.append("event log chain head is missing")
-    return problems, last_record
 
 
-def verify_event_log(root: Path, cfg: dict) -> list[str]:
-    """Walk the chain; return a list of problems, empty if it is intact.
-    Combines chain integrity with the status/acceptance freshness check:
-    the latest event must describe the files as they currently are."""
-    problems, last_record = event_log_chain_errors(root, cfg)
-    if last_record is None:
-        if status_path(root, cfg).exists() or acceptance_path(root, cfg).exists():
-            problems.append("event log is missing or empty while project state exists")
-    else:
-        if last_record.get("status_sha256") != _file_sha256(status_path(root, cfg)):
-            problems.append("status file does not match the state recorded by the latest event")
-        if last_record.get("acceptance_sha256") != _file_sha256(acceptance_path(root, cfg)):
-            problems.append("acceptance file does not match the state recorded by the latest event")
-    return problems
 
 
 # --------------------------------------------------------------------------
 # immutable verification ledger
 # --------------------------------------------------------------------------
 
-def criterion_spec_hash(criterion: dict) -> str:
-    """Hash the claim being verified, excluding mutable outcome fields and
-    authored_by -- the last is provenance metadata about who proposed the
-    criterion, not part of the claim being verified, so stamping it at
-    design-approve time can never change this hash, invalidate an
-    already-recorded evidence binding, or mismatch a freshly recomputed
-    design_hash (which is built from this same hash per criterion)."""
-    spec = {k: v for k, v in criterion.items() if k not in {"state", "evidence", "authored_by"}}
-    return hashlib.sha256(_canonical(spec).encode("utf-8")).hexdigest()
 
 
-def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
-                        by: str, criteria: list[dict], results: list[dict] | None = None,
-                        commands: list[str] | None = None,
-                        description: str | None = None,
-                        acceptance_digest: str | None = None,
-                        config_digest: str | None = None,
-                        binding: dict | None = None, executed: bool = True,
-                        reused_from: str | None = None,
-                        feature_hash: str | None = None,
-                        repository_digest: str | None = None,
-                        attempts: list[dict] | None = None,
-                        rules: dict | None = None) -> dict:
-    """Append a hash-chained evidence record. Caller must hold project_lock.
-
-    #43: `binding` (command to verification_binding hash), `executed`,
-    `reused_from`, and `feature_hash` are part of the hashed record so a
-    reused record cannot later be passed off as an executed one. Legacy
-    records written before these fields existed simply lack them and are
-    never reuse sources.
-
-    The chain proves a record was not altered AFTER it was written; it says
-    nothing about whether the record was meaningful WHEN it was written.
-    That is what this validates: an empty actor, an unknown kind, or a
-    record naming zero criteria would hash and chain just as cleanly as a
-    real one, so those are rejected here, structurally, before anything
-    is appended."""
-    if not isinstance(by, str) or not by.strip():
-        raise HandsoffError("verification record: 'by' must be a non-empty string")
-    if kind not in VERIFICATION_KINDS:
-        raise HandsoffError(f"verification record: 'kind' must be one of {sorted(VERIFICATION_KINDS)}")
-    if not criteria or not all(isinstance(c, dict) and c.get("id") for c in criteria):
-        raise HandsoffError("verification record: 'criteria' must be a non-empty list of criteria with ids")
-    if binding is not None and not isinstance(binding, dict):
-        raise HandsoffError("verification record: 'binding' must be an object or null")
-    if not isinstance(executed, bool):
-        raise HandsoffError("verification record: 'executed' must be a boolean")
-    if reused_from is not None and (not isinstance(reused_from, str) or not reused_from.strip()):
-        raise HandsoffError("verification record: 'reused_from' must be a run id or null")
-    if executed and reused_from is not None:
-        raise HandsoffError("verification record: an executed record cannot name a reuse source")
-    path = verification_log_path(root, cfg)
-    prev_hash = _last_hash(path)
-    record = {
-        "run_id": f"vr-{uuid.uuid4().hex}",
-        "at": datetime.now(timezone.utc).isoformat(),
-        "kind": kind,
-        "ok": bool(ok),
-        "by": by,
-        "criteria": [c["id"] for c in criteria],
-        "criterion_hashes": {c["id"]: criterion_spec_hash(c) for c in criteria},
-        "results": results or [],
-        "commands": list(commands or []),
-        "description": description or "",
-        "acceptance_hash": acceptance_digest,
-        "config_hash": config_digest,
-        "binding": binding,
-        "executed": executed,
-        "reused_from": reused_from,
-        "feature_hash": feature_hash,
-        "repository_digest": repository_digest,
-        "prev_hash": prev_hash,
-    }
-    if attempts is not None:
-        record["attempts"] = attempts  # #169: only a repeat record carries it
-    if rules is not None:
-        record["rules_hash"] = rules["rules_hash"]  # #170: a live record binds its rules set
-        record["rules_entries"] = rules["rules_entries"]
-    record["hash"] = hashlib.sha256((_canonical(record) + prev_hash).encode("utf-8")).hexdigest()
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(_canonical(record) + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    return record
 
 
-def evidence_drift(root: Path, cfg: dict, acceptance: dict,
-                   verifications: list[dict]) -> dict:
-    """Classify newest valid automated evidence against one cached digest.
-
-    Legacy records remain unknown rather than stale, so adding this integrity
-    check cannot unexpectedly invalidate an existing run.
-    """
-    current_digest = repository_digest(root, cfg)
-    current_config = verification_config_hash(cfg)
-    result = {"current_digest": current_digest, "current": [], "stale": [],
-              "unknown": [], "refresh_commands": [], "changed_paths": [],
-              "changed_paths_truncated": False, "changed_paths_note": None}
-    current_entries = repository_digest_entries(root, cfg)
-    for criterion in acceptance.get("criteria", []):
-        cid = criterion.get("id")
-        if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
-            continue
-        record = next((candidate for candidate in reversed(verifications)
-                       if candidate.get("kind") == "checks"
-                       and candidate.get("ok") is True
-                       and cid in candidate.get("criteria", [])
-                       and candidate.get("criterion_hashes", {}).get(cid) == criterion_spec_hash(criterion)), None)
-        if record is None:
-            continue
-        digest = record.get("repository_digest")
-        recorded_config = record.get("config_hash")
-        if digest is None:
-            result["unknown"].append(cid)
-            result["changed_paths"] = None
-            result["changed_paths_note"] = "snapshot not recorded"
-        elif digest == current_digest and (recorded_config is None or recorded_config == current_config):
-            result["current"].append(cid)
-        else:
-            result["stale"].append(cid)
-            snapshot_path = root / ".handsoff-digests" / f"{digest}.json"
-            if snapshot_path.is_file():
-                try:
-                    old_entries = load_unique_json(snapshot_path).get("entries", {})
-                    changed = sorted({*old_entries, *current_entries} - {
-                        path for path in set(old_entries) & set(current_entries)
-                        if old_entries[path] == current_entries[path]
-                    })
-                    if len(changed) > 32:
-                        result["changed_paths_truncated"] = True
-                    result["changed_paths"] = changed[:32]
-                except (OSError, HandsoffError, ValueError):
-                    result["changed_paths_note"] = "snapshot not recorded"
-            else:
-                result["changed_paths_note"] = "snapshot not recorded"
-            result["refresh_commands"].append(
-                f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
-    return result
 
 
-def load_verifications(root: Path, cfg: dict) -> tuple[list[dict], list[str]]:
-    """Read and authenticate the verification ledger."""
-    path = verification_log_path(root, cfg)
-    if not path.exists():
-        return [], []
-    records: list[dict] = []
-    problems: list[str] = []
-    prev_hash = "GENESIS"
-    for lineno, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not raw_line.strip():
-            continue
-        try:
-            record = json.loads(raw_line)
-        except json.JSONDecodeError:
-            problems.append(f"verification line {lineno}: not valid JSON")
-            continue
-        if not isinstance(record, dict):
-            problems.append(f"verification line {lineno}: record must be an object")
-            continue
-        claimed_hash = record.get("hash")
-        body = {k: v for k, v in record.items() if k != "hash"}
-        if body.get("prev_hash") != prev_hash:
-            problems.append(f"verification line {lineno}: prev_hash mismatch")
-        expected = hashlib.sha256((_canonical(body) + str(body.get("prev_hash", ""))).encode("utf-8")).hexdigest()
-        if claimed_hash != expected:
-            problems.append(f"verification line {lineno}: content hash mismatch")
-        # A hand-crafted record can chain and hash perfectly while still
-        # being empty or meaningless: the hash proves nothing was altered
-        # AFTER it was written, not that it was ever real evidence. Every
-        # loaded record is re-checked against the same structural rules
-        # append_verification enforces on the way in.
-        by = record.get("by")
-        if not isinstance(by, str) or not by.strip():
-            problems.append(f"verification line {lineno}: 'by' must be a non-empty string")
-        if record.get("kind") not in VERIFICATION_KINDS:
-            problems.append(f"verification line {lineno}: 'kind' must be one of {sorted(VERIFICATION_KINDS)}")
-        criteria_ids = record.get("criteria")
-        if not criteria_ids or not isinstance(criteria_ids, list) or not all(
-                isinstance(c, str) and c for c in criteria_ids):
-            problems.append(f"verification line {lineno}: 'criteria' must be a non-empty list of criterion ids")
-        if not isinstance(record.get("ok"), bool):
-            problems.append(f"verification line {lineno}: 'ok' must be a boolean")
-        # #43 fields: absent on legacy records (tolerated, never reusable),
-        # typed when present so a hand-edited "executed": "yes" or a reuse
-        # source on an executed record is refused rather than half-trusted.
-        if "executed" in record and not isinstance(record.get("executed"), bool):
-            problems.append(f"verification line {lineno}: 'executed' must be a boolean")
-        if record.get("binding") is not None and not isinstance(record.get("binding"), dict):
-            problems.append(f"verification line {lineno}: 'binding' must be an object or null")
-        reused_from = record.get("reused_from")
-        if reused_from is not None and (not isinstance(reused_from, str) or not reused_from.strip()):
-            problems.append(f"verification line {lineno}: 'reused_from' must be a run id or null")
-        if record.get("executed") is True and reused_from is not None:
-            problems.append(f"verification line {lineno}: an executed record cannot name a reuse source")
-        if record.get("feature_hash") is not None and not isinstance(record.get("feature_hash"), str):
-            problems.append(f"verification line {lineno}: 'feature_hash' must be a string or null")
-        records.append(record)
-        prev_hash = claimed_hash or prev_hash
-    return records, problems
 
 
 # --------------------------------------------------------------------------
@@ -5476,1110 +3173,28 @@ def load_verifications(root: Path, cfg: dict) -> tuple[list[dict], list[str]]:
 # project's own "portable, no assumptions" stance)
 # --------------------------------------------------------------------------
 
-def validate_acceptance_schema(acceptance: dict) -> list[str]:
-    errors = []
-    if not isinstance(acceptance, dict):
-        return ["acceptance: top-level value must be an object"]
-    if "feature" not in acceptance:
-        errors.append("acceptance: missing 'feature'")
-    elif not isinstance(acceptance["feature"], str) or not acceptance["feature"].strip():
-        errors.append("acceptance: 'feature' must be a non-empty string")
-    criteria = acceptance.get("criteria")
-    if not isinstance(criteria, list) or not criteria:
-        errors.append("acceptance: 'criteria' must be a non-empty array")
-        return errors
-    seen_ids = set()
-    for c in criteria:
-        if not isinstance(c, dict):
-            errors.append("acceptance: every criterion must be an object")
-            continue
-        cid = c.get("id")
-        if not isinstance(cid, str) or not cid.strip():
-            errors.append("acceptance: a criterion is missing 'id'")
-        elif cid in seen_ids:
-            errors.append(f"acceptance: duplicate criterion id '{cid}'")
-        else:
-            seen_ids.add(cid)
-        if c.get("type") not in ("primary_fix", "supporting"):
-            errors.append(f"acceptance: criterion {cid} has an invalid 'type'")
-        if c.get("state") not in ("failing", "passing", "not_tested", "blocked"):
-            errors.append(f"acceptance: criterion {cid} has an invalid 'state'")
-        for field in ("requirement", "verification"):
-            if not isinstance(c.get(field), str) or not c.get(field, "").strip():
-                errors.append(f"acceptance: criterion {cid} missing '{field}'")
-        if c.get("verification") not in VERIFICATION_REQUIREMENTS:
-            errors.append(f"acceptance: criterion {cid} has an invalid 'verification' policy")
-        tests = c.get("tests")
-        evidence = c.get("evidence")
-        if not isinstance(tests, list) or not all(isinstance(x, str) and x.strip() for x in tests):
-            errors.append(f"acceptance: criterion {cid} 'tests' must be an array of non-empty strings")
-        if not isinstance(evidence, list) or not all(isinstance(x, str) and x.strip() for x in evidence):
-            errors.append(f"acceptance: criterion {cid} 'evidence' must be an array of verification run ids")
-        if not tests and not evidence:
-            errors.append(f"acceptance: criterion {cid} has no linked tests or evidence")
-        if "authored_by" in c and c["authored_by"] is not None:
-            if not isinstance(c["authored_by"], str) or not c["authored_by"].strip():
-                errors.append(f"acceptance: criterion {cid} 'authored_by' must be a non-empty string or null")
-    if not any(isinstance(c, dict) and c.get("type") == "primary_fix" for c in criteria):
-        errors.append("acceptance: at least one primary_fix criterion is required")
-    work_items = acceptance.get("work_items")
-    if work_items is not None:
-        if not isinstance(work_items, list) or not work_items or len(work_items) > MAX_WORK_ITEMS:
-            errors.append(f"acceptance: 'work_items' must contain 1 to {MAX_WORK_ITEMS} entries")
-            work_items = []
-        seen_work_items = set()
-        required = {"id", "kind", "number", "title", "url", "required", "github_state",
-                    "github_checked_at", "created_at", "updated_at", "notes"}
-        for index, item in enumerate(work_items):
-            label = f"acceptance: work_items[{index}]"
-            if not isinstance(item, dict) or set(item) != required:
-                errors.append(f"{label} has invalid fields")
-                continue
-            item_id = item.get("id")
-            if not isinstance(item_id, str) or not WORK_ITEM_ID_PATTERN.fullmatch(item_id) or item_id in seen_work_items:
-                errors.append(f"{label}.id is invalid or duplicated")
-            seen_work_items.add(item_id)
-            if item.get("kind") not in WORK_ITEM_KINDS:
-                errors.append(f"{label}.kind is invalid")
-            number = item.get("number")
-            if (item.get("kind") == "issue") != (isinstance(number, int) and not isinstance(number, bool) and number > 0):
-                errors.append(f"{label}.number must match its kind")
-            if not isinstance(item.get("title"), str) or not item["title"].strip() or len(item["title"]) > 200:
-                errors.append(f"{label}.title is invalid")
-            if not isinstance(item.get("url"), str) or not isinstance(item.get("notes"), str) or len(item["notes"]) > 512:
-                errors.append(f"{label} display fields are invalid")
-            if not isinstance(item.get("required"), bool) or item.get("github_state") not in {None, "open", "closed"}:
-                errors.append(f"{label} state fields are invalid")
-            for field in ("created_at", "updated_at"):
-                try:
-                    parsed = datetime.fromisoformat(item.get(field))
-                    if parsed.tzinfo is None:
-                        raise ValueError
-                except (TypeError, ValueError):
-                    errors.append(f"{label}.{field} must be a timezone-aware timestamp")
-    return errors
 
 
-def _is_number(value) -> bool:
-    """True only for a finite, real number. json.loads accepts NaN and
-    Infinity as an extension, and both pass isinstance(x, float) while
-    still crashing int()/float() arithmetic downstream (ValueError for
-    NaN, OverflowError for Infinity) -- round 3 finding: this used to
-    let a hand-edited "design_round": NaN through the schema check clean,
-    then crash inside compute_errors."""
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
 
 
-def _design_review_findings_errors(findings: object, label: str) -> list[str]:
-    """#36: a bounded list of {id, text} findings, ids in the F<attempt>.<n> form."""
-    if not isinstance(findings, list):
-        return [f"status: '{label}' must be an array"]
-    if len(findings) > MAX_DESIGN_REVIEW_FINDINGS:
-        return [f"status: '{label}' must contain at most {MAX_DESIGN_REVIEW_FINDINGS} findings"]
-    errors: list[str] = []
-    seen: set[str] = set()
-    for finding in findings:
-        if not isinstance(finding, dict) or set(finding) != {"id", "text"}:
-            errors.append(f"status: '{label}' entries must be objects with exactly id and text")
-            continue
-        finding_id = finding.get("id")
-        if not isinstance(finding_id, str) or not DESIGN_REVIEW_FINDING_ID_PATTERN.fullmatch(finding_id):
-            errors.append(f"status: '{label}' id {finding_id!r} is not a finding id")
-        elif finding_id in seen:
-            errors.append(f"status: '{label}' repeats finding id {finding_id}")
-        else:
-            seen.add(finding_id)
-        text = finding.get("text")
-        if not isinstance(text, str) or not text.strip() or len(text) > MAX_DESIGN_REVIEW_FINDING_LENGTH:
-            errors.append(f"status: '{label}' text must be a non-empty string of at most "
-                          f"{MAX_DESIGN_REVIEW_FINDING_LENGTH} characters")
-    return errors
 
 
-def _design_reviewer_profile_errors(profile: object, label: str) -> list[str]:
-    """#37: {adapter, model, tier, reason} from the closed vocabularies."""
-    if not isinstance(profile, dict) or set(profile) != set(DESIGN_REVIEWER_PROFILE_FIELDS):
-        return [f"status: '{label}' must have exactly the keys {sorted(DESIGN_REVIEWER_PROFILE_FIELDS)}"]
-    errors: list[str] = []
-    for key in ("adapter", "model"):
-        if not isinstance(profile.get(key), str) or not profile[key].strip():
-            errors.append(f"status: '{label}.{key}' must be a non-empty string")
-    if profile.get("tier") not in DESIGN_REVIEWER_TIERS:
-        errors.append(f"status: '{label}.tier' must be one of {', '.join(DESIGN_REVIEWER_TIERS)}")
-    if profile.get("reason") not in DESIGN_REVIEWER_SELECTION_REASONS:
-        errors.append(f"status: '{label}.reason' must be one of {', '.join(DESIGN_REVIEWER_SELECTION_REASONS)}")
-    return errors
 
 
-def _design_reviewer_escalation_errors(escalation: object) -> list[str]:
-    """#37: absent or null when no Pilot escalation is recorded; when present
-    a complete {by, at, note, consumed_at} record, so a hand edit refuses
-    cleanly instead of being read by the selection as an open escalation."""
-    if escalation is None:
-        return []
-    if not isinstance(escalation, dict):
-        return ["status: 'design_reviewer_escalation' must be an object or null"]
-    errors: list[str] = []
-    if set(escalation) != set(DESIGN_REVIEWER_ESCALATION_FIELDS):
-        errors.append("status: 'design_reviewer_escalation' must have exactly the keys "
-                      f"{sorted(DESIGN_REVIEWER_ESCALATION_FIELDS)}")
-    if not isinstance(escalation.get("by"), str) or not escalation["by"].strip():
-        errors.append("status: 'design_reviewer_escalation.by' must be a non-empty string")
-    for sub in ("at", "consumed_at"):
-        value = escalation.get(sub)
-        if value is None and sub == "consumed_at":
-            continue
-        if not isinstance(value, str) or not value.strip():
-            errors.append(f"status: 'design_reviewer_escalation.{sub}' must be a non-empty string"
-                          + (" or null" if sub == "consumed_at" else ""))
-            continue
-        try:
-            if datetime.fromisoformat(value).tzinfo is None:
-                errors.append(f"status: 'design_reviewer_escalation.{sub}' must include a timezone")
-        except ValueError:
-            errors.append(f"status: 'design_reviewer_escalation.{sub}' must be an ISO-8601 timestamp")
-    note = escalation.get("note")
-    if note is not None and (not isinstance(note, str) or not note.strip()):
-        errors.append("status: 'design_reviewer_escalation.note' must be a non-empty string or null")
-    return errors
 
 
-def _design_review_history_errors(history: object) -> list[str]:
-    """#36: absent on a legacy status; when present, at most 8 complete entries."""
-    if history is None:
-        return []
-    if not isinstance(history, list):
-        return ["status: 'design_review_history' must be an array"]
-    if len(history) > MAX_DESIGN_REVIEW_HISTORY:
-        return [f"status: 'design_review_history' must contain at most {MAX_DESIGN_REVIEW_HISTORY} entries"]
-    errors: list[str] = []
-    for index, entry in enumerate(history):
-        label = f"status: design_review_history[{index}]"
-        if not isinstance(entry, dict):
-            errors.append(f"{label} must be an object")
-            continue
-        if set(entry) - set(DESIGN_REVIEW_HISTORY_FIELDS) - {"proposal_hash"} or \
-                set(DESIGN_REVIEW_HISTORY_FIELDS) - set(entry):
-            errors.append(f"{label} must have exactly the keys {sorted(DESIGN_REVIEW_HISTORY_FIELDS)}")
-            continue
-        attempt = entry["attempt"]
-        if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
-            errors.append(f"{label}.attempt must be a positive integer")
-        if entry["decision"] not in {"approved", "changes_requested"}:
-            errors.append(f"{label}.decision must be 'approved' or 'changes_requested'")
-        for field in ("by", "design_hash"):
-            if not isinstance(entry[field], str) or not entry[field].strip():
-                errors.append(f"{label}.{field} must be a non-empty string")
-        if entry["head"] is not None and (not isinstance(entry["head"], str) or not entry["head"].strip()):
-            errors.append(f"{label}.head must be a non-empty string or null")
-        ids = entry["criteria_ids"]
-        if not isinstance(ids, list) or not all(isinstance(i, str) and i.strip() for i in ids) \
-                or ids != sorted(ids):
-            errors.append(f"{label}.criteria_ids must be a sorted array of criterion ids")
-        hashes = entry["criterion_hashes"]
-        if not isinstance(hashes, dict) or not all(
-                isinstance(k, str) and isinstance(v, str) and v for k, v in hashes.items()):
-            errors.append(f"{label}.criterion_hashes must map criterion ids to spec hashes")
-        if not isinstance(entry["structural_blocker"], bool):
-            errors.append(f"{label}.structural_blocker must be boolean")
-        errors.extend(_design_review_findings_errors(entry["findings"], f"design_review_history[{index}].findings"))
-    return errors
 
 
-def _design_review_packet_errors(packet: object) -> list[str]:
-    """#36: null or the latest generated packet with its load-bearing fields typed."""
-    if packet is None:
-        return []
-    if not isinstance(packet, dict):
-        return ["status: 'design_review_packet' must be an object or null"]
-    errors: list[str] = []
-    packet_id = packet.get("packet_id")
-    if not isinstance(packet_id, str) or not DESIGN_REVIEW_PACKET_ID_PATTERN.fullmatch(packet_id):
-        errors.append("status: 'design_review_packet.packet_id' must be 32 hex characters")
-    attempt = packet.get("attempt")
-    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 2:
-        errors.append("status: 'design_review_packet.attempt' must be an integer of at least 2")
-    previous = packet.get("previous_attempt")
-    if not isinstance(previous, int) or isinstance(previous, bool) or previous < 1:
-        errors.append("status: 'design_review_packet.previous_attempt' must be a positive integer")
-    for field in ("design_hash", "previous_design_hash"):
-        if not isinstance(packet.get(field), str) or not packet[field].strip():
-            errors.append(f"status: 'design_review_packet.{field}' must be a non-empty string")
-    if not isinstance(packet.get("stale"), bool):
-        errors.append("status: 'design_review_packet.stale' must be boolean")
-    reasons = packet.get("stale_reasons")
-    if not isinstance(reasons, list) or not all(isinstance(r, str) for r in reasons):
-        errors.append("status: 'design_review_packet.stale_reasons' must be an array of strings")
-    if not isinstance(packet.get("criteria_delta"), dict):
-        errors.append("status: 'design_review_packet.criteria_delta' must be an object")
-    findings = packet.get("findings")
-    if not isinstance(findings, list) or not all(
-            isinstance(f, dict) and f.get("disposition") in DESIGN_REVIEW_DISPOSITIONS for f in findings):
-        errors.append("status: 'design_review_packet.findings' must be an array of dispositioned findings")
-    if "truncated" in packet and (not isinstance(packet["truncated"], dict) or not all(
-            isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in packet["truncated"].values())):
-        errors.append("status: 'design_review_packet.truncated' must map field names to dropped counts")
-    return errors
 
 
-def validate_status_schema(status: dict) -> list[str]:
-    """Every field compute_errors later casts with int()/float() is
-    type-checked HERE first. Skipping this and letting a bad cast raise
-    was a real bug: a hand-edited status.json with e.g.
-    "design_round": "not-a-number" crashed the CLI with a raw traceback
-    instead of a clean SHIP_FEATURE_BLOCKED."""
-    if not isinstance(status, dict):
-        return ["status: top-level value must be an object"]
-    errors = [f"status: missing required field '{f}'" for f in REQUIRED_STATUS_FIELDS if f not in status]
-    if "risk_class" in status:
-        try:
-            classify_adaptive_risk(status["risk_class"])
-        except HandsoffError as exc:
-            errors.append(f"status: {exc}")
-    if "model_policy" in status:
-        try:
-            validate_model_policy(status["model_policy"])
-        except HandsoffError as exc:
-            errors.append(f"status: {exc}")
-    if "approval_posture" in status:
-        posture = status["approval_posture"]
-        expected = {"profile", "require_design_approval", "require_deployment_approval", "waivers_active"}
-        if not isinstance(posture, dict) or set(posture) != expected \
-                or posture.get("profile") not in {"safe", "dogfood", "unattended", "shared", "production"} \
-                or any(not isinstance(posture.get(key), bool) for key in expected - {"profile"}) \
-                or posture.get("waivers_active") != (not posture.get("require_design_approval")
-                                                     or not posture.get("require_deployment_approval")):
-            errors.append("status: 'approval_posture' is invalid")
-    if "lane" in status:
-        if status["lane"] not in RUN_LANES:
-            errors.append("status: 'lane' must be one of full, design, review")
-        for field in ("phases_run", "phases_waived"):
-            values = status.get(field)
-            if not isinstance(values, list) or any(not isinstance(value, int) or isinstance(value, bool)
-                                                   or value not in PHASES for value in values):
-                errors.append(f"status: '{field}' must be a sorted list of phase numbers")
-            elif values != sorted(set(values)):
-                errors.append(f"status: '{field}' must be sorted and unique")
-        if isinstance(status.get("phases_run"), list) and isinstance(status.get("phases_waived"), list) \
-                and set(status["phases_run"]) & set(status["phases_waived"]):
-            errors.append("status: phases_run and phases_waived must be disjoint")
-    coverage = status.get("requirement_coverage", {})
-    if not isinstance(coverage, dict):
-        errors.append("status: 'requirement_coverage' must be an object")
-        coverage = {}
-    errors += [f"status: requirement_coverage missing '{f}'" for f in REQUIRED_COVERAGE_FIELDS if f not in coverage]
-    if "phase_number" in status and (not isinstance(status["phase_number"], int)
-                                      or isinstance(status["phase_number"], bool)
-                                      or status["phase_number"] not in PHASES):
-        errors.append(f"status: phase_number {status['phase_number']} is not one of {sorted(PHASES)}")
-    elif "phase_number" in status and status.get("phase") != PHASES[status["phase_number"]]:
-        errors.append("status: 'phase' does not match 'phase_number'")
-    if "progress" in status and (not _is_number(status["progress"]) or not 0 <= status["progress"] <= 100):
-        errors.append(f"status: 'progress' must be a finite number from 0 to 100, got {status['progress']!r}")
-    for field in ("design_round", "review_round", "retry_count"):
-        if field in status and (not isinstance(status[field], int) or isinstance(status[field], bool) or status[field] < 0):
-            errors.append(f"status: '{field}' must be a non-negative integer, got {status[field]!r}")
-    for field in ("feature", "phase", "status", "updated_at", "next_action"):
-        if field in status and (not isinstance(status[field], str) or not status[field].strip()):
-            errors.append(f"status: '{field}' must be a non-empty string")
-    if "status" in status and status["status"] not in STATUS_VALUES:
-        errors.append(f"status: invalid status value {status['status']!r}")
-    if "updated_at" in status and isinstance(status["updated_at"], str):
-        try:
-            parsed = datetime.fromisoformat(status["updated_at"])
-            if parsed.tzinfo is None:
-                errors.append("status: 'updated_at' must include a timezone")
-        except ValueError:
-            errors.append("status: 'updated_at' must be an ISO-8601 timestamp")
-    # 'last_heartbeat_at' is optional and nullable (absent entirely on any
-    # status.json written before this field existed, in this repo or any
-    # other project already running Handsoff) but when PRESENT it is held
-    # to the same timestamp discipline as 'updated_at', so a malformed
-    # heartbeat is refused as a schema error rather than silently read as
-    # fresh by stall_warning()/activity_note().
-    if "last_heartbeat_at" in status and status["last_heartbeat_at"] is not None:
-        if not isinstance(status["last_heartbeat_at"], str) or not status["last_heartbeat_at"].strip():
-            errors.append("status: 'last_heartbeat_at' must be a non-empty string or null")
-        else:
-            try:
-                parsed = datetime.fromisoformat(status["last_heartbeat_at"])
-                if parsed.tzinfo is None:
-                    errors.append("status: 'last_heartbeat_at' must include a timezone")
-            except ValueError:
-                errors.append("status: 'last_heartbeat_at' must be an ISO-8601 timestamp")
-    heartbeat_owner = status.get("last_heartbeat_owner")
-    if heartbeat_owner is not None and (not isinstance(heartbeat_owner, str) or not heartbeat_owner.strip()):
-        errors.append("status: 'last_heartbeat_owner' must be a non-empty string or null")
-    background_wait = status.get("background_wait")
-    if background_wait is not None and (not isinstance(background_wait, dict)
-                                        or not isinstance(background_wait.get("since"), str)
-                                        or not isinstance(background_wait.get("by"), str)):
-        errors.append("status: 'background_wait' must be an owned wait record or null")
-    # 'human_pause' is the durable record of an open human-pause-start
-    # (#34): absent or null on any status.json written before the field
-    # existed, or whenever no pause is open. When PRESENT it must be a
-    # complete object so a hand edit refuses cleanly instead of being
-    # read by stall_warning()/activity_note() as an open pause.
-    if "human_pause" in status and status["human_pause"] is not None:
-        pause = status["human_pause"]
-        if not isinstance(pause, dict):
-            errors.append("status: 'human_pause' must be an object or null")
-        else:
-            expected = {"by", "since", "note"}
-            if set(pause) != expected:
-                errors.append(f"status: 'human_pause' must have exactly the keys {sorted(expected)}")
-            if not isinstance(pause.get("by"), str) or not pause["by"].strip():
-                errors.append("status: 'human_pause.by' must be a non-empty string")
-            since = pause.get("since")
-            if not isinstance(since, str) or not since.strip():
-                errors.append("status: 'human_pause.since' must be a non-empty string")
-            else:
-                try:
-                    parsed = datetime.fromisoformat(since)
-                    if parsed.tzinfo is None:
-                        errors.append("status: 'human_pause.since' must include a timezone")
-                except ValueError:
-                    errors.append("status: 'human_pause.since' must be an ISO-8601 timestamp")
-            note = pause.get("note")
-            if note is not None and (not isinstance(note, str) or not note.strip()):
-                errors.append("status: 'human_pause.note' must be a non-empty string or null")
-    # #35: the cumulative attempt counter and the Pilot's one-attempt
-    # authorization. Both absent on any status.json written before the
-    # fields existed (read as zero attempts / no authorization); when
-    # PRESENT they are held to a strict shape so a hand edit refuses
-    # cleanly instead of being read by design_review_budget() as budget.
-    if "design_review_attempts" in status and (
-            not isinstance(status["design_review_attempts"], int)
-            or isinstance(status["design_review_attempts"], bool)
-            or status["design_review_attempts"] < 0):
-        errors.append("status: 'design_review_attempts' must be a non-negative integer, "
-                      f"got {status['design_review_attempts']!r}")
-    if "design_review_authorization" in status and status["design_review_authorization"] is not None:
-        authorization = status["design_review_authorization"]
-        if not isinstance(authorization, dict):
-            errors.append("status: 'design_review_authorization' must be an object or null")
-        else:
-            expected = {"by", "at", "note", "attempt_permitted", "launch_session_id", "consumed_at"}
-            if set(authorization) != expected:
-                errors.append("status: 'design_review_authorization' must have exactly the keys "
-                              f"{sorted(expected)}")
-            if not isinstance(authorization.get("by"), str) or not authorization["by"].strip():
-                errors.append("status: 'design_review_authorization.by' must be a non-empty string")
-            for sub in ("at", "consumed_at"):
-                value = authorization.get(sub)
-                if value is None and sub == "consumed_at":
-                    continue
-                if not isinstance(value, str) or not value.strip():
-                    errors.append(f"status: 'design_review_authorization.{sub}' must be a non-empty string"
-                                  + (" or null" if sub == "consumed_at" else ""))
-                    continue
-                try:
-                    if datetime.fromisoformat(value).tzinfo is None:
-                        errors.append(f"status: 'design_review_authorization.{sub}' must include a timezone")
-                except ValueError:
-                    errors.append(f"status: 'design_review_authorization.{sub}' must be an ISO-8601 timestamp")
-            note = authorization.get("note")
-            if note is not None and (not isinstance(note, str) or not note.strip()):
-                errors.append("status: 'design_review_authorization.note' must be a non-empty string or null")
-            permitted = authorization.get("attempt_permitted")
-            if not isinstance(permitted, int) or isinstance(permitted, bool) or permitted < 1:
-                errors.append("status: 'design_review_authorization.attempt_permitted' must be a positive integer")
-            launch_session_id = authorization.get("launch_session_id")
-            if launch_session_id is not None and (
-                    not isinstance(launch_session_id, str)
-                    or not AGENT_SESSION_ID_PATTERN.fullmatch(launch_session_id)):
-                errors.append("status: 'design_review_authorization.launch_session_id' must be an agent "
-                              "session id or null")
-    if "events" in status and not isinstance(status["events"], list):
-        errors.append("status: 'events' must be an array")
-    for field in ("passing", "failing", "not_tested", "blocked"):
-        if field in coverage and (not isinstance(coverage[field], int) or isinstance(coverage[field], bool) or coverage[field] < 0):
-            errors.append(f"status: requirement_coverage.{field} must be a non-negative integer")
-    if "original_symptom_resolved" in coverage and not isinstance(coverage["original_symptom_resolved"], bool):
-        errors.append("status: requirement_coverage.original_symptom_resolved must be boolean")
-    for field in ("implemented_by", "reviewed_by", "original_symptom_evidence_id", "live_verification_id"):
-        if field in status and status[field] is not None and (not isinstance(status[field], str) or not status[field].strip()):
-            errors.append(f"status: '{field}' must be a non-empty string or null")
-    for field in ("requires_design_approval", "requires_design_review"):
-        if field in status and not isinstance(status[field], bool):
-            errors.append(f"status: '{field}' must be a boolean")
-    for field, record_name in (("review", "review"), ("deployment_approved", "deployment_approved")):
-        record = status.get(field)
-        if record is None:
-            continue
-        if not isinstance(record, dict):
-            errors.append(f"status: '{field}' must be an object or null")
-            continue
-        for sub in ("by", "at", "acceptance_hash"):
-            if sub not in record or not isinstance(record[sub], str) or not record[sub].strip():
-                errors.append(f"status: '{record_name}.{sub}' must be a non-empty string")
-        if "at" in record and isinstance(record["at"], str):
-            try:
-                parsed = datetime.fromisoformat(record["at"])
-                if parsed.tzinfo is None:
-                    errors.append(f"status: '{record_name}.at' must include a timezone")
-            except ValueError:
-                errors.append(f"status: '{record_name}.at' must be an ISO-8601 timestamp")
-    design_approved = status.get("design_approved")
-    if design_approved is not None:
-        if not isinstance(design_approved, dict):
-            errors.append("status: 'design_approved' must be an object or null")
-        else:
-            for sub in ("by", "architect", "at", "design_hash"):
-                if sub not in design_approved or not isinstance(design_approved[sub], str) \
-                        or not design_approved[sub].strip():
-                    errors.append(f"status: 'design_approved.{sub}' must be a non-empty string")
-            if "at" in design_approved and isinstance(design_approved["at"], str):
-                try:
-                    parsed = datetime.fromisoformat(design_approved["at"])
-                    if parsed.tzinfo is None:
-                        errors.append("status: 'design_approved.at' must include a timezone")
-                except ValueError:
-                    errors.append("status: 'design_approved.at' must be an ISO-8601 timestamp")
-            if "proposal_hash" in design_approved and design_approved["proposal_hash"] is not None and (not isinstance(design_approved["proposal_hash"], str)
-                                                                                                          or not design_approved["proposal_hash"].strip()):
-                errors.append("status: 'design_approved.proposal_hash' must be a non-empty string")
-            if "redesigns_settled_work" in design_approved and design_approved["redesigns_settled_work"] is not None \
-                    and (not isinstance(design_approved["redesigns_settled_work"], str)
-                         or not design_approved["redesigns_settled_work"].strip()):
-                errors.append("status: 'design_approved.redesigns_settled_work' must be a non-empty string or null")
-            # Optional, like redesigns_settled_work: a run approved before
-            # this field existed (or a hand-crafted fixture) has none, and
-            # that stays valid -- only a present-but-malformed value refuses.
-            if "summary" in design_approved and design_approved["summary"] is not None \
-                    and (not isinstance(design_approved["summary"], str) or not design_approved["summary"].strip()):
-                errors.append("status: 'design_approved.summary' must be a non-empty string or null")
-    design_review = status.get("design_review")
-    if design_review is not None:
-        if not isinstance(design_review, dict):
-            errors.append("status: 'design_review' must be an object or null")
-        else:
-            for sub in ("by", "architect", "at", "decision", "summary", "design_hash", "config_hash"):
-                if sub not in design_review or not isinstance(design_review[sub], str) \
-                        or not design_review[sub].strip():
-                    errors.append(f"status: 'design_review.{sub}' must be a non-empty string")
-            if design_review.get("decision") not in {"approved", "changes_requested"}:
-                    errors.append("status: 'design_review.decision' must be 'approved' or 'changes_requested'")
-            if "proposal_hash" in design_review and design_review["proposal_hash"] is not None and (not isinstance(design_review["proposal_hash"], str)
-                                                                                                      or not design_review["proposal_hash"].strip()):
-                errors.append("status: 'design_review.proposal_hash' must be a non-empty string")
-            if "at" in design_review and isinstance(design_review["at"], str):
-                try:
-                    parsed = datetime.fromisoformat(design_review["at"])
-                    if parsed.tzinfo is None:
-                        errors.append("status: 'design_review.at' must include a timezone")
-                except ValueError:
-                    errors.append("status: 'design_review.at' must be an ISO-8601 timestamp")
-            # #36: optional on a record written before the fields existed.
-            if "findings" in design_review:
-                errors.extend(_design_review_findings_errors(design_review["findings"], "design_review.findings"))
-            if "head" in design_review and design_review["head"] is not None and (
-                    not isinstance(design_review["head"], str) or not design_review["head"].strip()):
-                errors.append("status: 'design_review.head' must be a non-empty string or null")
-            if "attempt" in design_review and (
-                    not isinstance(design_review["attempt"], int) or isinstance(design_review["attempt"], bool)
-                    or design_review["attempt"] < 1):
-                errors.append("status: 'design_review.attempt' must be a positive integer")
-            # #37: optional on a record written before the fields existed.
-            if "structural_blocker" in design_review and not isinstance(design_review["structural_blocker"], bool):
-                errors.append("status: 'design_review.structural_blocker' must be boolean")
-            if "reviewer_profile" in design_review and design_review["reviewer_profile"] is not None:
-                errors.extend(_design_reviewer_profile_errors(design_review["reviewer_profile"],
-                                                              "design_review.reviewer_profile"))
-    proposal = status.get("design_proposal")
-    if isinstance(proposal, dict) and "provenance" in proposal:
-        provenance = proposal["provenance"]
-        expected = {"actor", "pid", "executable", "host_session_id", "recorded_at"}
-        if not isinstance(provenance, dict) or set(provenance) != expected:
-            errors.append("status: 'design_proposal.provenance' has invalid fields")
-        else:
-            if not isinstance(provenance["actor"], str) or not provenance["actor"].strip():
-                errors.append("status: 'design_proposal.provenance.actor' must be a non-empty string")
-            if not isinstance(provenance["pid"], int) or isinstance(provenance["pid"], bool) or provenance["pid"] < 1:
-                errors.append("status: 'design_proposal.provenance.pid' must be a positive integer")
-            if not isinstance(provenance["executable"], str) or not provenance["executable"].strip():
-                errors.append("status: 'design_proposal.provenance.executable' must be a non-empty string")
-            if provenance["host_session_id"] is not None and (not isinstance(provenance["host_session_id"], str)
-                                                               or not provenance["host_session_id"].strip()):
-                errors.append("status: 'design_proposal.provenance.host_session_id' must be a string or null")
-            try:
-                if datetime.fromisoformat(provenance["recorded_at"]).tzinfo is None:
-                    raise ValueError
-            except (TypeError, ValueError):
-                errors.append("status: 'design_proposal.provenance.recorded_at' must be timezone-aware")
-    errors.extend(_design_reviewer_escalation_errors(status.get("design_reviewer_escalation")))
-    errors.extend(_design_review_history_errors(status.get("design_review_history")))
-    errors.extend(_design_review_packet_errors(status.get("design_review_packet")))
-    review = status.get("review")
-    if isinstance(review, dict) and "checklist" in review and not isinstance(review["checklist"], dict):
-        errors.append("status: 'review.checklist' must be an object")
-    if isinstance(review, dict):
-        for field in ("implementer_profile", "reviewer_profile"):
-            profile = review.get(field)
-            if profile is None:
-                continue
-            if not isinstance(profile, dict):
-                errors.append(f"status: 'review.{field}' must be an object")
-                continue
-            for key in ("adapter", "model"):
-                if not isinstance(profile.get(key), str) or not profile[key].strip():
-                    errors.append(f"status: 'review.{field}.{key}' must be a non-empty string")
-            effective = profile.get("effective_adapter")
-            if effective is not None and (not isinstance(effective, str) or not effective.strip()):
-                errors.append(f"status: 'review.{field}.effective_adapter' must be a non-empty string or null")
-            # #39: provenance is optional (records from before it carry
-            # none) but, when present, must be exactly adapter/model
-            # sources from the closed PROFILE_SOURCES vocabulary.
-            source = profile.get("source")
-            if source is not None and (
-                    not isinstance(source, dict) or set(source) != {"adapter", "model"}
-                    or any(value not in PROFILE_SOURCES for value in source.values())):
-                errors.append(
-                    f"status: 'review.{field}.source' must be an object with adapter and model "
-                    f"sources from {', '.join(PROFILE_SOURCES)}"
-                )
-        if "profiles_distinct" in review and not isinstance(review["profiles_distinct"], bool):
-            errors.append("status: 'review.profiles_distinct' must be boolean")
-    attempts = status.get("review_attempts")
-    if attempts is not None:
-        offset = status.get("legacy_review_round_offset")
-        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
-            errors.append("status: 'legacy_review_round_offset' must be a non-negative integer")
-            offset = 0
-        if not isinstance(attempts, list) or len(attempts) > MAX_REVIEW_ATTEMPTS:
-            errors.append(f"status: 'review_attempts' must contain at most {MAX_REVIEW_ATTEMPTS} entries")
-            attempts = []
-        open_count = 0
-        ids = set()
-        for index, attempt in enumerate(attempts):
-            label = f"status: review_attempts[{index}]"
-            required = {
-                "attempt_id", "attempt", "opened_at", "closed_at", "opened_by", "reviewer",
-                "session_ids", "trigger", "trigger_detail", "acceptance_hash", "phase_number",
-                "disposition", "findings",
-            }
-            if not isinstance(attempt, dict) or not required.issubset(attempt) \
-                    or set(attempt) - required - {"tests_executed", "adopted_by", "adopted_session", "design_hash", "reaffirmed_at"}:
-                errors.append(f"{label} has invalid fields")
-                continue
-            aid = attempt.get("attempt_id")
-            if not isinstance(aid, str) or not REVIEW_ATTEMPT_ID_PATTERN.fullmatch(aid) or aid in ids:
-                errors.append(f"{label}.attempt_id is invalid or duplicated")
-            ids.add(aid)
-            if attempt.get("attempt") != offset + index + 1:
-                errors.append(f"{label}.attempt does not match its monotonic ledger position")
-            if attempt.get("trigger") not in REVIEW_ATTEMPT_TRIGGERS:
-                errors.append(f"{label}.trigger is invalid")
-            disposition = attempt.get("disposition")
-            if disposition not in REVIEW_ATTEMPT_DISPOSITIONS:
-                errors.append(f"{label}.disposition is invalid")
-            if disposition == "open":
-                open_count += 1
-                if index != len(attempts) - 1 or attempt.get("closed_at") is not None:
-                    errors.append(f"{label} open attempt must be last with null closed_at")
-            elif attempt.get("closed_at") is None:
-                errors.append(f"{label} closed attempt requires closed_at")
-            for key in ("opened_at", "closed_at"):
-                value = attempt.get(key)
-                if value is None and key == "closed_at":
-                    continue
-                try:
-                    parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
-                    if parsed is None or parsed.tzinfo is None:
-                        raise ValueError
-                except ValueError:
-                    errors.append(f"{label}.{key} must be a timezone-aware timestamp or null")
-            try:
-                validate_agent_actor(attempt.get("opened_by"))
-                if attempt.get("reviewer") is not None:
-                    validate_agent_actor(attempt.get("reviewer"))
-            except HandsoffError as exc:
-                errors.append(f"{label}: {exc}")
-            session_ids = attempt.get("session_ids")
-            if not isinstance(session_ids, list) or len(session_ids) > MAX_REVIEW_SESSION_IDS \
-                    or len(session_ids) != len(set(session_ids)) \
-                    or any(not isinstance(sid, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(sid)
-                           for sid in session_ids):
-                errors.append(f"{label}.session_ids is invalid")
-            if not isinstance(attempt.get("trigger_detail"), str) or len(attempt["trigger_detail"]) > 512:
-                errors.append(f"{label}.trigger_detail is invalid")
-            if not isinstance(attempt.get("acceptance_hash"), str) \
-                    or not re.fullmatch(r"[0-9a-f]{64}", attempt["acceptance_hash"]):
-                errors.append(f"{label}.acceptance_hash is invalid")
-            if attempt.get("phase_number") not in PHASES:
-                errors.append(f"{label}.phase_number is invalid")
-            findings_value = attempt.get("findings")
-            if not isinstance(findings_value, list) or len(findings_value) > 16 \
-                    or any(not isinstance(item, dict) or set(item) != {"code", "summary"}
-                           or item.get("code") not in REVIEW_FINDING_CODES
-                           or not isinstance(item.get("summary"), str) or not item["summary"].strip()
-                           or len(item["summary"]) > 512 for item in findings_value):
-                errors.append(f"{label}.findings is invalid")
-            if attempt.get("tests_executed", "unknown") not in {"yes", "no", "unknown"}:
-                errors.append(f"{label}.tests_executed is invalid")
-        if open_count > 1:
-            errors.append("status: at most one review attempt may be open")
-        if isinstance(status.get("review_round"), int) \
-                and status.get("review_round") != offset + len(attempts):
-            errors.append("status: review_round must equal legacy offset plus review_attempts length")
-    overrides = status.get("review_cap_overrides")
-    if overrides is not None:
-        if not isinstance(overrides, list) or len(overrides) > MAX_REVIEW_CAP_OVERRIDES:
-            errors.append(f"status: 'review_cap_overrides' must contain at most {MAX_REVIEW_CAP_OVERRIDES} entries")
-        else:
-            seen_overrides = set()
-            for item in overrides:
-                oid = item.get("override_id") if isinstance(item, dict) else None
-                required = {"override_id", "by", "at", "reason", "config_hash", "review_round_at_grant"}
-                if not isinstance(item, dict) or set(item) != required \
-                        or not isinstance(oid, str) or not REVIEW_OVERRIDE_ID_PATTERN.fullmatch(oid) \
-                        or oid in seen_overrides:
-                    errors.append("status: review cap override is invalid")
-                    continue
-                seen_overrides.add(oid)
-                if not all(isinstance(item.get(k), str) and item[k].strip()
-                           for k in ("by", "at", "reason", "config_hash")) \
-                        or not isinstance(item.get("review_round_at_grant"), int):
-                    errors.append("status: review cap override fields are invalid")
-    escalation = status.get("escalation")
-    if escalation is not None:
-        required = {"kind", "at", "reason", "required_action", "source"}
-        if not isinstance(escalation, dict) or set(escalation) != required \
-                or escalation.get("kind") not in ESCALATION_KINDS \
-                or not all(isinstance(escalation.get(k), str) and escalation[k].strip()
-                           for k in required - {"kind"}):
-            errors.append("status: 'escalation' is invalid")
-    recovery_attempts = status.get("recovery_attempts")
-    if recovery_attempts is not None:
-        if not isinstance(recovery_attempts, list) or len(recovery_attempts) > MAX_RECOVERY_ATTEMPTS:
-            errors.append(f"status: 'recovery_attempts' must contain at most {MAX_RECOVERY_ATTEMPTS} entries")
-            recovery_attempts = []
-        recovery_ids = set()
-        for index, item in enumerate(recovery_attempts):
-            required = {"recovery_id", "role", "trigger", "from_session_id", "to_session_id",
-                        "attempt", "cap", "holder", "state", "reason", "at", "launched_at", "ended_at"}
-            rid = item.get("recovery_id") if isinstance(item, dict) else None
-            if not isinstance(item, dict) or set(item) != required \
-                    or not isinstance(rid, str) or not RECOVERY_ID_PATTERN.fullmatch(rid) \
-                    or rid in recovery_ids or item.get("role") not in SELECTABLE_AGENT_ROLES \
-                    or item.get("trigger") not in RECOVERY_TRIGGERS \
-                    or item.get("state") not in RECOVERY_STATES \
-                    or not isinstance(item.get("cap"), int) \
-                    or not isinstance(item.get("attempt"), int) \
-                    or isinstance(item.get("attempt"), bool) \
-                    or not 1 <= item.get("attempt") <= item.get("cap") \
-                    or not all(isinstance(item.get(k), str) and item[k].strip()
-                               for k in ("holder", "reason", "at")):
-                errors.append(f"status: recovery_attempts[{index}] is invalid")
-                continue
-            recovery_ids.add(rid)
-            if item.get("state") in {"reserved", "launched"} and index != len(recovery_attempts) - 1:
-                errors.append("status: only the last recovery attempt may be live")
-    lease = status.get("recovery_lease")
-    if lease is not None:
-        required = {"lease_id", "holder", "acquired_at", "expires_at", "recovery_id"}
-        if not isinstance(lease, dict) or set(lease) != required \
-                or not isinstance(lease.get("lease_id"), str) \
-                or not RECOVERY_LEASE_ID_PATTERN.fullmatch(lease["lease_id"]) \
-                or not all(isinstance(lease.get(k), str) and lease[k].strip()
-                           for k in ("holder", "acquired_at", "expires_at", "recovery_id")):
-            errors.append("status: 'recovery_lease' is invalid")
-        elif not isinstance(recovery_attempts, list) or not recovery_attempts \
-                or recovery_attempts[-1].get("recovery_id") != lease.get("recovery_id") \
-                or recovery_attempts[-1].get("state") not in {"reserved", "launched"}:
-            errors.append("status: recovery_lease must reference the live final recovery attempt")
-    errors.extend(validate_release_plan(status.get("release_plan")))
-    regression_requests = status.get("regression_requests")
-    if regression_requests is not None:
-        if not isinstance(regression_requests, list) or len(regression_requests) > MAX_REGRESSION_REQUESTS:
-            errors.append(f"status: 'regression_requests' must contain at most {MAX_REGRESSION_REQUESTS} entries")
-            regression_requests = []
-        seen_request_ids = set()
-        live_requests = 0
-        for index, item in enumerate(regression_requests):
-            required = {
-                "request_id", "group", "commands", "command_sha256", "state", "requested_by",
-                "requested_at", "expires_at", "decided_by", "decided_at", "launched_at",
-                "completed_at", "launch_nonce_sha256", "repository", "acceptance_hash",
-                "config_hash", "scope_hash", "run_id", "epoch_sha256", "reason",
-                "requester_session_id", "results",
-            }
-            label = f"status: regression_requests[{index}]"
-            rid = item.get("request_id") if isinstance(item, dict) else None
-            optional = {"release_version", "release_class", "policy_override_reason", "timeout_seconds"}
-            if not isinstance(item, dict) or not required <= set(item) or set(item) - required - optional:
-                errors.append(f"{label} has invalid fields")
-                continue
-            if "release_version" in item:
-                try:
-                    normalized, release_class = classify_release_version(item.get("release_version"))
-                    if normalized != item.get("release_version") or release_class != item.get("release_class"):
-                        errors.append(f"{label} release version/class mismatch")
-                except HandsoffError:
-                    errors.append(f"{label}.release_version is invalid")
-                override = item.get("policy_override_reason")
-                if override is not None and (not isinstance(override, str) or not override.strip()):
-                    errors.append(f"{label}.policy_override_reason is invalid")
-            if not isinstance(rid, str) or not REGRESSION_REQUEST_ID_PATTERN.fullmatch(rid) or rid in seen_request_ids:
-                errors.append(f"{label}.request_id is invalid or duplicated")
-            seen_request_ids.add(rid)
-            if item.get("state") not in REGRESSION_STATES:
-                errors.append(f"{label}.state is invalid")
-            if item.get("state") in {"awaiting_approval", "accepted", "launched"}:
-                live_requests += 1
-                if index != len(regression_requests) - 1:
-                    errors.append(f"{label} live request must be last")
-            if not isinstance(item.get("commands"), list) or not item["commands"] \
-                    or not all(isinstance(cmd, str) and cmd.strip() for cmd in item["commands"]):
-                errors.append(f"{label}.commands is invalid")
-            if "timeout_seconds" in item and (not isinstance(item["timeout_seconds"], int)
-                                               or isinstance(item["timeout_seconds"], bool)
-                                               or item["timeout_seconds"] <= 0):
-                errors.append(f"{label}.timeout_seconds is invalid")
-            for key in ("command_sha256", "acceptance_hash", "config_hash", "scope_hash", "epoch_sha256"):
-                if not isinstance(item.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", item[key]):
-                    errors.append(f"{label}.{key} is invalid")
-            nonce = item.get("launch_nonce_sha256")
-            if nonce is not None and (not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{64}", nonce)):
-                errors.append(f"{label}.launch_nonce_sha256 is invalid")
-            if item.get("state") in {"launched", "completed", "failed"} and nonce is None:
-                errors.append(f"{label} launched/terminal execution requires a nonce digest")
-            if not isinstance(item.get("repository"), dict):
-                errors.append(f"{label}.repository is invalid")
-            if not isinstance(item.get("run_id"), str) or not item["run_id"].strip() \
-                    or not isinstance(item.get("reason"), str) or not item["reason"].strip():
-                errors.append(f"{label} identity fields are invalid")
-            requester_session = item.get("requester_session_id")
-            if requester_session is not None and (not isinstance(requester_session, str)
-                                                   or not AGENT_SESSION_ID_PATTERN.fullmatch(requester_session)):
-                errors.append(f"{label}.requester_session_id is invalid")
-            if not isinstance(item.get("results"), list):
-                errors.append(f"{label}.results must be an array")
-        if live_requests > 1:
-            errors.append("status: at most one regression request may be live")
-    sessions = status.get("agent_sessions")
-    pointers = status.get("current_agent_sessions")
-    if sessions is not None:
-        if not isinstance(sessions, dict):
-            errors.append("status: 'agent_sessions' must be an object")
-            sessions = {}
-        elif len(sessions) > MAX_AGENT_SESSIONS:
-            errors.append(f"status: 'agent_sessions' must contain at most {MAX_AGENT_SESSIONS} sessions")
-        for session_id, session in sessions.items():
-            label = f"status: agent session {session_id!r}"
-            if not isinstance(session_id, str) or len(session_id) > MAX_AGENT_SESSION_ID_LENGTH \
-                    or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
-                errors.append(f"{label} has an invalid session id")
-            if not isinstance(session, dict):
-                errors.append(f"{label} must be an object")
-                continue
-            missing = AGENT_SESSION_FIELDS - AGENT_SESSION_OPTIONAL_FIELDS - set(session)
-            if missing:
-                errors.append(f"{label} is missing fields: {', '.join(sorted(missing))}")
-            unexpected = set(session) - AGENT_SESSION_FIELDS
-            if unexpected:
-                errors.append(f"{label} contains unsupported fields: {', '.join(sorted(unexpected))}")
-            for optional_field in sorted(AGENT_SESSION_OPTIONAL_FIELDS):
-                value = session.get(optional_field)
-                if optional_field == "result":
-                    continue
-                if optional_field == "usage":
-                    if value is not None:
-                        try:
-                            validate_usage(value)
-                        except HandsoffError as exc:
-                            errors.append(f"{label}.usage: {exc}")
-                    continue
-                if optional_field == "adaptive_routing":
-                    if value is not None:
-                        try:
-                            validate_session_adaptive_routing(value)
-                        except HandsoffError as exc:
-                            errors.append(f"{label}.adaptive_routing: {exc}")
-                    continue
-                if optional_field == "budget_decision":
-                    if value is not None:
-                        try:
-                            validate_session_budget_decision(value)
-                        except HandsoffError as exc:
-                            errors.append(f"{label}.budget_decision: {exc}")
-                    continue
-                if optional_field == "reviewer_isolation":
-                    if value is not None:
-                        try:
-                            validate_reviewer_isolation_contract(value)
-                        except HandsoffError as exc:
-                            errors.append(f"{label}.reviewer_isolation: {exc}")
-                    if session.get("role") == "reviewer" and value is None:
-                        # Legacy reviewer sessions predate this field and remain readable.
-                        pass
-                    elif session.get("role") != "reviewer" and value is not None:
-                        errors.append(f"{label}.reviewer_isolation applies only to reviewer sessions")
-                    continue
-                if optional_field == "phase_number":
-                    if value is not None and (not isinstance(value, int) or isinstance(value, bool)
-                                              or value not in PHASES):
-                        errors.append(f"{label}.phase_number must be null or an integer from 1 through 8")
-                    continue
-                if optional_field == "progress":
-                    # #215: the Implementer's per-criterion claims, validated one by one
-                    if value is not None and (not isinstance(value, list) or len(value) > MAX_PROGRESS_RECORDS or not all(
-                            isinstance(item, dict) and set(item) == {"criterion", "state", "test", "note", "at"}
-                            and validate_progress_line({k: item[k] for k in ("criterion", "state", "test", "note")}) is not None
-                            and isinstance(item["at"], str) for item in value)):
-                        errors.append(f"{label}.progress must be a list of validated progress records")
-                    continue
-                if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 64):
-                    errors.append(f"{label}.{optional_field} must be null or a non-empty string")
-                elif optional_field == "tier" and value is not None and value not in DESIGN_REVIEWER_TIERS:
-                    errors.append(f"{label}.tier must be null or one of {', '.join(DESIGN_REVIEWER_TIERS)}")
-            if session.get("session_id") != session_id:
-                errors.append(f"{label} session_id must match its object key")
-            if session.get("role") not in SELECTABLE_AGENT_ROLES:
-                errors.append(f"{label} has an invalid role")
-            try:
-                validate_agent_actor(session.get("actor"))
-            except HandsoffError as exc:
-                errors.append(f"{label}: {exc}")
-            if session.get("adapter") not in SELECTABLE_AGENT_ADAPTERS:
-                errors.append(f"{label} has an invalid adapter")
-            try:
-                validate_agent_model(session.get("requested_model"))
-            except HandsoffError as exc:
-                errors.append(f"{label}: requested_model: {exc}")
-            reported_model = session.get("reported_model")
-            if reported_model is not None:
-                try:
-                    validate_agent_model(reported_model)
-                except HandsoffError as exc:
-                    errors.append(f"{label}: reported_model: {exc}")
-            if session.get("resolution_source") not in AGENT_SESSION_RESOLUTION_SOURCES:
-                errors.append(f"{label} has an invalid resolution_source")
-            session_state = session.get("state")
-            if session_state not in AGENT_SESSION_STATES:
-                errors.append(f"{label} has an invalid state")
-            for time_field in ("started_at", "running_at", "ended_at"):
-                value = session.get(time_field)
-                if value is None and time_field != "started_at":
-                    continue
-                if not isinstance(value, str) or not value.strip():
-                    errors.append(f"{label}.{time_field} must be an ISO-8601 timestamp or null")
-                    continue
-                try:
-                    parsed = datetime.fromisoformat(value)
-                    if parsed.tzinfo is None:
-                        errors.append(f"{label}.{time_field} must include a timezone")
-                except ValueError:
-                    errors.append(f"{label}.{time_field} must be an ISO-8601 timestamp or null")
-            exit_code = session.get("exit_code")
-            if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
-                errors.append(f"{label}.exit_code must be an integer or null")
-            if session_state in AGENT_SESSION_LIVE_STATES and session.get("ended_at") is not None:
-                errors.append(f"{label} cannot have ended_at while live")
-            if session_state in AGENT_SESSION_TERMINAL_STATES and session.get("ended_at") is None:
-                errors.append(f"{label} terminal state requires ended_at")
-            if session_state == "launching" and session.get("running_at") is not None:
-                errors.append(f"{label} launching state cannot have running_at")
-            if session_state not in {"launching", "failed_to_start"} and session.get("running_at") is None:
-                errors.append(f"{label} state {session_state!r} requires running_at")
-            result = session.get("result")
-            if result is not None:
-                required = {"kind", "payload", "recorded_at", "adopted_at", "adopted_by"}
-                # #167: a packet a rule refused keeps its raw text and the mark
-                optional = {"readoptions", "refused_text", "recovered_from_rule"}
-                if not isinstance(result, dict) or set(result) - optional != required or result.get("kind") not in {"review", "design", "supervisor_request"} or not isinstance(result.get("payload"), dict) or ((result.get("adopted_at") is None) != (result.get("adopted_by") is None)) \
-                        or ("readoptions" in result and (not isinstance(result["readoptions"], list) or any(not isinstance(r, dict) or set(r) != {"at", "by"} for r in result["readoptions"]))) \
-                        or ("refused_text" in result and (not isinstance(result["refused_text"], str) or len(result["refused_text"]) > 65536)) \
-                        or ("recovered_from_rule" in result and not isinstance(result["recovered_from_rule"], bool)):
-                    errors.append(f"{label}.result is invalid")
-    if pointers is not None:
-        if not isinstance(pointers, dict):
-            errors.append("status: 'current_agent_sessions' must be an object")
-        else:
-            for role, session_id in pointers.items():
-                if role not in SELECTABLE_AGENT_ROLES:
-                    errors.append(f"status: current_agent_sessions has invalid role {role!r}")
-                    continue
-                if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
-                    errors.append(f"status: current_agent_sessions.{role} must be a valid session id")
-                elif not isinstance(sessions, dict) or session_id not in sessions:
-                    errors.append(f"status: current_agent_sessions.{role} points to a missing session")
-                elif not isinstance(sessions[session_id], dict) or sessions[session_id].get("role") != role:
-                    errors.append(f"status: current_agent_sessions.{role} points to a different role")
-    if (sessions is None) != (pointers is None):
-        errors.append("status: agent_sessions and current_agent_sessions must be present together")
-    failures = status.get("agent_failures")
-    if failures is not None:
-        if not isinstance(failures, dict) or len(failures) > MAX_AGENT_SESSIONS:
-            errors.append("status: 'agent_failures' must be an object with at most 64 entries")
-        else:
-            for session_id, failure in failures.items():
-                if not isinstance(sessions, dict) or session_id not in sessions:
-                    errors.append(f"status: agent failure {session_id!r} has no session")
-                    continue
-                try:
-                    normalized = _validate_failure_classification({
-                        key: failure.get(key) for key in ("category", "reason", "tail_sha256", "dependency", "operation", "changes", "progress_summary", "budget_cause", "ceiling_overshoot_tokens")
-                        if isinstance(failure, dict) and key in failure
-                    }) if isinstance(failure, dict) else None
-                except HandsoffError as exc:
-                    errors.append(f"status: agent failure {session_id!r}: {exc}")
-                    normalized = None
-                allowed_fields = {"session_id", "category", "reason", "tail_sha256", "at", "dependency", "operation", "changed_paths",
-                                  "changes", "result_available", "adopted", "scratch_path", "auto_retry_authorized", "acknowledged",
-                                  "progress_summary", "budget_cause", "ceiling_overshoot_tokens"}
-                if isinstance(failure, dict) and "auto_retry_authorized" in failure and failure["auto_retry_authorized"] is not True:
-                    errors.append(f"status: agent failure {session_id!r} auto_retry_authorized must be true when present")
-                if not isinstance(failure, dict) or not {"session_id", "category", "reason", "tail_sha256", "at"} <= set(failure) \
-                        or set(failure) - allowed_fields \
-                        or failure.get("session_id") != session_id:
-                    errors.append(f"status: agent failure {session_id!r} has invalid fields")
-                if isinstance(failure, dict) and (not isinstance(failure.get("changed_paths", []), list) or len(failure.get("changed_paths", [])) > 64):
-                    errors.append(f"{label} changed_paths is invalid")
-                if normalized and sessions[session_id].get("state") not in \
-                        AGENT_SESSION_TERMINAL_STATES - {"completed"}:
-                    errors.append(f"status: agent failure {session_id!r} is not terminal")
-    findings = status.get("agent_quality_findings")
-    if findings is not None:
-        if not isinstance(findings, list) or len(findings) > MAX_QUALITY_FINDINGS:
-            errors.append("status: 'agent_quality_findings' must contain at most 32 entries")
-        else:
-            for finding in findings:
-                required = {"finding_id", "session_id", "role", "code", "count", "limit",
-                            "review_round", "distinct_round_count", "eligible", "at"}
-                if not isinstance(finding, dict) or set(finding) != required \
-                        or not QUALITY_FINDING_ID_PATTERN.fullmatch(str(finding.get("finding_id", ""))) \
-                        or finding.get("code") not in QUALITY_FINDING_CODES \
-                        or not isinstance(finding.get("eligible"), bool) \
-                        or not isinstance(finding.get("review_round"), int) \
-                        or isinstance(finding.get("review_round"), bool) \
-                        or finding.get("review_round", -1) < 0 \
-                        or not isinstance(finding.get("distinct_round_count"), int) \
-                        or isinstance(finding.get("distinct_round_count"), bool) \
-                        or finding.get("distinct_round_count", -1) < 0:
-                    errors.append("status: agent quality finding is invalid")
-    bindings = status.get("reviewer_implementer_bindings")
-    if bindings is not None:
-        if not isinstance(bindings, dict) or len(bindings) > MAX_AGENT_SESSIONS:
-            errors.append("status: 'reviewer_implementer_bindings' must have at most 64 entries")
-        else:
-            for session_id, binding in bindings.items():
-                required = {"reviewer_session_id", "implementer_session_id", "adapter", "model", "bound_at"}
-                reviewer = sessions.get(session_id) if isinstance(sessions, dict) else None
-                if not isinstance(binding, dict) or set(binding) != required \
-                        or binding.get("reviewer_session_id") != session_id \
-                        or not isinstance(reviewer, dict) or reviewer.get("role") != "reviewer" \
-                        or binding.get("adapter") not in SELECTABLE_AGENT_ADAPTERS:
-                    errors.append(f"status: reviewer implementer binding {session_id!r} is invalid")
-                    continue
-                try:
-                    validate_agent_model(binding.get("model"))
-                except HandsoffError as exc:
-                    errors.append(f"status: reviewer implementer binding {session_id!r}: {exc}")
-                implementer_id = binding.get("implementer_session_id")
-                if implementer_id is not None and (not isinstance(implementer_id, str)
-                                                     or not AGENT_SESSION_ID_PATTERN.fullmatch(implementer_id)):
-                    errors.append(f"status: reviewer implementer binding {session_id!r} has invalid implementer id")
-    replacements = status.get("agent_replacements")
-    if replacements is not None:
-        if not isinstance(replacements, list) or len(replacements) > MAX_AGENT_REPLACEMENTS:
-            errors.append("status: 'agent_replacements' must contain at most 32 entries")
-        else:
-            for record in replacements:
-                if not isinstance(record, dict) or not REPLACEMENT_ID_PATTERN.fullmatch(
-                        str(record.get("replacement_id", ""))) \
-                        or record.get("trigger") not in AGENT_REPLACEMENT_TRIGGERS \
-                        or record.get("action") not in {"launch", "pilot_pause"} \
-                        or record.get("category") not in FAILURE_CATEGORIES \
-                        or record.get("state") not in AGENT_REPLACEMENT_STATES:
-                    errors.append("status: agent replacement record is invalid")
-                elif record.get("action") == "launch":
-                    handoff = record.get("handoff")
-                    if not isinstance(handoff, dict) or handoff.get("state") != record.get("state"):
-                        errors.append("status: agent replacement handoff state is invalid")
-                elif record.get("state") != "pilot_pause" or record.get("handoff") is not None:
-                    errors.append("status: paused agent replacement is invalid")
-    delivery = status.get("work_item_delivery")
-    if delivery is not None:
-        fields = {"lane", "requested_lane", "confirmed_by", "confirmed_at", "facts",
-                  "escalation_reason", "implemented_by", "reviewed_by", "review_hash",
-                  "baseline_head"}
-        if not isinstance(delivery, dict) or len(delivery) > MAX_WORK_ITEMS:
-            errors.append("status: 'work_item_delivery' must be an object of at most 64 items")
-        else:
-            for item_id, record in delivery.items():
-                if not WORK_ITEM_ID_PATTERN.fullmatch(str(item_id)) or not isinstance(record, dict) \
-                        or set(record) != fields:
-                    errors.append(f"status: work item delivery {item_id!r} has invalid fields")
-                    continue
-                if record.get("lane") not in WORK_ITEM_LANES \
-                        or record.get("requested_lane") not in {"full", "small-fix"}:
-                    errors.append(f"status: work item delivery {item_id!r} has invalid lane")
-                for field in ("confirmed_by", "confirmed_at", "escalation_reason", "implemented_by",
-                              "reviewed_by", "review_hash", "baseline_head"):
-                    if record.get(field) is not None and not isinstance(record.get(field), str):
-                        errors.append(f"status: work item delivery {item_id!r}.{field} must be a string or null")
-                if record.get("facts") is not None and not isinstance(record.get("facts"), dict):
-                    errors.append(f"status: work item delivery {item_id!r}.facts must be an object or null")
-    tranche_approval = status.get("tranche_approval")
-    if tranche_approval is not None:
-        required = {"proposal_hash", "proposed_order", "approved_order", "drops", "labels", "by", "at"}
-        if not isinstance(tranche_approval, dict) or set(tranche_approval) != required:
-            errors.append("status: 'tranche_approval' has invalid fields")
-        else:
-            proposed = tranche_approval.get("proposed_order")
-            approved = tranche_approval.get("approved_order")
-            drops = tranche_approval.get("drops")
-            labels = tranche_approval.get("labels")
-            if not re.fullmatch(r"[0-9a-f]{64}", str(tranche_approval.get("proposal_hash", ""))):
-                errors.append("status: tranche_approval.proposal_hash must be sha256")
-            if not all(isinstance(values, list) and len(values) <= MAX_WORK_ITEMS
-                       and len(values) == len(set(values))
-                       and all(WORK_ITEM_ID_PATTERN.fullmatch(str(value)) for value in values)
-                       for values in (proposed, approved, drops)):
-                errors.append("status: tranche approval item lists are invalid")
-            elif set(approved) & set(drops) or set(approved) | set(drops) != set(proposed):
-                errors.append("status: tranche approval order and drops must partition the proposal")
-            try:
-                validate_agent_actor(tranche_approval.get("by"))
-                datetime.fromisoformat(tranche_approval.get("at"))
-            except (HandsoffError, TypeError, ValueError):
-                errors.append("status: tranche approval actor or timestamp is invalid")
-            if not isinstance(labels, dict) or set(labels) != set(approved) \
-                    or any(not isinstance(value, list) or len(value) > 32
-                           or not all(isinstance(label, str) and len(label) <= 64 for label in value)
-                           for value in labels.values()):
-                errors.append("status: tranche approval labels are invalid")
-    # #42: the open amendment and its closed history, plus the amended_by
-    # trail on the design decisions it rewrote.
-    errors.extend(amendment_status_errors(status))
-    errors.extend(question_status_errors(status))
-    return errors
 
 
 # --------------------------------------------------------------------------
 # the gates
 # --------------------------------------------------------------------------
 
-#: [features] switches: name -> (default, one line for the settings dialog).
-#: failing_first is off by default because turning it on refuses every
-#: project's next Phase 6 until baselines exist; the other two only refuse
-#: what was already a mistake.
-FEATURES = {
-    "failing_first": (False, "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165)."),
-    "launch_rules": (True, "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167)."),
-    "ticket_lock": (True, "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166)."),
-    "token_accounting": (True, "The usage each adapter prints is recorded on its session and summed by role, phase and ticket; nothing is estimated (#168)."),
-    "review_binds_rules": (True, "A review, design approval and deployment approval carry the hash of the rules set they ran under; a changed hook or config revokes them (#170)."),
-    "report_posting": (False, "Phase 8 completion posts the ledger's report to each ticket and closes it; off, nothing leaves the machine unless run-close --post says so (#171)."),
-}
 
 
-def feature_enabled(cfg: dict, name: str) -> bool:
-    if name not in FEATURES:
-        raise HandsoffError(f"unknown workflow feature: {name}")
-    return bool((cfg or {}).get("features", {}).get(name, FEATURES[name][0]))
 
 
 def features_view(cfg: dict) -> dict:
@@ -6589,108 +3204,16 @@ def features_view(cfg: dict) -> dict:
             for name, (default, text) in FEATURES.items()}
 
 
-GOVERNANCE_CONFIG_KEYS = (
-    "deployment_requires_explicit_approval", "require_live_verification",
-    "max_design_rounds", "max_review_rounds", "stall_minutes",
-    "max_autonomous_design_reviews", "small_fix_max_criteria",
-    "small_fix_max_changed_lines", "small_fix_max_files",
-    "require_design_approval",
-)
-# Governance keys added after runs were already in flight. A key in this
-# set is hashed only while it holds a non-default value: an absent (or
-# explicitly default) key must reproduce the pre-existing hash byte for
-# byte, or upgrading bin/ would invalidate every design review, design
-# approval, and deployment approval already recorded on every project
-# running Handsoff (this repo's own run included). Changing the key to
-# anything else still invalidates the decisions bound to the old value,
-# which is the whole point of the chain of trust.
-_LEGACY_OPTIONAL_GOVERNANCE_KEYS = {
-    "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
-    "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
-    "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
-    "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
-    "require_design_approval": True,  # #159
-}
 
 
-def config_hash(cfg: dict) -> str:
-    """Binds a review, a deployment approval, or a live verification to the
-    governance policy in force when it was recorded. Without this, someone
-    could flip deployment_requires_explicit_approval or
-    require_live_verification off AFTER a review, silently downgrading what
-    the workflow requires without invalidating anything already granted."""
-    bound = {}
-    for key in GOVERNANCE_CONFIG_KEYS:
-        if key in _LEGACY_OPTIONAL_GOVERNANCE_KEYS:
-            default = _LEGACY_OPTIONAL_GOVERNANCE_KEYS[key]
-            if cfg.get(key, default) == default:
-                continue
-        bound[key] = cfg.get(key)
-    # The execution profile was introduced after runs already existed. Bind
-    # every non-default profile so changing posture invalidates subsequent
-    # decisions. The sole migration exception is an existing dogfood run
-    # with active waivers: those exact waiver booleans are already present in
-    # ``bound``, so adding the profile as a second representation would only
-    # invalidate an in-flight approval without strengthening the decision.
-    # Once the waivers are removed, dogfood itself is non-default and binds.
-    profile = cfg.get("execution_profile", "safe")
-    waivers_active = (not cfg.get("deployment_requires_explicit_approval", True)
-                      or not cfg.get("require_design_approval", True))
-    if profile != "safe" and not (profile == "dogfood" and waivers_active):
-        bound["execution_profile"] = profile
-    # [features] switches bind the same way: a switch at its default keeps
-    # every recorded hash byte for byte; a flipped one revokes what was
-    # granted under the other setting.
-    for name, (default, _text) in FEATURES.items():
-        if feature_enabled(cfg, name) != default:
-            bound["features." + name] = feature_enabled(cfg, name)
-    return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
 
 
-def acceptance_hash(criteria: list[dict]) -> str:
-    """Binds a deployment approval to the exact criteria states it was
-    given against. If the registry changes afterward (a criterion flips,
-    one is added or removed), this changes too, and the Phase 8 gate
-    refuses the now-stale approval rather than honoring it blindly.
-
-    Sorted by id first: `_canonical` sorts each dict's own keys but not
-    list order, so a harmless reordering of the criteria array (a
-    re-save, a merge) would otherwise change the hash and falsely
-    invalidate a still-valid approval. Sorting fails safe either way,
-    over-blocking rather than under-blocking, but there is no reason to
-    pay for it when the content genuinely has not changed."""
-    ordered = sorted(criteria, key=lambda c: c.get("id") or "")
-    return hashlib.sha256(_canonical({"criteria": ordered}).encode("utf-8")).hexdigest()
 
 
-def design_hash(criteria: list[dict]) -> str:
-    """Binds a design approval to the SPEC of each criterion (id, type,
-    requirement, verification, tests), never its evidence state --
-    unlike acceptance_hash, which deliberately includes state/evidence so
-    a deployment/review approval notices new or changed evidence. A
-    design approval is given before implementation exists; if it were
-    bound to acceptance_hash, the very first `verify` call (which flips
-    a criterion's state) would invalidate it, forcing re-approval for
-    every criterion the moment it is first evidenced. Adding, removing,
-    or respecifying a criterion still invalidates it; recording evidence
-    about one that already exists does not."""
-    ordered = sorted(criteria, key=lambda c: c.get("id") or "")
-    return hashlib.sha256(_canonical(
-        {"criteria": [{"id": c.get("id"), "spec": criterion_spec_hash(c)} for c in ordered]}
-    ).encode("utf-8")).hexdigest()
 
 
-def _is_green(criteria: list[dict]) -> bool:
-    return bool(criteria) and all(c.get("state") == "passing" for c in criteria)
 
 
-def coverage_for(criteria: list[dict], resolved: bool = False) -> dict:
-    counts = {"passing": 0, "failing": 0, "not_tested": 0, "blocked": 0}
-    for criterion in criteria:
-        state = criterion.get("state")
-        if state in counts:
-            counts[state] += 1
-    return {**counts, "original_symptom_resolved": bool(resolved)}
 
 
 def sync_coverage(status: dict, acceptance: dict) -> None:
@@ -6698,22 +3221,6 @@ def sync_coverage(status: dict, acceptance: dict) -> None:
     status["requirement_coverage"] = coverage_for(acceptance.get("criteria", []), resolved)
 
 
-def valid_evidence_kinds(criterion: dict, verifications: list[dict]) -> set[str]:
-    """Which required evidence kinds this criterion actually has a valid,
-    spec-matching, successful record for right now. `verifications` may be
-    a list of already-loaded records, an in-memory list a caller just
-    appended to, or any combination; only ok=True, criterion-id-matching,
-    current-spec-hash-matching records count."""
-    cid = criterion.get("id")
-    spec = criterion_spec_hash(criterion)
-    kinds: set[str] = set()
-    for record in verifications:
-        if not isinstance(record, dict):
-            continue
-        if (record.get("ok") is True and cid in record.get("criteria", [])
-                and record.get("criterion_hashes", {}).get(cid) == spec):
-            kinds.add(record.get("kind"))
-    return kinds
 
 
 def criterion_fully_evidenced(criterion: dict, verifications: list[dict]) -> bool:
@@ -6743,425 +3250,30 @@ def reviewer_launch_evidence_gaps(criteria: list[dict], verifications: list[dict
     return gaps
 
 
-def _evidence_errors(criteria: list[dict], verifications: list[dict]) -> list[str]:
-    errors: list[str] = []
-    for criterion in criteria:
-        if criterion.get("state") != "passing":
-            continue
-        cid = criterion.get("id")
-        required = VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
-        missing = required - valid_evidence_kinds(criterion, verifications)
-        if missing:
-            errors.append(f"evidence gate: passing criterion {cid} lacks valid {', '.join(sorted(missing))} evidence")
-    return errors
 
 
-def criterion_baseline(criterion: dict, verifications: list[dict]) -> dict | None:
-    """#165: the newest VALID baseline (kind baseline, ok True) bound to this
-    criterion's current spec hash, or None. A baseline recorded against an
-    older wording of the criterion does not count: the claim changed."""
-    cid = criterion.get("id")
-    spec = criterion_spec_hash(criterion)
-    found = None
-    for record in verifications:
-        if (isinstance(record, dict) and record.get("kind") == "baseline" and record.get("ok") is True
-                and cid in record.get("criteria", []) and record.get("criterion_hashes", {}).get(cid) == spec):
-            found = record
-    return found
 
 
-def baseline_errors(criteria: list[dict], verifications: list[dict], cfg: dict) -> list[str]:
-    """#165: with features.failing_first on, every automated criterion that
-    reads passing must have a valid failing run behind it, unless it says
-    baseline = not_applicable with a reason. Off: nothing is asked."""
-    if not feature_enabled(cfg, "failing_first"):
-        return []
-    errors: list[str] = []
-    for criterion in criteria:
-        if criterion.get("state") != "passing":
-            continue
-        if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
-            continue
-        cid = criterion.get("id")
-        if criterion.get("baseline") == BASELINE_NOT_APPLICABLE:
-            if not str(criterion.get("baseline_reason") or "").strip():
-                errors.append(f"baseline gate: {cid} says baseline not_applicable without a reason")
-            continue
-        if criterion_baseline(criterion, verifications) is None:
-            errors.append(f"baseline gate: {cid} passed without a recorded failing run; run handsoff_supervisor.py "
-                          f"verify --criterion {cid} --expect-fail --by ACTOR on the tree before the feature, "
-                          f"or mark it --baseline not_applicable --baseline-reason TEXT")
-    return errors
 
 
-def _review_errors(status: dict, acceptance: dict, cfg: dict, root: Path | None = None) -> list[str]:
-    errors: list[str] = []
-    review = status.get("review")
-    if not isinstance(review, dict):
-        return ["review gate: Phase 6+ requires a recorded independent review"]
-    if review.get("acceptance_hash") != acceptance_hash(acceptance.get("criteria", [])):
-        errors.append("review gate: acceptance changed since review; record a new review")
-    if review.get("config_hash") != config_hash(cfg):
-        errors.append("review gate: workflow policy changed since review; record a new review")
-    errors.extend(rules_binding_errors(root, cfg, review, "review gate"))  # #170
-    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
-        errors.append("review gate: work-item scope changed since review; record a new review")
-    reviewer = review.get("by")
-    if not reviewer:
-        errors.append("review gate: review must identify its reviewer")
-    implementer = status.get("implemented_by")
-    if reviewer and implementer \
-            and reviewer.strip().casefold() == implementer.strip().casefold():
-        errors.append("review gate: reviewer must differ from implementer, no self-approval")
-    adopted = status.get("implementation_adopted")
-    if isinstance(adopted, dict):
-        for field, label in (("commit_author", "adopted commit author"),
-                             ("adopting_actor", "adopting actor")):
-            identity = adopted.get(field)
-            if identity and reviewer and reviewer.strip().casefold() == str(identity).strip().casefold():
-                errors.append(f"review gate: reviewer must differ from {label}")
-    checklist = review.get("checklist", {})
-    for field, allowed in CHECKLIST_VALUES.items():
-        if checklist.get(field) not in allowed:
-            errors.append(f"review gate: checklist field '{field}' is incomplete")
-    return errors
 
 
-def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
-                        action_binding: str) -> list[dict]:
-    """Return every Pilot-facing operation, including blocked previews.
-
-    The dashboard used to show only the next permitted buttons.  That made a
-    missing button ambiguous: unavailable, already satisfied, or simply not
-    implemented.  This table makes that distinction explicit while keeping
-    action ids bound to the same state hash used by the legacy endpoint.
-    """
-    specs = [
-        ("design_approve", "design-approve", "Authorize the reviewed design", "primary", False),
-        ("design_reject", "design-reject", "Request a design revision", "danger", True),
-        ("deployment_approve", "deployment-gate", "Authorize live verification", "primary", False),
-        ("deployment_revoke", "deployment-gate", "Revoke deployment approval", "danger", True),
-        ("deployment_hold", "human-pause-start", "Hold deployment", "danger", True),
-        ("design_review_authorize", "design-review-authorize", "Permit one more design review", "primary", False),
-        ("design_review_escalate", "design-review-escalate", "Escalate the reviewer tier", "primary", True),
-        ("review_cap_override", "review-cap-override", "Extend the implementation review cap once", "primary", True),
-        ("recovery_acknowledge", "recovery-acknowledge", "Clear the recovery hold", "primary", True),
-        ("recover", "recover", "Retry one bounded recovery attempt", "primary", True),
-        ("pause", "human-pause-start", "Pause the mission", "muted", True),
-        ("resume", "human-pause-end", "Resume the mission", "primary", False),
-        ("run_close", "run-close", "Close the run and release resources", "danger", True),
-        ("run_reopen", "run-reopen", "Reopen the run", "primary", True),
-        ("regression_accept", "regression-decide", "Accept the requested regression", "primary", False),
-        ("regression_decline", "regression-decide", "Decline the requested regression", "danger", False),
-        ("regression_cancel", "regression-cancel", "Cancel the regression request", "danger", False),
-        ("launch_role", "launch-role", "Launch a selected managed role", "primary", False),
-        ("verify_criterion", "verify", "Run focused criterion verification", "primary", False),
-        ("verify_live", "verify-live", "Run live verification", "primary", False),
-        # #183: engine-upgrade, engine-rollback and engine-migrate are CLI
-        # commands; they were listed here as permanent READ ONLY rows that
-        # could never act from a served dashboard, so they are not listed.
-    ]
-    closed = isinstance(status.get("run_closed"), dict)
-    complete = status.get("status") == "complete" or int(status.get("phase_number", 0) or 0) >= 8
-    phase = int(status.get("phase_number", 0) or 0)
-    review = status.get("design_review") or {}
-    review_ready = review.get("decision") == "approved"
-    design_pending = bool(status.get("requires_design_approval")) and review_ready and not status.get("design_approved")
-    deployment_pending = (phase == 7 and adaptive_deployment_approval_required(status, cfg)
-                          and not status.get("deployment_approved"))
-    deployment_revoke = phase in {7, 8} and isinstance(status.get("deployment_approved"), dict) and not status.get("live_verification_id")
-    budget = design_review_budget(status, cfg)
-    regression = active_regression_request(status)
-    escalation = status.get("escalation") or {}
-    recovery_hold = escalation.get("kind") in {"recovery_exhausted", "recovery_paused"}
-    # #123: a replacement paused on a non-recoverable failure has no
-    # escalation record, yet the Pilot must be able to clear it here.
-    replacement_pause = None
-    if not recovery_hold and not closed and not complete:
-        try:
-            assessment = recovery_assessment(status, cfg, {}, [], root=root)
-        except (HandsoffError, OSError, ValueError):
-            assessment = {}
-        if assessment.get("reason") == "non_recoverable_failure":
-            replacement_pause = (status.get("agent_failures") or {}).get(assessment.get("lost_session_id")) or {}
-            recovery_hold = True
-    automated = [c.get("id") for c in acceptance.get("criteria", [])
-                 if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
-    try:
-        verification_in_flight = bool(verify_inflight_bindings(root))
-    except OSError:
-        verification_in_flight = False
-    launch_role = assigned_role(status)
-    launch_reason = None
-    launch_profile = None
-    if status.get("status") != "in_progress":
-        launch_reason = "run is not in progress"
-    elif closed:
-        launch_reason = "run is closed"
-    elif launch_role not in SELECTABLE_AGENT_ROLES:
-        launch_reason = "current phase assigns no managed role"
-    else:
-        launch_profile = resolved_agent_profiles(cfg).get(launch_role)
-        current_session = current_agent_sessions(status).get(launch_role)
-        if not launch_profile or launch_profile.get("adapter") == HOST_AGENT_ADAPTER:
-            launch_reason = f"{launch_role} is host-driven"
-        elif current_session and current_session.get("state") in AGENT_SESSION_LIVE_STATES:
-            # #123: only a live session blocks a launch; a failed one is
-            # exactly what a relaunch replaces.
-            launch_reason = f"a live {launch_role} session already exists"
-        elif phase == 2 and launch_role == "reviewer" and not status.get("design_proposal"):
-            launch_reason = "reviewer launch requires a design proposal"
-    actionable = set()
-    if design_pending: actionable |= {"design_approve", "design_reject"}
-    if deployment_pending: actionable |= {"deployment_approve", "deployment_hold"}
-    if deployment_revoke: actionable.add("deployment_revoke")
-    if phase == 2 and budget.get("exhausted"): actionable |= {"design_review_authorize", "design_review_escalate"}
-    if recovery_hold: actionable.add("recovery_acknowledge")
-    if recovery_hold and not replacement_pause: actionable.add("recover")
-    if escalation.get("kind") == "review_cap_exhausted": actionable.add("review_cap_override")
-    if regression and regression.get("state") in {"awaiting_approval", "accepted"}: actionable |= {"regression_accept", "regression_decline", "regression_cancel"}
-    if not closed and not complete:
-        if status.get("human_pause"): actionable.add("resume")
-        else: actionable.add("pause")
-        actionable.add("run_close")
-    elif closed and not complete: actionable.add("run_reopen")
-    result = []
-    for kind, operation, consequence, tone, requires_reason in specs:
-        if kind == "launch_role":
-            if launch_reason:
-                availability, reason = "unavailable", launch_reason
-            else:
-                availability, reason = "actionable", ""
-                consequence = (f"launches a managed {launch_role}: {launch_profile['adapter']} "
-                               f"({launch_profile['model']}), budget {cfg['agent_token_budgets'][launch_role]} tokens")
-        elif kind in {"verify_criterion", "verify_live"}:
-            if closed:
-                availability, reason = "unavailable", "run is closed"
-            elif complete:
-                availability, reason = "unavailable", "run is complete"
-            elif kind == "verify_criterion":
-                if phase < 4 or phase > 7:
-                    availability, reason = "unavailable", f"verification requires Phase 4 to 7, current phase is {phase}"
-                elif verification_in_flight:
-                    availability, reason = "unavailable", "verification already in flight"
-                elif not automated:
-                    availability, reason = "unavailable", "no automated criteria"
-                else:
-                    availability, reason = "actionable", ""
-                    consequence = "runs the configured checks for the selected criteria as Mission Control Pilot and appends ledger records"
-            elif phase not in {7, 8}:
-                availability, reason = "unavailable", f"live verification requires Phase 7 or 8, current phase is {phase}"
-            elif verification_in_flight:
-                availability, reason = "unavailable", "verification already in flight"
-            else:
-                availability, reason = "actionable", ""
-                consequence = "runs [checks].live_commands as Mission Control Pilot"
-        elif kind in actionable:
-            availability, reason = "actionable", ""
-        elif closed:
-            availability, reason = "unavailable", "run is closed"
-        elif complete:
-            availability, reason = "unavailable", "run is complete"
-        elif kind.startswith("design_") and not review_ready:
-            availability, reason = "unavailable", "design review is not approved yet"
-        elif kind.startswith("deployment_"):
-            availability, reason = "unavailable", "no deployment approval is pending"
-        elif kind.startswith("regression_"):
-            availability, reason = "unavailable", "no regression request is pending"
-        elif kind == "design_review_authorize":
-            availability, reason = "unavailable", "budget is not exhausted"
-        else:
-            availability, reason = "unavailable", "operation is not currently applicable"
-        entry = {"kind": kind, "operation": operation, "availability": availability,
-                       "reason": reason, "consequence": consequence,
-                       "action_id": f"{kind}:{action_binding}" if availability == "actionable" else None,
-                       "requires_reason": requires_reason, "tone": tone}
-        if kind == "verify_criterion":
-            entry["criteria"] = automated if availability == "actionable" else []
-        if kind == "launch_role":
-            entry["launchable_roles"] = [launch_role] if availability == "actionable" else []
-            entry["role"] = launch_role
-        if kind == "recovery_acknowledge" and replacement_pause:
-            entry["consequence"] = (f"Clears the replacement pause after a {replacement_pause.get('category')} failure "
-                                    f"({replacement_pause.get('reason')}); relaunch the role afterwards")
-        result.append(entry)
-    return result
 
 
-GATE_PROGRESS_WEIGHTS = (
-    ("initialized", 5), ("design_reviewed", 15), ("design_approved", 25), ("evidence", 45),
-    ("symptom", 50), ("review", 65), ("deployment", 80), ("live", 95), ("complete", 100),
-)
 
 
-def gate_progress(status: dict, acceptance: dict) -> dict:
-    """#102: progress as gates cleared, not phase index. A run with an
-    approved design used to read 8 percent because progress was
-    phase-weighted; here it reads 25. Gates are cumulative: the percent is
-    the weight of the highest gate cleared, `cleared` lists them in order."""
-    criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
-    automated = [c for c in criteria if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
-    review = status.get("design_review") if isinstance(status, dict) else None
-    facts = {
-        "initialized": bool(status),
-        "design_reviewed": isinstance(review, dict) and review.get("decision") == "approved",
-        "design_approved": isinstance(status.get("design_approved"), dict),
-        "evidence": bool(automated) and all(c.get("state") == "passing" for c in automated),
-        "symptom": bool((status.get("requirement_coverage") or {}).get("original_symptom_resolved")
-                        or status.get("original_symptom_evidence_id")),
-        "review": isinstance(status.get("review"), dict) and bool(status.get("reviewed_by")),
-        "deployment": isinstance(status.get("deployment_approved"), dict),
-        "live": bool(status.get("live_verification_id")),
-        "complete": status.get("status") == "complete" or int(status.get("phase_number", 0) or 0) >= 8,
-    }
-    cleared = [name for name, _ in GATE_PROGRESS_WEIGHTS if facts[name]]
-    percent = max((weight for name, weight in GATE_PROGRESS_WEIGHTS if facts[name]), default=0)
-    return {"percent": percent, "cleared": cleared}
 
 
-def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bool:
-    """A design decision is current when its hash is the registry's design
-    hash, or (#42) while a scoped amendment is open: the decision still
-    carries the amendment's base hash and the registry is exactly the
-    amended one. Approving the amendment rewrites the decision to the
-    resulting hash; escalating it clears the decision."""
-    current = design_hash(acceptance.get("criteria", []))
-    if recorded == current:
-        return True
-    amendment = open_amendment(status)
-    return bool(amendment) and amendment.get("base_design_hash") == recorded \
-        and amendment.get("resulting_design_hash") == current
 
 
-def _design_errors(status: dict, acceptance: dict, cfg: dict, root: Path | None = None) -> list[str]:
-    """The Architect gate: Phase 3+ requires a recorded human design
-    approval, for any run `requires_design_approval` (a run a NEW init
-    created). Absent for any status.json that predates this field --
-    those runs are simply never subject to this check, so an
-    already-in-progress run elsewhere is unaffected by upgrading bin/."""
-    if not status.get("requires_design_approval"):
-        return []
-    errors: list[str] = []
-    approval = status.get("design_approved")
-    if not isinstance(approval, dict):
-        return ["design gate: Phase 3+ requires a recorded human design approval"]
-    if not _design_hash_current(approval.get("design_hash"), status, acceptance):
-        errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
-    if approval.get("config_hash") != config_hash(cfg):
-        errors.append("design gate: workflow policy changed since design approval; record a new approval")
-    # #170: the design approval RECORDS the rules set it was given under;
-    # the comparison belongs to the review, deployment and live gates, so
-    # a hook edit at Phase 6 asks for a fresh review, not a fresh design.
-    if "work_items" in acceptance and not scope_hash_matches(approval.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
-        errors.append("design gate: work-item scope changed since design approval; record a new approval")
-    proposal = status.get("design_proposal")
-    if isinstance(proposal, dict) and approval.get("proposal_hash") != proposal.get("proposal_hash"):
-        errors.append(f"stale proposal: approval binds {approval.get('proposal_hash')}, current is {proposal.get('proposal_hash')}")
-    approver = approval.get("by")
-    architect = approval.get("architect")
-    if not approver:
-        errors.append("design gate: design approval must identify the human approver")
-    if not architect:
-        errors.append("design gate: design approval must identify the architect")
-    if approver and architect and approver.strip().casefold() == architect.strip().casefold():
-        errors.append("design gate: approver must differ from the architect, no self-approval")
-    return errors
 
 
-def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
-    """AR7 gate: new runs cannot leave Phase 2 until an independent
-    reviewer approved the exact current design. The opt-in status flag is
-    absent from pre-AR7 runs, preserving their in-flight behavior."""
-    if not status.get("requires_design_review"):
-        return []
-    review = status.get("design_review")
-    if not isinstance(review, dict):
-        return ["design review gate: Phase 3+ requires an approved independent design review"]
-    errors: list[str] = []
-    if review.get("decision") != "approved":
-        errors.append("design review gate: the current design review requested changes")
-    if not _design_hash_current(review.get("design_hash"), status, acceptance):
-        errors.append("design review gate: criteria changed since design review; record a new design review")
-    if review.get("config_hash") != config_hash(cfg):
-        errors.append("design review gate: workflow policy changed since design review; record a new design review")
-    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
-        errors.append("design review gate: work-item scope changed since design review; record a new design review")
-    proposal = status.get("design_proposal")
-    if isinstance(proposal, dict) and review.get("proposal_hash") != proposal.get("proposal_hash"):
-        errors.append(f"stale proposal: approval binds {review.get('proposal_hash')}, current is {proposal.get('proposal_hash')}")
-    reviewer = review.get("by")
-    architect = review.get("architect")
-    if not reviewer:
-        errors.append("design review gate: design review must identify its reviewer")
-    if not architect:
-        errors.append("design review gate: design review must identify the architect")
-    if reviewer and architect and reviewer.strip().casefold() == architect.strip().casefold():
-        errors.append("design review gate: reviewer must differ from the architect, no self-review")
-    approval = status.get("design_approved")
-    approved_architect = approval.get("architect") if isinstance(approval, dict) else None
-    if approved_architect and architect \
-            and approved_architect.strip().casefold() != architect.strip().casefold():
-        errors.append("design review gate: reviewed architect differs from the architect named in human approval")
-    return errors
 
 
-def design_review_budget(status: dict, cfg: dict) -> dict:
-    """#35: the one rule for both kinds of design-review attempt.
-
-    `design_review_attempts` counts every record-design-review ever made
-    on the run (approve or request-changes, cumulative, never decremented;
-    `design_round` is a separate, human-driven number and was the gap the
-    original symptom slipped through). Once `attempts >= limit` the run is
-    `exhausted` unless the Pilot has recorded a `design_review_authorization`
-    that no record has consumed yet. An authorization permits exactly ONE
-    attempt, performed either by a managed reviewer session (which reserves
-    it under the project lock by writing `launch_session_id`, see
-    create_agent_session) or by a human-recorded review (which consumes it
-    directly). `launch_reserved` is that reservation: while it is set and
-    the authorization is unconsumed, no second managed launch is permitted.
-    Legacy status files without the fields read as zero attempts and no
-    authorization, which reproduces the pre-#35 behavior below the limit."""
-    recorded_reviews = len(status.get("design_review_history") or [])
-    attempts = max(int(status.get("design_review_attempts", 0) or 0), recorded_reviews)
-    limit = int(cfg.get("max_autonomous_design_reviews", DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS))
-    authorization = status.get("design_review_authorization")
-    authorized = isinstance(authorization, dict) and authorization.get("consumed_at") is None
-    launch_reserved = authorized and authorization.get("launch_session_id") is not None
-    return {
-        "attempts": attempts,
-        "limit": limit,
-        "authorized": authorized,
-        "exhausted": attempts >= limit and not authorized,
-        "launch_reserved": launch_reserved,
-        "next_attempt": attempts + 1,
-        "authorization_command": DESIGN_REVIEW_AUTHORIZATION_COMMAND,
-    }
 
 
-def design_review_budget_exhausted_message(budget: dict) -> str:
-    """The exact sentence a refused record, a refused launch, and a blocked
-    run's next_action all carry, so the Pilot reads the same command in
-    the CLI, in `status`, and on the Mission Control banner."""
-    return (f"design review budget exhausted ({budget['attempts']}/{budget['limit']}); "
-            f"Pilot must run {budget['authorization_command']} to permit one more attempt")
 
 
-def design_review_launch_refusal(budget: dict, status: dict) -> str | None:
-    """Why a managed reviewer launch in Phase 2 is refused right now, or
-    None when it is permitted. Below the limit no authorization is
-    involved; at or past it the launch needs an unconsumed, unreserved
-    authorization."""
-    if budget["attempts"] < budget["limit"]:
-        return None
-    if budget["exhausted"]:
-        return f"managed reviewer launch refused: {design_review_budget_exhausted_message(budget)}"
-    if budget["launch_reserved"]:
-        reserved_by = (status.get("design_review_authorization") or {}).get("launch_session_id")
-        return (f"managed reviewer launch refused: the authorized design-review attempt "
-                f"{budget['next_attempt']} is already reserved by session {reserved_by}; "
-                f"record-design-review must consume it before any further launch, after which "
-                f"the Pilot may run {budget['authorization_command']} again")
-    return None
 
 
 def select_design_reviewer_tier(cfg: dict, status: dict, acceptance: dict) -> tuple[str, str]:
@@ -7331,260 +3443,16 @@ def design_reviewer_selection_view(cfg: dict, status: dict, acceptance: dict, *,
                      "model": profile["model"], "error": error}}
 
 
-def _valid_symptom_record(status: dict, criteria: list[dict], verifications: list[dict]) -> dict | None:
-    evidence_id = status.get("original_symptom_evidence_id")
-    primary = {c["id"]: c for c in criteria if c.get("type") == "primary_fix"}
-    for record in verifications:
-        if record.get("run_id") != evidence_id or record.get("ok") is not True:
-            continue
-        for cid in set(record.get("criteria", [])) & set(primary):
-            if record.get("criterion_hashes", {}).get(cid) == criterion_spec_hash(primary[cid]):
-                return record
-    return None
 
 
-def _valid_review_anchor(status: dict) -> dict | None:
-    """A review lane anchors its evidence to the adopted implementation.
-
-    Review lanes have no original symptom to resolve, but they must still
-    carry an immutable commit identity and concrete provenance before they
-    can cross the implementation gates.
-    """
-    adopted = status.get("implementation_adopted")
-    if not isinstance(adopted, dict):
-        return None
-    if not str(adopted.get("sha") or "").strip():
-        return None
-    if not str(adopted.get("commit_author") or "").strip():
-        return None
-    if not str(adopted.get("adopting_actor") or "").strip():
-        return None
-    return adopted
 
 
-def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime | None = None,
-                   verifications: list[dict] | None = None,
-                   verification_problems: list[str] | None = None,
-                   root: Path | None = None) -> list[str]:
-    """Every rule a transition must satisfy, evaluated against WHATEVER
-    status dict is passed in. Callers that want to gate a transition must
-    pass the PROPOSED status, the one they are about to write, not the one
-    already on disk: this function has no way to know which you meant, and
-    checking the wrong one is exactly how the original tool let an
-    unguarded write through."""
-    now = now or datetime.now(timezone.utc)
-    errors = validate_status_schema(status)
-    errors += validate_acceptance_schema(acceptance)
-    errors += [f"verification ledger: {p}" for p in (verification_problems or [])]
-    records = verifications or []
-    actual_verification_head = records[-1].get("hash") if records else "GENESIS"
-    if isinstance(status, dict) and status.get("verification_head") != actual_verification_head:
-        errors.append("verification ledger: tail does not match the anchored head; evidence was deleted or an append was interrupted")
-    if errors:
-        return errors  # a malformed shape makes every gate below meaningless
-
-    criteria = acceptance.get("criteria", [])
-    gate_criteria = criteria
-    registry = acceptance.get("work_items")
-    if isinstance(registry, list):
-        required_ids = {item.get("id") for item in registry if item.get("required", True)}
-        gate_criteria = [criterion for criterion in criteria
-                         if criterion_work_item(criterion, registry) in required_ids
-                         or criterion_work_item(criterion, registry) == "unattributed"]
-    coverage = status.get("requirement_coverage", {})
-    green = _is_green(gate_criteria)
-    resolved = coverage.get("original_symptom_resolved") is True
-    phase = int(status.get("phase_number", 0) or 0)
-    progress = float(status.get("progress", 0) or 0)
-    evidence_errors = _evidence_errors(gate_criteria, verifications or [])
-    if phase >= 6 or progress >= 95:
-        # #165: the failing-first gate rides with the evidence gate, so a
-        # green with no red behind it blocks Phase 6+ and 95%+ alike.
-        evidence_errors.extend(baseline_errors(gate_criteria, verifications or [], cfg))
-    if root is not None and phase >= 5:
-        drift = evidence_drift(root, cfg, acceptance, records)
-        for cid in drift["stale"]:
-            paths = ", ".join(drift.get("changed_paths", []))
-            suffix = f"; changed paths: {paths}" if paths else ""
-            errors.append(f"evidence drift: {cid} was verified on a different repository digest{suffix}; "
-                          f"re-run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
-    expected_coverage = coverage_for(criteria, resolved)
-    review_lane = status.get("lane") == "review"
-    symptom_record = _valid_symptom_record(status, gate_criteria, verifications or [])
-    anchor_record = _valid_review_anchor(status) if review_lane else symptom_record
-
-    if status.get("feature") != acceptance.get("feature"):
-        errors.append("state gate: status and acceptance describe different features")
-    if coverage != expected_coverage:
-        errors.append("state gate: requirement_coverage does not match the acceptance registry")
-    if phase == 7 and status.get("status") not in {"awaiting_approval", "ready_to_deploy"}:
-        errors.append("state gate: Phase 7 requires status 'awaiting_approval' or 'ready_to_deploy'")
-
-    if phase >= 3 and full_design_required(status, acceptance, cfg):
-        errors.extend(_design_review_errors(status, acceptance, cfg))
-        errors.extend(_design_errors(status, acceptance, cfg, root))
-    # #42: an open amendment pins the run to the phase and progress it was
-    # opened at, forward and back, until it is approved or escalated.
-    errors.extend(amendment_freeze_errors(status))
-
-    if phase >= 6 and (not green or (not anchor_record) or evidence_errors):
-        errors.append("phase gate: every criterion and the original symptom must have verified evidence before Phase 6+")
-        if review_lane and not anchor_record:
-            errors.append("review anchor gate: review lane requires a valid implementation_adopted record with sha, commit_author, and adopting_actor")
-        elif resolved and not symptom_record:
-            errors.append("symptom gate: resolved original symptom must reference a successful verification run")
-        errors.extend(evidence_errors)
-    if progress >= 95 and (not green or not anchor_record or evidence_errors):
-        errors.append("progress gate: 95%+ requires verified acceptance and a resolved original symptom")
-        if review_lane and not anchor_record:
-            errors.append("review anchor gate: review lane requires a valid implementation_adopted record with sha, commit_author, and adopting_actor")
-        if phase < 6:
-            errors.extend(evidence_errors)  # name the baseline gaps here too (#165)
-    if "work_items" in acceptance and progress >= 95:
-        unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
-                      if item.get("required") and item.get("status") != "done"]
-        for item in unfinished:
-            if item.get("status") == "unscoped":
-                tag = f"#{item['number']}" if item.get("kind") == "issue" else item["id"][4:]
-                errors.append(f"progress gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
-            else:
-                errors.append(f"progress gate: required work item {item['id']} must be done before 95%+")
-    if status.get("status") in ("ready_to_deploy", "awaiting_approval", "complete", "review_complete") and (not green or not anchor_record or evidence_errors):
-        errors.append("status gate: acceptance registry is not fully green")
-    if "work_items" in acceptance and (phase >= 8 or status.get("status") == "complete"):
-        unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
-                      if item.get("required") and item.get("status") != "done"]
-        for item in unfinished:
-            if item.get("status") == "unscoped":
-                tag = f"#{item['number']}" if item.get("kind") == "issue" else item["id"][4:]
-                errors.append(f"work items gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
-            else:
-                errors.append(f"work items gate: required work item {item['id']} is {item['status']}; a run cannot complete while it is unfinished")
-        # #116: every required item names who implemented it, or the
-        # completion audit is silently weaker for items added mid-run.
-        delivery = status.get("work_item_delivery")
-        if isinstance(delivery, dict):
-            for item in derive_work_items(status, acceptance, cfg)["items"]:
-                record = delivery.get(item["id"])
-                if item.get("required") and item.get("status") != "unscoped" \
-                        and (not isinstance(record, dict) or not record.get("implemented_by")):
-                    errors.append(f"work items gate: work item {item['id']} has no implemented_by; run handsoff_supervisor.py work-item-update {item['id']} --by ACTOR --implemented-by ACTOR")
-
-    if phase >= 6:
-        implemented_by = status.get("implemented_by")
-        if not implemented_by:
-            errors.append("review gate: Phase 6+ requires 'implemented_by' to be recorded")
-        errors.extend(_review_errors(status, acceptance, cfg, root))
-
-    if adaptive_deployment_approval_required(status, cfg) and phase >= 8:
-        approval = status.get("deployment_approved")
-        if not approval or not approval.get("at"):
-            errors.append("deployment gate: Phase 8 requires a recorded deployment approval")
-        elif approval.get("acceptance_hash") != acceptance_hash(criteria):
-            errors.append("deployment gate: the acceptance registry changed since approval was given, re-approve")
-        elif approval.get("config_hash") != config_hash(cfg):
-            errors.append("deployment gate: workflow policy changed since approval was given, re-approve")
-        else:
-            errors.extend(rules_binding_errors(root, cfg, approval, "deployment gate"))  # #170
-
-    if phase >= 3 and pending_design_decline(status):
-        errors.append("design gate: a decline is pending the independent reviewer's word; approve closes the run as not planned, changes send it back")  # #177
-    if phase >= 7:
-        errors.extend(ci_gate_errors(status))  # #181
-
-    if phase >= 8:
-        if progress != 100 or status.get("status") != "complete":
-            errors.append("live gate: Phase 8 requires progress 100 and status 'complete'")
-        if cfg.get("require_live_verification", True):
-            live_id = status.get("live_verification_id")
-            record = next((r for r in (verifications or []) if r.get("run_id") == live_id), None)
-            approval = status.get("deployment_approved") or {}
-            if not record or record.get("kind") != "live" or record.get("ok") is not True:
-                errors.append("live gate: Phase 8 requires a successful live verification run")
-            elif record.get("acceptance_hash") != acceptance_hash(criteria):
-                errors.append("live gate: acceptance changed since live verification")
-            elif record.get("config_hash") != config_hash(cfg):
-                errors.append("live gate: workflow policy changed since live verification; run it again")
-            elif rules_binding_errors(root, cfg, record, "live gate"):
-                errors.extend(rules_binding_errors(root, cfg, record, "live gate"))  # #170
-            elif approval.get("at") and record.get("at", "") <= approval.get("at", ""):
-                errors.append("live gate: live verification must occur after deployment approval")
-
-    design_round = int(status.get("design_round", 0) or 0)
-    review_round = int(status.get("review_round", 0) or 0)
-    max_design = int(cfg.get("max_design_rounds", 3))
-    max_review = effective_review_cap(status, cfg) if "review_attempts" in status else int(cfg.get("max_review_rounds", 3))
-    if design_round > max_design:
-        errors.append(f"round cap: design_round {design_round} exceeds max_design_rounds {max_design}, escalate to the user")
-    if review_round > max_review:
-        errors.append(f"round cap: review_round {review_round} exceeds effective max_review_rounds {max_review}, escalate to the user")
-    escalation = status.get("escalation")
-    if escalation is not None and status.get("status") != "blocked":
-        errors.append(
-            f"escalation gate: run is escalated ({escalation.get('kind')}); status must stay blocked "
-            f"until the escalation is cleared by {escalation.get('required_action')}"
-        )
-    if current_review_attempt(status) is not None and status.get("status") == "complete":
-        errors.append("review attempt gate: an open review attempt exists but status is complete")
-
-    return errors
 
 
-def _minutes_since(timestamp: str | None, now: datetime) -> float | None:
-    """Age of an ISO-8601 timestamp in minutes, or None if it is missing or
-    unparsable -- callers treat None as 'no signal', never as 'fresh'."""
-    if not timestamp:
-        return None
-    try:
-        last = datetime.fromisoformat(timestamp)
-    except ValueError:
-        return None
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    return (now - last).total_seconds() / 60
 
 
-def implementation_evidence_complete(status: dict) -> bool:
-    """#122: every automated criterion passing and the original symptom
-    resolved, read from the run's own coverage bookkeeping."""
-    coverage = status.get("requirement_coverage") if isinstance(status.get("requirement_coverage"), dict) else {}
-    symptom = bool(coverage.get("original_symptom_resolved") or status.get("original_symptom_evidence_id"))
-    counts = {key: int(coverage.get(key, 0) or 0) for key in ("passing", "failing", "not_tested", "blocked")}
-    return symptom and counts["passing"] > 0 and counts["failing"] + counts["not_tested"] + counts["blocked"] == 0
 
 
-def assigned_role(status: dict) -> str | None:
-    if status.get("status") == "complete":
-        return None
-    phase = int(status.get("phase_number", 1) or 1)
-    if phase == 1:
-        return "architect"
-    if phase == 2:
-        # A recorded Pilot approval ends design work even before the
-        # phase counter advances.  This transition is deterministic and is
-        # performed by the owned dashboard without an LLM; assigning a
-        # Supervisor here wastes tokens and lets malformed model protocol
-        # turn a valid approval into a recovery hold.
-        if isinstance(status.get("design_approved"), dict):
-            return None
-        review = status.get("design_review") or {}
-        proposal = status.get("design_proposal") or {}
-        proposal_ready = isinstance(proposal, dict) \
-            and proposal.get("based_on_review_attempt") == int(status.get("design_review_attempts", 0) or 0)
-        if review.get("decision") == "changes_requested" and not proposal_ready:
-            return "architect"
-        return "reviewer"
-    if phase == 5 and isinstance(status.get("review"), dict):
-        # record-review completes the Reviewer's assignment before the
-        # Supervisor advances to Phase 6. The watchdog must not recover
-        # that deliberately completed reviewer during this interval.
-        return "supervisor"
-    if phase == 4 and implementation_evidence_complete(status):
-        # #122: the Implementer's assignment ends with the last piece of
-        # evidence; the Supervisor advances to Phase 5.
-        return "supervisor"
-    return {3: "supervisor", 4: "implementer", 5: "reviewer", 6: "implementer",
-            7: "supervisor", 8: "supervisor"}.get(phase)
 
 
 # #121: what an orchestration launch tells each role. The Supervisor gets
@@ -7893,260 +3761,18 @@ def reviewer_implementation_contract(status: dict, acceptance: dict) -> dict | N
     return body
 
 
-def session_liveness_path(root: Path) -> Path:
-    return root / ".handsoff-session-liveness.json"
 
 
-def read_session_liveness(root: Path) -> dict:
-    path = session_liveness_path(root)
-    if not path.exists():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
 
 
-def update_session_liveness(root: Path, session_id: str, *, at: str | None = None,
-                            remove: bool = False) -> None:
-    if not AGENT_SESSION_ID_PATTERN.fullmatch(str(session_id)):
-        raise HandsoffError("agent session id is invalid")
-    root = root.resolve()
-    with project_lock(root):
-        mapping = read_session_liveness(root)
-        if remove:
-            mapping.pop(session_id, None)
-        else:
-            mapping[session_id] = at or datetime.now(timezone.utc).isoformat()
-        path = session_liveness_path(root)
-        text = json.dumps(mapping, sort_keys=True, separators=(",", ":")) + "\n"
-        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
-        try:
-            with tmp.open("w", encoding="utf-8") as handle:
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, path)
-        finally:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
 
 
-def _latest_event_kind(events: list[dict], kinds: set[str]) -> str | None:
-    for event in reversed(events):
-        if event.get("kind") in kinds:
-            return event.get("kind")
-    return None
 
 
-def bound_heartbeat_at(status: dict) -> str | None:
-    """Return a heartbeat only while its declared owner is still current.
-
-    Managed heartbeats are leases owned by one live session. Background
-    waits use their explicit persisted wait record. Legacy/unowned pings are
-    deliberately ignored so a detached shell cannot keep a dead role green.
-    """
-    stamped = status.get("last_heartbeat_at")
-    owner = status.get("last_heartbeat_owner")
-    if not isinstance(stamped, str) or not isinstance(owner, str):
-        return None
-    if owner == "background_wait":
-        return stamped if isinstance(status.get("background_wait"), dict) else None
-    return stamped if any(
-        isinstance(session, dict) and session.get("session_id") == owner
-        and session.get("state") in AGENT_SESSION_LIVE_STATES
-        for session in current_agent_sessions(status).values()
-    ) else None
 
 
-def _beacon_process_alive(root: Path | None, session_id: str) -> bool:
-    """True when the live beacon names `session_id` and its pid still
-    exists. Existence, not identity: pid reuse is bounded by the beacon's
-    own session binding, and a stale beacon for another session never
-    vouches for this one."""
-    if root is None:
-        return False
-    beacon = read_live_beacon(root)
-    if not isinstance(beacon, dict) or beacon.get("session_id") != session_id:
-        return False
-    pid = beacon.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
 
 
-def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
-                        events: list[dict] | None = None,
-                        now: datetime | None = None, root: Path | None = None) -> dict:
-    """`root` lets the assessment consult the live beacon (#86); callers
-    without a root (pure tests, older call sites) keep the timestamp rule."""
-    now = now or datetime.now(timezone.utc)
-    recovery = cfg.get("recovery") or DEFAULT_CONFIG["recovery"]
-    role = assigned_role(status)
-    result = {"state": "not_applicable", "reason": "disabled", "assigned_role": role,
-              "silent_minutes": None, "threshold_minutes": None, "lost_session_id": None}
-    if not recovery.get("enabled", True):
-        return result
-    open_regression = next((item for item in status.get("regression_requests", [])
-                            if item.get("state") in {"awaiting_approval", "accepted", "launched"}), None)
-    exclusions = [
-        (status.get("status") in {"complete", "blocked", "awaiting_approval", "ready_to_deploy"}, "run_state"),
-        (int(status.get("phase_number", 1) or 1) == 8, "complete"),
-        (status.get("escalation") is not None, "escalated"),
-        (status.get("authorization_hold") is not None, "authorization_hold"),
-        (open_regression is not None, "regression_pending"),
-        (any(item.get("state") in {"reserved", "launched"}
-             for item in status.get("recovery_attempts", [])), "recovery_in_progress"),
-        (_latest_event_kind(events or [], {"human_pause_started", "human_pause_ended"}) ==
-         "human_pause_started", "human_pause"),
-        (_latest_event_kind(events or [], {"background_wait_started", "background_wait_ended"}) ==
-         "background_wait_started", "background_wait"),
-    ]
-    for applies, reason in exclusions:
-        if applies:
-            result["reason"] = reason
-            return result
-    if role is None:
-        result["reason"] = "no_assigned_role"
-        return result
-    if cfg.get("agents", {}).get(role) == HOST_AGENT_ADAPTER:
-        result["reason"] = "host_role"
-        return result
-    sessions = status.get("agent_sessions") or {}
-    current = status.get("current_agent_sessions") or {}
-    phase = int(status.get("phase_number", 1) or 1)
-
-    def session_signal(item: dict) -> tuple[str, float | None, float, str] | None:
-        state = item.get("state")
-        if state in {"failed", "timed_out", "failed_to_start"}:
-            return ("worker_terminal", _minutes_since(item.get("ended_at"), now),
-                    float(recovery["worker_loss_grace_minutes"]), "failed session is terminal")
-        if state in AGENT_SESSION_LIVE_STATES:
-            sid = item.get("session_id")
-            ping = (liveness or {}).get(sid)
-            protocol_limit = int((recovery.get("protocol_silence_minutes") or {}).get(role, 0) or 0)
-            if protocol_limit > 0 and root is not None:
-                store = _read_agent_output_store(root)
-                output = (store.get("sessions") or {}).get(sid)
-                entries = output.get("entries") if isinstance(output, dict) else []
-                newest = entries[-1].get("at") if entries and isinstance(entries[-1], dict) else None
-                ping = newest or (output.get("updated_at") if isinstance(output, dict) else None)
-                ping = ping or item.get("running_at") or item.get("started_at")
-                minutes = _minutes_since(ping, now)
-                if minutes is not None and minutes >= protocol_limit:
-                    return ("protocol_silent", minutes, float(protocol_limit),
-                            f"no protocol output for {int(minutes)} minutes (limit {protocol_limit})")
-            ping = ping or item.get("running_at") or item.get("started_at")
-            return ("worker_silent", _minutes_since(ping, now),
-                    float(recovery["live_session_silence_minutes"]), "session liveness expired")
-        return None
-
-    # The in-process fallback planner already refuses these categories.  The
-    # host watchdog must honor the same decision or it can spend the budget
-    # again after the launcher intentionally paused (# token ceilings).
-    for current_role, candidate_id in current.items():
-        candidate = sessions.get(candidate_id) if isinstance(candidate_id, str) else None
-        failure = (status.get("agent_failures") or {}).get(candidate_id) \
-            if isinstance(candidate_id, str) else None
-        if isinstance(candidate, dict) and candidate.get("state") in {
-                "failed", "timed_out", "failed_to_start", "cancelled"} \
-                and isinstance(failure, dict) and not failure.get("adopted") \
-                and not failure.get("acknowledged") \
-                and not failure.get("auto_retry_authorized") \
-                and failure.get("category") not in RECOVERABLE_FAILURE_CATEGORIES:
-            result.update(reason="non_recoverable_failure", assigned_role=current_role,
-                          lost_session_id=candidate_id)
-            return result
-
-    acknowledged = {
-        event.get("session_id") for event in (events or [])
-        if isinstance(event, dict) and event.get("kind") == "recovery_acknowledged"
-    }
-    candidates = []
-    for current_role, candidate_id in current.items():
-        candidate = sessions.get(candidate_id) if isinstance(candidate_id, str) else None
-        if not isinstance(candidate, dict) or candidate_id in acknowledged:
-            continue
-        candidate_phase = candidate.get("phase_number")
-        if candidate_phase is not None and candidate_phase != phase:
-            continue
-        observed = session_signal(candidate)
-        if observed is None:
-            continue
-        state_name, silent, threshold, reason = observed
-        if state_name == "worker_silent" and _beacon_process_alive(root, candidate_id):
-            # #86: a liveness timestamp can go stale without the worker
-            # dying (a sleeping laptop, a paused runner). The beacon names
-            # the child's pid; while that pid exists, presuming the
-            # session lost would kill real work and pay for a replacement.
-            result.update(state="active", reason="process_alive", assigned_role=current_role,
-                          lost_session_id=candidate_id, silent_minutes=silent,
-                          threshold_minutes=threshold)
-            return result
-        if silent is not None and silent >= threshold:
-            stamp = candidate.get("ended_at") or candidate.get("running_at") \
-                or candidate.get("started_at") or ""
-            candidates.append((stamp, current_role, candidate_id, state_name, silent, threshold, reason))
-    if candidates:
-        _, exact_role, exact_id, state_name, silent, threshold, reason = max(candidates)
-        result.update(state=state_name, reason=reason, assigned_role=exact_role,
-                      lost_session_id=exact_id, silent_minutes=silent,
-                      threshold_minutes=threshold)
-        return result
-
-    session_id = current.get(role)
-    session = sessions.get(session_id) if isinstance(session_id, str) else None
-    if not isinstance(session, dict):
-        # Recovery may replace a worker that was actually launched and was
-        # subsequently lost.  It must never manufacture the first managed
-        # session for a role merely because a run has been quiet.  Manual
-        # and externally driven runs intentionally have no agent_session_*
-        # record for that role; escalating them is a false alarm (#51).
-        managed_for_role = any(
-            isinstance(event, dict)
-            and str(event.get("kind") or "").startswith("agent_session_")
-            and event.get("role") == role
-            for event in (events or [])
-        ) or any(item.get("role") == role for item in status.get("recovery_attempts", []))
-        if not managed_for_role:
-            result["reason"] = "no_managed_session"
-            return result
-        timestamps = [status.get("updated_at"), bound_heartbeat_at(status)]
-        ages = [_minutes_since(value, now) for value in timestamps]
-        ages = [age for age in ages if age is not None]
-        silent = min(ages) if ages else float("inf")
-        threshold = float(cfg.get("stall_minutes", 10))
-        result.update(silent_minutes=silent, threshold_minutes=threshold)
-        if silent >= threshold:
-            result.update(state="silent_run", reason="assigned role has no session")
-        else:
-            result.update(state="active", reason="recent unassigned-run activity")
-        return result
-    if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
-        result["reason"] = "assigned session is terminal but not recoverable"
-        return result
-    state = session.get("state")
-    result["lost_session_id"] = session_id
-    ping = (liveness or {}).get(session_id) or session.get("running_at") or session.get("started_at")
-    silent = _minutes_since(ping, now)
-    threshold = float(recovery["live_session_silence_minutes"])
-    result.update(silent_minutes=silent, threshold_minutes=threshold)
-    if silent is not None and silent >= threshold:
-        result.update(state="worker_silent", reason="assigned session liveness expired")
-    else:
-        result.update(state="active", reason="assigned session is live")
-    return result
 
 
 def _expire_recovery_lease(status: dict, now: datetime) -> bool:
@@ -8357,115 +3983,14 @@ def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None,
     return None
 
 
-def _output_seconds_ago(bound: dict | None, now: datetime) -> int | None:
-    """Whole seconds since a bound output record's `output_at`, truncated
-    (never rounded, so two readers a few hundred milliseconds apart agree)
-    and clamped at zero; None when there is no bound record."""
-    seconds = _seconds_since(bound["output_at"], now) if bound else None
-    if seconds is None:
-        return None
-    return max(int(seconds), 0)
 
 
-def activity_note(status: dict, cfg: dict, *, now: datetime | None = None,
-                  output_liveness: dict | None = None) -> str | None:
-    """The other half of the same signal: a run that is alive but not
-    currently progressing. Fires only in the specific cases that would
-    otherwise look ambiguous -- `updated_at` is stale past `stall_minutes`,
-    but the current live managed session produced output within
-    `stall_minutes` (#41, 'Agent active; latest output N seconds ago'), or
-    `last_heartbeat_at` is fresh -- so a caller (the dashboard, `status`)
-    can say 'busy on a long background task' instead of leaving the
-    operator to guess between 'stalled' and 'on course'. Mutually exclusive
-    with `stall_warning`: whenever this returns non-None, `stall_warning`
-    is guaranteed None, since fresh output or a fresh heartbeat is exactly
-    what suppresses it. The output reading comes before the heartbeat one;
-    `output_liveness` omitted or unbound reads as 'no output'.
-
-    An open human pause takes precedence over both readings and renders as
-    'waiting on <by> since <n> min ago[: <note>]', the one rendering both
-    `status` and the dashboard snapshot show."""
-    now = now or datetime.now(timezone.utc)
-    if status.get("status") not in ("in_progress",):
-        return None
-    pause = status.get("human_pause")
-    if isinstance(pause, dict):
-        since_minutes = _minutes_since(pause.get("since"), now)
-        since = f"{since_minutes:.0f} min ago" if since_minutes is not None else "an unknown time"
-        note = pause.get("note")
-        suffix = f": {note}" if isinstance(note, str) else ""
-        return f"waiting on {pause.get('by')} since {since}{suffix}"
-    updated_minutes = _minutes_since(status.get("updated_at"), now)
-    limit = float(cfg.get("stall_minutes", 10))
-    bound = output_liveness_for(status, output_liveness)
-    output_minutes = _minutes_since(bound["output_at"], now) if bound else None
-    if (updated_minutes is not None and updated_minutes > limit
-            and output_minutes is not None and output_minutes <= limit):
-        return f"Agent active; latest output {_output_seconds_ago(bound, now)} seconds ago"
-    heartbeat_minutes = _minutes_since(bound_heartbeat_at(status), now)
-    if updated_minutes is None or heartbeat_minutes is None:
-        return None
-    if updated_minutes > limit and heartbeat_minutes <= limit:
-        return (f"background task active (heartbeat {heartbeat_minutes:.0f} min ago); "
-                f"no status update in {updated_minutes:.0f} minutes, but the run is alive")
-    return None
 
 
-PLAIN_COMMAND_MESSAGE = "test commands may not contain shell expansion or control operators"
 
 
-def assert_plain_command(command: str) -> list[str]:
-    """Refuse every construct that can manufacture a different command after
-    validation; the allowed language is simple argv plus path globs. Shared by
-    verify-live and, since the field-note fixes, by config load, so an operator
-    in [checks].live_commands is refused at configuration time (defect 5)."""
-    if not isinstance(command, str) or not command.strip():
-        raise HandsoffError("test command must be a non-empty string")
-    if re.search(r"[\$`;&|<>(){}\r\n]", command):
-        raise HandsoffError(PLAIN_COMMAND_MESSAGE)
-    try:
-        words = shlex.split(command)
-    except ValueError as exc:
-        raise HandsoffError(f"invalid test command: {exc}") from exc
-    if any(token in {"|", "||", "&&", ";", ">", ">>", "<"} for token in words):
-        raise HandsoffError("test commands may not contain shell control operators")
-    return words
 
 
-def normalized_test_footprint(command: str, root: Path) -> frozenset[str]:
-    """Return the repository-relative tests a command can execute.
-
-    This is intentionally conservative: a command that names a tests directory,
-    wildcard, discovery mode, or an unrecognised test runner is treated as broad.
-    Handsoff only needs to distinguish configured focused checks from configured
-    regression groups; it is not a general shell parser.
-    """
-    # Commands use a shell so configured test-path globs continue to work.
-    words = assert_plain_command(command)
-    lowered = [Path(word).name.lower() for word in words]
-    footprint: set[str] = set()
-    for word in words:
-        candidate = word.split("::", 1)[0]
-        while candidate.startswith("./"):
-            candidate = candidate[2:]
-        if candidate.startswith("tests.") and "/" not in candidate:
-            candidate = candidate.replace(".", "/") + ".py"
-        if not (candidate.startswith("tests/") or candidate == "tests"):
-            continue
-        if candidate == "tests" or candidate.endswith("/"):
-            return frozenset({"*"})
-        if any(ch in candidate for ch in "*?["):
-            matches = sorted(root.glob(candidate))
-            if not matches:
-                return frozenset({"*"})
-            footprint.update(path.resolve().relative_to(root.resolve()).as_posix() for path in matches if path.is_file())
-        else:
-            footprint.add(Path(candidate).as_posix())
-    if "unittest" in lowered and "discover" in lowered:
-        return frozenset({"*"})
-    if not footprint:
-        return frozenset({"*"})
-    return frozenset(footprint)
 
 
 def regression_group(cfg: dict, name: str) -> dict:
@@ -8475,26 +4000,9 @@ def regression_group(cfg: dict, name: str) -> dict:
     return item
 
 
-RELEASE_VERSION_PATTERN = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?$")
 RELEASE_CLASSES = ("patch", "minor", "major")
 
 
-def classify_release_version(version: str) -> tuple[str, str]:
-    """Normalize a semantic version and classify the intended release.
-
-    The class is explicit in the version itself for this policy: any X.0.0
-    is major, X.Y.0 is minor, and X.Y.Z is patch. 0.x still follows the
-    same mechanical rule so agents cannot reinterpret policy ad hoc.
-    """
-    if not isinstance(version, str):
-        raise HandsoffError("release version must be semantic X.Y.Z")
-    match = RELEASE_VERSION_PATTERN.fullmatch(version.strip())
-    if not match:
-        raise HandsoffError("release version must be semantic X.Y.Z")
-    major, minor, patch = (int(value) for value in match.groups())
-    normalized = f"v{major}.{minor}.{patch}"
-    release_class = "major" if minor == 0 and patch == 0 else "minor" if patch == 0 else "patch"
-    return normalized, release_class
 
 
 def release_plan_payload(cfg: dict, version: str, by: str, *, override_reason: str | None = None,
@@ -8515,99 +4023,24 @@ def release_plan_payload(cfg: dict, version: str, by: str, *, override_reason: s
     }
 
 
-def validate_release_plan(plan: object) -> list[str]:
-    if plan is None:
-        return []
-    required = {"version", "release_class", "planned_by", "planned_at",
-                "full_regression_eligible", "full_regression_override_reason",
-                "targeted_checks", "regression_groups"}
-    if not isinstance(plan, dict) or set(plan) != required:
-        return ["status: release_plan is invalid"]
-    errors = []
-    try:
-        normalized, release_class = classify_release_version(plan.get("version"))
-        if normalized != plan.get("version") or release_class != plan.get("release_class"):
-            errors.append("status: release_plan version/class mismatch")
-    except HandsoffError:
-        errors.append("status: release_plan version is invalid")
-    if not all(isinstance(plan.get(key), str) and plan[key].strip()
-               for key in ("planned_by", "planned_at")):
-        errors.append("status: release_plan identity is invalid")
-    if not isinstance(plan.get("full_regression_eligible"), bool):
-        errors.append("status: release_plan eligibility is invalid")
-    override = plan.get("full_regression_override_reason")
-    if override is not None and (not isinstance(override, str) or not override.strip()):
-        errors.append("status: release_plan override reason is invalid")
-    checks = plan.get("targeted_checks")
-    if not isinstance(checks, list) or not all(
-            isinstance(item, dict) and set(item) == {"command", "reason"}
-            and all(isinstance(item.get(key), str) and item[key].strip() for key in ("command", "reason"))
-            for item in checks):
-        errors.append("status: release_plan targeted checks are invalid")
-    groups = plan.get("regression_groups")
-    if not isinstance(groups, list) or not all(isinstance(item, str) and item for item in groups):
-        errors.append("status: release_plan regression groups are invalid")
-    return errors
 
 
-def configured_regression_commands(cfg: dict) -> set[str]:
-    return {command for group in cfg.get("regressions", []) for command in group.get("commands", [])}
 
 
 def command_sha256(commands: list[str]) -> str:
     return hashlib.sha256(json.dumps(commands, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
 
 
-def ensure_regression_config_is_disjoint(cfg: dict, root: Path) -> None:
-    regression_footprints = []
-    for group in cfg.get("regressions", []):
-        footprint = set().union(*(normalized_test_footprint(cmd, root) for cmd in group["commands"]))
-        regression_footprints.append((group["name"], footprint))
-    for command in cfg.get("check_commands", []):
-        focused = normalized_test_footprint(command, root)
-        for name, regression in regression_footprints:
-            captures_group = "*" in focused or ("*" not in regression and regression <= set(focused))
-            if captures_group:
-                raise HandsoffError(
-                    f"focused check overlaps gated regression group {name}: {command}"
-                )
 
 
-def active_regression_request(status: dict) -> dict | None:
-    requests = status.get("regression_requests") or []
-    return next((item for item in reversed(requests)
-                 if item.get("state") in {"awaiting_approval", "accepted", "launched"}), None)
 
 
-def ensure_no_launched_regression(status: dict) -> None:
-    item = active_regression_request(status)
-    if item and item.get("state") == "launched":
-        raise HandsoffError(
-            f"regression {item.get('request_id')} is running; workflow mutations are locked until it terminalizes"
-        )
 
 
-def _work_item_slug(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")[:40].rstrip("-")
-    return slug or "item"
 
 
-def criterion_work_item_id(criterion: dict) -> str | None:
-    requirement = criterion.get("requirement") if isinstance(criterion, dict) else None
-    match = WORK_ITEM_TAG_PATTERN.match(requirement or "")
-    if not match:
-        return None
-    tag = match.group(1)
-    return f"issue-{tag[1:]}" if tag.startswith("#") else f"ask-{tag}"
 
 
-def removed_work_item_ids(acceptance: dict) -> set[str]:
-    """Ids the Pilot removed with work-item-remove (#141 tombstones)."""
-    out = set()
-    for record in acceptance.get("removed_work_items") or []:
-        if isinstance(record, dict) and isinstance(record.get("id"), str):
-            out.add(record["id"])
-    return out
 
 
 def add_work_item_tombstone(acceptance: dict, item_id: str, by: str, at: str) -> None:
@@ -8628,143 +4061,16 @@ def clear_work_item_tombstones(acceptance: dict, item_ids) -> list[str]:
     return cleared
 
 
-def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None,
-                              explicit_items: list[str] | None = None) -> list[dict]:
-    """Derive stable scope from criterion tags, feature issue refs and legacy display metadata."""
-    now = now or datetime.now(timezone.utc).isoformat()
-    tickets = {int(item["number"]): item for item in cfg.get("tickets", [])}
-    identities: dict[str, tuple[str, int | None, str]] = {}
-    feature = str(acceptance.get("feature") or "")
-
-    def add_text(text: str) -> None:
-        issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", text)
-        if issue:
-            number = int(issue.group(1))
-            supplied = (issue.group(2) or "").strip()
-            title = supplied or tickets.get(number, {}).get("title") or f"Issue #{number}"
-            identities[f"issue-{number}"] = ("issue", number, title)
-            return
-        slug = _work_item_slug(text)
-        identities.setdefault(f"ask-{slug}", ("ask", None, text.strip()[:200]))
-
-    if explicit_items:
-        for item in explicit_items[:MAX_WORK_ITEMS]:
-            add_text(item)
-    else:
-        # Explicit separators are promises. A segment containing issue refs
-        # contributes those issues; a segment without one remains a plain ask.
-        parts = [part.strip(" -\t") for part in
-                 re.split(r"[;\n]+|(?:^|\s)\d+[.)]\s+", feature)
-                 if part.strip(" -\t")]
-        for part in parts[:MAX_WORK_ITEMS]:
-            numbers = re.findall(r"(?<!\w)#([1-9][0-9]{0,8})\b", part)
-            if numbers:
-                for number_text in numbers:
-                    number = int(number_text)
-                    identities[f"issue-{number}"] = (
-                        "issue", number,
-                        tickets.get(number, {}).get("title") or f"Issue #{number}",
-                    )
-            else:
-                add_text(part)
-    tagged: set[str] = set()
-    for criterion in acceptance.get("criteria", []):
-        item_id = criterion_work_item_id(criterion)
-        if not item_id:
-            continue
-        tagged.add(item_id)
-        if item_id.startswith("issue-"):
-            number = int(item_id[6:])
-            title = tickets.get(number, {}).get("title") or f"Issue #{number}"
-            identities[item_id] = ("issue", number, title)
-        else:
-            title = item_id[4:].replace("-", " ").title()
-            identities[item_id] = ("ask", None, title)
-    # #141: an item the Pilot removed stays removed. The feature title still
-    # names it, so title derivation would quietly bring it back on the next
-    # transaction; the tombstone says the removal was a decision. A tagged
-    # criterion or an explicit --item is the deliberate way back, and the
-    # caller clears the tombstone in the same commit (clear_work_item_tombstones).
-    explicit_ids = set()
-    for item in explicit_items or []:
-        issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", item)
-        explicit_ids.add(f"issue-{int(issue.group(1))}" if issue else f"ask-{_work_item_slug(item)}")
-    for item_id in removed_work_item_ids(acceptance):
-        if item_id not in tagged and item_id not in explicit_ids:
-            identities.pop(item_id, None)
-    items = []
-    for item_id, (kind, number, title) in identities.items():
-        ticket = tickets.get(number, {}) if number is not None else {}
-        items.append({
-            "id": item_id, "kind": kind, "number": number, "title": title[:200],
-            "url": str(ticket.get("url") or ""), "required": True,
-            "github_state": None, "github_checked_at": None,
-            "created_at": now, "updated_at": now, "notes": "",
-        })
-    return sorted(items, key=lambda item: (item["kind"] != "issue", item["number"] or 0, item["id"]))[:MAX_WORK_ITEMS]
 
 
-def effective_work_items(acceptance: dict, cfg: dict) -> tuple[list[dict], str]:
-    persisted = acceptance.get("work_items")
-    if isinstance(persisted, list):
-        return persisted, "persisted"
-    return derive_work_item_registry(acceptance, cfg), "derived"
 
 
-def scoped_work_items(items: list[dict], criteria: list[dict] | None) -> list[dict]:
-    """The items that actually carry acceptance criteria. Scope is what the
-    criteria promise: an item nobody has tagged a criterion to (a spurious
-    title-derived ask, an issue registered ahead of its criteria) is not
-    part of what a reviewer or the Pilot judged, so adding or removing it
-    must not invalidate their decisions (#82). With `criteria` None the
-    whole registry counts, which is what pure-registry callers expect.
-    Mirrors derive_work_items: untagged criteria attach to a single-item
-    registry's only item."""
-    if criteria is None:
-        return list(items)
-    ids = {item.get("id") for item in items}
-    mapped: set[str] = set()
-    for criterion in criteria:
-        item_id = criterion_work_item_id(criterion)
-        if item_id is None and len(items) == 1:
-            item_id = items[0].get("id")
-        if item_id in ids:
-            mapped.add(item_id)
-    return [item for item in items if item.get("id") in mapped]
 
 
-def work_item_scope_hash(items: list[dict], criteria: list[dict] | None = None) -> str:
-    scope = sorted(({"id": item.get("id"), "kind": item.get("kind"),
-                    "number": item.get("number")} for item in scoped_work_items(items, criteria)),
-                   key=lambda item: item["id"] or "")
-    return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def work_item_scope_hashes(items: list[dict], criteria: list[dict] | None = None) -> dict[str, str]:
-    """Current digest plus every historical formula a recorded decision may
-    carry: the pre-v0.3.11 digest over all items with `required`, the same
-    with `required` normalized to true, and the v0.3.11 identity-only
-    digest over all items. Gates accept any of them so runs recorded by an
-    earlier engine keep their approvals."""
-    current = work_item_scope_hash(items, criteria)
-    all_items = work_item_scope_hash(items)
-    legacy_scope = sorted(({
-        "id": item.get("id"), "kind": item.get("kind"),
-        "number": item.get("number"), "required": item.get("required", True),
-    } for item in items), key=lambda item: item["id"] or "")
-    legacy = hashlib.sha256(json.dumps(legacy_scope, sort_keys=True,
-                                       separators=(",", ":")).encode()).hexdigest()
-    legacy_normalized_scope = sorted(({**item, "required": True} for item in legacy_scope),
-                                     key=lambda item: item["id"] or "")
-    legacy_normalized = hashlib.sha256(json.dumps(legacy_normalized_scope, sort_keys=True,
-                                                  separators=(",", ":")).encode()).hexdigest()
-    return {"current": current, "all_items": all_items, "legacy": legacy,
-            "legacy_normalized": legacy_normalized}
 
 
-def scope_hash_matches(recorded: object, items: list[dict], criteria: list[dict] | None = None) -> bool:
-    """Accept any known digest so existing approvals remain valid after migration."""
-    return recorded in work_item_scope_hashes(items, criteria).values()
 
 
 def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
@@ -8780,27 +4086,10 @@ def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
     } for item in items}
 
 
-def work_item_delivery(status: dict, item_id: str) -> dict:
-    record = (status.get("work_item_delivery") or {}).get(item_id)
-    if isinstance(record, dict):
-        return record
-    return {
-        "lane": "full", "requested_lane": "full", "confirmed_by": None,
-        "confirmed_at": None, "facts": None, "escalation_reason": None,
-        "implemented_by": status.get("implemented_by"),
-        "reviewed_by": status.get("reviewed_by"), "review_hash": None,
-        "baseline_head": None,
-    }
 
 
-def item_criteria(acceptance: dict, item_id: str) -> list[dict]:
-    registry = acceptance.get("work_items") or []
-    return [criterion for criterion in acceptance.get("criteria", [])
-            if criterion_work_item(criterion, registry) == item_id]
 
 
-def item_acceptance_hash(acceptance: dict, item_id: str) -> str:
-    return acceptance_hash(item_criteria(acceptance, item_id))
 
 
 def repository_change_facts(root: Path) -> dict:
@@ -8873,159 +4162,12 @@ def small_fix_facts(root: Path, acceptance: dict, item_id: str, cfg: dict,
     return facts
 
 
-def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> dict:
-    own = item_criteria(acceptance, item_id)
-    delivery = work_item_delivery(status, item_id)
-    passing = sum(c.get("state") == "passing" for c in own)
-    criteria_points = 60.0 * passing / len(own) if own else 0.0
-    lane_gate = (bool(delivery.get("confirmed_by")) if delivery.get("lane") == "small-fix"
-                 else not _design_errors(status, acceptance, cfg)
-                 and not _design_review_errors(status, acceptance, cfg))
-    implemented_by = delivery.get("implemented_by")
-    implemented = bool(implemented_by and any(c.get("evidence") for c in own))
-    item_hash = item_acceptance_hash(acceptance, item_id)
-    reviewed = bool(delivery.get("reviewed_by") and delivery.get("review_hash") == item_hash)
-    global_review = status.get("review") or {}
-    if global_review.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])):
-        reviewed = True
-    approval = status.get("deployment_approved") or {}
-    deployed = (not adaptive_deployment_approval_required(status, cfg)
-                or approval.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])))
-    live = not cfg.get("require_live_verification", True) or bool(status.get("live_verification_id"))
-    gates = {"lane": lane_gate, "implemented": implemented, "reviewed": reviewed,
-             "deployed": deployed, "live": live}
-    # #102: gate weights, not phase weights. An approved design reads 25,
-    # partial evidence climbs from 25 to 45 with the passing fraction, and
-    # each later gate lands on its own step, so a run never reads 8 percent
-    # with its design fully approved.
-    # A small-fix item has no design review; its lane confirmation is the
-    # equivalent step.
-    design_reviewed = (lane_gate if delivery.get("lane") == "small-fix"
-                       else not _design_review_errors(status, acceptance, cfg))
-    fraction = passing / len(own) if own else 0.0
-    symptom = bool((status.get("requirement_coverage") or {}).get("original_symptom_resolved")
-                   or status.get("original_symptom_evidence_id"))
-    phase = int(status.get("phase_number", 0) or 0)
-    value = 5
-    if design_reviewed:
-        value = 15
-    if lane_gate:
-        value = 25 + int(math.floor(20 * fraction + 0.5))
-    if own and passing == len(own) and lane_gate:
-        value = 45
-        if symptom:
-            value = 50
-        if reviewed:
-            value = 65
-        # A gate the project switched off clears with the phase that would
-        # have asked for it, never ahead of the run (the 95 percent step is
-        # reserved for a work item that is actually done).
-        if reviewed and deployed and phase >= 7:
-            value = 80
-        if reviewed and deployed and live and phase >= 8:
-            value = 95
-    if status.get("status") == "complete" or phase >= 8 and reviewed and deployed and live:
-        value = 100
-    value = min(100, max(0, value))
-    return {"percent": value, "passing": passing, "total": len(own), "gates": gates,
-            "lane": delivery.get("lane", "full"), "facts": delivery.get("facts"),
-            "escalation_reason": delivery.get("escalation_reason")}
 
 
-def overall_item_progress(status: dict, acceptance: dict, cfg: dict) -> int:
-    items, _ = effective_work_items(acceptance, cfg)
-    values = [item_progress(status, acceptance, cfg, item["id"])["percent"]
-              for item in items if item.get("required", True)]
-    return int(math.floor(sum(values) / len(values) + 0.5)) if values else 0
 
 
-def full_design_required(status: dict, acceptance: dict, cfg: dict) -> bool:
-    if status.get("lane") == "review":
-        return False
-    items, _ = effective_work_items(acceptance, cfg)
-    for item in items:
-        if not item.get("required", True):
-            continue
-        delivery = work_item_delivery(status, item["id"])
-        if delivery.get("lane") != "small-fix" or not delivery.get("confirmed_by"):
-            return True
-    return False
 
 
-def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
-    registry, source = effective_work_items(acceptance, cfg)
-    criteria = acceptance.get("criteria", [])
-    multi = len(registry) > 1
-    mapping: dict[str, list[dict]] = {item["id"]: [] for item in registry}
-    for criterion in criteria:
-        item_id = criterion_work_item_id(criterion)
-        if item_id is None and len(registry) == 1:
-            item_id = registry[0]["id"]
-        if item_id in mapping:
-            mapping[item_id].append(criterion)
-        elif item_id is not None:
-            mapping.setdefault("unattributed", []).append(criterion)
-    rows = list(registry)
-    if "unattributed" in mapping and not any(item["id"] == "unattributed" for item in rows):
-        timestamp = status.get("updated_at") or datetime.now(timezone.utc).isoformat()
-        rows.append({"id": "unattributed", "kind": "ask", "number": None,
-                     "title": "Unattributed acceptance criteria", "url": "", "required": True,
-                     "github_state": None, "github_checked_at": None,
-                     "created_at": timestamp, "updated_at": timestamp, "notes": ""})
-    regression = active_regression_request(status)
-    recovering = any(item.get("state") in {"reserved", "launched"}
-                     for item in status.get("recovery_attempts", []))
-    reviewing = bool(current_review_attempt(status)) or int(status.get("phase_number", 1) or 1) == 5
-    escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
-    rendered = []
-    for item in rows:
-        own = mapping.get(item["id"], [])
-        progress_view = item_progress(status, acceptance, cfg, item["id"])
-        blocker = ""
-        if escalation or status.get("status") == "blocked":
-            state = "blocked"
-            blocker = (escalation or {}).get("reason") or status.get("next_action", "Run blocked")
-        elif regression and regression.get("state") in {"awaiting_approval", "accepted"}:
-            state = "awaiting_approval"
-            blocker = f"Regression {regression.get('group')} awaits Pilot action"
-        elif recovering:
-            state = "recovering"
-            blocker = "Assigned worker recovery is active"
-        elif reviewing:
-            state = "in_review"
-        elif item.get("required", True) and not own:
-            state = "unscoped"
-            blocker = "Required work item has no mapped acceptance criteria"
-        elif progress_view["percent"] == 100:
-            state = "done"
-        elif any(c.get("state") == "blocked" for c in own):
-            state = "blocked"
-            blocker = "A mapped acceptance criterion is blocked"
-        elif status.get("active_work_item") == item["id"] or any(c.get("evidence") for c in own):
-            state = "in_progress"
-        else:
-            state = "not_started"
-        github_state = item.get("github_state")
-        discrepancy = None
-        if github_state == "closed" and state != "done":
-            discrepancy = "GitHub is closed but Handsoff work is unfinished"
-        elif github_state == "open" and state == "done":
-            discrepancy = "Handsoff is done but GitHub is still open"
-        rendered.append({**item, "status": state, "criteria": [c.get("id") for c in own],
-                         "lane": progress_view["lane"], "progress": progress_view["percent"],
-                         "lane_confirmed": bool(work_item_delivery(status, item["id"]).get("confirmed_by")),
-                         "lane_facts": progress_view["facts"],
-                         "lane_escalation": progress_view["escalation_reason"],
-                         "phase_or_next": status.get("next_action") or status.get("phase"),
-                         "blocker": blocker, "discrepancy": discrepancy})
-    counts = {state: sum(item["status"] == state for item in rendered) for state in WORK_ITEM_STATES}
-    unattributed_criteria = [c.get("id") for c in mapping.get("unattributed", [])]
-    return {"multi": len(rendered) > 1, "registry": source,
-            "tickets_config_deprecated": bool(cfg.get("tickets")) and source == "persisted",
-            "unattributed_criteria": unattributed_criteria,
-            "items": rendered, "aggregate": {"total": len(rendered), "done": counts["done"],
-                                               "counts": counts,
-                                               "progress": overall_item_progress(status, acceptance, cfg)}}
 
 
 def work_item_checkpoints(status: dict, acceptance: dict, events: list[dict] | None = None,
@@ -9110,87 +4252,11 @@ def resume_scope_section(root: Path) -> str:
 # operation named, so the caller writes everything or nothing.
 # --------------------------------------------------------------------------
 
-CRITERION_TYPES = ("primary_fix", "supporting")
-CRITERION_SETTABLE_STATES = ("failing", "not_tested", "blocked")
-CRITERION_ADD_FIELDS = ("id", "type", "requirement", "verification", "tests")
-CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "state",
-                           # #165: a criterion may declare that no failing run can exist
-                           # for it (a test born with the feature), with the reason audited
-                           "baseline", "baseline_reason",
-                           # #169: N green runs in a row, with a seed per attempt
-                           "repeat", "seed_env")
-MAX_REPEAT = 50
-CRITERIA_TRANSACTION_OPS = ("add", "update", "remove")
-MAX_CRITERIA_TRANSACTION_OPERATIONS = 64
 MAX_CRITERIA_TRANSACTION_BYTES = 256 * 1024
 
 
-class CriteriaTransactionError(HandsoffError):
-    """A refused operation. `str()` yields the documented refusal text
-    `operation N (<op> <id>): <reason>`, with N counted from 1 in file
-    order, so the supervisor's generic SHIP_FEATURE_BLOCKED prefix
-    completes the message without a second formatting path."""
-
-    def __init__(self, index: int, op: object, criterion_id: object, reason: str):
-        self.index = index
-        self.op = op if isinstance(op, str) and op else "?"
-        self.criterion_id = criterion_id if isinstance(criterion_id, str) and criterion_id else "?"
-        self.reason = reason
-        super().__init__(f"operation {index} ({self.op} {self.criterion_id}): {reason}")
 
 
-def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> list[str]:
-    """The one field validator behind criterion-add, criterion-update, and
-    criteria-apply. `require_all` is the add form: id, type, requirement,
-    verification, and a non-empty tests list must all be present. Without
-    it (the update and remove forms) any subset of the fields is checked,
-    `id` included; whether a subset may be empty is the caller's rule.
-    Returns a list of problems."""
-    if not isinstance(fields, dict):
-        return ["criterion fields must be an object"]
-    allowed = set(CRITERION_ADD_FIELDS) | set(CRITERION_UPDATE_FIELDS)
-    unknown = sorted(set(fields) - allowed)
-    if unknown:
-        return [f"unknown criterion field(s): {', '.join(unknown)}"]
-    errors: list[str] = []
-    if require_all:
-        missing = [field for field in CRITERION_ADD_FIELDS if field not in fields]
-        if missing:
-            errors.append(f"missing criterion field(s): {', '.join(missing)}")
-        if "state" in fields:
-            errors.append("a new criterion may not set 'state'; it starts not_tested")
-    if "id" in fields and (not isinstance(fields["id"], str) or not fields["id"].strip()):
-        errors.append("'id' must be a non-empty string")
-    if "type" in fields and fields["type"] not in CRITERION_TYPES:
-        errors.append(f"'type' must be one of {', '.join(CRITERION_TYPES)}")
-    if "requirement" in fields and (not isinstance(fields["requirement"], str)
-                                    or not fields["requirement"].strip()):
-        errors.append("'requirement' must be a non-empty string")
-    if "verification" in fields and fields["verification"] not in VERIFICATION_REQUIREMENTS:
-        errors.append(f"'verification' must be one of {', '.join(VERIFICATION_REQUIREMENTS)}")
-    if "tests" in fields:
-        tests = fields["tests"]
-        if not isinstance(tests, list) or not tests \
-                or not all(isinstance(test, str) and test.strip() for test in tests):
-            errors.append("'tests' must be a non-empty list of non-empty strings")
-    if "state" in fields and fields["state"] not in CRITERION_SETTABLE_STATES:
-        errors.append(f"'state' must be one of {', '.join(CRITERION_SETTABLE_STATES)}")
-    if "baseline" in fields and fields["baseline"] not in (BASELINE_NOT_APPLICABLE, None):
-        errors.append(f"'baseline' may only be {BASELINE_NOT_APPLICABLE} (or absent)")
-    if fields.get("baseline") == BASELINE_NOT_APPLICABLE and not str(fields.get("baseline_reason") or "").strip():
-        errors.append("'baseline_reason' is required with baseline not_applicable")
-    if "baseline_reason" in fields and fields.get("baseline") != BASELINE_NOT_APPLICABLE:
-        errors.append("'baseline_reason' needs baseline not_applicable")
-    if "repeat" in fields and fields["repeat"] is not None and (
-            not isinstance(fields["repeat"], int) or isinstance(fields["repeat"], bool)
-            or not 1 <= fields["repeat"] <= MAX_REPEAT):
-        errors.append(f"'repeat' must be an integer from 1 to {MAX_REPEAT}")
-    if "seed_env" in fields and fields["seed_env"] is not None and (
-            not isinstance(fields["seed_env"], str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,63}", fields["seed_env"])):
-        errors.append("'seed_env' must be an environment variable name (A-Z, 0-9, _)")
-    if fields.get("seed_env") and not fields.get("repeat"):
-        errors.append("'seed_env' needs repeat")
-    return errors
 
 
 def repeat_seed(run_hash: str | None, attempt: int) -> str:
@@ -9220,28 +4286,6 @@ def run_repeated_checks(cfg: dict, root: Path, commands: list[str], repeat: int,
     return last, attempts
 
 
-def sync_work_item_registry(acceptance: dict, cfg: dict) -> bool:
-    """Append newly declared criterion identities to a persisted registry
-    without deleting stable promises. A legacy registry (no persisted
-    `work_items`) is left alone: its items stay derived on read."""
-    existing = acceptance.get("work_items")
-    if not isinstance(existing, list):
-        return False
-    known = {item.get("id") for item in existing}
-    criterion_ids = {criterion_work_item_id(criterion)
-                     for criterion in acceptance.get("criteria", [])}
-    criterion_ids.discard(None)
-    has_persisted_issue = any(item.get("kind") == "issue" for item in existing)
-    changed = False
-    for item in derive_work_item_registry(acceptance, cfg):
-        if item["id"] not in known:
-            if has_persisted_issue and item.get("kind") == "ask" and item["id"] not in criterion_ids:
-                continue
-            existing.append(item)
-            known.add(item["id"])
-            changed = True
-    existing.sort(key=lambda item: (item["kind"] != "issue", item.get("number") or 0, item["id"]))
-    return changed
 
 
 def load_criteria_transaction(path: Path) -> list[dict]:
@@ -9267,206 +4311,8 @@ def load_criteria_transaction(path: Path) -> list[dict]:
     return operations
 
 
-def _transaction_test_gate(index: int, op: str, criterion: dict, cfg: dict, root: Path) -> None:
-    """For a criterion `verify` will run (its policy requires `checks`):
-    every tests entry must be one of [checks].commands, the rule `verify`
-    applies at run time, and must pass the #28 footprint gate exactly as
-    `run_checks` applies it (no shell control operators, never a command
-    that captures a gated regression group), so a transaction can never
-    register a test that verification would later refuse. Manual and
-    browser criteria carry attestation descriptions, never commands, and
-    are not gated here, matching the single commands."""
-    if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
-        return
-    regression_commands = configured_regression_commands(cfg)
-    for test in criterion.get("tests", []):
-        if test not in cfg.get("check_commands", []):
-            raise CriteriaTransactionError(
-                index, op, criterion.get("id"),
-                f"automated test {test!r} is not one of [checks].commands",
-            )
-        try:
-            footprint = normalized_test_footprint(test, root)
-        except HandsoffError as exc:
-            raise CriteriaTransactionError(index, op, criterion.get("id"), f"test {test!r}: {exc}") from exc
-        for gated in regression_commands:
-            gated_footprint = normalized_test_footprint(gated, root)
-            if "*" in footprint or ("*" not in gated_footprint and gated_footprint <= set(footprint)):
-                raise CriteriaTransactionError(
-                    index, op, criterion.get("id"),
-                    f"test {test!r} captures gated regression group commands; "
-                    "full regressions go through regression-request",
-                )
 
 
-def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict], *,
-                              root: Path | None = None) -> dict:
-    """Apply `operations` in order to a deep copy of `acceptance` and return
-    the plan, or raise CriteriaTransactionError (HandsoffError) naming the
-    first refused operation. Nothing passed in is mutated.
-
-    The plan carries `operations` ([{op, id, previous_hash, resulting_hash}]),
-    `operation_count`, `registry_hash_before`/`registry_hash_after`
-    (`acceptance_hash`), `design_hash_before`/`design_hash_after`,
-    `work_items_after` (effective work item ids), `work_item_scope_changed`,
-    `resets_original_symptom` (a primary_fix spec was added or changed),
-    and the full `criteria_after` and `work_items_registry_after` that
-    `apply_criteria_plan` writes. `root` is where test footprints resolve
-    their globs; it defaults to the current directory."""
-    root = root if root is not None else Path.cwd()
-    if not isinstance(operations, list) or not 1 <= len(operations) <= MAX_CRITERIA_TRANSACTION_OPERATIONS:
-        raise HandsoffError(
-            f"transaction: 'operations' must contain 1 to {MAX_CRITERIA_TRANSACTION_OPERATIONS} entries"
-        )
-    before_criteria = acceptance.get("criteria")
-    if not isinstance(before_criteria, list):
-        raise HandsoffError("transaction: acceptance registry has no criteria list")
-    planned = deepcopy(acceptance)
-    criteria: list[dict] = planned["criteria"]
-    before_items, _ = effective_work_items(acceptance, cfg)
-    before_scope = work_item_scope_hash(before_items, before_criteria)
-    seen_ids: set[str] = set()
-    records: list[dict] = []
-    resets_symptom = False
-    last_primary_touch: int | None = None
-
-    def lookup(criterion_id: str) -> dict | None:
-        return next((c for c in criteria if c.get("id") == criterion_id), None)
-
-    for position, operation in enumerate(operations, start=1):
-        if not isinstance(operation, dict):
-            raise CriteriaTransactionError(position, None, None, "operation must be an object")
-        op = operation.get("op")
-        if op not in CRITERIA_TRANSACTION_OPS:
-            raise CriteriaTransactionError(position, op, operation.get("id"),
-                                           f"'op' must be one of {', '.join(CRITERIA_TRANSACTION_OPS)}")
-        if op == "add":
-            if set(operation) != {"op", "criterion"}:
-                raise CriteriaTransactionError(position, op, None,
-                                               "an add operation has exactly 'op' and 'criterion'")
-            spec = operation["criterion"]
-            if not isinstance(spec, dict) or set(spec) != set(CRITERION_ADD_FIELDS):
-                raise CriteriaTransactionError(
-                    position, op, spec.get("id") if isinstance(spec, dict) else None,
-                    "an add criterion has exactly id, type, requirement, verification, tests",
-                )
-            criterion_id = spec.get("id")
-            problems = validate_criterion_fields(spec, require_all=True)
-            if problems:
-                raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
-            if criterion_id in seen_ids:
-                raise CriteriaTransactionError(position, op, criterion_id,
-                                               "criterion id appears in an earlier operation")
-            if lookup(criterion_id) is not None:
-                raise CriteriaTransactionError(position, op, criterion_id, "criterion already exists")
-            seen_ids.add(criterion_id)
-            criterion = {
-                "id": criterion_id, "type": spec["type"], "requirement": spec["requirement"],
-                "verification": spec["verification"], "tests": list(spec["tests"]),
-                "evidence": [], "state": "not_tested",
-            }
-            _transaction_test_gate(position, op, criterion, cfg, root)
-            criteria.append(criterion)
-            if criterion["type"] == "primary_fix":
-                resets_symptom = True
-                last_primary_touch = position
-            records.append({"op": op, "id": criterion_id, "previous_hash": None,
-                            "resulting_hash": criterion_spec_hash(criterion)})
-            continue
-        criterion_id = operation.get("id")
-        if not isinstance(criterion_id, str) or not criterion_id.strip():
-            raise CriteriaTransactionError(position, op, criterion_id, "'id' must be a non-empty string")
-        if op == "update":
-            if set(operation) != {"op", "id", "fields"}:
-                raise CriteriaTransactionError(position, op, criterion_id,
-                                               "an update operation has exactly 'op', 'id' and 'fields'")
-        elif set(operation) != {"op", "id"}:
-            raise CriteriaTransactionError(position, op, criterion_id,
-                                           "a remove operation has exactly 'op' and 'id'")
-        if criterion_id in seen_ids:
-            raise CriteriaTransactionError(position, op, criterion_id,
-                                           "criterion id appears in an earlier operation")
-        seen_ids.add(criterion_id)
-        criterion = lookup(criterion_id)
-        if criterion is None:
-            raise CriteriaTransactionError(position, op, criterion_id, "unknown criterion")
-        previous_hash = criterion_spec_hash(criterion)
-        if op == "remove":
-            if len(criteria) == 1:
-                raise CriteriaTransactionError(position, op, criterion_id,
-                                               "acceptance registry must retain at least one criterion")
-            if criterion.get("type") == "primary_fix":
-                last_primary_touch = position
-            criteria[:] = [c for c in criteria if c is not criterion]
-            records.append({"op": op, "id": criterion_id, "previous_hash": previous_hash,
-                            "resulting_hash": None})
-            continue
-        fields = operation["fields"]
-        if not isinstance(fields, dict) or not fields or set(fields) - set(CRITERION_UPDATE_FIELDS):
-            raise CriteriaTransactionError(
-                position, op, criterion_id,
-                "'fields' must be a non-empty object with keys among requirement, verification, tests, type, state",
-            )
-        problems = validate_criterion_fields(fields)
-        if problems:
-            raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
-        was_primary = criterion.get("type") == "primary_fix"
-        spec_changed = False
-        for field in ("requirement", "verification", "type"):
-            if field in fields and criterion.get(field) != fields[field]:
-                criterion[field] = fields[field]
-                spec_changed = True
-        if "tests" in fields:
-            criterion["tests"] = list(fields["tests"])
-            spec_changed = True
-        if "state" in fields:
-            criterion["state"] = fields["state"]
-        if spec_changed or "state" in fields:
-            criterion["evidence"] = []
-            if "state" not in fields:
-                criterion["state"] = "not_tested"
-        if "tests" in fields or "verification" in fields:
-            _transaction_test_gate(position, op, criterion, cfg, root)
-        if spec_changed and (was_primary or criterion.get("type") == "primary_fix"):
-            resets_symptom = True
-        if was_primary or criterion.get("type") == "primary_fix":
-            last_primary_touch = position
-        records.append({"op": op, "id": criterion_id, "previous_hash": previous_hash,
-                        "resulting_hash": criterion_spec_hash(criterion)})
-
-    primary_count = sum(1 for c in criteria if c.get("type") == "primary_fix")
-    if primary_count != 1:
-        culprit = last_primary_touch or len(operations)
-        culprit_record = records[culprit - 1]
-        raise CriteriaTransactionError(
-            culprit, culprit_record["op"], culprit_record["id"],
-            f"the resulting registry would have {primary_count} primary_fix criteria; exactly one is required",
-        )
-    errors = validate_acceptance_schema(planned)
-    if errors:
-        culprit = len(operations)
-        for record in reversed(records):
-            if any(f"criterion {record['id']} " in error for error in errors):
-                culprit = records.index(record) + 1
-                break
-        culprit_record = records[culprit - 1]
-        raise CriteriaTransactionError(culprit, culprit_record["op"], culprit_record["id"],
-                                       "resulting registry fails validation: " + "; ".join(errors))
-    registry_changed = sync_work_item_registry(planned, cfg)
-    after_items, _ = effective_work_items(planned, cfg)
-    return {
-        "operations": records,
-        "operation_count": len(records),
-        "registry_hash_before": acceptance_hash(before_criteria),
-        "registry_hash_after": acceptance_hash(criteria),
-        "design_hash_before": design_hash(before_criteria),
-        "design_hash_after": design_hash(criteria),
-        "work_items_after": [item["id"] for item in after_items],
-        "work_item_scope_changed": before_scope != work_item_scope_hash(after_items, criteria),
-        "resets_original_symptom": resets_symptom,
-        "criteria_after": criteria,
-        "work_items_registry_after": planned.get("work_items") if isinstance(planned.get("work_items"), list) else None,
-    }
 
 
 def criteria_plan_preview(plan: dict, status: dict) -> dict:
@@ -9519,33 +4365,8 @@ def apply_criteria_plan(acceptance: dict, plan: dict) -> None:
 # the caller cannot choose the classification.
 # --------------------------------------------------------------------------
 
-AMENDMENT_ID_PATTERN = re.compile(r"^am-[0-9a-f]{32}$")
-AMENDMENT_STATES = ("open", "approved", "escalated", "rejected")
-AMENDMENT_CLASSIFICATIONS = ("scoped", "full_redesign")
-AMENDMENT_REVIEW_DECISIONS = ("approved", "changes_requested")
-MAX_AMENDMENT_HISTORY = 16
-MAX_AMENDMENT_LIST = 1024
-AMENDMENT_FIELDS = {
-    "amendment_id", "opened_at", "by", "base_design_hash", "base_scope_hash",
-    "changed_ids", "dependent_ids", "affected_work_items", "operations",
-    "amendment_hash", "resulting_design_hash", "classification", "classification_reasons",
-    "frozen_phase", "frozen_progress", "review", "pilot_approval", "state", "closed_at",
-}
-AMENDMENT_REVIEW_FIELDS = {"by", "at", "decision", "summary", "amendment_hash"}
-#: #146: a request-changes review may carry the reviewer's findings, and a
-#: verdict adopted from a terminal session names that session and adopter.
-AMENDMENT_REVIEW_OPTIONAL_FIELDS = {"findings", "adopted_session", "adopted_by"}
-MAX_AMENDMENT_REVIEW_FINDINGS = 32
-AMENDMENT_PILOT_APPROVAL_FIELDS = {"by", "at", "amendment_hash"}
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
-def open_amendment(status: dict) -> dict | None:
-    """The open amendment record on `status`, or None. Only state `open`
-    counts; a closed record left in `status["amendment"]` by a hand edit is
-    a schema error, never a silent freeze."""
-    record = status.get("amendment") if isinstance(status, dict) else None
-    return record if isinstance(record, dict) and record.get("state") == "open" else None
 
 
 def amendment_hash(base_design_hash: str, operations: list[dict]) -> str:
@@ -9558,15 +4379,6 @@ def amendment_hash(base_design_hash: str, operations: list[dict]) -> str:
     ).hexdigest()
 
 
-def criterion_work_item(criterion: dict, registry: list[dict]) -> str:
-    """The work item a criterion belongs to, by the same rule
-    derive_work_items renders: its leading tag, else the only item of a
-    single-item run, else `unattributed`."""
-    item_id = criterion_work_item_id(criterion)
-    if item_id is None and len(registry) == 1:
-        return registry[0]["id"]
-    known = {item.get("id") for item in registry}
-    return item_id if item_id in known else "unattributed"
 
 
 def _amendment_changed_ids(operations: list[dict]) -> list[str]:
@@ -9820,20 +4632,6 @@ def recompute_amendment_hash(amendment: dict, criteria: list[dict]) -> tuple[str
     return (None if problems else recomputed), problems
 
 
-def amendment_freeze_errors(status: dict) -> list[str]:
-    """The compute_errors rule: while an amendment is open the run is
-    pinned to the phase and progress it was opened at (after the review,
-    deployment, and live decisions were invalidated). Any other proposed
-    phase or progress is refused, forward or back."""
-    amendment = open_amendment(status)
-    if amendment is None:
-        return []
-    phase = int(status.get("phase_number", 0) or 0)
-    progress = float(status.get("progress", 0) or 0)
-    if phase != amendment.get("frozen_phase") or progress != float(amendment.get("frozen_progress", 0) or 0):
-        return [f"amendment gate: amendment {amendment.get('amendment_id')} is open; "
-                "record its review and Pilot approval first"]
-    return []
 
 
 def amendment_mutation_refusal(status: dict) -> str | None:
@@ -9910,125 +4708,8 @@ def amendment_view(status: dict, acceptance: dict, cfg: dict, verifications: lis
     }
 
 
-def _amendment_record_errors(record: object, label: str, *, must_be_open: bool) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(record, dict):
-        return [f"status: '{label}' must be an object"]
-    if set(record) != AMENDMENT_FIELDS:
-        return [f"status: '{label}' must have exactly the keys {sorted(AMENDMENT_FIELDS)}"]
-    aid = record.get("amendment_id")
-    if not isinstance(aid, str) or not AMENDMENT_ID_PATTERN.fullmatch(aid):
-        errors.append(f"status: '{label}.amendment_id' must match am-<32 hex>")
-    if not isinstance(record.get("by"), str) or not record["by"].strip():
-        errors.append(f"status: '{label}.by' must be a non-empty string")
-    for sub in ("opened_at", "closed_at"):
-        value = record.get(sub)
-        if value is None and sub == "closed_at":
-            continue
-        try:
-            parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
-            if parsed is None or parsed.tzinfo is None:
-                raise ValueError
-        except ValueError:
-            errors.append(f"status: '{label}.{sub}' must be a timezone-aware ISO-8601 timestamp"
-                          + (" or null" if sub == "closed_at" else ""))
-    for sub in ("base_design_hash", "base_scope_hash", "amendment_hash", "resulting_design_hash"):
-        if not isinstance(record.get(sub), str) or not _HEX64.fullmatch(record[sub]):
-            errors.append(f"status: '{label}.{sub}' must be a sha256 hex digest")
-    for sub in ("changed_ids", "dependent_ids", "affected_work_items", "classification_reasons"):
-        value = record.get(sub)
-        if not isinstance(value, list) or len(value) > MAX_AMENDMENT_LIST \
-                or any(not isinstance(item, str) or not item.strip() for item in value):
-            errors.append(f"status: '{label}.{sub}' must be a list of non-empty strings")
-    operations = record.get("operations")
-    if not isinstance(operations, list) or not operations \
-            or len(operations) > MAX_AMENDMENT_LIST \
-            or any(not isinstance(op, dict) or set(op) != {"op", "id", "previous_hash", "resulting_hash"}
-                   or op.get("op") not in CRITERIA_TRANSACTION_OPS
-                   or not isinstance(op.get("id"), str) or not op["id"].strip()
-                   or any(op.get(h) is not None and (not isinstance(op.get(h), str) or not _HEX64.fullmatch(op[h]))
-                          for h in ("previous_hash", "resulting_hash"))
-                   for op in operations):
-        errors.append(f"status: '{label}.operations' must be a non-empty list of "
-                      "{op, id, previous_hash, resulting_hash} records")
-    if record.get("classification") not in AMENDMENT_CLASSIFICATIONS:
-        errors.append(f"status: '{label}.classification' must be one of {', '.join(AMENDMENT_CLASSIFICATIONS)}")
-    if record.get("frozen_phase") not in PHASES or isinstance(record.get("frozen_phase"), bool):
-        errors.append(f"status: '{label}.frozen_phase' must be a phase number")
-    progress = record.get("frozen_progress")
-    if not _is_number(progress) or not 0 <= progress <= 100:
-        errors.append(f"status: '{label}.frozen_progress' must be a number from 0 to 100")
-    state = record.get("state")
-    if state not in AMENDMENT_STATES:
-        errors.append(f"status: '{label}.state' must be one of {', '.join(AMENDMENT_STATES)}")
-    elif must_be_open and state != "open":
-        errors.append(f"status: '{label}' must be open (a closed amendment belongs in 'amendments')")
-    elif not must_be_open and state == "open":
-        errors.append(f"status: '{label}' must be closed (an open amendment belongs in 'amendment')")
-    if state == "open" and record.get("closed_at") is not None:
-        errors.append(f"status: '{label}.closed_at' must be null while open")
-    if state != "open" and state in AMENDMENT_STATES and record.get("closed_at") is None:
-        errors.append(f"status: '{label}.closed_at' is required once closed")
-    review = record.get("review")
-    if review is not None:
-        if not isinstance(review, dict) or not AMENDMENT_REVIEW_FIELDS <= set(review) \
-                or set(review) - AMENDMENT_REVIEW_FIELDS - AMENDMENT_REVIEW_OPTIONAL_FIELDS \
-                or review.get("decision") not in AMENDMENT_REVIEW_DECISIONS \
-                or not all(isinstance(review.get(k), str) and review[k].strip()
-                           for k in ("by", "at", "summary", "amendment_hash")):
-            errors.append(f"status: '{label}.review' must be null or {{by, at, decision, summary, amendment_hash}}")
-        else:
-            findings = review.get("findings")
-            if findings is not None and (not isinstance(findings, list) or len(findings) > MAX_AMENDMENT_REVIEW_FINDINGS
-                                         or not all(isinstance(f, str) and f.strip() and len(f) <= 512 for f in findings)):
-                errors.append(f"status: '{label}.review.findings' must be a list of at most "
-                              f"{MAX_AMENDMENT_REVIEW_FINDINGS} non-empty strings of at most 512 characters")
-            for key in ("adopted_session", "adopted_by"):
-                if key in review and (not isinstance(review[key], str) or not review[key].strip()):
-                    errors.append(f"status: '{label}.review.{key}' must be a non-empty string when set")
-    pilot = record.get("pilot_approval")
-    if pilot is not None:
-        if not isinstance(pilot, dict) or set(pilot) != AMENDMENT_PILOT_APPROVAL_FIELDS \
-                or not all(isinstance(pilot.get(k), str) and pilot[k].strip()
-                           for k in ("by", "at", "amendment_hash")):
-            errors.append(f"status: '{label}.pilot_approval' must be null or {{by, at, amendment_hash}}")
-    if state == "approved" and (pilot is None or not isinstance(review, dict)
-                                or review.get("decision") != "approved"):
-        errors.append(f"status: '{label}' approved requires an approved review and a pilot approval")
-    return errors
 
 
-def amendment_status_errors(status: dict) -> list[str]:
-    """Schema rules for `amendment` (null or one OPEN record) and
-    `amendments` (closed history, at most 16, unique ids). Both are absent
-    on any status.json written before the lane existed and stay optional;
-    a present-but-malformed value refuses the whole state."""
-    errors: list[str] = []
-    seen: set[str] = set()
-    if "amendment" in status and status["amendment"] is not None:
-        errors.extend(_amendment_record_errors(status["amendment"], "amendment", must_be_open=True))
-        if isinstance(status["amendment"], dict) and isinstance(status["amendment"].get("amendment_id"), str):
-            seen.add(status["amendment"]["amendment_id"])
-    if "amendments" in status:
-        history = status["amendments"]
-        if not isinstance(history, list) or len(history) > MAX_AMENDMENT_HISTORY:
-            errors.append(f"status: 'amendments' must be a list of at most {MAX_AMENDMENT_HISTORY} closed amendments")
-        else:
-            for index, item in enumerate(history):
-                errors.extend(_amendment_record_errors(item, f"amendments[{index}]", must_be_open=False))
-                aid = item.get("amendment_id") if isinstance(item, dict) else None
-                if isinstance(aid, str):
-                    if aid in seen:
-                        errors.append(f"status: amendment id {aid} appears more than once")
-                    seen.add(aid)
-    for field in ("design_approved", "design_review"):
-        record = status.get(field)
-        if isinstance(record, dict) and "amended_by" in record:
-            value = record["amended_by"]
-            if not isinstance(value, list) or len(value) > MAX_AMENDMENT_HISTORY \
-                    or any(not isinstance(aid, str) or not AMENDMENT_ID_PATTERN.fullmatch(aid) for aid in value):
-                errors.append(f"status: '{field}.amended_by' must be a list of amendment ids")
-    return errors
 
 
 # --------------------------------------------------------------------------
@@ -10038,13 +4719,8 @@ def amendment_status_errors(status: dict) -> list[str]:
 # record) into one small view the dashboard strip and `status` show.
 # --------------------------------------------------------------------------
 
-def live_beacon_path(root: Path) -> Path:
-    return Path(root) / LIVE_BEACON_FILE
 
 
-def _seconds_since(timestamp: str | None, now: datetime) -> float | None:
-    minutes = _minutes_since(timestamp, now)
-    return None if minutes is None else minutes * 60
 
 
 def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
@@ -10073,28 +4749,6 @@ def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
     return True
 
 
-def read_live_beacon(root: Path) -> dict | None:
-    """The beacon if it exists and is well-formed (exactly the seven keys,
-    identifiers, integers, and timestamps only); anything else reads as no
-    signal, never as an error."""
-    path = live_beacon_path(root)
-    try:
-        beacon = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(beacon, dict) or set(beacon) != set(LIVE_BEACON_KEYS):
-        return None
-    for key in ("session_id", "role", "state", "beacon_at"):
-        if not isinstance(beacon[key], str) or not beacon[key]:
-            return None
-    for key in ("pid", "exit_code"):
-        if beacon[key] is not None and (not isinstance(beacon[key], int) or isinstance(beacon[key], bool)):
-            return None
-    if beacon["ended_at"] is not None and not isinstance(beacon["ended_at"], str):
-        return None
-    if _minutes_since(beacon["beacon_at"], datetime.now(timezone.utc)) is None:
-        return None
-    return beacon
 
 
 def liveness_view(status: dict, root: Path, cfg: dict,
@@ -10183,12 +4837,8 @@ def record_stall_transition(root: Path, cfg: dict, warning: str | None) -> str |
 # touches the session record.
 # --------------------------------------------------------------------------
 
-def output_liveness_path(root: Path) -> Path:
-    return Path(root) / OUTPUT_LIVENESS_FILE
 
 
-def agent_output_path(root: Path) -> Path:
-    return Path(root) / AGENT_OUTPUT_FILE
 
 
 _AGENT_OUTPUT_LOCK = threading.Lock()
@@ -10211,16 +4861,6 @@ def agent_output_lock(root: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _read_agent_output_store(root: Path) -> dict:
-    try:
-        value = json.loads(agent_output_path(root).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"schema": 1, "order": [], "sessions": {}}
-    if not isinstance(value, dict) or value.get("schema") != 1 \
-            or not isinstance(value.get("order"), list) \
-            or not isinstance(value.get("sessions"), dict):
-        return {"schema": 1, "order": [], "sessions": {}}
-    return value
 
 
 def operations_path(root: Path) -> Path:
@@ -10228,22 +4868,6 @@ def operations_path(root: Path) -> Path:
     return Path(root) / OPERATIONS_FILE
 
 
-def validate_progress_line(payload: object) -> dict | None:
-    """#215: {criterion, state, test, note}; the criterion id pattern, the
-    state enum, strings bounded; anything else is None (a protocol warning)."""
-    if not isinstance(payload, dict) or set(payload) - {"criterion", "state", "test", "note"} \
-            or not {"criterion", "state"} <= set(payload):
-        return None
-    criterion = payload.get("criterion")
-    if not isinstance(criterion, str) or not PROGRESS_CRITERION_PATTERN.fullmatch(criterion):
-        return None
-    if payload.get("state") not in PROGRESS_STATES:
-        return None
-    test = payload.get("test", "")
-    note = payload.get("note", "")
-    if not isinstance(test, str) or not isinstance(note, str) or len(test) > 512 or len(note) > MAX_PROGRESS_NOTE:
-        return None
-    return {"criterion": criterion, "state": payload["state"], "test": test, "note": note}
 
 
 def record_session_progress(root: Path, session_id: str, record: dict) -> list[dict]:
@@ -10270,22 +4894,6 @@ def record_session_progress(root: Path, session_id: str, record: dict) -> list[d
         return deepcopy(progress)
 
 
-def progress_summary(progress: list | None, acceptance: dict | None) -> dict:
-    """#215: {done, partial, untouched} from a session's progress list and
-    the acceptance registry: the last state per reported criterion wins;
-    every automated criterion never reported is untouched. Computed from
-    the ledger, never trusted from the child."""
-    last: dict[str, str] = {}
-    for item in progress or []:
-        if isinstance(item, dict) and isinstance(item.get("criterion"), str) and item.get("state") in PROGRESS_STATES:
-            last[item["criterion"]] = item["state"]
-    automated = [c["id"] for c in (acceptance or {}).get("criteria") or []
-                 if isinstance(c, dict) and c.get("verification") == "automated" and isinstance(c.get("id"), str)]
-    order = list(dict.fromkeys(automated + sorted(last)))
-    out = {"done": [], "partial": [], "untouched": []}
-    for criterion in order:
-        out[last.get(criterion, "untouched")].append(criterion)
-    return out
 
 
 def latest_failed_implementer_progress(status: dict) -> dict | None:
@@ -10651,27 +5259,6 @@ def _output_bytes_missed(root: Path, session_id: str | None, record) -> bool:
         return False
 
 
-def read_output_liveness(root: Path) -> dict | None:
-    """The output record if it exists and is well-formed (exactly the five
-    keys: two identifiers, one timestamp, two non-negative counters);
-    anything else, including no file, reads as no signal, never as an
-    error."""
-    path = output_liveness_path(root)
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(record, dict) or set(record) != set(OUTPUT_LIVENESS_KEYS):
-        return None
-    for key in ("session_id", "role", "output_at"):
-        if not isinstance(record[key], str) or not record[key]:
-            return None
-    for key in ("chunks", "bytes"):
-        if not isinstance(record[key], int) or isinstance(record[key], bool) or record[key] < 0:
-            return None
-    if _minutes_since(record["output_at"], datetime.now(timezone.utc)) is None:
-        return None
-    return record
 
 
 _OUTPUT_LIVENESS_LOCK = threading.Lock()
@@ -10721,147 +5308,12 @@ def note_output_liveness(root: Path, session_id: str, role: str, nbytes: int, *,
     return True
 
 
-def output_liveness_for(status: dict, liveness: dict | None) -> dict | None:
-    """The output record only when it is bound to the run: its `session_id`
-    is the recorded current session for its `role` AND that session is in
-    a live state (launching, running). Output from a completed, failed,
-    replaced, or unknown session, or from an unknown role, reads as None,
-    which is how a process exit expires the signal at once."""
-    if not isinstance(liveness, dict):
-        return None
-    current = current_agent_sessions(status).get(liveness.get("role"))
-    if not isinstance(current, dict):
-        return None
-    if current.get("session_id") != liveness.get("session_id"):
-        return None
-    if current.get("state") not in AGENT_SESSION_LIVE_STATES:
-        return None
-    return liveness
 
 
-_READ_OUTPUT_LIVENESS = object()
 
 
-def _live_focus_session(status: dict) -> dict | None:
-    """The one session the live view is about: a live (launching/running)
-    current session first, else the most recently ended terminal one."""
-    sessions = [s for s in current_agent_sessions(status).values() if isinstance(s, dict)]
-    live = [s for s in sessions if s.get("state") in AGENT_SESSION_LIVE_STATES]
-    if live:
-        return max(live, key=lambda s: str(s.get("running_at") or s.get("started_at") or ""))
-    terminal = [s for s in sessions if s.get("state") in AGENT_SESSION_TERMINAL_STATES]
-    if terminal:
-        return max(terminal, key=lambda s: str(s.get("ended_at") or s.get("started_at") or ""))
-    return None
 
 
-def live_status(status: dict, cfg: dict, root: Path, *, now: datetime | None = None,
-                output_liveness=_READ_OUTPUT_LIVENESS) -> dict:
-    """Derive one of LIVE_STATES from structured state plus the beacon.
-
-    Precedence: a complete run; a run waiting on a person (blocked, open
-    human pause, Phase 7 awaiting deployment approval); the current live
-    session (a beacon counts only when its session_id is the current
-    session's; fresh means at most LIVE_BEACON_FRESH_SECONDS old); the
-    current terminal session, reported from the ledger-bound record
-    (`ended_at`, `exit_code`) with the beacon informing `process_signal`
-    only; else idle. `last_activity_at` is the freshest of updated_at,
-    last_heartbeat_at, the bound output record (#41), the matching beacon,
-    the session timestamps, and an open pause's `since`; `activity_source`
-    names which of ACTIVITY_SOURCES that was. `output_liveness` defaults to
-    reading `.handsoff-output-liveness.json` from `root`; `activity_view`
-    passes the record it already read so one reading feeds every field."""
-    now = now or datetime.now(timezone.utc)
-    beacon = read_live_beacon(root)
-    if output_liveness is _READ_OUTPUT_LIVENESS:
-        output_liveness = read_output_liveness(root)
-    output = output_liveness_for(status, output_liveness)
-    session = _live_focus_session(status)
-    session_id = session.get("session_id") if session else None
-    role = session.get("role") if session else None
-    matching = beacon if (beacon and session_id and beacon["session_id"] == session_id) else None
-    beacon_age = _seconds_since(matching["beacon_at"], now) if matching else None
-    if matching is None:
-        process_signal = "none"
-    elif beacon_age is not None and 0 <= beacon_age <= LIVE_BEACON_FRESH_SECONDS:
-        process_signal = "fresh"
-    else:
-        process_signal = "stale"
-
-    # Ordered so an exact tie goes to the more specific signal.
-    pause = status.get("human_pause")
-    candidates = [("pause", pause.get("since") if isinstance(pause, dict) else None)]
-    if output:
-        candidates.append(("output", output["output_at"]))
-    candidates.append(("heartbeat", bound_heartbeat_at(status)))
-    if matching:
-        candidates.append(("beacon", matching["beacon_at"]))
-    if session:
-        candidates.extend(("session", session.get(key)) for key in ("started_at", "running_at", "ended_at"))
-    candidates.append(("workflow", status.get("updated_at")))
-    stamped = [(source, c, _seconds_since(c, now)) for source, c in candidates if isinstance(c, str)]
-    stamped = [(source, c, age) for source, c, age in stamped if age is not None]
-    freshest = min(stamped, key=lambda item: item[2]) if stamped else None
-    activity_source = freshest[0] if freshest else None
-    last_activity_at = freshest[1] if freshest else None
-    seconds_since_activity = int(round(freshest[2])) if freshest else None
-
-    view = {
-        "state": "idle", "role": role, "session_id": session_id,
-        "last_activity_at": last_activity_at, "seconds_since_activity": seconds_since_activity,
-        "activity_source": activity_source,
-        "process_signal": process_signal, "detail": "no managed process is running",
-        "ended_at": None, "exit_code": None,
-    }
-    session_state = session.get("state") if session else None
-    phase = int(status.get("phase_number", 1) or 1)
-    awaiting_deployment = (
-        adaptive_deployment_approval_required(status, cfg)
-        and phase == 7 and not status.get("deployment_approved")
-        and status.get("status") == "in_progress"
-    )
-    if status.get("status") == "complete":
-        view["state"] = "complete"
-        view["detail"] = "run complete"
-    elif (status.get("status") == "blocked" or isinstance(status.get("human_pause"), dict)
-          or awaiting_deployment):
-        view["state"] = "waiting"
-        view["detail"] = (activity_note(status, cfg, now=now)
-                          or status.get("next_action")
-                          or ("awaiting deployment approval" if awaiting_deployment else "waiting on a decision"))
-    elif session_state in AGENT_SESSION_LIVE_STATES:
-        mismatch = (f"beacon belongs to session {beacon['session_id']}, not current session {session_id}"
-                    if beacon and matching is None else None)
-        if process_signal == "fresh":
-            view["state"] = "started" if session_state == "launching" else "running"
-            view["detail"] = f"{role} session {session_state}"
-            if matching.get("pid") is not None:
-                view["detail"] += f" (pid {matching['pid']})"
-        elif session_state == "launching":
-            view["state"] = "started"
-            view["detail"] = mismatch or f"{role} session launching, no process signal yet"
-        else:
-            signal_at = matching["beacon_at"] if matching else (session.get("running_at") or session.get("started_at"))
-            silent = _seconds_since(signal_at, now)
-            silent_text = f"{int(round(silent))} s" if silent is not None else "an unknown time"
-            view["state"] = "stalled"
-            view["detail"] = f"no process signal for {silent_text}" + (f" ({mismatch})" if mismatch else "")
-    elif session_state in AGENT_SESSION_TERMINAL_STATES:
-        exit_code = session.get("exit_code")
-        view["state"] = "stopped" if session_state in ("completed", "cancelled") else "failed"
-        view["ended_at"] = session.get("ended_at")
-        view["exit_code"] = exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None
-        exit_text = f"exit {view['exit_code']}" if view["exit_code"] is not None else "no exit code"
-        view["detail"] = (f"{role} session {session_state.replace('_', ' ')} ({exit_text})"
-                          f" at {view['ended_at'] or 'an unknown time'}")
-        superseded = failed_session_superseded(status, session)
-        if view["state"] == "failed" and superseded:
-            # #172: the failure stays in the ledger; the live reading says
-            # what the host did with it, so a stale failure never outranks
-            # a run that has moved on.
-            view["state"] = "stopped"
-            view["detail"] = f"{role} session failed ({exit_text}) at {view['ended_at'] or 'an unknown time'}; {superseded}"
-    return view
 
 
 def mark_beacon_adopted(root: Path, session_id: str) -> bool:
@@ -10876,33 +5328,6 @@ def mark_beacon_adopted(root: Path, session_id: str) -> bool:
                              exit_code=beacon.get("exit_code"))
 
 
-def failed_session_superseded(status: dict, session: dict) -> str | None:
-    """#172: why a failed session no longer speaks for the run: its persisted
-    result was adopted, its adopted failure record was followed by a newer
-    status update, or the run advanced past the phase the session ran in.
-    None when neither holds (a genuinely failed run stays failed)."""
-    result = session.get("result") if isinstance(session, dict) else None
-    if isinstance(result, dict) and result.get("adopted_at"):
-        return f"verdict adopted at {result['adopted_at']} by {result.get('adopted_by') or 'the host'}"
-    failures = status.get("agent_failures") if isinstance(status.get("agent_failures"), dict) else {}
-    record = failures.get(session.get("session_id")) if isinstance(session, dict) else None
-    if isinstance(record, dict) and record.get("adopted") is True:
-        try:
-            ended = datetime.fromisoformat(str(session.get("ended_at")))
-            updated = datetime.fromisoformat(str(status.get("updated_at")))
-            if updated > ended:
-                return f"verdict adopted by the host; status updated at {status['updated_at']}"
-        except (TypeError, ValueError):
-            pass
-        return "verdict adopted by the host"
-    try:
-        session_phase = int(session.get("phase_number") or 0)
-        run_phase = int(status.get("phase_number") or 0)
-    except (TypeError, ValueError):
-        return None
-    if session_phase and run_phase > session_phase:
-        return f"session ran at phase {session_phase}; the run advanced to phase {run_phase}"
-    return None
 
 
 def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None = None) -> dict:
@@ -11056,117 +5481,14 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
 # --------------------------------------------------------------------------
 
 CHECK_OUTPUT_TAIL_CHARS = 2000
-VERIFY_INFLIGHT_DIR = ".handsoff-verify-inflight"
-# Handsoff's own generated state, never part of the repository digest in
-# either mode: the ledgers, anchors, locks, beacons, and the in-flight
-# directory would otherwise churn the digest on every evidence write.
-HANDSOFF_GENERATED_NAMES = frozenset({
-    ".handsoff.lock", ".handsoff-event-head.json", ".handsoff-writeahead.json",
-    ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
-    # Agent output is gitignored Handsoff runtime state, not repository evidence.
-    ".handsoff-agent-output.json", ".handsoff-regression.json", ".handsoff-test-progress.json",
-    LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE, PREFLIGHT_FILE,
-    LIVE_INFLIGHT_FILE,
-    ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,
-    "__pycache__", ".git",
-})
 
 
-def _digest_listing(root: Path, cfg: dict) -> list[str]:
-    """List candidate paths once, applying git and configured ignore rules."""
-    listed = None
-    try:
-        probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=str(root),
-                               capture_output=True, text=True, timeout=10, check=False)
-        if probe.returncode == 0 and probe.stdout.strip() == "true":
-            tracked = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), capture_output=True,
-                                     timeout=30, check=True).stdout
-            untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"],
-                                       cwd=str(root), capture_output=True, timeout=30, check=True).stdout
-            listed = [x.decode("utf-8", "replace") for x in (tracked + untracked).split(b"\0") if x]
-    except (OSError, subprocess.SubprocessError):
-        listed = None
-    if listed is None:
-        listed = []
-        gitignore_rules = []
-        for directory, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in HANDSOFF_GENERATED_NAMES)
-            base = Path(directory).relative_to(root).as_posix()
-            if base == ".": base = ""
-            if ".gitignore" in files:
-                for line in (Path(directory) / ".gitignore").read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#") and not line.startswith("!"):
-                        gitignore_rules.append((base, line))
-            for filename in files:
-                if filename == ".gitignore":
-                    continue
-                relative = filename if not base else f"{base}/{filename}"
-                ignored = False
-                for rule_base, rule in gitignore_rules:
-                    target = relative[len(rule_base) + 1:] if rule_base and relative.startswith(rule_base + "/") else relative
-                    pattern = rule.rstrip("/")
-                    if rule.endswith("/") and (target == pattern or target.startswith(pattern + "/")):
-                        ignored = True
-                    elif rule.startswith("/") and fnmatch.fnmatch(target, pattern.lstrip("/")):
-                        ignored = True
-                    elif fnmatch.fnmatch(target, pattern) or fnmatch.fnmatch(Path(target).name, pattern):
-                        ignored = True
-                if not ignored:
-                    listed.append(relative)
-    ignores = [item for item in cfg.get("digest_ignore", []) if isinstance(item, str)]
-    return sorted({path for path in listed
-                   if not any(fnmatch.fnmatch(path, glob) or any(fnmatch.fnmatch(part, glob) for part in path.split("/"))
-                              for glob in ignores)})
 
 
-HANDSOFF_TEMP_COMPONENT = re.compile(r"\.*handsoff[^/]*\.tmp-?\d+[^/]*")
 
 
-def _digest_excluded(relative: str, state_files: set[str]) -> bool:
-    """Runtime bookkeeping never counts as repository content. Beyond the
-    enumerated names, every `.handsoff*` path component is Handsoff side
-    state (locks, beacons, output tails, the version pin, future files).
-    Without the structural rule a managed session running after `verify`
-    would write a side file and flag its own evidence stale on a root that
-    is not a git checkout (#77)."""
-    parts = relative.split("/")
-    if relative in state_files or relative in {f"{name}.bak" for name in state_files}:
-        return True
-    if any(part in HANDSOFF_GENERATED_NAMES for part in parts):
-        return True
-    # Every `.handsoff*` path component, the version pin included: the pin
-    # is Handsoff configuration, not product source. `upgrade --to` rewrites
-    # it on every engine upgrade, which used to stale the evidence of every
-    # completed run in the project (v0.3.25 field-note defect 2). The engine
-    # identity stays auditable through `engine_history` and the engine
-    # recorded on every initialized and agent_session_launching event.
-    if any(part.startswith(".handsoff") for part in parts):
-        return True
-    # #203: the in-flight temp file of Handsoff's own atomic writers
-    # (`..handsoff-live.json.tmp-<pid>-<hex>`, `handsoff-status.json.tmp<pid>`)
-    # exists for a few milliseconds between write and rename. A digest scan
-    # that lands in that window used to see a file the other scan did not,
-    # and a managed reviewer was blamed for a tree it never touched.
-    if any(HANDSOFF_TEMP_COMPONENT.fullmatch(part) for part in parts):
-        return True
-    # handsoff.toml is Handsoff's own configuration, not the product under
-    # test: a live_commands line or a budget tweak must not read as source
-    # drift (#93). What configuration CAN change the meaning of evidence,
-    # the check commands, is bound separately through the verification
-    # config hash stored on every executed record (see evidence_drift).
-    if relative == "handsoff.toml":
-        return True
-    return parts[-1].endswith(".pyc")
 
 
-def _digest_entry(root: Path, relative: str) -> str | None:
-    path = root / relative
-    if path.is_symlink():
-        return hashlib.sha256(("symlink:" + os.readlink(path)).encode("utf-8", "replace")).hexdigest()
-    if not path.is_file():
-        return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def repository_digest_from_entries(entries: dict[str, str | None]) -> str:
@@ -11178,36 +5500,8 @@ def repository_digest_from_entries(entries: dict[str, str | None]) -> str:
     return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
 
 
-def repository_digest(root: Path, cfg: dict | None = None) -> str:
-    """sha256 over the sorted (relative path, file sha256) pairs of every
-    tracked file plus every untracked-not-ignored file when `root` is a git
-    checkout (dirty state included by construction: the working tree
-    content is hashed, not HEAD). A root that is not a git checkout hashes
-    every file under it minus Handsoff's generated names. A tracked file
-    deleted from the working tree contributes a null hash, so a deletion
-    changes the digest too. Gitignored Handsoff state files are omitted by
-    git's untracked-file query, preventing runtime bookkeeping from causing
-    evidence drift."""
-    names = cfg or DEFAULT_CONFIG
-    state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
-    pairs = []
-    for relative in _digest_listing(root, names):
-        if _digest_excluded(relative, state_files):
-            continue
-        pairs.append([relative, _digest_entry(root, relative)])
-    return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
 
 
-def repository_digest_entries(root: Path, cfg: dict | None = None) -> dict[str, str | None]:
-    """Return per-path working-tree digests so a sandbox violation can name files.
-
-    Handsoff state is excluded for the same reason as repository_digest: its own
-    bookkeeping must not look like an agent edit.
-    """
-    names = cfg or load_config(root)
-    state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
-    return {path: _digest_entry(root, path) for path in _digest_listing(root, names)
-            if not _digest_excluded(path, state_files)}
 
 
 def record_session_result(root: Path, session_id: str, kind: str, payload: dict, *,
@@ -11246,19 +5540,6 @@ def record_session_result(root: Path, session_id: str, kind: str, payload: dict,
         return deepcopy(result)
 
 
-def verification_config_hash(cfg: dict) -> str:
-    """The configuration that changes what a targeted check proves: the
-    governance keys, [checks].commands, the per-command timeout, and the
-    regression groups. Distinct from config_hash (which binds decisions to
-    governance policy alone) and deliberately blind to file paths,
-    [agents], [models], [fallback_policy], [recovery], [design_evidence]
-    and tickets, none of which alter a check's meaning."""
-    bound = {key: cfg.get(key) for key in GOVERNANCE_CONFIG_KEYS}
-    bound["check_commands"] = list(cfg.get("check_commands", []))
-    bound["check_timeout_seconds"] = cfg.get("check_timeout_seconds")
-    bound["regressions"] = [{"name": group.get("name"), "commands": list(group.get("commands", []))}
-                            for group in cfg.get("regressions", [])]
-    return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
 
 
 def verification_binding(command: str, repo_digest: str, config_digest: str,
@@ -11274,13 +5555,6 @@ def verification_binding(command: str, repo_digest: str, config_digest: str,
     }).encode("utf-8")).hexdigest()
 
 
-def feature_hash(status: dict, events: list[dict]) -> str:
-    """Identity of the current run: sha256 of the feature text plus the
-    timestamp of the run's first event (the `initialized` record), the same
-    anchor the regression gate uses for its run id. A record from an
-    earlier run of the same feature therefore never satisfies this one."""
-    initialized_at = str(events[0].get("at") or "") if events else ""
-    return hashlib.sha256((str(status.get("feature") or "") + initialized_at).encode("utf-8")).hexdigest()
 
 
 def check_result_reusable(result: object) -> bool:
@@ -11320,30 +5594,6 @@ def reusable_check_record(records: list[dict], command: str, binding: str,
 def verify_inflight_lock_path(root: Path, binding: str) -> Path:
     return root / VERIFY_INFLIGHT_DIR / f"{binding}.lock"
 
-def verify_inflight_bindings(root: Path) -> list[str]:
-    """Binding ids whose verify lock is held right now. Lock files are
-    never unlinked (unlinking a flock file races with the next opener), so
-    a file on disk proves nothing; only a lock that refuses LOCK_NB is in
-    flight (#72). Without fcntl nothing can be proven, so nothing is
-    reported."""
-    directory = root / VERIFY_INFLIGHT_DIR
-    if fcntl is None or not directory.is_dir():
-        return []
-    held = []
-    for path in sorted(directory.iterdir()):
-        if not path.is_file():
-            continue
-        try:
-            with path.open("r+") as fh:
-                try:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError:
-                    held.append(path.name[:-5] if path.name.endswith(".lock") else path.name)
-                else:
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            continue
-    return held
 
 
 
@@ -11966,38 +6216,7 @@ def design_review_packet_summary(status: dict) -> dict | None:
 # from a fixed, closed set.
 # --------------------------------------------------------------------------
 
-FAILURE_CATEGORIES = (
-    "cancelled", "timeout", "token_budget_exhaustion", "orchestration_noop",
-    "auth_failure", "rate_limit", "context_exhaustion",
-    "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
-    "reviewer_modified_project",
-    "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
-    "protocol_silence", "model_identity_mismatch",
-)
 
-_FAILURE_REASON_LABELS = {
-    "protocol_silence": "session produced no protocol output within the configured limit",
-    "cancelled": "run was cancelled",
-    "timeout": "runner exceeded its timeout",
-    "token_budget_exhaustion": "managed role exhausted its token budget",
-    "orchestration_noop": "Supervisor exited without a broker request or Pilot question",
-    "auth_failure": "authentication or authorization failed",
-    "rate_limit": "rate limit or quota exhausted",
-    "context_exhaustion": "context window exhausted",
-    "runtime_environment": "managed runtime initialization failed",
-    "process_crash": "process was terminated by a signal",
-    "non_zero_exit": "process exited with a non-zero status",
-    "unknown": "failure signal matched no known category",
-    "still_running": "no failure signal reported yet",
-    "presumed_lost": "host watchdog found no liveness signal past the threshold",
-    "reviewer_modified_project": "managed Reviewer modified the project tree",
-    "external_timeout": "external operation exceeded its declared timeout",
-    "dispatch_failed": "host dispatch failed",
-    "no_artifact": "process exited 0 without a protocol result",
-    "network": "network connection to a dependency failed",
-    "target_service": "target service reported a failure",
-    "model_identity_mismatch": "provider reported a different model than requested",
-}
 
 # Order matters: tier 3 checks these in sequence and the first match wins,
 # even when a tail matches more than one (e.g. an auth error surfaced while
@@ -12075,11 +6294,6 @@ def should_failover_for_quality(*, retry_count: int, retry_limit: int, finding_i
     return retry_count >= retry_limit and has_finding
 
 
-RECOVERABLE_FAILURE_CATEGORIES = {
-    "auth_failure", "rate_limit", "context_exhaustion", "timeout",
-    "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost", "external_timeout",
-    "no_artifact", "protocol_silence",
-}
 FALLBACK_SKIP_REASONS = {
     "invalid_profile", "adapter_unavailable", "already_attempted", "reviewer_not_independent",
     "environment_failure", "model_policy_denied", "cross_vendor_not_allowed", "insufficient_capability",
@@ -12091,23 +6305,6 @@ def _fallback_decision(action: str, reason: str, *, profile: dict | None = None,
     return {"action": action, "reason": reason, "profile": profile, "skipped": skipped or []}
 
 
-def _canonical_implementer_identity(profile: object) -> tuple[str, str] | None:
-    """Accept immutable runtime-session or implementation-review snapshots."""
-    if not isinstance(profile, dict):
-        return None
-    if "requested_model" in profile:
-        adapter = profile.get("resolved_adapter", profile.get("adapter"))
-        model = profile.get("requested_model")
-    else:
-        adapter = profile.get("effective_adapter", profile.get("adapter"))
-        model = profile.get("model")
-    if adapter not in SELECTABLE_AGENT_ADAPTERS:
-        return None
-    try:
-        model = validate_agent_model(model)
-    except HandsoffError:
-        return None
-    return adapter, model
 
 
 def plan_agent_fallback(role: str, failure_category: str, fallback_entries: object,
@@ -12649,109 +6846,16 @@ def record_pilot_note(root: Path, *, by: object, text: object) -> dict:
 # Nothing in the ledger changes; sleep is subtracted at read time.
 # --------------------------------------------------------------------------
 
-SLEEP_LOG_CACHE_SECONDS = 60
-_SLEEP_LOG_CACHE: dict = {"at": None, "intervals": [], "thread": None}
-_SLEEP_LOG_LOCK = threading.Lock()
-_SLEEP_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ([+-]\d{4}) (Sleep|Wake|DarkWake)\b")
 
 
-def _read_pmset_log() -> str | None:
-    """`pmset -g log` on macOS; None where it does not exist or fails."""
-    if shutil.which("pmset") is None:
-        return None
-    try:
-        result = subprocess.run(["pmset", "-g", "log"], capture_output=True, text=True, timeout=20, shell=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout if result.returncode == 0 else None
 
 
-def parse_sleep_log(text: str, *, now: datetime) -> list[tuple[datetime, datetime]]:
-    """[(slept_at, woke_at)] in UTC from pmset's log. Each line carries its
-    own offset ('2026-09-21 06:36:06 -0400 Sleep'), parsed arithmetically,
-    never through a zone name, so a DST change is two lines with different
-    offsets and nothing is ambiguous. 'Sleep' opens an interval; only 'Wake'
-    closes it; 'DarkWake' (maintenance) leaves it open; an open interval
-    closes at now. Overlapping or touching intervals merge."""
-    intervals: list[tuple[datetime, datetime]] = []
-    open_at: datetime | None = None
-    for line in text.splitlines():
-        match = _SLEEP_LINE.match(line)
-        if not match:
-            continue
-        try:
-            stamp = datetime.strptime(match.group(1) + match.group(2), "%Y-%m-%d %H:%M:%S%z").astimezone(timezone.utc)
-        except ValueError:
-            continue
-        kind = match.group(3)
-        if kind == "Sleep":
-            if open_at is None or stamp < open_at:
-                open_at = stamp if open_at is None else open_at
-        elif kind == "Wake" and open_at is not None:
-            if stamp > open_at:
-                intervals.append((open_at, stamp))
-            open_at = None
-    if open_at is not None and now > open_at:
-        intervals.append((open_at, now))
-    intervals.sort()
-    merged: list[tuple[datetime, datetime]] = []
-    for start, end in intervals:
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return merged
 
 
-def _refresh_sleep_cache(now: datetime) -> None:
-    text = _read_pmset_log()
-    intervals = parse_sleep_log(text, now=now) if isinstance(text, str) else []
-    with _SLEEP_LOG_LOCK:
-        _SLEEP_LOG_CACHE["at"] = now
-        _SLEEP_LOG_CACHE["intervals"] = intervals
-        _SLEEP_LOG_CACHE["thread"] = None
 
 
-def machine_sleep_intervals(*, now: datetime | None = None, log_reader=None, wait: bool = False) -> list[tuple[datetime, datetime]]:
-    """The machine's sleep intervals from a per-process cache refreshed
-    every SLEEP_LOG_CACHE_SECONDS. `pmset -g log` is tens of thousands of
-    lines and takes seconds, so the refresh runs on a background thread
-    and never on a request: a read before the first refresh lands returns
-    [] (wall clock) rather than holding the page. `wait=True` blocks for
-    the refresh (the CLI, tests). An injected log_reader (tests) bypasses
-    the cache and pmset."""
-    now = now or datetime.now(timezone.utc)
-    if log_reader is not None:
-        text = log_reader()
-        return parse_sleep_log(text, now=now) if isinstance(text, str) else []
-    with _SLEEP_LOG_LOCK:
-        cached_at = _SLEEP_LOG_CACHE["at"]
-        fresh = cached_at is not None and (now - cached_at).total_seconds() < SLEEP_LOG_CACHE_SECONDS
-        running = _SLEEP_LOG_CACHE["thread"]
-        if fresh:
-            return list(_SLEEP_LOG_CACHE["intervals"])
-        if running is None or not running.is_alive():
-            running = threading.Thread(target=_refresh_sleep_cache, args=(now,), daemon=True, name="handsoff-sleep-log")
-            _SLEEP_LOG_CACHE["thread"] = running
-            running.start()
-        stale = list(_SLEEP_LOG_CACHE["intervals"])
-    if wait:
-        running.join(timeout=30)
-        with _SLEEP_LOG_LOCK:
-            return list(_SLEEP_LOG_CACHE["intervals"])
-    return stale
 
 
-def asleep_seconds(start: datetime | None, end: datetime | None, intervals: list[tuple[datetime, datetime]]) -> float:
-    """How much of [start, end] the machine spent asleep; never negative."""
-    if start is None or end is None or end <= start:
-        return 0.0
-    total = 0.0
-    for slept, woke in intervals:
-        overlap = (min(end, woke) - max(start, slept)).total_seconds()
-        if overlap > 0:
-            total += overlap
-    return min(total, (end - start).total_seconds())
 
 
 def awake_seconds(start: datetime | None, end: datetime | None, intervals: list[tuple[datetime, datetime]]) -> float | None:
@@ -12768,113 +6872,12 @@ def awake_seconds(start: datetime | None, end: datetime | None, intervals: list[
 # prefix (the #164 rule), never inferred from anything else.
 # --------------------------------------------------------------------------
 
-ACTOR_FAMILY_PREFIXES = ("claude-", "codex-")
-#: events written by the host's own commands (never by a managed session)
-HOST_COMMAND_EVENT_KINDS = frozenset({
-    "criteria_transaction_applied", "criterion_added", "criterion_updated", "criterion_removed",
-    "design_proposal_recorded", "evidence_recorded", "review_attempt_opened", "symptom_resolved",
-    "ci_watch_started", "work_item_updated", "pilot_note", "run_closed",
-})
 
 
-def actor_family(actor: object) -> str | None:
-    """'claude' or 'codex' from an actor's prefix; None for anything else."""
-    if not isinstance(actor, str):
-        return None
-    for prefix in ACTOR_FAMILY_PREFIXES:
-        if actor.startswith(prefix):
-            return prefix[:-1]
-    return None
 
 
-def host_identity(status: dict, events: list[dict]) -> dict:
-    """{family, actor, source}: the actor `init --by` recorded on
-    `initialized` (source initialized); else the newest actor on a
-    host-side command event or status.implemented_by (source ledger);
-    else unknown with source none. A family is only ever an actor prefix."""
-    events = [e for e in events if isinstance(e, dict)]
-    # The host already knows the exact model serving the supervising session.
-    # Prefer the plainly named variable; retain the old CLASS spelling so a
-    # dashboard started by an older host keeps its identity after an upgrade.
-    model_class = str(
-        os.environ.get("HANDSOFF_HOST_MODEL")
-        or os.environ.get("HANDSOFF_HOST_MODEL_CLASS")
-        or ""
-    ).strip()[:64] or None
-
-    def identified(family, actor, source):
-        value = {"family": family, "actor": actor, "source": source}
-        # Preserve the established three-key API when the runtime does not
-        # expose an exact model; an unavailable value is absence, not a new
-        # nullable field forced on every existing consumer.
-        if model_class is not None:
-            value["model_class"] = model_class
-        return value
-
-    for event in events:
-        if event.get("kind") == "initialized" and actor_family(event.get("by")):
-            return identified(actor_family(event["by"]), event["by"], "initialized")
-    for event in reversed(events):
-        if event.get("kind") in HOST_COMMAND_EVENT_KINDS and actor_family(event.get("by")):
-            return identified(actor_family(event["by"]), event["by"], "ledger")
-    implemented = status.get("implemented_by") if isinstance(status, dict) else None
-    if actor_family(implemented):
-        return identified(actor_family(implemented), implemented, "ledger")
-    return identified("unknown", None, "none")
 
 
-def host_wait_view(status: dict, events: list[dict], cfg: dict, *, now: datetime | None = None,
-                   pilot_input_required: bool = False) -> dict | None:
-    """#194: who the run is waiting on, when the ball is with the host.
-    None when the run is closed or complete, a managed session is
-    launching or running, the Pilot's own input is pending (a decision
-    card is on the page), or the ledger has been written to within the
-    stall threshold. Ledger silence is measured from the newest of
-    status.updated_at and the last event's `at` (design review F1.2): a
-    fresh heartbeat or managed-session output is not the host acting.
-    Otherwise the host family (an actor prefix, never a guess), when the
-    ledger was last written, how long since, and the action the host owes:
-    the authorized design-review attempt when one is unconsumed, else the
-    run's next_action. Computed at read time; nothing is written."""
-    if not isinstance(status, dict):
-        return None
-    if isinstance(status.get("run_closed"), dict) or status.get("status") == "complete" \
-            or int(status.get("phase_number", 0) or 0) >= 8:
-        return None
-    if pilot_input_required or isinstance(status.get("human_pause"), dict):
-        return None
-    sessions = status.get("agent_sessions") if isinstance(status.get("agent_sessions"), dict) else {}
-    if any(isinstance(s, dict) and s.get("state") in ("launching", "running") for s in sessions.values()):
-        return None
-    now = now or datetime.now(timezone.utc)
-    times = [e.get("at") for e in events if isinstance(e, dict) and isinstance(e.get("at"), str)]
-    if isinstance(status.get("updated_at"), str):
-        times.append(status["updated_at"])
-    since = max(times) if times else None
-    silent = _iso_seconds(since, now.isoformat()) if since else None
-    # #193: silence is awake time; a closed lid is not the host ignoring the run
-    slept = 0.0
-    if silent is not None:
-        try:
-            began = datetime.fromisoformat(str(since).replace("Z", "+00:00"))
-            slept = asleep_seconds(began, now, machine_sleep_intervals(now=now))
-            silent = max(silent - slept, 0.0)
-        except (TypeError, ValueError):
-            slept = 0.0
-    limit = float(cfg.get("stall_minutes", 10) or 10) * 60
-    if silent is None or silent < limit:
-        return None
-    host = host_identity(status, events)
-    authorization = status.get("design_review_authorization")
-    if isinstance(authorization, dict) and authorization.get("consumed_at") is None \
-            and authorization.get("attempt_permitted") is not None:
-        action = f"launch design-review attempt {authorization['attempt_permitted']}"
-        launch_role = "reviewer"
-    else:
-        action = str(status.get("next_action") or "the next step")
-        launch_role = None
-    return {"family": host["family"], "actor": host["actor"], "since": since,
-            "silent_seconds": silent, "asleep_seconds": round(slept, 3), "action": action, "launch_role": launch_role}
 
 
 # --------------------------------------------------------------------------
@@ -12939,14 +6942,6 @@ def _ci_checks(root: Path, pr: int, runner=None, which=None) -> list[dict]:
     return sorted(checks, key=lambda c: c["name"])
 
 
-def _iso_seconds(start: object, end: object) -> float | None:
-    try:
-        a = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
-        b = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    seconds = (b - a).total_seconds()
-    return seconds if seconds >= 0 else None
 
 
 CI_EXPECTED_SAMPLE = 5
@@ -13157,15 +7152,6 @@ def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
     }
 
 
-def ci_gate_errors(status: dict) -> list[str]:
-    """One line while the watched head has a failed check. Evaluated on the
-    proposed status like every gate, so it refuses the 6 to 7 transition."""
-    watch = status.get("ci") if isinstance(status, dict) else None
-    if not isinstance(watch, dict) or watch.get("state") != "failed":
-        return []
-    check = watch.get("failed_check") or "a check"
-    link = f" ({watch['url']})" if isinstance(watch.get("url"), str) else ""
-    return [f"CI: {check} failed on PR #{watch.get('pr')}{link}; rerun or push, then ci-watch --pr {watch.get('pr')} again"]
 
 
 # --------------------------------------------------------------------------
@@ -13235,9 +7221,6 @@ def record_design_decline(root: Path, cfg: dict, *, by: object, reason: object, 
     return record
 
 
-def pending_design_decline(status: dict) -> dict | None:
-    declined = status.get("design_declined") if isinstance(status, dict) else None
-    return declined if isinstance(declined, dict) and declined.get("decision") == "pending" else None
 
 
 
@@ -13636,30 +7619,9 @@ def reopen_run(root: Path, *, by: str, reason: str, expected_updated_at: str | N
 # and the answer reaches the role on its next launch (build_role_input).
 
 QUESTION_PREFIX = "HANDSOFF_QUESTION:"
-QUESTION_ID_PATTERN = re.compile(r"^qn-[0-9a-f]{32}$")
-MAX_PENDING_QUESTIONS = 16
-MAX_QUESTION_TEXT = 1024
-# #48: structured questions. A candidate that begins with '{' is parsed as a
-# JSON form (text + options + optional recommended); anything else after the
-# prefix is plain text exactly as in #46. A form that fails any rule is kept
-# verbatim as plain text with `form_error` naming the rule, so nothing a
-# role asked is ever lost.
-MAX_QUESTION_OPTIONS = 6
-MAX_QUESTION_OPTION_TEXT = 120
 MAX_QUESTION_BATCH = 16
 QUESTION_FORM_REQUIRED_KEYS = {"text", "options"}
 QUESTION_FORM_OPTIONAL_KEYS = {"recommended"}
-QUESTION_FORM_ERRORS = (
-    "malformed_json", "not_object", "unknown_keys", "missing_keys", "text_bounds",
-    "options_bounds", "duplicate_options", "recommended_not_offered",
-)
-QUESTION_LEGACY_FIELDS = {
-    "question_id", "role", "session_id", "text", "truncated", "asked_at", "blocking",
-    "answer", "answered_by", "answered_at", "delivered_at", "previous_next_action",
-}
-QUESTION_FORM_FIELDS = {"options", "recommended", "form_error"}
-QUESTION_ANSWER_FIELDS = {"chosen_option", "other_text"}
-QUESTION_FIELDS = QUESTION_LEGACY_FIELDS | QUESTION_FORM_FIELDS | QUESTION_ANSWER_FIELDS
 
 
 class QuestionAnswerConflict(HandsoffError):
@@ -14105,99 +8067,8 @@ def question_cards(status: dict) -> list[dict]:
     return [{"role": role, "count": count} for role, count in cards.items()]
 
 
-def question_status_errors(status: dict) -> list[str]:
-    """Schema half of the trust boundary: a hand-edited record refuses cleanly."""
-    errors: list[str] = []
-    if "pending_questions" not in status or status["pending_questions"] is None:
-        return errors
-    items = status["pending_questions"]
-    if not isinstance(items, list):
-        return ["status: 'pending_questions' must be a list"]
-    if len(items) > MAX_PENDING_QUESTIONS * 4:
-        errors.append(f"status: 'pending_questions' must contain at most {MAX_PENDING_QUESTIONS * 4} entries")
-    seen = set()
-    for index, q in enumerate(items):
-        label = f"status: pending_questions[{index}]"
-        if not isinstance(q, dict):
-            errors.append(f"{label} must be an object")
-            continue
-        # #48 records carry the form and answer fields; a #46 record written
-        # before them is read as plain text (absent means empty list / null).
-        # Any other key set is a hand edit.
-        if set(q) not in (QUESTION_FIELDS, QUESTION_LEGACY_FIELDS):
-            errors.append(f"{label} must have exactly the keys {sorted(QUESTION_FIELDS)}")
-            continue
-        qid = q.get("question_id")
-        if not isinstance(qid, str) or not QUESTION_ID_PATTERN.fullmatch(qid) or qid in seen:
-            errors.append(f"{label}.question_id is invalid or duplicated")
-        seen.add(qid)
-        if q.get("role") not in SELECTABLE_AGENT_ROLES:
-            errors.append(f"{label}.role is invalid")
-        sid = q.get("session_id")
-        if sid is not None and (not isinstance(sid, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(sid)):
-            errors.append(f"{label}.session_id is invalid")
-        if not isinstance(q.get("text"), str) or not q["text"].strip() or len(q["text"]) > MAX_QUESTION_TEXT:
-            errors.append(f"{label}.text must be a non-empty string of at most {MAX_QUESTION_TEXT} characters")
-        for flag in ("truncated", "blocking"):
-            if not isinstance(q.get(flag), bool):
-                errors.append(f"{label}.{flag} must be boolean")
-        for key in ("asked_at", "answered_at", "delivered_at"):
-            value = q.get(key)
-            if value is None and key != "asked_at":
-                continue
-            try:
-                if not isinstance(value, str) or datetime.fromisoformat(value).tzinfo is None:
-                    raise ValueError
-            except (TypeError, ValueError):
-                errors.append(f"{label}.{key} must be a timezone-aware timestamp")
-        answered = q.get("answer") is not None
-        if answered and (not isinstance(q.get("answer"), str) or not q["answer"].strip()
-                         or not isinstance(q.get("answered_by"), str) or q.get("answered_at") is None):
-            errors.append(f"{label} answer must carry text, answered_by and answered_at together")
-        if not answered and (q.get("answered_by") is not None or q.get("answered_at") is not None
-                             or q.get("delivered_at") is not None):
-            errors.append(f"{label} unanswered question cannot carry answer metadata")
-        previous = q.get("previous_next_action")
-        if previous is not None and not isinstance(previous, str):
-            errors.append(f"{label}.previous_next_action must be a string or null")
-        errors.extend(_question_form_errors(label, q, answered))
-    return errors
 
 
-def _question_form_errors(label: str, q: dict, answered: bool) -> list[str]:
-    """#48 half of the schema check: options, recommended, form_error and
-    the chosen_option / other_text pair must agree with each other."""
-    errors: list[str] = []
-    options = q.get("options", [])
-    options_ok = isinstance(options, list) and len(options) <= MAX_QUESTION_OPTIONS and all(
-        isinstance(o, str) and 1 <= len(o) <= MAX_QUESTION_OPTION_TEXT and " ".join(o.split()) == o
-        for o in options)
-    if not options_ok:
-        errors.append(f"{label}.options must be a list of at most {MAX_QUESTION_OPTIONS} normalized strings "
-                      f"of 1 to {MAX_QUESTION_OPTION_TEXT} characters")
-        options = []
-    elif len(set(options)) != len(options):
-        errors.append(f"{label}.options must be unique")
-    recommended = q.get("recommended")
-    if recommended is not None and (not isinstance(recommended, str) or recommended not in options):
-        errors.append(f"{label}.recommended must be null or one of the options")
-    form_error = q.get("form_error")
-    if form_error is not None:
-        if form_error not in QUESTION_FORM_ERRORS:
-            errors.append(f"{label}.form_error must be null or one of {list(QUESTION_FORM_ERRORS)}")
-        if options or recommended is not None:
-            errors.append(f"{label} with a form_error must carry no options or recommended")
-    chosen = q.get("chosen_option")
-    other = q.get("other_text")
-    if chosen is not None and (not isinstance(chosen, str) or chosen not in options or chosen != q.get("answer")):
-        errors.append(f"{label}.chosen_option must be null or the offered option that is the answer")
-    if other is not None and (not isinstance(other, str) or other != q.get("answer")):
-        errors.append(f"{label}.other_text must be null or equal to the answer")
-    if chosen is not None and other is not None:
-        errors.append(f"{label} cannot carry both chosen_option and other_text")
-    if not answered and (chosen is not None or other is not None):
-        errors.append(f"{label} unanswered question cannot carry chosen_option or other_text")
-    return errors
 
 
 # --------------------------------------------------------------------------

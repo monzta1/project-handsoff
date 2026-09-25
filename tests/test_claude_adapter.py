@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from unittest import TestCase, mock
 
+from tests.engine_patch import patch_engine
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
 import handsoff_agent as agent
 import handsoff_lib as lib
@@ -17,9 +19,9 @@ class ClaudeAdapterTests(TestCase):
             'compatibility_mode': True, 'compatibility_approved': True,
         }
         # The launch spec is computed against a fixture, never the repository's own run.
-        with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), \
+        with mock.patch.object(lib, "validate_runtime_integrity"), patch_engine("load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), \
                 mock.patch.object(lib, "evaluate_launch_rules", return_value=None), \
-                mock.patch.object(lib, "status_path", return_value=Path("/nonexistent-handsoff-status")):
+                patch_engine("status_path", return_value=Path("/nonexistent-handsoff-status")):
             # the launch rules read the repository's own run (#165); a checkout
             # at Phase 1 would refuse the reviewer here, which is not this test
             spec = agent.build_launch_spec(Path('.'), 'reviewer', 'review', which=lambda x: '/bin/claude', skip_preflight=True)
@@ -84,7 +86,7 @@ class ClaudeAdapterTests(TestCase):
         # both launch paths go through the helper
         cfg = lib.load_config(Path('.'))
         cfg['agents']['implementer'] = 'claude'
-        with mock.patch.object(lib, "validate_runtime_integrity"), mock.patch.object(lib, "load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), mock.patch.object(lib, "status_path", return_value=Path("/nonexistent-handsoff-status")):
+        with mock.patch.object(lib, "validate_runtime_integrity"), patch_engine("load_config", return_value=cfg), mock.patch.object(agent, "build_role_input", return_value="task"), mock.patch.object(agent, "applicable_design_review_packet", return_value=None), mock.patch.object(agent, "_refuse_reviewer_launch_over_budget"), mock.patch.object(lib, "managed_design_context", return_value=None), patch_engine("status_path", return_value=Path("/nonexistent-handsoff-status")):
             spec = agent.build_launch_spec(Path('.'), 'implementer', 'build', which=lambda x: '/bin/claude', skip_preflight=True)
             fallback = agent.build_profile_launch_spec(Path('.'), 'implementer', 'build', {'adapter': 'claude', 'model': 'default'}, which=lambda x: '/bin/claude', skip_preflight=True)
         for argv in (spec.argv, fallback.argv):
@@ -92,7 +94,7 @@ class ClaudeAdapterTests(TestCase):
             self.assertEqual(argv[i - 1], '--verbose', argv)
 
     def test_implementer_role_input_names_permitted_forms(self):
-        with mock.patch.object(lib, "resume_scope_section", return_value=""), mock.patch.object(lib, "load_config", return_value=lib.load_config(Path('.'))):
+        with mock.patch.object(lib, "resume_scope_section", return_value=""), patch_engine("load_config", return_value=lib.load_config(Path('.'))):
             text = agent.build_role_input(Path('.'), 'implementer', 'build it')
         self.assertIn('# Permitted supervisor commands', text)
         self.assertIn('`python3 bin/handsoff_supervisor.py verify ...`', text)

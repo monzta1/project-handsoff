@@ -14,6 +14,8 @@ from tests.test_handsoff_supervisor import docs_text
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bin"))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -49,7 +51,7 @@ class ConfigKeyTests(HandsoffTestCase):
         # The hash a pre-#159 engine computed: the same governance keys without the new one.
         legacy = dict(lib.load_config(self.tmp))
         legacy.pop("require_design_approval")
-        with mock.patch.object(lib, "GOVERNANCE_CONFIG_KEYS", tuple(k for k in lib.GOVERNANCE_CONFIG_KEYS if k != "require_design_approval")):
+        with patch_engine("GOVERNANCE_CONFIG_KEYS", tuple(k for k in lib.GOVERNANCE_CONFIG_KEYS if k != "require_design_approval")):
             pre_159 = lib.config_hash(legacy)
         self.assertEqual(absent, pre_159)
         _set_workflow_key(toml, "require_design_approval", "true")

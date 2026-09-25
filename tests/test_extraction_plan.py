@@ -55,7 +55,11 @@ class ThePlanAccountsForEverySubsystem(unittest.TestCase):
         belongs, and keying on the first occurrence read that instead."""
         rows = [l.lower() for l in self.text.splitlines() if l.strip().startswith("|")]
         for name in TICKET_SUBSYSTEMS:
-            stated = [r for r in rows if name in r and ("extracted" in r or "pending" in r)]
+            # "already its own module" is a recorded state too: Fleet registry
+            # was never inside the monolith, and saying so is more useful than
+            # forcing it into the extracted/pending vocabulary.
+            states = ("extracted", "pending", "already its own module")
+            stated = [r for r in rows if name in r and any(v in r for v in states)]
             self.assertTrue(stated, f"{name} has no table row recording its state")
 
     def test_the_plan_names_owners_and_persisted_schemas(self):
@@ -109,7 +113,11 @@ class ThePlanNumbersMatchTheCode(unittest.TestCase):
         """The plan states the size at extraction and the size after. The
         second number must still describe the file."""
         actual = len(LIB.read_text(encoding="utf-8").splitlines())
-        claimed = [int(m.replace(",", "")) for m in re.findall(r"1[45],\d{3}", self.text)]
+        # The monolith shrinks with every stage, so the pattern must not be
+        # pinned to the range it happened to be in when this was written --
+        # \b1\d,\d{3}\b was, and would have failed for every count under
+        # 10,000 no matter what the document said.
+        claimed = [int(m.replace(",", "")) for m in re.findall(r"\b\d{1,2},\d{3}\b", self.text)]
         self.assertIn(actual, claimed,
                       f"handsoff_lib.py is {actual} lines; the plan names {sorted(set(claimed))}")
 

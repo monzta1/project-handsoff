@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import force_acceptance
 
 
 class ReviewAttemptTests(unittest.TestCase):
@@ -141,9 +142,10 @@ class ReviewAttemptTests(unittest.TestCase):
             verification="manual", tests=[], evidence=[], state="not_tested",
         )
         cfg = lib.load_config(self.root)
-        with lib.project_lock(self.root):
-            lib.commit(self.root, cfg, acceptance=acceptance,
-                       event_kind="criterion_fixture", event_message="Manual evidence fixture")
+        # A manual criterion with neither tests nor evidence is the starting
+        # state this test needs and one the engine refuses to write, so the
+        # registry is placed on disk rather than committed.
+        force_acceptance(self.root, cfg, acceptance)
         status = self.read("handsoff-status.json")
         status.update(phase_number=4, phase=lib.PHASES[4], progress=40,
                       requires_design_review=False, requires_design_approval=False)

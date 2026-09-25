@@ -7,7 +7,8 @@
     "protocol": "the managed-role protocol",
     "lessons-lane": "lessons: running and landing a lane",
     "lessons-agents": "lessons: managed sessions",
-    "lessons-evidence": "lessons: evidence that holds"
+    "lessons-evidence": "lessons: evidence that holds",
+    "lessons-binding": "what a module split does to name binding: which patch reaches which call, and when to change the shape instead of the rule"
   },
   "always_load": [
     "INDEX.md",
@@ -34,6 +35,12 @@
       "file": "lessons-agents.md",
       "topics": [
         "lessons-agents"
+      ]
+    },
+    {
+      "file": "lessons-binding.md",
+      "topics": [
+        "lessons-binding"
       ]
     },
     {

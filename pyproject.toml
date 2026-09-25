@@ -28,7 +28,7 @@ package-dir = {"" = "bin"}
 py-modules = [
   "handsoff_agent", "handsoff_broker", "handsoff_cli", "handsoff_close_transaction",
   "handsoff_dashboard", "handsoff_fleet", "handsoff_fleet_signals", "handsoff_lib", "handsoff_manifest",
-  "handsoff_observability", "handsoff_preflight", "handsoff_progress", "handsoff_regress", "handsoff_routing", "handsoff_release_runtime", "handsoff_release_transaction", "handsoff_runtime_control",
+  "handsoff_observability", "handsoff_preflight", "handsoff_progress", "handsoff_regress", "handsoff_config", "handsoff_agent_runtime", "handsoff_core", "handsoff_projection", "handsoff_schema", "handsoff_workflow", "handsoff_resources", "handsoff_ledger", "handsoff_routing", "handsoff_release_runtime", "handsoff_release_transaction", "handsoff_runtime_control",
   "handsoff_supervisor", "handsoff_tranche", "handsoff_update", "validate_handsoff_status"
 ]
 
@@ -37,7 +37,7 @@ py-modules = [
 "share/handsoff/dashboard" = ["dashboard/app.js", "dashboard/index.html", "dashboard/logo.png", "dashboard/regression.html", "dashboard/regression.js", "dashboard/styles.css"]
 "share/handsoff/dashboard/lib" = ["dashboard/lib/dashboard-logic.js", "dashboard/lib/run-vocabulary.js"]
 "share/handsoff/fleet" = ["fleet/app.js", "fleet/index.html", "fleet/metrics.html", "fleet/metrics.js", "fleet/styles.css"]
-"share/handsoff/playbook" = ["playbook/INDEX.md", "playbook/index.json", "playbook/landing.md", "playbook/lanes.md", "playbook/lessons-agents.md", "playbook/lessons-evidence.md", "playbook/lessons-lane.md", "playbook/protocol.md", "playbook/reviewers.md"]
+"share/handsoff/playbook" = ["playbook/INDEX.md", "playbook/index.json", "playbook/landing.md", "playbook/lanes.md", "playbook/lessons-agents.md", "playbook/lessons-binding.md", "playbook/lessons-evidence.md", "playbook/lessons-lane.md", "playbook/protocol.md", "playbook/reviewers.md"]
 "share/handsoff/prompts" = ["prompts/architect.md", "prompts/implementer.md", "prompts/reviewer.md", "prompts/supervisor.md"]
 "share/handsoff/rules" = ["rules/README.md", "rules/reviewer-launch-phase-1.json", "rules/reviewer-packet-finding-length.json", "rules/reviewer-packet-tests-executed.json"]
 "share/handsoff/schemas" = ["schemas/acceptance.schema.json", "schemas/status.schema.json", "schemas/snapshot.schema.json"]

@@ -1,4 +1,5 @@
 """REQ-001 and REQ-008 focused checks for the operations inventory."""
+from datetime import datetime, timezone
 import hashlib
 import http.client
 import json
@@ -56,7 +57,7 @@ class MissionControlOpsTests(HandsoffTestCase):
         self.assertIn("closed", next(x["reason"] for x in self.inventory() if x["kind"] == "run_close"))
 
     def test_completed_run_has_no_actionable_entries(self):
-        self.init(); status = self.read_status(); status.update(status="complete", phase_number=8)
+        self.init(); status = self.read_status(); status.update(status="complete", phase_number=8, phase=lib.PHASES[8])
         lib.commit(self.tmp, lib.load_config(self.tmp), status=status, acceptance=self.read_acceptance(), event_kind="fixture", event_message="complete", actor="test")
         self.assertFalse([x for x in self.inventory() if x["availability"] == "actionable"])
 
@@ -206,7 +207,13 @@ class MissionControlOpsTests(HandsoffTestCase):
 
     def test_verify_live_is_actionable_at_phase_seven(self):
         self.init(); self._phase(7)
-        status = self.read_status(); status["deployment_approved"] = {"by": "test"}
+        status = self.read_status()
+        # An approval the engine would really write: by, at and the acceptance
+        # hash it was bound to. {"by": "test"} alone is not a state the engine
+        # can produce, and commit now refuses it.
+        status["deployment_approved"] = {
+            "by": "test", "at": datetime.now(timezone.utc).isoformat(),
+            "acceptance_hash": lib.acceptance_hash(self.read_acceptance()["criteria"])}
         lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
                    event_kind="fixture_deployment", event_message="fixture deployment", actor="test")
         self.assertEqual(next(x for x in self.inventory() if x["kind"] == "verify_live")["availability"], "actionable")
