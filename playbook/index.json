@@ -4,8 +4,10 @@
     "lanes": "running a lane",
     "landing": "landing and releasing",
     "reviewers": "managed reviewers",
-    "lessons": "rules that cost a round",
-    "protocol": "the managed-role protocol"
+    "protocol": "the managed-role protocol",
+    "lessons-lane": "lessons: running and landing a lane",
+    "lessons-agents": "lessons: managed sessions",
+    "lessons-evidence": "lessons: evidence that holds"
   },
   "always_load": [
     "INDEX.md",
@@ -17,33 +19,45 @@
       "topics": []
     },
     {
-      "file": "lanes.md",
-      "topics": [
-        "lanes"
-      ]
-    },
-    {
       "file": "landing.md",
       "topics": [
         "landing"
       ]
     },
     {
-      "file": "reviewers.md",
+      "file": "lanes.md",
       "topics": [
-        "reviewers"
+        "lanes"
       ]
     },
     {
-      "file": "lessons.md",
+      "file": "lessons-agents.md",
       "topics": [
-        "lessons"
+        "lessons-agents"
+      ]
+    },
+    {
+      "file": "lessons-evidence.md",
+      "topics": [
+        "lessons-evidence"
+      ]
+    },
+    {
+      "file": "lessons-lane.md",
+      "topics": [
+        "lessons-lane"
       ]
     },
     {
       "file": "protocol.md",
       "topics": [
         "protocol"
+      ]
+    },
+    {
+      "file": "reviewers.md",
+      "topics": [
+        "reviewers"
       ]
     }
   ]

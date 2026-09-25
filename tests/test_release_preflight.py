@@ -92,11 +92,14 @@ class AnEditedRuntimeFileFails(PreflightFixture):
         """playbook/*.md are covered runtime files, but `changes` classifies
         any *.md as docs-only. The preflight is the only gate that sees it."""
         self.regenerate()
-        target = self.root / "playbook" / "lessons.md"
+        # #315: any covered playbook file proves the point; naming one that
+        # a later split can delete is what broke this test once already.
+        target = self.root / "playbook" / "lessons-lane.md"
+        self.assertTrue(target.is_file(), "pick a playbook file that exists")
         target.write_text(target.read_text() + "\n- a lesson added after the manifest\n")
         report = preflight.preflight(self.root)
         self.assertFalse(report["ok"])
-        self.assertEqual(report["checks"][0]["stale"], ["playbook/lessons.md"])
+        self.assertEqual(report["checks"][0]["stale"], ["playbook/lessons-lane.md"])
 
     def test_a_covered_file_that_is_absent_is_reported_separately_from_a_changed_one(self):
         self.regenerate()

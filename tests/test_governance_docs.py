@@ -30,7 +30,9 @@ class GovernanceDocumentationTests(unittest.TestCase):
     def test_playbook_makes_provider_quota_cross_vendor_supervisor_discretion(self):
         lanes = (ROOT / "playbook" / "lanes.md").read_text()
         reviewers = (ROOT / "playbook" / "reviewers.md").read_text()
-        lessons = (ROOT / "playbook" / "lessons.md").read_text()
+        # #315: lessons.md split by theme; the provider-quota rule is a
+        # managed-session lesson.
+        lessons = (ROOT / "playbook" / "lessons-agents.md").read_text()
         supervisor = (ROOT / "prompts" / "supervisor.md").read_text()
         for text in (lanes, reviewers, lessons, supervisor):
             normalized = " ".join(text.split())
