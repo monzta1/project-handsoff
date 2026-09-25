@@ -130,78 +130,141 @@ NEXT_ACTION_DEFAULTS = {
 #: drift apart into checking different text.
 PLACEHOLDER_REQUIREMENT = "State the exact observable outcome."
 PLACEHOLDER_TESTS = ["name_or_path_of_test"]
-MAX_FALLBACK_PROFILES = 8
-DEFAULT_MAX_FAILOVERS_PER_ROLE = 2
-# #35: how many design-review attempts (approve or request-changes, every
-# record-design-review counts) a run may consume on its own before the
-# Pilot has to authorize each further attempt one at a time.
-#: #320: the nearest-rank p90 of 100 measured product runs. Attempts
-#: distribute 24/49/17/6/1/1/2 at 1,2,3,4,5,6,8. A limit of 2 interrupts
-#: 27% of runs and a limit of 3 interrupts 10%. The gate at 2 saved no
-#: tokens: 27 runs went past it, so authorization was granted and the
-#: attempt ran anyway. Kept rather than removed because four runs needed
-#: five to eight attempts, where the design is wrong and a human should look.
-DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS = 3
+from handsoff_config import (  # noqa: E402,F401
+    AGENT_ROLES,
+    AGENT_SETTING_ADAPTERS,
+    ANALYSIS_FILING_MODES,
+    AUTO_AGENT_ADAPTER,
+    BRIEFING_CONFIG_KEYS,
+    DEFAULT_AGENT_MODEL,
+    DEFAULT_AGENT_TOKEN_BUDGETS,
+    DEFAULT_CONFIG,
+    DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
+    DEFAULT_MAX_FAILOVERS_PER_ROLE,
+    DEFAULT_MODEL_POLICY,
+    DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
+    DEFAULT_SMALL_FIX_MAX_CRITERIA,
+    DEFAULT_SMALL_FIX_MAX_FILES,
+    DESIGN_EVIDENCE_ID_PATTERN,
+    EXPLICIT_PROFILE_SOURCE,
+    FEATURES,
+    FOLLOWUP_REVIEWER_KEY,
+    HOST_AGENT_ADAPTER,
+    HOST_CAPABLE_ROLES,
+    LEGACY_UNCONFIGURED_AGENT_ADAPTER,
+    MAX_AGENT_MODEL_LENGTH,
+    MAX_AGENT_TOKEN_BUDGET,
+    MAX_DESIGN_EVIDENCE_ENTRIES,
+    MAX_FALLBACK_PROFILES,
+    MIN_AGENT_TOKEN_BUDGET,
+    PLAIN_COMMAND_MESSAGE,
+    RECOMMENDED_CREW,
+    RECOMMENDED_PROFILE_SOURCE,
+    RUNNER_DEFAULT_PROFILE_SOURCE,
+    SELECTABLE_AGENT_ADAPTERS,
+    SELECTABLE_AGENT_ROLES,
+    TICKET_STATES,
+    _validate_analysis_config,
+    _validate_design_evidence_config,
+    assert_plain_command,
+    ensure_regression_config_is_disjoint,
+    load_config,
+    model_policy_allows,
+    normalize_public_origins,
+    normalized_test_footprint,
+    validate_agent_model,
+    validate_fallback_entries,
+    validate_max_failovers,
+    validate_model_policy,
+)
 DESIGN_REVIEW_AUTHORIZATION_COMMAND = "handsoff_supervisor.py design-review-authorize --by <pilot>"
-# Hard ceilings for one managed Codex session.  These are deliberately
-# conservative: a role that cannot finish inside its allowance must return a
-# bounded handoff or stop for the Pilot, never silently consume an unlimited
-# rollout.  Projects may lower or raise an individual role under
-# [agent_budget], but may not disable the ceiling.
-DEFAULT_AGENT_TOKEN_BUDGETS = {
-    "architect": 40_000,
-    "supervisor": 24_000,
-    "implementer": 80_000,
-    "reviewer": 80_000,
-}
-PREFLIGHT_FILE = ".handsoff-preflight.json"
-PREFLIGHT_SCHEMA = 2
+from handsoff_ledger import (  # noqa: E402,F401
+    ANALYSIS_DIR,
+    DESIGN_EVIDENCE_FILE,
+    GOVERNANCE_CONFIG_KEYS,
+    HANDSOFF_GENERATED_NAMES,
+    HANDSOFF_TEMP_COMPONENT,
+    LIVE_BEACON_FILE,
+    LIVE_INFLIGHT_FILE,
+    MAX_WORK_ITEMS,
+    OUTPUT_LIVENESS_FILE,
+    PREFLIGHT_FILE,
+    VERIFICATION_REQUIREMENTS,
+    VERIFY_INFLIGHT_DIR,
+    WORK_ITEM_TAG_PATTERN,
+    _LEGACY_OPTIONAL_GOVERNANCE_KEYS,
+    _design_errors,
+    _design_hash_current,
+    _design_review_errors,
+    _digest_entry,
+    _digest_excluded,
+    _digest_listing,
+    _file_sha256,
+    _last_hash,
+    _serialized_digest,
+    _work_item_slug,
+    append_event,
+    atomic_write_json,
+    clear_write_ahead,
+    commit,
+    config_hash,
+    criterion_work_item,
+    criterion_work_item_id,
+    derive_work_item_registry,
+    effective_work_items,
+    event_head_path,
+    event_log_path,
+    evidence_drift,
+    feature_enabled,
+    item_acceptance_hash,
+    item_criteria,
+    item_progress,
+    open_amendment,
+    overall_item_progress,
+    removed_work_item_ids,
+    repository_digest,
+    repository_digest_entries,
+    scope_hash_matches,
+    scoped_work_items,
+    verification_config_hash,
+    verification_log_path,
+    work_item_delivery,
+    work_item_scope_hash,
+    work_item_scope_hashes,
+    write_ahead,
+    write_ahead_path,
+)
+from handsoff_resources import (  # noqa: E402,F401
+    MAX_BRIEFING_FILE_BYTES,
+    MAX_BRIEFING_TOTAL_BYTES,
+    MAX_PREFLIGHT_ENTRIES,
+    PLAYBOOK_DIR,
+    PLAYBOOK_INDEX,
+    PREFLIGHT_SCHEMA,
+    RUNTIME_MANIFEST_FILE,
+    briefing_section,
+    engine_resource_path,
+    engine_root,
+    launch_preflight_snapshot,
+    playbook_index,
+    playbook_root,
+    repository_snapshot,
+)
 PREFLIGHT_SUCCESS_TTL_SECONDS = 900
 PREFLIGHT_FAILURE_TTL_SECONDS = 60
-MAX_PREFLIGHT_ENTRIES = 16
 MAX_PREFLIGHT_REASON = 220
-MIN_AGENT_TOKEN_BUDGET = 8_000
 #: The pre-flight probe's own rollout ceiling. It used to borrow the 8,000
 #: token floor, and inside a real project the reviewer-shaped prompt alone
 #: cost 13,008 tokens at prefill weight 1.0, so a working Codex reported
 #: `unreachable` (v0.3.25 field-note defect 1). Three times the floor bounds
 #: one "Reply with OK" turn without depending on any project's context.
 PREFLIGHT_TOKEN_BUDGET = 24_000
-MAX_AGENT_TOKEN_BUDGET = 500_000
-TICKET_STATES = frozenset({"done", "in_progress", "not_started", "blocked"})
-#: #38: cached, hash-bound design evidence. The side file is generated
-#: state (gitignored), never a ledger: it holds the bounded output of
-#: trusted configured commands, and the event log only ever carries hashes.
-DESIGN_EVIDENCE_FILE = "handsoff-design-evidence.json"
-DESIGN_EVIDENCE_ID_PATTERN = re.compile(r"^[a-z0-9-]{1,64}$")
-MAX_DESIGN_EVIDENCE_ENTRIES = 16
 MAX_DESIGN_EVIDENCE_OUTPUT_BYTES = 8192
-# #175: managed-session knowledge briefings are bounded so a project cannot
-# turn an indexed file into an unbounded launch prompt.
-MAX_BRIEFING_FILE_BYTES = 64 * 1024
-MAX_BRIEFING_TOTAL_BYTES = 256 * 1024
-BRIEFING_CONFIG_KEYS = frozenset({"index", "root"})
 DESIGN_EVIDENCE_STATES = ("current", "stale", "failed", "missing")
-#: #33: liveness beacon written by `handsoff_agent.execute_launch` while a
-#: managed child runs. Generated state (gitignored), never hashed, never
-#: read by any gate: identifiers, integers, and timestamps only. The
-#: ledger-bound session record stays the authority on lifecycle; the beacon
-#: only says whether the process that owns that session is still signalling.
-LIVE_BEACON_FILE = ".handsoff-live.json"
-LIVE_INFLIGHT_FILE = ".handsoff-live-inflight.json"
 LIVE_BEACON_KEYS = ("session_id", "role", "state", "pid", "beacon_at", "ended_at", "exit_code")
 LIVE_BEACON_INTERVAL_SECONDS = 5.0
 LIVE_BEACON_FRESH_SECONDS = 15.0
 LIVE_STATES = ("idle", "started", "running", "waiting", "stalled", "stopped", "failed", "complete")
-#: #41: output liveness. Every stdout/stderr chunk a managed child writes
-#: bumps this file (gitignored, never hashed, never logged, never read by
-#: a gate): identifiers, one timestamp, and two counters, never content.
-#: It is what lets `stall_warning` see a child that is streaming output
-#: while the workflow and heartbeat timestamps sit idle. Writes are rate
-#: limited to one per second per session; chunks in between only bump the
-#: counters. The file only counts while bound to the current session for
-#: its role in a live state, so a process exit expires the signal at once.
-OUTPUT_LIVENESS_FILE = ".handsoff-output-liveness.json"
 OUTPUT_LIVENESS_KEYS = ("session_id", "role", "output_at", "chunks", "bytes")
 OUTPUT_LIVENESS_WRITE_INTERVAL_SECONDS = 1.0
 # #58: portable, bounded managed-agent output. This generated side file is
@@ -255,36 +318,12 @@ DESIGN_EVIDENCE_RECORD_FIELDS = (
     "exit_code", "output", "output_sha256", "output_bytes", "truncated", "at", "by", "head", "branch", "dirty",
 )
 
-#: #39: the crew a role gets when handsoff.toml does not name one (or still
-#: carries the legacy "configure-me" placeholder). Architect, Supervisor,
-#: and Implementer share one premium reasoning profile: design needs the
-#: strongest reasoning available, and the operator keeps the same Opus
-#: profile for orchestration and implementation so one run has one
-#: consistent voice. The Reviewer runs on an independent provider family
-#: so the critique never comes from the model being critiqued. An explicit
-#: "auto" is NOT part of this table: it keeps the older first-installed
-#: auto-detect path (DEFAULT_AGENT_PREFERENCE) on purpose.
-RECOMMENDED_CREW = {
-    "architect": {"adapter": "claude", "model": "claude-opus-5"},
-    "supervisor": {"adapter": "claude", "model": "claude-opus-5"},
-    "implementer": {"adapter": "claude", "model": "claude-opus-5"},
-    "reviewer": {"adapter": "codex", "model": "default"},
-}
 #: Where a role's adapter or model came from: named in handsoff.toml
 #: ("explicit"), taken from RECOMMENDED_CREW because the key was absent or
 #: the placeholder ("recommended"), or the runner default because the
 #: adapter was overridden but no model was named, so the recommended model
 #: for the other adapter would be the wrong thing to pass ("runner_default").
 PROFILE_SOURCES = ("explicit", "recommended", "runner_default")
-RECOMMENDED_PROFILE_SOURCE = "recommended"
-EXPLICIT_PROFILE_SOURCE = "explicit"
-RUNNER_DEFAULT_PROFILE_SOURCE = "runner_default"
-#: #37: the optional economical follow-up reviewer profile. Both keys
-#: ([agents].reviewer_followup and [models].reviewer_followup) present
-#: enables tiering; both absent reproduces the single-profile behavior
-#: exactly; exactly one present is a config error. It is a cost knob, not
-#: a gate, so it is deliberately NOT in GOVERNANCE_CONFIG_KEYS.
-FOLLOWUP_REVIEWER_KEY = "reviewer_followup"
 DESIGN_REVIEWER_TIERS = ("primary", "followup")
 #: Selection precedence, evaluated in this order; the first match is the
 #: reason. Only `delta_check` selects the follow-up tier.
@@ -304,13 +343,8 @@ WORK_ITEM_STATES = {
     "done", "blocked", "in_review", "awaiting_approval", "recovering",
     "in_progress", "not_started", "unscoped",
 }
-WORK_ITEM_TAG_PATTERN = re.compile(r"^\[(#\d{1,9}|[a-z0-9][a-z0-9-]{0,39})\]\s")
 WORK_ITEM_ID_PATTERN = re.compile(r"^(?:issue-[1-9][0-9]{0,8}|ask-[a-z0-9][a-z0-9-]{0,39}|unattributed)$")
-MAX_WORK_ITEMS = 64
 WORK_ITEM_LANES = ("full", "small-fix", "escalated")
-DEFAULT_SMALL_FIX_MAX_CRITERIA = 3
-DEFAULT_SMALL_FIX_MAX_CHANGED_LINES = 200
-DEFAULT_SMALL_FIX_MAX_FILES = 6
 
 # #284: adaptive model routing now lives in bin/handsoff_routing.py, the
 # first bounded subsystem extracted from this module. Re-exported here so
@@ -355,90 +389,7 @@ from handsoff_routing import (  # noqa: E402,F401
     validate_adaptive_routing_profiles,
     validate_session_adaptive_routing,
 )
-DEFAULT_MODEL_POLICY = {
-    "allowed_adapters": ["codex", "claude"],
-    "denied_models": [],
-    "quota_substitution": True,
-}
 
-DEFAULT_CONFIG = {
-    "adaptive_routing_profiles": deepcopy(ADAPTIVE_DEFAULT_PROFILES),
-    "adaptive_routing_budgets": deepcopy(ADAPTIVE_DEFAULT_BUDGETS),
-    "risk_policy": deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY),
-    "model_policy": deepcopy(DEFAULT_MODEL_POLICY),
-    "reviewer_isolation": {"compatibility_mode": False, "compatibility_approved": False},
-    "execution_profile": "safe",
-    "logo": None,
-    "status_file": "handsoff-status.json",
-    "acceptance_file": "handsoff-acceptance.json",
-    "event_log": "handsoff-events.jsonl",
-    "verification_log": "handsoff-verifications.jsonl",
-    "max_design_rounds": 3,
-    "auto_handoff": True,
-    "max_review_rounds": 3,
-    "stall_minutes": 10,
-    "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
-    "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
-    "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
-    "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
-    "require_live_verification": True,
-    "deployment_requires_explicit_approval": True,
-    # #159: false lets a project waive the Pilot's design click; the
-    # independent design review stays mandatory either way.
-    "require_design_approval": True,
-    # #165 #167 #166: workflow features, each a switch under [features] that
-    # Mission Control's settings dialog edits. Defaults live in FEATURES.
-    "features": {},
-    "check_commands": [],
-    "briefing": None,
-    "digest_ignore": [],
-    "implementer_commands": [],
-    "documentation": {"files": [], "exclude": []},
-    # #124: exact browser origins (scheme://host[:port]) that may drive the
-    # run dashboard through a tunnel or private network; loopback is always
-    # accepted. Fleet reads HANDSOFF_PUBLIC_ORIGINS instead (no project).
-    "public_origins": [],
-    "live_check_commands": [],
-    "check_timeout_seconds": 600,
-    "tickets": [],
-    "design_evidence": [],
-    "regressions": [],
-    "regression_gate": {
-        "approval_timeout_minutes": 30, "launch_window_minutes": 10,
-        "full_regression_major_only": True,
-    },
-    "agents": {role: profile["adapter"] for role, profile in RECOMMENDED_CREW.items()},
-    "models": {role: profile["model"] for role, profile in RECOMMENDED_CREW.items()},
-    "fallbacks": {
-        "architect": [],
-        "supervisor": [],
-        "implementer": [],
-        "reviewer": [],
-    },
-    "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
-    "agent_token_budgets": dict(DEFAULT_AGENT_TOKEN_BUDGETS),
-    "adapters": {},
-    "followup_design_token_budget": None,
-    "reviewer_followup": None,
-    "recovery": {
-        "enabled": True, "max_attempts": 3, "lease_minutes": 15,
-        "worker_loss_grace_minutes": 2, "live_session_silence_minutes": 10,
-        "protocol_silence_minutes": {"architect": 0, "supervisor": 0, "implementer": 0, "reviewer": 0},
-        "liveness_seconds": 60, "dashboard_watchdog": True, "poll_seconds": 30,
-        "operation_grace_seconds": 120,
-    },
-    # #49: the archive analyzer. `filing` is "gh" (file through the gh CLI)
-    # or "report_only" (never construct a GitHub client; the report still
-    # lists every draft). archive_dir None means HANDSOFF_ARCHIVE_DIR or
-    # the default Documents archive.
-    "analysis": {
-        "enabled": True, "max_tickets_per_scan": 5, "dedupe_days": 30,
-        "design_phase_hours_threshold": 1.0, "archive_dir": None, "filing": "gh",
-        "framework_repo": "monzta1/project-handsoff",
-    },
-}
-ANALYSIS_FILING_MODES = ("gh", "report_only")
-ANALYSIS_DIR = ".handsoff-analysis"
 # #49: a run whose root name starts with one of these is a test fixture,
 # a self-check, a drop-in or a benchmark run, never a product run.
 FIXTURE_ROOT_PREFIXES = (
@@ -491,10 +442,7 @@ ARCHIVE_CLASSIFICATION_WRITERS = {
 }
 MAX_PILOT_NOTE_LENGTH = 512
 
-AGENT_ROLES = ("architect", "supervisor", "implementer", "reviewer")
-SELECTABLE_AGENT_ROLES = AGENT_ROLES
 LEGACY_AGENT_ROLES = ("architect", "implementer", "reviewer")
-SELECTABLE_AGENT_ADAPTERS = ("codex", "claude")
 #: #290: how each adapter's recorded ceiling is actually imposed. An adapter
 #: absent from this map cannot bound a session and is refused at launch:
 #: recording a ceiling nothing enforces reads as a guarantee and is not one.
@@ -756,18 +704,10 @@ def adapter_ceiling_enforcement(adapter: str) -> str:
             "cannot bound it by observation; add it to CEILING_ENFORCEMENT before selecting it"
         )
     return enforcement
-HOST_AGENT_ADAPTER = "host"
-HOST_CAPABLE_ROLES = ("supervisor", "architect")
-AUTO_AGENT_ADAPTER = "auto"
-LEGACY_UNCONFIGURED_AGENT_ADAPTER = "configure-me"
-AGENT_SETTING_ADAPTERS = (AUTO_AGENT_ADAPTER, *SELECTABLE_AGENT_ADAPTERS)
 DEFAULT_AGENT_PREFERENCE = SELECTABLE_AGENT_ADAPTERS
-DEFAULT_AGENT_MODEL = "default"
-MAX_AGENT_MODEL_LENGTH = 128
 MAX_AGENT_ACTOR_LENGTH = 128
 MAX_AGENT_SESSION_ID_LENGTH = 64
 MAX_AGENT_SESSIONS = 64
-RUNTIME_MANIFEST_FILE = "handsoff-runtime.json"
 VERSION_PIN_FILE = ".handsoff-version"
 OVERRIDES_FILE = "handsoff-overrides.json"
 ROLE_PROTOCOL_PREFIXES = {"reviewer": "HANDSOFF_REVIEW_RESULT:",
@@ -803,26 +743,6 @@ AGENT_SESSION_FIELDS = {
 }
 
 
-def normalize_public_origins(value, label: str) -> list[str]:
-    """#124: an origin is scheme://host[:port], nothing else. Each entry is
-    canonicalised (lowercase scheme and host, explicit port dropped only
-    when it is the scheme default) so comparison is exact, never a prefix."""
-    from urllib.parse import urlsplit
-    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
-        raise HandsoffError(f"{label} must be a list of non-empty origin strings")
-    result = []
-    for item in value:
-        parts = urlsplit(item.strip())
-        if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path not in {"", "/"} \
-                or parts.query or parts.fragment or parts.username or parts.password:
-            raise HandsoffError(f"{label} entry {item!r} must be scheme://host[:port] with no path")
-        port = parts.port
-        default = 443 if parts.scheme == "https" else 80
-        host = parts.hostname.lower()
-        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port and port != default else "")
-        if canonical not in result:
-            result.append(canonical)
-    return result
 
 
 def origin_allowed(origin: str | None, server_port: int, public_origins: list[str]) -> bool:
@@ -903,21 +823,8 @@ def open_dashboard_url(url: str, *, platform: str | None = None, chrome: Path | 
     return "fallback"
 
 
-def engine_root() -> Path:
-    """Locate this engine's immutable resources in a checkout or installation."""
-    checkout = Path(__file__).resolve().parent.parent
-    if (checkout / RUNTIME_MANIFEST_FILE).is_file() and (checkout / "dashboard").is_dir():
-        return checkout
-    return Path(sysconfig.get_path("data")) / "share" / "handsoff"
 
 
-def engine_resource_path(relative: str) -> Path:
-    if not isinstance(relative, str) or relative.startswith(("/", "../")):
-        raise HandsoffError("engine resource path is invalid")
-    root = engine_root()
-    if relative.startswith("bin/") and not (root / relative).exists():
-        return Path(__file__).resolve().parent / Path(relative).name
-    return root / relative
 
 
 def _version_tuple(value: str) -> tuple[int, int, int]:
@@ -1189,28 +1096,13 @@ def project_resource_path(root: Path, relative: str) -> Path:
     return engine_resource_path(relative)
 
 
-PLAYBOOK_DIR = "playbook"
-PLAYBOOK_INDEX = "index.json"
 #: the playbook part of a launch stays small enough to ride every launch;
 #: a topic that would push it past this is refused at launch, never trimmed
 MAX_PLAYBOOK_SECTION_BYTES = 16 * 1024  # #217: room for the protocol topic (8 KB) beside the index and the lanes
 
 
-def playbook_root() -> Path:
-    """The engine's own playbook: the checkout's copy in a drop-in, else the
-    installed engine's (#208). Engine knowledge, shipped with the engine."""
-    return engine_resource_path(PLAYBOOK_DIR)
 
 
-def playbook_index() -> dict:
-    path = playbook_root() / PLAYBOOK_INDEX
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HandsoffError(f"the engine playbook index is missing or unreadable: {path}; reinstall the Handsoff engine") from exc
-    if not isinstance(manifest, dict) or manifest.get("version") != 1 or not isinstance(manifest.get("topics"), dict):
-        raise HandsoffError("the engine playbook index must be a version 1 object with topics")
-    return manifest
 
 
 def playbook_text(topic: str | None = None) -> str:
@@ -1250,102 +1142,6 @@ def playbook_section(topic: str | None = None) -> str:
     return text
 
 
-def briefing_section(root: Path, cfg: dict, topic: str | None = None) -> str:
-    """Resolve the bounded knowledge briefing for one managed launch.
-
-    A missing [briefing] block is deliberately a no-op. When configured, the
-    index is authoritative: always_load files are included first, followed by
-    files whose declared topics match the optional one-launch topic. Every
-    selected path must remain inside the project root and exist as a regular
-    file before a managed session can be reserved.
-    """
-    briefing = cfg.get("briefing")
-    if briefing is None:
-        if topic is not None and topic not in playbook_index()["topics"]:
-            raise HandsoffError("--topic requires a [briefing] block in handsoff.toml, or a playbook topic")
-        return ""
-    if topic is not None and (not isinstance(topic, str) or not topic.strip()):
-        raise HandsoffError("--topic must be a non-empty topic name")
-    root = Path(root).resolve()
-    index_path = (root / briefing["index"]).resolve()
-    if not index_path.is_file():
-        raise HandsoffError(f"briefing index is missing: {index_path}")
-    kb_root = (root / briefing.get("root", "")).resolve() if briefing.get("root") else index_path.parent
-    try:
-        index_path.relative_to(root)
-        kb_root.relative_to(root)
-    except ValueError as exc:
-        raise HandsoffError("briefing paths must remain inside the project root") from exc
-    try:
-        manifest = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HandsoffError(f"cannot read briefing index {index_path}: {exc}") from exc
-    if not isinstance(manifest, dict) or manifest.get("version") != 1:
-        raise HandsoffError("briefing index must be a version 1 object")
-    topics = manifest.get("topics")
-    always_load = manifest.get("always_load")
-    files = manifest.get("files")
-    if not isinstance(topics, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in topics.items()):
-        raise HandsoffError("briefing index topics must map strings to strings")
-    if not isinstance(always_load, list) or not all(isinstance(item, str) and item.strip() for item in always_load):
-        raise HandsoffError("briefing index always_load must be a list of file names")
-    if not isinstance(files, list):
-        raise HandsoffError("briefing index files must be a list")
-    declared = {}
-    for item in files:
-        if not isinstance(item, dict) or not isinstance(item.get("file"), str) or not item["file"].strip():
-            raise HandsoffError("briefing index files must contain a file name")
-        item_topics = item.get("topics", [])
-        if not isinstance(item_topics, list) or not all(isinstance(value, str) and value in topics for value in item_topics):
-            raise HandsoffError(f"briefing index topics are invalid for {item['file']}")
-        declared[item["file"]] = tuple(item_topics)
-    selected = list(always_load)
-    if topic is not None:
-        topic = topic.strip()
-        # A topic is looked up in both indexes (#208): a playbook topic rides
-        # from the playbook, a project topic from the project's KB, and a name
-        # declared in both rides from both. Only a name in neither is refused.
-        if topic not in topics:
-            if topic in playbook_index()["topics"]:
-                topic = None  # carried by playbook_section
-            else:
-                raise HandsoffError(f"briefing topic is not declared in the index: {topic}")
-        else:
-            selected.extend(name for name, item_topics in declared.items() if topic in item_topics)
-    unique = []
-    for name in selected:
-        if name not in unique:
-            unique.append(name)
-    sections = []
-    total = 0
-    for name in unique:
-        relative = Path(name)
-        if relative.is_absolute():
-            raise HandsoffError(f"briefing file must be relative: {name}")
-        path = (kb_root / relative).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError as exc:
-            raise HandsoffError(f"briefing file escapes the project root: {name}") from exc
-        if not path.is_file():
-            raise HandsoffError(f"briefing file is missing: {path}")
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            raise HandsoffError(f"cannot read briefing file {path}: {exc}") from exc
-        if len(data) > MAX_BRIEFING_FILE_BYTES:
-            raise HandsoffError(f"briefing file is larger than {MAX_BRIEFING_FILE_BYTES} bytes: {path}")
-        total += len(data)
-        if total > MAX_BRIEFING_TOTAL_BYTES:
-            raise HandsoffError(f"briefing exceeds {MAX_BRIEFING_TOTAL_BYTES} bytes")
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HandsoffError(f"briefing file is not UTF-8: {path}") from exc
-        sections.append(f"## {name}\n\n{text.rstrip()}")
-    if not sections:
-        raise HandsoffError("briefing index selected no files")
-    return "# Knowledge base briefing\n\n" + "\n\n".join(sections)
 
 
 def prompt_override_diagnosis(root: Path) -> list[dict]:
@@ -1472,12 +1268,6 @@ STATUS_VALUES = {"in_progress", "blocked", "ready_to_deploy", "awaiting_approval
 #: the later green run.
 VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline"}
 BASELINE_NOT_APPLICABLE = "not_applicable"
-VERIFICATION_REQUIREMENTS = {
-    "automated": {"checks"},
-    "manual": {"manual"},
-    "browser": {"browser"},
-    "automated_and_browser": {"checks", "browser"},
-}
 CHECKLIST_VALUES = {
     "symptom_reproduced": {"yes", "not_applicable"},
     "symptom_resolved": {"yes"},
@@ -1486,9 +1276,24 @@ CHECKLIST_VALUES = {
 }
 
 
-class HandsoffError(Exception):
-    """A config or state file problem that stops us before any gate logic
-    runs, distinct from a gate simply refusing a transition."""
+# #284 stage 1: the core primitives now live in bin/handsoff_core.py, a
+# layer with zero outbound dependencies on the rest of the engine.
+# Re-exported here so no caller changed.
+from handsoff_core import (  # noqa: E402,F401
+    HandsoffError,
+    _atomic_write_text,
+    _canonical,
+    acceptance_hash,
+    acceptance_path,
+    criterion_spec_hash,
+    design_hash,
+    durable_backup_path,
+    durable_replace,
+    load_unique_json,
+    lock_path,
+    project_lock,
+    status_path,
+)
 
 
 # --------------------------------------------------------------------------
@@ -1512,415 +1317,6 @@ def resolve_root(explicit: str | None = None) -> Path:
     return here
 
 
-def load_config(root: Path) -> dict:
-    """handsoff.toml, actually read this time. Missing keys fall back to
-    DEFAULT_CONFIG rather than erroring, since a fresh project may not have
-    customised every field yet."""
-    cfg = dict(DEFAULT_CONFIG)
-    cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
-    cfg["models"] = dict(DEFAULT_CONFIG["models"])
-    cfg["adaptive_routing_profiles"] = deepcopy(ADAPTIVE_DEFAULT_PROFILES)
-    cfg["adaptive_routing_budgets"] = deepcopy(ADAPTIVE_DEFAULT_BUDGETS)
-    cfg["risk_policy"] = deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY)
-    cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
-    cfg["agent_token_budgets"] = dict(DEFAULT_AGENT_TOKEN_BUDGETS)
-    cfg["adapters"] = {}
-    cfg["design_evidence"] = []
-    cfg["profile_sources"] = {
-        role: {"adapter": RECOMMENDED_PROFILE_SOURCE, "model": RECOMMENDED_PROFILE_SOURCE}
-        for role in AGENT_ROLES
-    }
-    cfg["recovery"] = dict(DEFAULT_CONFIG["recovery"])
-    cfg["recovery"]["protocol_silence_minutes"] = dict(DEFAULT_CONFIG["recovery"]["protocol_silence_minutes"])
-    cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
-    cfg["analysis"] = dict(DEFAULT_CONFIG["analysis"])
-    cfg["documentation"] = {key: list(value) for key, value in DEFAULT_CONFIG["documentation"].items()}
-    path = root / "handsoff.toml"
-    if not path.is_file():
-        return cfg
-    if tomllib is None:
-        raise HandsoffError("handsoff.toml present but no TOML parser available (need Python 3.11+)")
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HandsoffError(f"cannot load {path}: {exc}") from exc
-    project = raw.get("project", {})
-    workflow = raw.get("workflow", {})
-    agents = raw.get("agents", {})
-    models = raw.get("models", {})
-    fallback_policy = raw.get("fallback_policy", {})
-    agent_budget = raw.get("agent_budget", {})
-    adapters = raw.get("adapters", {})
-    checks = raw.get("checks", {})
-    implementer = raw.get("implementer", {})
-    documentation = raw.get("documentation", {})
-    dashboard_table = raw.get("dashboard", {})
-    recovery = raw.get("recovery", {})
-    regression_gate = raw.get("regression_gate", {})
-    analysis = raw.get("analysis", {})
-    routing_profiles = raw.get("routing_profiles", {})
-    routing_budgets = raw.get("routing_budgets", {})
-    risk_policy = raw.get("risk_policy", {})
-    model_policy = raw.get("model_policy", {})
-    reviewer_isolation = raw.get("reviewer_isolation", {})
-    execution = raw.get("execution", {})
-    digest = raw.get("digest", {})
-    briefing = raw.get("briefing")
-    regressions = raw.get("regressions", [])
-    tickets = raw.get("tickets", [])
-    if not isinstance(digest, dict):
-        raise HandsoffError("handsoff.toml: digest must be a table")
-    if not all(isinstance(section, dict) for section in (project, workflow, agents, models, fallback_policy, agent_budget, adapters, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, model_policy, reviewer_isolation, execution)):
-        raise HandsoffError(
-            "handsoff.toml: project, workflow, agents, models, fallback_policy, agent_budget, checks, implementer, documentation, recovery, regression_gate, analysis, routing_profiles, routing_budgets, risk_policy, and model_policy must be tables"
-        )
-    cfg["adaptive_routing_profiles"] = validate_adaptive_routing_profiles(routing_profiles or ADAPTIVE_DEFAULT_PROFILES)
-    cfg["adaptive_routing_budgets"] = validate_adaptive_routing_budgets(routing_budgets or ADAPTIVE_DEFAULT_BUDGETS)
-    cfg["risk_policy"] = validate_adaptive_risk_policy(risk_policy or ADAPTIVE_DEFAULT_RISK_POLICY)
-    cfg["model_policy"] = validate_model_policy(model_policy or DEFAULT_MODEL_POLICY)
-    unknown_isolation = set(reviewer_isolation) - {"compatibility_mode", "compatibility_approved"}
-    if unknown_isolation:
-        raise HandsoffError("handsoff.toml: reviewer_isolation has unknown keys: "
-                            + ", ".join(sorted(unknown_isolation)))
-    for key in ("compatibility_mode", "compatibility_approved"):
-        value = reviewer_isolation.get(key, False)
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: reviewer_isolation.{key} must be boolean")
-    if reviewer_isolation.get("compatibility_approved") and not reviewer_isolation.get("compatibility_mode"):
-        raise HandsoffError("handsoff.toml: reviewer isolation compatibility approval requires compatibility_mode")
-    cfg["reviewer_isolation"] = {
-        "compatibility_mode": bool(reviewer_isolation.get("compatibility_mode")),
-        "compatibility_approved": bool(reviewer_isolation.get("compatibility_approved")),
-    }
-    if set(execution) - {"profile"}:
-        raise HandsoffError("handsoff.toml: execution may contain only profile")
-    profile = execution.get("profile", "safe")
-    if profile not in {"safe", "dogfood", "unattended", "shared", "production"}:
-        raise HandsoffError("handsoff.toml: execution.profile must be safe, dogfood, unattended, shared, or production")
-    cfg["execution_profile"] = profile
-    if briefing is not None:
-        if not isinstance(briefing, dict):
-            raise HandsoffError("handsoff.toml: briefing must be a table")
-        unknown_briefing = set(briefing) - BRIEFING_CONFIG_KEYS
-        if unknown_briefing:
-            raise HandsoffError(
-                "handsoff.toml: briefing has unknown keys: " + ", ".join(sorted(unknown_briefing))
-            )
-        index = briefing.get("index")
-        if not isinstance(index, str) or not index.strip() or Path(index).is_absolute() or ".." in Path(index).parts:
-            raise HandsoffError("handsoff.toml: briefing.index must be a safe relative path")
-        kb_root = briefing.get("root", "")
-        if not isinstance(kb_root, str) or (kb_root and (Path(kb_root).is_absolute() or ".." in Path(kb_root).parts)):
-            raise HandsoffError("handsoff.toml: briefing.root must be a safe relative path when set")
-        cfg["briefing"] = {"index": index.strip(), "root": kb_root.strip()}
-    cfg["status_file"] = project.get("status_file", cfg["status_file"])
-    cfg["acceptance_file"] = project.get("acceptance_file", cfg["acceptance_file"])
-    cfg["event_log"] = project.get("event_log", cfg["event_log"])
-    cfg["verification_log"] = project.get("verification_log", cfg["verification_log"])
-    logo = project.get("logo")
-    if logo is not None and (not isinstance(logo, str) or not logo.strip()):
-        raise HandsoffError("handsoff.toml: project.logo must be a non-empty relative path when set")
-    cfg["logo"] = logo
-    ignore = digest.get("ignore", [])
-    if not isinstance(ignore, list) or not all(isinstance(item, str) for item in ignore):
-        raise HandsoffError("handsoff.toml: digest.ignore must be a list of strings")
-    cfg["digest_ignore"] = list(ignore)
-    if set(adapters) - set(SELECTABLE_AGENT_ADAPTERS):
-        raise HandsoffError("handsoff.toml: adapters may only contain codex and claude")
-    for adapter, value in adapters.items():
-        if not isinstance(value, str) or not value.strip():
-            raise HandsoffError(f"handsoff.toml: adapters.{adapter} must name an existing file")
-        path_value = Path(value).expanduser()
-        if not path_value.is_absolute(): path_value = root / path_value
-        if not path_value.is_file(): raise HandsoffError(f"handsoff.toml: adapters.{adapter} must name an existing file")
-        cfg["adapters"][adapter] = str(path_value.resolve())
-    for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews",
-                "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
-        value = workflow.get(key, cfg[key])
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: workflow.{key} must be an integer")
-        cfg[key] = value
-    for key in ("auto_handoff", "require_live_verification", "deployment_requires_explicit_approval",
-                "require_design_approval"):
-        value = workflow.get(key, cfg[key])
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
-        cfg[key] = value
-    waived = not cfg["deployment_requires_explicit_approval"] or not cfg["require_design_approval"]
-    if waived and cfg["execution_profile"] != "dogfood":
-        raise HandsoffError(
-            "approval waivers require [execution] profile = \"dogfood\"; safe, unattended, shared, "
-            "and production profiles cannot inherit dogfood waivers"
-        )
-    features = raw.get("features", {})
-    if not isinstance(features, dict):
-        raise HandsoffError("handsoff.toml: [features] must be a table")
-    unknown = sorted(set(features) - set(FEATURES))
-    if unknown:
-        raise HandsoffError("handsoff.toml: unknown [features] key(s): " + ", ".join(unknown)
-                            + "; known: " + ", ".join(FEATURES))
-    for key, value in features.items():
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: features.{key} must be boolean")
-    cfg["features"] = {name: bool(features.get(name, default)) for name, (default, _text) in FEATURES.items()}
-    # #39: a role key absent from the TOML (or still holding the legacy
-    # "configure-me" placeholder) takes the recommended crew profile. Any
-    # explicit value, "auto" included, is kept as written and only ever
-    # affects its own role.
-    for role in AGENT_ROLES:
-        if role not in agents:
-            continue
-        value = agents[role]
-        if not isinstance(value, str) or not value.strip():
-            raise HandsoffError(f"handsoff.toml: agents.{role} must be a non-empty string")
-        value = value.strip()
-        if value == LEGACY_UNCONFIGURED_AGENT_ADAPTER:
-            continue
-        if value not in AGENT_SETTING_ADAPTERS and value != HOST_AGENT_ADAPTER:
-            raise HandsoffError(f"handsoff.toml: agents.{role} must be exactly 'auto', 'codex', 'claude', or 'host'")
-        cfg["agents"][role] = value
-        if value == HOST_AGENT_ADAPTER and role not in HOST_CAPABLE_ROLES:
-            raise HandsoffError(f"[agents].{role} cannot be host: only supervisor and architect may be host-driven")
-        cfg["profile_sources"][role]["adapter"] = EXPLICIT_PROFILE_SOURCE
-    for role in SELECTABLE_AGENT_ROLES:
-        if role in models:
-            cfg["models"][role] = validate_agent_model(models[role])
-            cfg["profile_sources"][role]["model"] = EXPLICIT_PROFILE_SOURCE
-        elif cfg["agents"][role] != RECOMMENDED_CREW[role]["adapter"]:
-            # The recommended model belongs to the recommended adapter. With
-            # the adapter overridden (or set to "auto") and no model named,
-            # passing that model id to a different runner would be wrong,
-            # so the runner's own default is used and labelled as such.
-            cfg["models"][role] = DEFAULT_AGENT_MODEL
-            cfg["profile_sources"][role]["model"] = RUNNER_DEFAULT_PROFILE_SOURCE
-    # #37: the follow-up reviewer profile is enabled only by BOTH keys.
-    # Half a profile is refused rather than guessed, and "auto" is not a
-    # profile (the follow-up must be a specific adapter so the independence
-    # check against the architect and implementer means something).
-    followup_adapter = agents.get(FOLLOWUP_REVIEWER_KEY)
-    followup_model = models.get(FOLLOWUP_REVIEWER_KEY)
-    if (followup_adapter is None) != (followup_model is None):
-        raise HandsoffError(
-            f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} and models.{FOLLOWUP_REVIEWER_KEY} "
-            "must be set together (both present enables the follow-up reviewer tier; both absent disables it)"
-        )
-    if followup_adapter is not None:
-        if not isinstance(followup_adapter, str) or not followup_adapter.strip():
-            raise HandsoffError(f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} must be a non-empty string")
-        followup_adapter = followup_adapter.strip()
-        if followup_adapter not in SELECTABLE_AGENT_ADAPTERS:
-            raise HandsoffError(
-                f"handsoff.toml: agents.{FOLLOWUP_REVIEWER_KEY} must be exactly 'codex' or 'claude'"
-            )
-        try:
-            followup_model = validate_agent_model(followup_model)
-        except HandsoffError as exc:
-            raise HandsoffError(f"handsoff.toml: models.{FOLLOWUP_REVIEWER_KEY}: {exc}") from exc
-        cfg["reviewer_followup"] = {"adapter": followup_adapter, "model": followup_model}
-    else:
-        cfg["reviewer_followup"] = None
-    allowed_fallback_keys = {*SELECTABLE_AGENT_ROLES, "max_failovers_per_role"}
-    unknown_fallback_keys = set(fallback_policy) - allowed_fallback_keys
-    if unknown_fallback_keys:
-        raise HandsoffError(
-            f"handsoff.toml: fallback_policy has unknown keys: {', '.join(sorted(unknown_fallback_keys))}"
-        )
-    for role in SELECTABLE_AGENT_ROLES:
-        cfg["fallbacks"][role] = validate_fallback_entries(
-            fallback_policy.get(role, []), field=f"fallback_policy.{role}",
-        )
-    cfg["max_failovers_per_role"] = validate_max_failovers(
-        fallback_policy.get("max_failovers_per_role", DEFAULT_MAX_FAILOVERS_PER_ROLE)
-    )
-    unknown_budget_roles = set(agent_budget) - {*SELECTABLE_AGENT_ROLES, "followup_design"}
-    if unknown_budget_roles:
-        raise HandsoffError(
-            "handsoff.toml: agent_budget has unknown keys: "
-            + ", ".join(sorted(unknown_budget_roles))
-        )
-    for role in SELECTABLE_AGENT_ROLES:
-        value = agent_budget.get(role, DEFAULT_AGENT_TOKEN_BUDGETS[role])
-        if not isinstance(value, int) or isinstance(value, bool) \
-                or not MIN_AGENT_TOKEN_BUDGET <= value <= MAX_AGENT_TOKEN_BUDGET:
-            raise HandsoffError(
-                f"handsoff.toml: agent_budget.{role} must be an integer from "
-                f"{MIN_AGENT_TOKEN_BUDGET} to {MAX_AGENT_TOKEN_BUDGET}"
-            )
-        cfg["agent_token_budgets"][role] = value
-    followup_budget = agent_budget.get("followup_design")
-    if followup_budget is not None:
-        if not isinstance(followup_budget, int) or isinstance(followup_budget, bool) or followup_budget < MIN_AGENT_TOKEN_BUDGET:
-            raise HandsoffError("handsoff.toml: agent_budget.followup_design must be a positive integer")
-        cfg["followup_design_token_budget"] = followup_budget
-    for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
-        value = checks.get(toml_key, cfg[config_key])
-        if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
-            raise HandsoffError(f"handsoff.toml: checks.{toml_key} must be an array of non-empty command strings")
-        cfg[config_key] = list(value)
-    # Field-note defect 5: a live command with shell operators used to pass
-    # validate, status and doctor and fail only at verify-live, after
-    # deployment approval. Refuse it at load with verify-live's own message.
-    for index, command in enumerate(cfg["live_check_commands"]):
-        try:
-            assert_plain_command(command)
-        except HandsoffError as exc:
-            raise HandsoffError(f"handsoff.toml: checks.live_commands[{index}]: {exc}") from exc
-    implementer_commands = implementer.get("commands", [])
-    if not isinstance(implementer_commands, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in implementer_commands):
-        raise HandsoffError("handsoff.toml: implementer.commands must be an array of non-empty command strings")
-    cfg["implementer_commands"] = list(implementer_commands)
-    timeout_value = checks.get("timeout_seconds", cfg["check_timeout_seconds"])
-    if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
-        raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
-    cfg["check_timeout_seconds"] = timeout_value
-    for key in ("files", "exclude"):
-        value = documentation.get(key, [])
-        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
-            raise HandsoffError(f"handsoff.toml: documentation.{key} must be a list of non-empty strings")
-        cfg["documentation"][key] = list(value)
-    if not isinstance(dashboard_table, dict):
-        raise HandsoffError("handsoff.toml: dashboard must be a table")
-    cfg["public_origins"] = normalize_public_origins(dashboard_table.get("public_origins", []), "handsoff.toml: dashboard.public_origins")
-    unknown_gate = set(regression_gate) - set(DEFAULT_CONFIG["regression_gate"])
-    if unknown_gate:
-        raise HandsoffError(f"handsoff.toml: regression_gate has unknown keys: {', '.join(sorted(unknown_gate))}")
-    for key in ("approval_timeout_minutes", "launch_window_minutes"):
-        value = regression_gate.get(key, cfg["regression_gate"][key])
-        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 1440:
-            raise HandsoffError(f"handsoff.toml: regression_gate.{key} must be an integer from 1 to 1440")
-        cfg["regression_gate"][key] = value
-    major_only = regression_gate.get(
-        "full_regression_major_only", cfg["regression_gate"]["full_regression_major_only"],
-    )
-    if not isinstance(major_only, bool):
-        raise HandsoffError("handsoff.toml: regression_gate.full_regression_major_only must be boolean")
-    cfg["regression_gate"]["full_regression_major_only"] = major_only
-    if not isinstance(regressions, list):
-        raise HandsoffError("handsoff.toml: regressions must be an array of tables")
-    normalized_regressions = []
-    for index, item in enumerate(regressions):
-        allowed = {"name", "commands", "timeout_seconds"}
-        if not isinstance(item, dict) or not {"name", "commands"} <= set(item) or set(item) - allowed:
-            raise HandsoffError(
-                f"handsoff.toml: regressions[{index}] must contain name, commands, and optional timeout_seconds"
-            )
-        name, commands = item.get("name"), item.get("commands")
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
-            raise HandsoffError(f"handsoff.toml: regressions[{index}].name is invalid")
-        if not isinstance(commands, list) or not commands or not all(isinstance(cmd, str) and cmd.strip() for cmd in commands):
-            raise HandsoffError(f"handsoff.toml: regressions[{index}].commands must be non-empty strings")
-        normalized = {"name": name, "commands": list(commands)}
-        if "timeout_seconds" in item:
-            regression_timeout = item["timeout_seconds"]
-            if not isinstance(regression_timeout, int) or isinstance(regression_timeout, bool) \
-                    or regression_timeout <= 0:
-                raise HandsoffError(
-                    f"handsoff.toml: regressions[{index}].timeout_seconds must be a positive integer"
-                )
-            normalized["timeout_seconds"] = regression_timeout
-        normalized_regressions.append(normalized)
-    if len({item["name"] for item in normalized_regressions}) != len(normalized_regressions):
-        raise HandsoffError("handsoff.toml: regression names must be unique")
-    cfg["regressions"] = normalized_regressions
-    allowed_recovery = set(DEFAULT_CONFIG["recovery"])
-    unknown_recovery = set(recovery) - allowed_recovery
-    if unknown_recovery:
-        raise HandsoffError(
-            f"handsoff.toml: recovery has unknown keys: {', '.join(sorted(unknown_recovery))}"
-        )
-    for key in ("enabled", "dashboard_watchdog"):
-        value = recovery.get(key, cfg["recovery"][key])
-        if not isinstance(value, bool):
-            raise HandsoffError(f"handsoff.toml: recovery.{key} must be boolean")
-        cfg["recovery"][key] = value
-    bounds = {
-        "max_attempts": (0, 16), "lease_minutes": (1, 1440),
-        "worker_loss_grace_minutes": (1, 1440), "live_session_silence_minutes": (1, 1440),
-        "liveness_seconds": (1, 3600), "poll_seconds": (1, 3600),
-        "operation_grace_seconds": (0, 3600),
-    }
-    for key, (minimum, maximum) in bounds.items():
-        value = recovery.get(key, cfg["recovery"][key])
-        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
-            raise HandsoffError(
-                f"handsoff.toml: recovery.{key} must be an integer from {minimum} to {maximum}"
-            )
-        cfg["recovery"][key] = value
-    protocol_limits = recovery.get("protocol_silence_minutes", cfg["recovery"]["protocol_silence_minutes"])
-    if not isinstance(protocol_limits, dict):
-        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes must be a per-role table")
-    unknown_roles = set(protocol_limits) - set(AGENT_ROLES)
-    if unknown_roles:
-        raise HandsoffError("handsoff.toml: recovery.protocol_silence_minutes has unknown roles: " + ", ".join(sorted(unknown_roles)))
-    for role_name in AGENT_ROLES:
-        value = protocol_limits.get(role_name, 0)
-        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1440:
-            raise HandsoffError(f"handsoff.toml: recovery.protocol_silence_minutes.{role_name} must be an integer from 0 to 1440")
-        cfg["recovery"]["protocol_silence_minutes"][role_name] = value
-    cfg["analysis"] = _validate_analysis_config(analysis)
-    if not isinstance(tickets, list):
-        raise HandsoffError("handsoff.toml: tickets must be an array of tables")
-    normalized_tickets = []
-    for index, ticket in enumerate(tickets):
-        if not isinstance(ticket, dict):
-            raise HandsoffError(f"handsoff.toml: tickets[{index}] must be a table")
-        unknown = set(ticket) - {"number", "title", "status", "url"}
-        if unknown:
-            raise HandsoffError(
-                f"handsoff.toml: tickets[{index}] has unknown keys: {', '.join(sorted(unknown))}"
-            )
-        number, title, state, url = (
-            ticket.get("number"), ticket.get("title"), ticket.get("status"), ticket.get("url", "")
-        )
-        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
-            raise HandsoffError(f"handsoff.toml: tickets[{index}].number must be a positive integer")
-        if not isinstance(title, str) or not title.strip():
-            raise HandsoffError(f"handsoff.toml: tickets[{index}].title must be a non-empty string")
-        if state not in TICKET_STATES:
-            raise HandsoffError(
-                f"handsoff.toml: tickets[{index}].status must be one of {', '.join(sorted(TICKET_STATES))}"
-            )
-        if not isinstance(url, str):
-            raise HandsoffError(f"handsoff.toml: tickets[{index}].url must be a string")
-        normalized_tickets.append({
-            "number": number, "title": title.strip(), "status": state, "url": url.strip(),
-        })
-    if len({ticket["number"] for ticket in normalized_tickets}) != len(normalized_tickets):
-        raise HandsoffError("handsoff.toml: ticket numbers must be unique")
-    cfg["tickets"] = normalized_tickets
-    cfg["design_evidence"] = _validate_design_evidence_config(raw.get("design_evidence", []))
-    resolved_root = root.resolve()
-    for key in ("status_file", "acceptance_file", "event_log", "verification_log", "logo"):
-        value = cfg[key]
-        if key == "logo" and value is None:
-            continue
-        if not isinstance(value, str) or not value.strip() or Path(value).is_absolute() or ".." in Path(value).parts:
-            raise HandsoffError(f"handsoff.toml: project.{key} must be a safe relative path")
-        # The string-only check above rejects ".." and absolute paths, but
-        # a symlinked PARENT DIRECTORY defeats it just as completely: the
-        # string never says ".." while the real file still lands outside
-        # the project. Resolve the full path and confirm it is still a
-        # descendant of the root after that resolution, not just lexically.
-        try:
-            (root / value).resolve().relative_to(resolved_root)
-        except ValueError:
-            raise HandsoffError(
-                f"handsoff.toml: project.{key} resolves outside the project root "
-                f"(a parent directory may be a symlink)") from None
-    for key in ("max_design_rounds", "stall_minutes", "max_autonomous_design_reviews",
-                "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
-        if cfg[key] < 0:
-            raise HandsoffError(f"handsoff.toml: {key} must not be negative")
-    if not 1 <= cfg["max_review_rounds"] <= 56:
-        raise HandsoffError("handsoff.toml: workflow.max_review_rounds must be an integer from 1 to 56")
-    if not 1 <= cfg["small_fix_max_criteria"] <= 64:
-        raise HandsoffError("handsoff.toml: workflow.small_fix_max_criteria must be an integer from 1 to 64")
-    if not 1 <= cfg["small_fix_max_changed_lines"] <= 100000:
-        raise HandsoffError("handsoff.toml: workflow.small_fix_max_changed_lines must be an integer from 1 to 100000")
-    if not 1 <= cfg["small_fix_max_files"] <= 1000:
-        raise HandsoffError("handsoff.toml: workflow.small_fix_max_files must be an integer from 1 to 1000")
-    ensure_regression_config_is_disjoint(cfg, root)
-    return cfg
 
 
 #: The two supervisor operations an implementer may run, in every form the
@@ -2077,9 +1473,6 @@ def implementer_permissions_section(root: Path | None, which=shutil.which) -> st
     return "\n".join(lines)
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Durably replace a UTF-8 text file using the shared state primitive."""
-    durable_replace(path, text.encode("utf-8"))
 
 
 def render_review_report(status: dict, acceptance: dict) -> str:
@@ -2110,166 +1503,20 @@ def render_review_report(status: dict, acceptance: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _validate_analysis_config(analysis: dict) -> dict:
-    """#49: the [analysis] table. Every key is optional; an invalid value is
-    a load error like every other section."""
-    cfg = dict(DEFAULT_CONFIG["analysis"])
-    unknown = set(analysis) - set(cfg)
-    if unknown:
-        raise HandsoffError(f"handsoff.toml: analysis has unknown keys: {', '.join(sorted(unknown))}")
-    enabled = analysis.get("enabled", cfg["enabled"])
-    if not isinstance(enabled, bool):
-        raise HandsoffError("handsoff.toml: analysis.enabled must be boolean")
-    cfg["enabled"] = enabled
-    for key, (minimum, maximum) in (("max_tickets_per_scan", (0, 50)), ("dedupe_days", (0, 365))):
-        value = analysis.get(key, cfg[key])
-        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
-            raise HandsoffError(f"handsoff.toml: analysis.{key} must be an integer from {minimum} to {maximum}")
-        cfg[key] = value
-    threshold = analysis.get("design_phase_hours_threshold", cfg["design_phase_hours_threshold"])
-    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) \
-            or not math.isfinite(threshold) or threshold <= 0:
-        raise HandsoffError("handsoff.toml: analysis.design_phase_hours_threshold must be a number greater than 0")
-    cfg["design_phase_hours_threshold"] = float(threshold)
-    archive = analysis.get("archive_dir", cfg["archive_dir"])
-    if archive is not None and (not isinstance(archive, str) or not archive.strip()):
-        raise HandsoffError("handsoff.toml: analysis.archive_dir must be a non-empty string when set")
-    cfg["archive_dir"] = archive.strip() if isinstance(archive, str) else None
-    framework_repo = analysis.get("framework_repo", cfg["framework_repo"])
-    if not isinstance(framework_repo, str) or not re.fullmatch(
-            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", framework_repo.strip()):
-        raise HandsoffError("handsoff.toml: analysis.framework_repo must be an owner/repository slug")
-    cfg["framework_repo"] = framework_repo.strip()
-    filing = analysis.get("filing", cfg["filing"])
-    if filing not in ANALYSIS_FILING_MODES:
-        raise HandsoffError("handsoff.toml: analysis.filing must be exactly 'gh' or 'report_only'")
-    cfg["filing"] = filing
-    return cfg
-
-
-def _validate_design_evidence_config(value: object) -> list[dict]:
-    """#38: `[[design_evidence]]` entries, each {id, command, inputs}. An
-    absent section is an empty list and changes nothing. Commands are
-    trusted configuration at the same level as [checks].commands; the
-    input globs are relative to the project root and may not escape it."""
-    if not isinstance(value, list):
-        raise HandsoffError("handsoff.toml: design_evidence must be an array of tables")
-    if len(value) > MAX_DESIGN_EVIDENCE_ENTRIES:
-        raise HandsoffError(
-            f"handsoff.toml: design_evidence may hold at most {MAX_DESIGN_EVIDENCE_ENTRIES} entries"
-        )
-    entries = []
-    for index, entry in enumerate(value):
-        if not isinstance(entry, dict):
-            raise HandsoffError(f"handsoff.toml: design_evidence[{index}] must be a table")
-        unknown = set(entry) - {"id", "command", "inputs"}
-        if unknown:
-            raise HandsoffError(
-                f"handsoff.toml: design_evidence[{index}] has unknown keys: {', '.join(sorted(unknown))}"
-            )
-        artifact_id, command, inputs = entry.get("id"), entry.get("command"), entry.get("inputs")
-        if not isinstance(artifact_id, str) or not DESIGN_EVIDENCE_ID_PATTERN.match(artifact_id):
-            raise HandsoffError(
-                f"handsoff.toml: design_evidence[{index}].id must match [a-z0-9-]{{1,64}}"
-            )
-        if not isinstance(command, str) or not command.strip():
-            raise HandsoffError(f"handsoff.toml: design_evidence[{index}].command must be a non-empty string")
-        if not isinstance(inputs, list) or not inputs \
-                or not all(isinstance(pattern, str) and pattern.strip() for pattern in inputs):
-            raise HandsoffError(
-                f"handsoff.toml: design_evidence[{index}].inputs must be a non-empty array of glob strings"
-            )
-        for pattern in inputs:
-            if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-                raise HandsoffError(
-                    f"handsoff.toml: design_evidence[{index}].inputs must be relative globs inside the project root"
-                )
-        entries.append({"id": artifact_id, "command": command.strip(), "inputs": [p.strip() for p in inputs]})
-    if len({entry["id"] for entry in entries}) != len(entries):
-        raise HandsoffError("handsoff.toml: design_evidence ids must be unique")
-    return entries
-
-
-def validate_agent_model(value: object) -> str:
-    """Validate a literal runner model ID without interpreting it.
-
-    The value is passed as one argv element only after validation. Leading
-    dashes are rejected so a model can never be confused for another CLI
-    option even if a runner changes how it parses option values.
-    """
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise HandsoffError("agent model must be a non-empty string without surrounding whitespace")
-    if len(value) > MAX_AGENT_MODEL_LENGTH:
-        raise HandsoffError(f"agent model must be at most {MAX_AGENT_MODEL_LENGTH} characters")
-    if value.startswith("-"):
-        raise HandsoffError("agent model must not begin with '-'")
-    if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise HandsoffError("agent model must not contain control characters")
-    return value
-
-
-def validate_model_policy(value: object) -> dict:
-    """Validate hard mission routing constraints.
-
-    These constraints are filters, never preferences: a route that cannot
-    satisfy them pauses instead of silently selecting another model.
-    """
-    if not isinstance(value, dict):
-        raise HandsoffError("model_policy must be a table")
-    allowed_fields = {"allowed_adapters", "denied_models", "quota_substitution"}
-    extra = set(value) - allowed_fields
-    if extra:
-        raise HandsoffError("model_policy has unknown fields: " + ", ".join(sorted(extra)))
-    adapters = value.get("allowed_adapters", ["codex", "claude"])
-    if not isinstance(adapters, list) or not adapters or len(adapters) > 2 \
-            or any(adapter not in {"codex", "claude"} for adapter in adapters) \
-            or len(set(adapters)) != len(adapters):
-        raise HandsoffError("model_policy.allowed_adapters must be a unique non-empty subset of codex and claude")
-    denied = value.get("denied_models", [])
-    if not isinstance(denied, list) or len(denied) > 32:
-        raise HandsoffError("model_policy.denied_models must be an array of at most 32 model ids")
-    denied = [validate_agent_model(model) for model in denied]
-    if len(set(model.casefold() for model in denied)) != len(denied):
-        raise HandsoffError("model_policy.denied_models must be unique")
-    quota = value.get("quota_substitution", True)
-    if not isinstance(quota, bool):
-        raise HandsoffError("model_policy.quota_substitution must be boolean")
-    return {"allowed_adapters": list(adapters), "denied_models": denied,
-            "quota_substitution": quota}
-
-
-def model_policy_allows(policy: object, adapter: str, model: str) -> bool:
-    normalized = validate_model_policy(policy or DEFAULT_MODEL_POLICY)
-    return adapter in normalized["allowed_adapters"] and model.casefold() not in {
-        item.casefold() for item in normalized["denied_models"]
-    }
 
 
 
 
-def validate_fallback_entries(value: object, *, field: str = "fallbacks") -> list[dict]:
-    """Validate and copy one role's bounded, ordered fallback profiles."""
-    if not isinstance(value, list):
-        raise HandsoffError(f"{field} must be an array")
-    if len(value) > MAX_FALLBACK_PROFILES:
-        raise HandsoffError(f"{field} must contain at most {MAX_FALLBACK_PROFILES} profiles")
-    result = []
-    for index, profile in enumerate(value):
-        if not isinstance(profile, dict) or set(profile) != {"adapter", "model"}:
-            raise HandsoffError(f"{field}[{index}] must contain exactly adapter and model")
-        adapter = profile.get("adapter")
-        if adapter not in SELECTABLE_AGENT_ADAPTERS:
-            raise HandsoffError(f"{field}[{index}].adapter must be exactly 'codex' or 'claude'")
-        result.append({"adapter": adapter, "model": validate_agent_model(profile.get("model"))})
-    return result
 
 
-def validate_max_failovers(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= MAX_FALLBACK_PROFILES:
-        raise HandsoffError(
-            f"fallback_policy.max_failovers_per_role must be an integer from 0 to {MAX_FALLBACK_PROFILES}"
-        )
-    return value
+
+
+
+
+
+
+
+
 
 
 def validate_agent_actor(value: object) -> str:
@@ -2889,25 +2136,6 @@ def launch_preflight(root: Path, *, adapter: str, model: str, executable: str,
     return {**deepcopy(entry), "cached": False}
 
 
-def launch_preflight_snapshot(root: Path) -> dict:
-    """Bounded, content-free Mission Control view of exact-launch readiness."""
-    path = Path(root) / PREFLIGHT_FILE
-    try:
-        store = load_unique_json(path)
-    except HandsoffError:
-        return {"state": "not_checked", "incident": None, "entries": [], "avoided_retries": 0}
-    if not isinstance(store, dict) or store.get("schema") != PREFLIGHT_SCHEMA:
-        return {"state": "legacy", "incident": None, "entries": [], "avoided_retries": 0}
-    safe_fields = ("fingerprint", "adapter", "model", "state", "category", "reason",
-                   "checked_at", "expires_at", "provider_probe_calls", "coalesced_count")
-    entries = [{field: item.get(field) for field in safe_fields}
-               for item in (store.get("entries") or {}).values() if isinstance(item, dict)]
-    entries.sort(key=lambda item: item.get("checked_at") or "", reverse=True)
-    incident = store.get("incident") if isinstance(store.get("incident"), dict) else None
-    incident_view = ({field: incident.get(field) for field in safe_fields} if incident else None)
-    return {"state": "blocked" if incident else (entries[0]["state"] if entries else "not_checked"),
-            "incident": incident_view, "entries": entries[:MAX_PREFLIGHT_ENTRIES],
-            "avoided_retries": sum(int(item.get("coalesced_count") or 0) for item in entries)}
 
 
 #: Providers surfaced read-only in the Agent Settings UI so a user can see
@@ -3504,74 +2732,26 @@ def update_feature_settings(root: Path, payload: object) -> dict:
     return {"features": dict(payload)}
 
 
-def status_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["status_file"]
 
 
-def acceptance_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["acceptance_file"]
 
 
-def event_log_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["event_log"]
 
 
-def verification_log_path(root: Path, cfg: dict) -> Path:
-    return root / cfg["verification_log"]
 
 
-def lock_path(root: Path) -> Path:
-    return root / ".handsoff.lock"
 
 
-def event_head_path(root: Path) -> Path:
-    return root / ".handsoff-event-head.json"
 
 
-def write_ahead_path(root: Path) -> Path:
-    return root / ".handsoff-writeahead.json"
 
 
-@contextmanager
-def project_lock(root: Path):
-    """Advisory single-writer lock around a read-modify-write. Best effort:
-    on a platform without fcntl this is a no-op, which is a known
-    limitation (see README), not a silent claim of safety it cannot keep."""
-    if fcntl is None:
-        yield
-        return
-    lp = lock_path(root)
-    lp.touch(exist_ok=True)
-    with lp.open("r+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 # --------------------------------------------------------------------------
 # JSON I/O: duplicate-key detection, atomic writes
 # --------------------------------------------------------------------------
 
-def load_unique_json(path: Path) -> dict:
-    """Parse JSON, rejecting a duplicate top-level-or-nested key rather than
-    silently keeping the last one, the way plain json.loads would."""
-    def pairs(items):
-        out = {}
-        for key, value in items:
-            if key in out:
-                raise HandsoffError(f"duplicate JSON key '{key}' in {path}")
-            out[key] = value
-        return out
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise HandsoffError(f"cannot read {path}: {e}") from e
-    try:
-        return json.loads(text, object_pairs_hook=pairs)
-    except json.JSONDecodeError as e:
-        raise HandsoffError(f"invalid JSON in {path}: {e}") from e
 
 
 def durability_capability(path: Path) -> dict:
@@ -3595,61 +2775,8 @@ def durability_capability(path: Path) -> dict:
     return {"level": "full", "file_fsync": True, "directory_fsync": True, "reason": None}
 
 
-def durable_backup_path(path: Path) -> Path:
-    """One bounded last-known-good copy; a newer write replaces the old copy."""
-    return Path(path).with_name(f"{Path(path).name}.bak")
 
 
-def durable_replace(path: Path, payload: bytes, *, fault=None, keep_backup: bool = True) -> dict:
-    """Flush, atomically replace, and sync one durable record.
-
-    ``fault(stage)`` is a test-only interruption hook.  At every boundary the
-    target is either its prior complete bytes or the complete new payload.
-    This is filesystem durability, not a database transaction spanning files.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
-    try:
-        with tmp.open("wb") as handle:
-            handle.write(bytes(payload))
-            if fault:
-                fault("before_flush")
-            handle.flush()
-            os.fsync(handle.fileno())
-            if fault:
-                fault("after_flush")
-        try:
-            os.chmod(tmp, path.stat().st_mode)
-        except OSError:
-            pass
-        if keep_backup and path.is_file():
-            previous = path.read_bytes()
-            durable_replace(durable_backup_path(path), previous, keep_backup=False)
-        os.replace(tmp, path)
-        if fault:
-            fault("after_replace")
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        try:
-            descriptor = os.open(path.parent, flags)
-            try:
-                if fault:
-                    fault("during_directory_sync")
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            capability = {"level": "full", "file_fsync": True,
-                          "directory_fsync": True, "reason": None}
-        except OSError as exc:
-            capability = {"level": "best_effort", "file_fsync": True,
-                          "directory_fsync": False,
-                          "reason": f"directory fsync unavailable: {type(exc).__name__}"}
-        return capability
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
 
 
 def restore_durable_backup(path: Path) -> dict:
@@ -3666,47 +2793,16 @@ def restore_durable_backup(path: Path) -> dict:
             "durability": capability}
 
 
-def atomic_write_json(path: Path, data: object) -> None:
-    """Durably replace a JSON record and retain one last-known-good copy."""
-    durable_replace(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
 # --------------------------------------------------------------------------
 # write-ahead journal: lets `doctor` prove a crash, not launder a hand edit
 # --------------------------------------------------------------------------
 
-def _serialized_digest(data: dict) -> str:
-    """The sha256 of the exact bytes atomic_write_json would produce for
-    this value, in the same format, so a later comparison against the
-    real file on disk (hashed the same way _file_sha256 does) can never
-    mismatch on serialization alone."""
-    return hashlib.sha256((json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")).hexdigest()
 
 
-def write_ahead(root: Path, *, status: dict | None = None, acceptance: dict | None = None) -> None:
-    """Record, BEFORE any target file is touched, exactly which file(s)
-    this in-flight write intends to produce and their exact resulting
-    content. This is what lets `doctor` tell a genuinely interrupted
-    write apart from an unrelated hand edit that merely happens to still
-    validate: doctor will only re-anchor the event log to a state that
-    exactly matches a journal entry naming it as the intended result of
-    a real command, never to any state that simply passes the gates.
-    Caller must hold project_lock and call clear_write_ahead once the
-    matching commit (through its append_event) has completed; see
-    commit()."""
-    entry: dict = {"at": datetime.now(timezone.utc).isoformat()}
-    if status is not None:
-        entry["status_sha256"] = _serialized_digest(status)
-    if acceptance is not None:
-        entry["acceptance_sha256"] = _serialized_digest(acceptance)
-    atomic_write_json(write_ahead_path(root), entry)
 
 
-def clear_write_ahead(root: Path) -> None:
-    try:
-        write_ahead_path(root).unlink()
-    except Exception:
-        pass
 
 
 def read_write_ahead(root: Path) -> dict | None:
@@ -3719,51 +2815,6 @@ def read_write_ahead(root: Path) -> dict | None:
         return None
 
 
-def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dict | None = None,
-          event_kind: str, event_message: str, extra_events: list[dict] | None = None,
-          **event_extra) -> str:
-    """Write status and/or acceptance, and append the event(s) describing
-    them, as one write-ahead-journaled unit. Every mutating command uses
-    this instead of calling atomic_write_json/append_event directly, so
-    every real write leaves the journal `doctor` needs to recover it
-    safely. Caller must hold project_lock for the entire surrounding
-    read-validate-write, not just this call.
-
-    `extra_events`, if given, are appended (in list order) BEFORE the
-    primary event_kind/event_message, so a single state transition that is
-    really two consecutive facts (a design round ending because the next
-    one just started, say) can log both without a second write-ahead cycle
-    or a second caller of commit(). Each entry is {"kind": ..., "message":
-    ..., **extra}. Returns the hash of the PRIMARY event only; callers that
-    need an extra event's own hash should read it back from the log."""
-    # A scoped amendment deliberately freezes both phase and progress.
-    # Recomputing item progress while its changed criteria are temporarily
-    # reset would make the just-written amendment contradict its own frozen
-    # snapshot and render an otherwise valid run invalid.
-    preserve_progress = bool(status is not None and status.pop("_preserve_progress", False))
-    if status is not None and "work_item_delivery" in status and open_amendment(status) is None and not preserve_progress:
-        progress_acceptance = acceptance
-        if progress_acceptance is None and acceptance_path(root, cfg).is_file():
-            progress_acceptance = load_unique_json(acceptance_path(root, cfg))
-        if isinstance(progress_acceptance, dict):
-            # The derived value only ever raises progress here: an operator
-            # value written by advance (#100) is never fought by bookkeeping,
-            # and rollbacks set their own lower value explicitly.
-            derived = overall_item_progress(status, progress_acceptance, cfg)
-            status["progress"] = max(int(status.get("progress", 0) or 0), derived)
-    if status is not None and preserve_progress and "progress" in event_extra:
-        status["progress"] = event_extra["progress"]
-    write_ahead(root, status=status, acceptance=acceptance)
-    if acceptance is not None:
-        atomic_write_json(acceptance_path(root, cfg), acceptance)
-    if status is not None:
-        atomic_write_json(status_path(root, cfg), status)
-    for extra in extra_events or ():
-        rest = {k: v for k, v in extra.items() if k not in ("kind", "message")}
-        append_event(root, cfg, extra["kind"], extra["message"], **rest)
-    event_hash = append_event(root, cfg, event_kind, event_message, **event_extra)
-    clear_write_ahead(root)
-    return event_hash
 
 
 # --------------------------------------------------------------------------
@@ -4680,80 +3731,6 @@ def transition_agent_session(root: Path, session_id: str, state: str,
     return result
 
 
-def repository_snapshot(root: Path, *, runner=subprocess.run) -> dict:
-    """Return bounded exact git identity without retaining porcelain text."""
-    def git(*args: str) -> str:
-        try:
-            result = runner(
-                ["git", *args], cwd=str(root.resolve()), shell=False, text=True,
-                capture_output=True, timeout=3, check=True,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            stderr = getattr(exc, "stderr", "") or ""
-            if "unborn branch" in stderr.lower() or "ambiguous argument 'head'" in stderr.lower():
-                raise HandsoffError("non-git root") from None
-            raise HandsoffError(f"cannot establish repository identity: {type(exc).__name__}") from exc
-        return result.stdout
-    head = git("rev-parse", "HEAD").strip()
-    parents = git("rev-list", "--parents", "-n", "1", "HEAD").strip().split()
-    branch = git("branch", "--show-current").strip() or "(detached)"
-    porcelain = git("status", "--porcelain=v1")
-    tracked_diff = git("diff", "--binary", "HEAD")
-    untracked = [line for line in git("ls-files", "--others", "--exclude-standard").splitlines() if line]
-    content = bytearray(tracked_diff.encode("utf-8", "replace"))
-    for relative in sorted(untracked):
-        path = (root / relative).resolve()
-        try:
-            path.relative_to(root.resolve())
-            if path.is_file():
-                content.extend(relative.encode("utf-8", "replace") + b"\0" + path.read_bytes())
-        except (OSError, ValueError):
-            raise HandsoffError("cannot establish repository content identity") from None
-    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head) or len(branch) > 256:
-        raise HandsoffError("cannot establish bounded repository identity")
-    # Bind the reviewed change range, not merely HEAD's immediate parent.
-    # Prefer the remote's declared default branch, then conventional local
-    # names. Repositories without one retain the safe parent fallback.
-    base = None
-    candidates = []
-    try:
-        symbolic = runner(
-            ["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-            cwd=str(root.resolve()), shell=False, text=True, capture_output=True,
-            timeout=3, check=False,
-        )
-        if symbolic.returncode == 0 and symbolic.stdout.strip():
-            candidates.append(symbolic.stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        pass
-    candidates.extend(["refs/remotes/origin/main", "main", "master"])
-    for candidate in dict.fromkeys(candidates):
-        try:
-            merged = runner(
-                ["git", "merge-base", "HEAD", candidate], cwd=str(root.resolve()),
-                shell=False, text=True, capture_output=True, timeout=3, check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if merged.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{40,64}", merged.stdout.strip()):
-            base = merged.stdout.strip().lower()
-            break
-    remote = ""
-    try:
-        remote_result = runner(["git", "remote", "get-url", "origin"], cwd=str(root.resolve()),
-                               shell=False, text=True, capture_output=True, timeout=3, check=False)
-        if remote_result.returncode == 0:
-            remote = remote_result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return {
-        "remote": remote,
-        "path": str(root.resolve()), "head": head.lower(), "branch": branch, "dirty": bool(porcelain),
-        "status_sha256": hashlib.sha256(porcelain.encode("utf-8", "replace")).hexdigest(),
-        "content_sha256": hashlib.sha256(content).hexdigest(),
-        "commit_pair": {"before": base or (parents[1].lower() if len(parents) > 1 else head.lower()),
-                        "after": head.lower()},
-    }
 
 
 def _new_bounded_id(prefix: str, pattern: re.Pattern, existing: set[str], id_factory=None) -> str:
@@ -5115,8 +4092,6 @@ def current_agent_sessions(status: dict) -> dict:
 # tamper-evident event log
 # --------------------------------------------------------------------------
 
-def _canonical(record: dict) -> str:
-    return json.dumps(record, sort_keys=True, separators=(",", ":"))
 
 
 def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict) -> str:
@@ -5170,40 +4145,10 @@ def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict
         + readable + f'<script type="application/json" id="handsoff-design">{script_payload}</script></body></html>\n'
 
 
-def _file_sha256(path: Path) -> str | None:
-    if not path.exists():
-        return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _last_hash(path: Path) -> str:
-    if not path.exists() or path.stat().st_size == 0:
-        return "GENESIS"
-    last = ""
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                last = line
-    if not last:
-        return "GENESIS"
-    return json.loads(last)["hash"]
 
 
-def append_event(root: Path, cfg: dict, kind: str, message: str, **extra) -> str:
-    path = event_log_path(root, cfg)
-    prev_hash = _last_hash(path)
-    body = {"at": datetime.now(timezone.utc).isoformat(), "kind": kind, "message": message,
-            "prev_hash": prev_hash,
-            "status_sha256": _file_sha256(status_path(root, cfg)),
-            "acceptance_sha256": _file_sha256(acceptance_path(root, cfg)), **extra}
-    body["hash"] = hashlib.sha256((_canonical(body) + prev_hash).encode("utf-8")).hexdigest()
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(_canonical(body) + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    atomic_write_json(event_head_path(root), {"hash": body["hash"]})
-    return body["hash"]
 
 
 def event_log_chain_errors(root: Path, cfg: dict) -> tuple[list[str], dict | None]:
@@ -5270,15 +4215,6 @@ def verify_event_log(root: Path, cfg: dict) -> list[str]:
 # immutable verification ledger
 # --------------------------------------------------------------------------
 
-def criterion_spec_hash(criterion: dict) -> str:
-    """Hash the claim being verified, excluding mutable outcome fields and
-    authored_by -- the last is provenance metadata about who proposed the
-    criterion, not part of the claim being verified, so stamping it at
-    design-approve time can never change this hash, invalidate an
-    already-recorded evidence binding, or mismatch a freshly recomputed
-    design_hash (which is built from this same hash per criterion)."""
-    spec = {k: v for k, v in criterion.items() if k not in {"state", "evidence", "authored_by"}}
-    return hashlib.sha256(_canonical(spec).encode("utf-8")).hexdigest()
 
 
 def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
@@ -5356,58 +4292,6 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
     return record
 
 
-def evidence_drift(root: Path, cfg: dict, acceptance: dict,
-                   verifications: list[dict]) -> dict:
-    """Classify newest valid automated evidence against one cached digest.
-
-    Legacy records remain unknown rather than stale, so adding this integrity
-    check cannot unexpectedly invalidate an existing run.
-    """
-    current_digest = repository_digest(root, cfg)
-    current_config = verification_config_hash(cfg)
-    result = {"current_digest": current_digest, "current": [], "stale": [],
-              "unknown": [], "refresh_commands": [], "changed_paths": [],
-              "changed_paths_truncated": False, "changed_paths_note": None}
-    current_entries = repository_digest_entries(root, cfg)
-    for criterion in acceptance.get("criteria", []):
-        cid = criterion.get("id")
-        if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
-            continue
-        record = next((candidate for candidate in reversed(verifications)
-                       if candidate.get("kind") == "checks"
-                       and candidate.get("ok") is True
-                       and cid in candidate.get("criteria", [])
-                       and candidate.get("criterion_hashes", {}).get(cid) == criterion_spec_hash(criterion)), None)
-        if record is None:
-            continue
-        digest = record.get("repository_digest")
-        recorded_config = record.get("config_hash")
-        if digest is None:
-            result["unknown"].append(cid)
-            result["changed_paths"] = None
-            result["changed_paths_note"] = "snapshot not recorded"
-        elif digest == current_digest and (recorded_config is None or recorded_config == current_config):
-            result["current"].append(cid)
-        else:
-            result["stale"].append(cid)
-            snapshot_path = root / ".handsoff-digests" / f"{digest}.json"
-            if snapshot_path.is_file():
-                try:
-                    old_entries = load_unique_json(snapshot_path).get("entries", {})
-                    changed = sorted({*old_entries, *current_entries} - {
-                        path for path in set(old_entries) & set(current_entries)
-                        if old_entries[path] == current_entries[path]
-                    })
-                    if len(changed) > 32:
-                        result["changed_paths_truncated"] = True
-                    result["changed_paths"] = changed[:32]
-                except (OSError, HandsoffError, ValueError):
-                    result["changed_paths_note"] = "snapshot not recorded"
-            else:
-                result["changed_paths_note"] = "snapshot not recorded"
-            result["refresh_commands"].append(
-                f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
-    return result
 
 
 def load_verifications(root: Path, cfg: dict) -> tuple[list[dict], list[str]]:
@@ -6562,24 +5446,8 @@ def validate_status_schema(status: dict) -> list[str]:
 # the gates
 # --------------------------------------------------------------------------
 
-#: [features] switches: name -> (default, one line for the settings dialog).
-#: failing_first is off by default because turning it on refuses every
-#: project's next Phase 6 until baselines exist; the other two only refuse
-#: what was already a mistake.
-FEATURES = {
-    "failing_first": (False, "A criterion's test must be seen to fail before the feature; Phase 6 and Phase 8 refuse a pass with no recorded failing run behind it (#165)."),
-    "launch_rules": (True, "Rules distilled from run history are evaluated before a managed launch and at the reviewer packet boundary; a match refuses with the rule's cause (#167)."),
-    "ticket_lock": (True, "init refuses a ticket that another live registered run already owns; --adopt takes over only a dead or closed owner (#166)."),
-    "token_accounting": (True, "The usage each adapter prints is recorded on its session and summed by role, phase and ticket; nothing is estimated (#168)."),
-    "review_binds_rules": (True, "A review, design approval and deployment approval carry the hash of the rules set they ran under; a changed hook or config revokes them (#170)."),
-    "report_posting": (False, "Phase 8 completion posts the ledger's report to each ticket and closes it; off, nothing leaves the machine unless run-close --post says so (#171)."),
-}
 
 
-def feature_enabled(cfg: dict, name: str) -> bool:
-    if name not in FEATURES:
-        raise HandsoffError(f"unknown workflow feature: {name}")
-    return bool((cfg or {}).get("features", {}).get(name, FEATURES[name][0]))
 
 
 def features_view(cfg: dict) -> dict:
@@ -6589,95 +5457,12 @@ def features_view(cfg: dict) -> dict:
             for name, (default, text) in FEATURES.items()}
 
 
-GOVERNANCE_CONFIG_KEYS = (
-    "deployment_requires_explicit_approval", "require_live_verification",
-    "max_design_rounds", "max_review_rounds", "stall_minutes",
-    "max_autonomous_design_reviews", "small_fix_max_criteria",
-    "small_fix_max_changed_lines", "small_fix_max_files",
-    "require_design_approval",
-)
-# Governance keys added after runs were already in flight. A key in this
-# set is hashed only while it holds a non-default value: an absent (or
-# explicitly default) key must reproduce the pre-existing hash byte for
-# byte, or upgrading bin/ would invalidate every design review, design
-# approval, and deployment approval already recorded on every project
-# running Handsoff (this repo's own run included). Changing the key to
-# anything else still invalidates the decisions bound to the old value,
-# which is the whole point of the chain of trust.
-_LEGACY_OPTIONAL_GOVERNANCE_KEYS = {
-    "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
-    "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
-    "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
-    "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
-    "require_design_approval": True,  # #159
-}
 
 
-def config_hash(cfg: dict) -> str:
-    """Binds a review, a deployment approval, or a live verification to the
-    governance policy in force when it was recorded. Without this, someone
-    could flip deployment_requires_explicit_approval or
-    require_live_verification off AFTER a review, silently downgrading what
-    the workflow requires without invalidating anything already granted."""
-    bound = {}
-    for key in GOVERNANCE_CONFIG_KEYS:
-        if key in _LEGACY_OPTIONAL_GOVERNANCE_KEYS:
-            default = _LEGACY_OPTIONAL_GOVERNANCE_KEYS[key]
-            if cfg.get(key, default) == default:
-                continue
-        bound[key] = cfg.get(key)
-    # The execution profile was introduced after runs already existed. Bind
-    # every non-default profile so changing posture invalidates subsequent
-    # decisions. The sole migration exception is an existing dogfood run
-    # with active waivers: those exact waiver booleans are already present in
-    # ``bound``, so adding the profile as a second representation would only
-    # invalidate an in-flight approval without strengthening the decision.
-    # Once the waivers are removed, dogfood itself is non-default and binds.
-    profile = cfg.get("execution_profile", "safe")
-    waivers_active = (not cfg.get("deployment_requires_explicit_approval", True)
-                      or not cfg.get("require_design_approval", True))
-    if profile != "safe" and not (profile == "dogfood" and waivers_active):
-        bound["execution_profile"] = profile
-    # [features] switches bind the same way: a switch at its default keeps
-    # every recorded hash byte for byte; a flipped one revokes what was
-    # granted under the other setting.
-    for name, (default, _text) in FEATURES.items():
-        if feature_enabled(cfg, name) != default:
-            bound["features." + name] = feature_enabled(cfg, name)
-    return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
 
 
-def acceptance_hash(criteria: list[dict]) -> str:
-    """Binds a deployment approval to the exact criteria states it was
-    given against. If the registry changes afterward (a criterion flips,
-    one is added or removed), this changes too, and the Phase 8 gate
-    refuses the now-stale approval rather than honoring it blindly.
-
-    Sorted by id first: `_canonical` sorts each dict's own keys but not
-    list order, so a harmless reordering of the criteria array (a
-    re-save, a merge) would otherwise change the hash and falsely
-    invalidate a still-valid approval. Sorting fails safe either way,
-    over-blocking rather than under-blocking, but there is no reason to
-    pay for it when the content genuinely has not changed."""
-    ordered = sorted(criteria, key=lambda c: c.get("id") or "")
-    return hashlib.sha256(_canonical({"criteria": ordered}).encode("utf-8")).hexdigest()
 
 
-def design_hash(criteria: list[dict]) -> str:
-    """Binds a design approval to the SPEC of each criterion (id, type,
-    requirement, verification, tests), never its evidence state --
-    unlike acceptance_hash, which deliberately includes state/evidence so
-    a deployment/review approval notices new or changed evidence. A
-    design approval is given before implementation exists; if it were
-    bound to acceptance_hash, the very first `verify` call (which flips
-    a criterion's state) would invalidate it, forcing re-approval for
-    every criterion the moment it is first evidenced. Adding, removing,
-    or respecifying a criterion still invalidates it; recording evidence
-    about one that already exists does not."""
-    ordered = sorted(criteria, key=lambda c: c.get("id") or "")
-    return hashlib.sha256(_canonical(
-        {"criteria": [{"id": c.get("id"), "spec": criterion_spec_hash(c)} for c in ordered]}
-    ).encode("utf-8")).hexdigest()
 
 
 def _is_green(criteria: list[dict]) -> bool:
@@ -7019,90 +5804,10 @@ def gate_progress(status: dict, acceptance: dict) -> dict:
     return {"percent": percent, "cleared": cleared}
 
 
-def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bool:
-    """A design decision is current when its hash is the registry's design
-    hash, or (#42) while a scoped amendment is open: the decision still
-    carries the amendment's base hash and the registry is exactly the
-    amended one. Approving the amendment rewrites the decision to the
-    resulting hash; escalating it clears the decision."""
-    current = design_hash(acceptance.get("criteria", []))
-    if recorded == current:
-        return True
-    amendment = open_amendment(status)
-    return bool(amendment) and amendment.get("base_design_hash") == recorded \
-        and amendment.get("resulting_design_hash") == current
 
 
-def _design_errors(status: dict, acceptance: dict, cfg: dict, root: Path | None = None) -> list[str]:
-    """The Architect gate: Phase 3+ requires a recorded human design
-    approval, for any run `requires_design_approval` (a run a NEW init
-    created). Absent for any status.json that predates this field --
-    those runs are simply never subject to this check, so an
-    already-in-progress run elsewhere is unaffected by upgrading bin/."""
-    if not status.get("requires_design_approval"):
-        return []
-    errors: list[str] = []
-    approval = status.get("design_approved")
-    if not isinstance(approval, dict):
-        return ["design gate: Phase 3+ requires a recorded human design approval"]
-    if not _design_hash_current(approval.get("design_hash"), status, acceptance):
-        errors.append("design gate: criteria were added, removed, or respecified since design approval; record a new approval")
-    if approval.get("config_hash") != config_hash(cfg):
-        errors.append("design gate: workflow policy changed since design approval; record a new approval")
-    # #170: the design approval RECORDS the rules set it was given under;
-    # the comparison belongs to the review, deployment and live gates, so
-    # a hook edit at Phase 6 asks for a fresh review, not a fresh design.
-    if "work_items" in acceptance and not scope_hash_matches(approval.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
-        errors.append("design gate: work-item scope changed since design approval; record a new approval")
-    proposal = status.get("design_proposal")
-    if isinstance(proposal, dict) and approval.get("proposal_hash") != proposal.get("proposal_hash"):
-        errors.append(f"stale proposal: approval binds {approval.get('proposal_hash')}, current is {proposal.get('proposal_hash')}")
-    approver = approval.get("by")
-    architect = approval.get("architect")
-    if not approver:
-        errors.append("design gate: design approval must identify the human approver")
-    if not architect:
-        errors.append("design gate: design approval must identify the architect")
-    if approver and architect and approver.strip().casefold() == architect.strip().casefold():
-        errors.append("design gate: approver must differ from the architect, no self-approval")
-    return errors
 
 
-def _design_review_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
-    """AR7 gate: new runs cannot leave Phase 2 until an independent
-    reviewer approved the exact current design. The opt-in status flag is
-    absent from pre-AR7 runs, preserving their in-flight behavior."""
-    if not status.get("requires_design_review"):
-        return []
-    review = status.get("design_review")
-    if not isinstance(review, dict):
-        return ["design review gate: Phase 3+ requires an approved independent design review"]
-    errors: list[str] = []
-    if review.get("decision") != "approved":
-        errors.append("design review gate: the current design review requested changes")
-    if not _design_hash_current(review.get("design_hash"), status, acceptance):
-        errors.append("design review gate: criteria changed since design review; record a new design review")
-    if review.get("config_hash") != config_hash(cfg):
-        errors.append("design review gate: workflow policy changed since design review; record a new design review")
-    if "work_items" in acceptance and not scope_hash_matches(review.get("scope_hash"), acceptance["work_items"], acceptance.get("criteria", [])):
-        errors.append("design review gate: work-item scope changed since design review; record a new design review")
-    proposal = status.get("design_proposal")
-    if isinstance(proposal, dict) and review.get("proposal_hash") != proposal.get("proposal_hash"):
-        errors.append(f"stale proposal: approval binds {review.get('proposal_hash')}, current is {proposal.get('proposal_hash')}")
-    reviewer = review.get("by")
-    architect = review.get("architect")
-    if not reviewer:
-        errors.append("design review gate: design review must identify its reviewer")
-    if not architect:
-        errors.append("design review gate: design review must identify the architect")
-    if reviewer and architect and reviewer.strip().casefold() == architect.strip().casefold():
-        errors.append("design review gate: reviewer must differ from the architect, no self-review")
-    approval = status.get("design_approved")
-    approved_architect = approval.get("architect") if isinstance(approval, dict) else None
-    if approved_architect and architect \
-            and approved_architect.strip().casefold() != architect.strip().casefold():
-        errors.append("design review gate: reviewed architect differs from the architect named in human approval")
-    return errors
 
 
 def design_review_budget(status: dict, cfg: dict) -> dict:
@@ -8411,61 +7116,10 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None,
     return None
 
 
-PLAIN_COMMAND_MESSAGE = "test commands may not contain shell expansion or control operators"
 
 
-def assert_plain_command(command: str) -> list[str]:
-    """Refuse every construct that can manufacture a different command after
-    validation; the allowed language is simple argv plus path globs. Shared by
-    verify-live and, since the field-note fixes, by config load, so an operator
-    in [checks].live_commands is refused at configuration time (defect 5)."""
-    if not isinstance(command, str) or not command.strip():
-        raise HandsoffError("test command must be a non-empty string")
-    if re.search(r"[\$`;&|<>(){}\r\n]", command):
-        raise HandsoffError(PLAIN_COMMAND_MESSAGE)
-    try:
-        words = shlex.split(command)
-    except ValueError as exc:
-        raise HandsoffError(f"invalid test command: {exc}") from exc
-    if any(token in {"|", "||", "&&", ";", ">", ">>", "<"} for token in words):
-        raise HandsoffError("test commands may not contain shell control operators")
-    return words
 
 
-def normalized_test_footprint(command: str, root: Path) -> frozenset[str]:
-    """Return the repository-relative tests a command can execute.
-
-    This is intentionally conservative: a command that names a tests directory,
-    wildcard, discovery mode, or an unrecognised test runner is treated as broad.
-    Handsoff only needs to distinguish configured focused checks from configured
-    regression groups; it is not a general shell parser.
-    """
-    # Commands use a shell so configured test-path globs continue to work.
-    words = assert_plain_command(command)
-    lowered = [Path(word).name.lower() for word in words]
-    footprint: set[str] = set()
-    for word in words:
-        candidate = word.split("::", 1)[0]
-        while candidate.startswith("./"):
-            candidate = candidate[2:]
-        if candidate.startswith("tests.") and "/" not in candidate:
-            candidate = candidate.replace(".", "/") + ".py"
-        if not (candidate.startswith("tests/") or candidate == "tests"):
-            continue
-        if candidate == "tests" or candidate.endswith("/"):
-            return frozenset({"*"})
-        if any(ch in candidate for ch in "*?["):
-            matches = sorted(root.glob(candidate))
-            if not matches:
-                return frozenset({"*"})
-            footprint.update(path.resolve().relative_to(root.resolve()).as_posix() for path in matches if path.is_file())
-        else:
-            footprint.add(Path(candidate).as_posix())
-    if "unittest" in lowered and "discover" in lowered:
-        return frozenset({"*"})
-    if not footprint:
-        return frozenset({"*"})
-    return frozenset(footprint)
 
 
 def regression_group(cfg: dict, name: str) -> dict:
@@ -8558,19 +7212,6 @@ def command_sha256(commands: list[str]) -> str:
     return hashlib.sha256(json.dumps(commands, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
 
 
-def ensure_regression_config_is_disjoint(cfg: dict, root: Path) -> None:
-    regression_footprints = []
-    for group in cfg.get("regressions", []):
-        footprint = set().union(*(normalized_test_footprint(cmd, root) for cmd in group["commands"]))
-        regression_footprints.append((group["name"], footprint))
-    for command in cfg.get("check_commands", []):
-        focused = normalized_test_footprint(command, root)
-        for name, regression in regression_footprints:
-            captures_group = "*" in focused or ("*" not in regression and regression <= set(focused))
-            if captures_group:
-                raise HandsoffError(
-                    f"focused check overlaps gated regression group {name}: {command}"
-                )
 
 
 def active_regression_request(status: dict) -> dict | None:
@@ -8587,27 +7228,10 @@ def ensure_no_launched_regression(status: dict) -> None:
         )
 
 
-def _work_item_slug(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")[:40].rstrip("-")
-    return slug or "item"
 
 
-def criterion_work_item_id(criterion: dict) -> str | None:
-    requirement = criterion.get("requirement") if isinstance(criterion, dict) else None
-    match = WORK_ITEM_TAG_PATTERN.match(requirement or "")
-    if not match:
-        return None
-    tag = match.group(1)
-    return f"issue-{tag[1:]}" if tag.startswith("#") else f"ask-{tag}"
 
 
-def removed_work_item_ids(acceptance: dict) -> set[str]:
-    """Ids the Pilot removed with work-item-remove (#141 tombstones)."""
-    out = set()
-    for record in acceptance.get("removed_work_items") or []:
-        if isinstance(record, dict) and isinstance(record.get("id"), str):
-            out.add(record["id"])
-    return out
 
 
 def add_work_item_tombstone(acceptance: dict, item_id: str, by: str, at: str) -> None:
@@ -8628,143 +7252,16 @@ def clear_work_item_tombstones(acceptance: dict, item_ids) -> list[str]:
     return cleared
 
 
-def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None,
-                              explicit_items: list[str] | None = None) -> list[dict]:
-    """Derive stable scope from criterion tags, feature issue refs and legacy display metadata."""
-    now = now or datetime.now(timezone.utc).isoformat()
-    tickets = {int(item["number"]): item for item in cfg.get("tickets", [])}
-    identities: dict[str, tuple[str, int | None, str]] = {}
-    feature = str(acceptance.get("feature") or "")
-
-    def add_text(text: str) -> None:
-        issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", text)
-        if issue:
-            number = int(issue.group(1))
-            supplied = (issue.group(2) or "").strip()
-            title = supplied or tickets.get(number, {}).get("title") or f"Issue #{number}"
-            identities[f"issue-{number}"] = ("issue", number, title)
-            return
-        slug = _work_item_slug(text)
-        identities.setdefault(f"ask-{slug}", ("ask", None, text.strip()[:200]))
-
-    if explicit_items:
-        for item in explicit_items[:MAX_WORK_ITEMS]:
-            add_text(item)
-    else:
-        # Explicit separators are promises. A segment containing issue refs
-        # contributes those issues; a segment without one remains a plain ask.
-        parts = [part.strip(" -\t") for part in
-                 re.split(r"[;\n]+|(?:^|\s)\d+[.)]\s+", feature)
-                 if part.strip(" -\t")]
-        for part in parts[:MAX_WORK_ITEMS]:
-            numbers = re.findall(r"(?<!\w)#([1-9][0-9]{0,8})\b", part)
-            if numbers:
-                for number_text in numbers:
-                    number = int(number_text)
-                    identities[f"issue-{number}"] = (
-                        "issue", number,
-                        tickets.get(number, {}).get("title") or f"Issue #{number}",
-                    )
-            else:
-                add_text(part)
-    tagged: set[str] = set()
-    for criterion in acceptance.get("criteria", []):
-        item_id = criterion_work_item_id(criterion)
-        if not item_id:
-            continue
-        tagged.add(item_id)
-        if item_id.startswith("issue-"):
-            number = int(item_id[6:])
-            title = tickets.get(number, {}).get("title") or f"Issue #{number}"
-            identities[item_id] = ("issue", number, title)
-        else:
-            title = item_id[4:].replace("-", " ").title()
-            identities[item_id] = ("ask", None, title)
-    # #141: an item the Pilot removed stays removed. The feature title still
-    # names it, so title derivation would quietly bring it back on the next
-    # transaction; the tombstone says the removal was a decision. A tagged
-    # criterion or an explicit --item is the deliberate way back, and the
-    # caller clears the tombstone in the same commit (clear_work_item_tombstones).
-    explicit_ids = set()
-    for item in explicit_items or []:
-        issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", item)
-        explicit_ids.add(f"issue-{int(issue.group(1))}" if issue else f"ask-{_work_item_slug(item)}")
-    for item_id in removed_work_item_ids(acceptance):
-        if item_id not in tagged and item_id not in explicit_ids:
-            identities.pop(item_id, None)
-    items = []
-    for item_id, (kind, number, title) in identities.items():
-        ticket = tickets.get(number, {}) if number is not None else {}
-        items.append({
-            "id": item_id, "kind": kind, "number": number, "title": title[:200],
-            "url": str(ticket.get("url") or ""), "required": True,
-            "github_state": None, "github_checked_at": None,
-            "created_at": now, "updated_at": now, "notes": "",
-        })
-    return sorted(items, key=lambda item: (item["kind"] != "issue", item["number"] or 0, item["id"]))[:MAX_WORK_ITEMS]
 
 
-def effective_work_items(acceptance: dict, cfg: dict) -> tuple[list[dict], str]:
-    persisted = acceptance.get("work_items")
-    if isinstance(persisted, list):
-        return persisted, "persisted"
-    return derive_work_item_registry(acceptance, cfg), "derived"
 
 
-def scoped_work_items(items: list[dict], criteria: list[dict] | None) -> list[dict]:
-    """The items that actually carry acceptance criteria. Scope is what the
-    criteria promise: an item nobody has tagged a criterion to (a spurious
-    title-derived ask, an issue registered ahead of its criteria) is not
-    part of what a reviewer or the Pilot judged, so adding or removing it
-    must not invalidate their decisions (#82). With `criteria` None the
-    whole registry counts, which is what pure-registry callers expect.
-    Mirrors derive_work_items: untagged criteria attach to a single-item
-    registry's only item."""
-    if criteria is None:
-        return list(items)
-    ids = {item.get("id") for item in items}
-    mapped: set[str] = set()
-    for criterion in criteria:
-        item_id = criterion_work_item_id(criterion)
-        if item_id is None and len(items) == 1:
-            item_id = items[0].get("id")
-        if item_id in ids:
-            mapped.add(item_id)
-    return [item for item in items if item.get("id") in mapped]
 
 
-def work_item_scope_hash(items: list[dict], criteria: list[dict] | None = None) -> str:
-    scope = sorted(({"id": item.get("id"), "kind": item.get("kind"),
-                    "number": item.get("number")} for item in scoped_work_items(items, criteria)),
-                   key=lambda item: item["id"] or "")
-    return hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def work_item_scope_hashes(items: list[dict], criteria: list[dict] | None = None) -> dict[str, str]:
-    """Current digest plus every historical formula a recorded decision may
-    carry: the pre-v0.3.11 digest over all items with `required`, the same
-    with `required` normalized to true, and the v0.3.11 identity-only
-    digest over all items. Gates accept any of them so runs recorded by an
-    earlier engine keep their approvals."""
-    current = work_item_scope_hash(items, criteria)
-    all_items = work_item_scope_hash(items)
-    legacy_scope = sorted(({
-        "id": item.get("id"), "kind": item.get("kind"),
-        "number": item.get("number"), "required": item.get("required", True),
-    } for item in items), key=lambda item: item["id"] or "")
-    legacy = hashlib.sha256(json.dumps(legacy_scope, sort_keys=True,
-                                       separators=(",", ":")).encode()).hexdigest()
-    legacy_normalized_scope = sorted(({**item, "required": True} for item in legacy_scope),
-                                     key=lambda item: item["id"] or "")
-    legacy_normalized = hashlib.sha256(json.dumps(legacy_normalized_scope, sort_keys=True,
-                                                  separators=(",", ":")).encode()).hexdigest()
-    return {"current": current, "all_items": all_items, "legacy": legacy,
-            "legacy_normalized": legacy_normalized}
 
 
-def scope_hash_matches(recorded: object, items: list[dict], criteria: list[dict] | None = None) -> bool:
-    """Accept any known digest so existing approvals remain valid after migration."""
-    return recorded in work_item_scope_hashes(items, criteria).values()
 
 
 def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
@@ -8780,27 +7277,10 @@ def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
     } for item in items}
 
 
-def work_item_delivery(status: dict, item_id: str) -> dict:
-    record = (status.get("work_item_delivery") or {}).get(item_id)
-    if isinstance(record, dict):
-        return record
-    return {
-        "lane": "full", "requested_lane": "full", "confirmed_by": None,
-        "confirmed_at": None, "facts": None, "escalation_reason": None,
-        "implemented_by": status.get("implemented_by"),
-        "reviewed_by": status.get("reviewed_by"), "review_hash": None,
-        "baseline_head": None,
-    }
 
 
-def item_criteria(acceptance: dict, item_id: str) -> list[dict]:
-    registry = acceptance.get("work_items") or []
-    return [criterion for criterion in acceptance.get("criteria", [])
-            if criterion_work_item(criterion, registry) == item_id]
 
 
-def item_acceptance_hash(acceptance: dict, item_id: str) -> str:
-    return acceptance_hash(item_criteria(acceptance, item_id))
 
 
 def repository_change_facts(root: Path) -> dict:
@@ -8873,70 +7353,8 @@ def small_fix_facts(root: Path, acceptance: dict, item_id: str, cfg: dict,
     return facts
 
 
-def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> dict:
-    own = item_criteria(acceptance, item_id)
-    delivery = work_item_delivery(status, item_id)
-    passing = sum(c.get("state") == "passing" for c in own)
-    criteria_points = 60.0 * passing / len(own) if own else 0.0
-    lane_gate = (bool(delivery.get("confirmed_by")) if delivery.get("lane") == "small-fix"
-                 else not _design_errors(status, acceptance, cfg)
-                 and not _design_review_errors(status, acceptance, cfg))
-    implemented_by = delivery.get("implemented_by")
-    implemented = bool(implemented_by and any(c.get("evidence") for c in own))
-    item_hash = item_acceptance_hash(acceptance, item_id)
-    reviewed = bool(delivery.get("reviewed_by") and delivery.get("review_hash") == item_hash)
-    global_review = status.get("review") or {}
-    if global_review.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])):
-        reviewed = True
-    approval = status.get("deployment_approved") or {}
-    deployed = (not adaptive_deployment_approval_required(status, cfg)
-                or approval.get("acceptance_hash") == acceptance_hash(acceptance.get("criteria", [])))
-    live = not cfg.get("require_live_verification", True) or bool(status.get("live_verification_id"))
-    gates = {"lane": lane_gate, "implemented": implemented, "reviewed": reviewed,
-             "deployed": deployed, "live": live}
-    # #102: gate weights, not phase weights. An approved design reads 25,
-    # partial evidence climbs from 25 to 45 with the passing fraction, and
-    # each later gate lands on its own step, so a run never reads 8 percent
-    # with its design fully approved.
-    # A small-fix item has no design review; its lane confirmation is the
-    # equivalent step.
-    design_reviewed = (lane_gate if delivery.get("lane") == "small-fix"
-                       else not _design_review_errors(status, acceptance, cfg))
-    fraction = passing / len(own) if own else 0.0
-    symptom = bool((status.get("requirement_coverage") or {}).get("original_symptom_resolved")
-                   or status.get("original_symptom_evidence_id"))
-    phase = int(status.get("phase_number", 0) or 0)
-    value = 5
-    if design_reviewed:
-        value = 15
-    if lane_gate:
-        value = 25 + int(math.floor(20 * fraction + 0.5))
-    if own and passing == len(own) and lane_gate:
-        value = 45
-        if symptom:
-            value = 50
-        if reviewed:
-            value = 65
-        # A gate the project switched off clears with the phase that would
-        # have asked for it, never ahead of the run (the 95 percent step is
-        # reserved for a work item that is actually done).
-        if reviewed and deployed and phase >= 7:
-            value = 80
-        if reviewed and deployed and live and phase >= 8:
-            value = 95
-    if status.get("status") == "complete" or phase >= 8 and reviewed and deployed and live:
-        value = 100
-    value = min(100, max(0, value))
-    return {"percent": value, "passing": passing, "total": len(own), "gates": gates,
-            "lane": delivery.get("lane", "full"), "facts": delivery.get("facts"),
-            "escalation_reason": delivery.get("escalation_reason")}
 
 
-def overall_item_progress(status: dict, acceptance: dict, cfg: dict) -> int:
-    items, _ = effective_work_items(acceptance, cfg)
-    values = [item_progress(status, acceptance, cfg, item["id"])["percent"]
-              for item in items if item.get("required", True)]
-    return int(math.floor(sum(values) / len(values) + 0.5)) if values else 0
 
 
 def full_design_required(status: dict, acceptance: dict, cfg: dict) -> bool:
@@ -9540,12 +7958,6 @@ AMENDMENT_PILOT_APPROVAL_FIELDS = {"by", "at", "amendment_hash"}
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
-def open_amendment(status: dict) -> dict | None:
-    """The open amendment record on `status`, or None. Only state `open`
-    counts; a closed record left in `status["amendment"]` by a hand edit is
-    a schema error, never a silent freeze."""
-    record = status.get("amendment") if isinstance(status, dict) else None
-    return record if isinstance(record, dict) and record.get("state") == "open" else None
 
 
 def amendment_hash(base_design_hash: str, operations: list[dict]) -> str:
@@ -9558,15 +7970,6 @@ def amendment_hash(base_design_hash: str, operations: list[dict]) -> str:
     ).hexdigest()
 
 
-def criterion_work_item(criterion: dict, registry: list[dict]) -> str:
-    """The work item a criterion belongs to, by the same rule
-    derive_work_items renders: its leading tag, else the only item of a
-    single-item run, else `unattributed`."""
-    item_id = criterion_work_item_id(criterion)
-    if item_id is None and len(registry) == 1:
-        return registry[0]["id"]
-    known = {item.get("id") for item in registry}
-    return item_id if item_id in known else "unattributed"
 
 
 def _amendment_changed_ids(operations: list[dict]) -> list[str]:
@@ -11056,117 +9459,14 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
 # --------------------------------------------------------------------------
 
 CHECK_OUTPUT_TAIL_CHARS = 2000
-VERIFY_INFLIGHT_DIR = ".handsoff-verify-inflight"
-# Handsoff's own generated state, never part of the repository digest in
-# either mode: the ledgers, anchors, locks, beacons, and the in-flight
-# directory would otherwise churn the digest on every evidence write.
-HANDSOFF_GENERATED_NAMES = frozenset({
-    ".handsoff.lock", ".handsoff-event-head.json", ".handsoff-writeahead.json",
-    ".handsoff-session-liveness.json", ".handsoff-dashboard-owner.json",
-    # Agent output is gitignored Handsoff runtime state, not repository evidence.
-    ".handsoff-agent-output.json", ".handsoff-regression.json", ".handsoff-test-progress.json",
-    LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE, PREFLIGHT_FILE,
-    LIVE_INFLIGHT_FILE,
-    ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,
-    "__pycache__", ".git",
-})
 
 
-def _digest_listing(root: Path, cfg: dict) -> list[str]:
-    """List candidate paths once, applying git and configured ignore rules."""
-    listed = None
-    try:
-        probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=str(root),
-                               capture_output=True, text=True, timeout=10, check=False)
-        if probe.returncode == 0 and probe.stdout.strip() == "true":
-            tracked = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), capture_output=True,
-                                     timeout=30, check=True).stdout
-            untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard"],
-                                       cwd=str(root), capture_output=True, timeout=30, check=True).stdout
-            listed = [x.decode("utf-8", "replace") for x in (tracked + untracked).split(b"\0") if x]
-    except (OSError, subprocess.SubprocessError):
-        listed = None
-    if listed is None:
-        listed = []
-        gitignore_rules = []
-        for directory, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in HANDSOFF_GENERATED_NAMES)
-            base = Path(directory).relative_to(root).as_posix()
-            if base == ".": base = ""
-            if ".gitignore" in files:
-                for line in (Path(directory) / ".gitignore").read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#") and not line.startswith("!"):
-                        gitignore_rules.append((base, line))
-            for filename in files:
-                if filename == ".gitignore":
-                    continue
-                relative = filename if not base else f"{base}/{filename}"
-                ignored = False
-                for rule_base, rule in gitignore_rules:
-                    target = relative[len(rule_base) + 1:] if rule_base and relative.startswith(rule_base + "/") else relative
-                    pattern = rule.rstrip("/")
-                    if rule.endswith("/") and (target == pattern or target.startswith(pattern + "/")):
-                        ignored = True
-                    elif rule.startswith("/") and fnmatch.fnmatch(target, pattern.lstrip("/")):
-                        ignored = True
-                    elif fnmatch.fnmatch(target, pattern) or fnmatch.fnmatch(Path(target).name, pattern):
-                        ignored = True
-                if not ignored:
-                    listed.append(relative)
-    ignores = [item for item in cfg.get("digest_ignore", []) if isinstance(item, str)]
-    return sorted({path for path in listed
-                   if not any(fnmatch.fnmatch(path, glob) or any(fnmatch.fnmatch(part, glob) for part in path.split("/"))
-                              for glob in ignores)})
 
 
-HANDSOFF_TEMP_COMPONENT = re.compile(r"\.*handsoff[^/]*\.tmp-?\d+[^/]*")
 
 
-def _digest_excluded(relative: str, state_files: set[str]) -> bool:
-    """Runtime bookkeeping never counts as repository content. Beyond the
-    enumerated names, every `.handsoff*` path component is Handsoff side
-    state (locks, beacons, output tails, the version pin, future files).
-    Without the structural rule a managed session running after `verify`
-    would write a side file and flag its own evidence stale on a root that
-    is not a git checkout (#77)."""
-    parts = relative.split("/")
-    if relative in state_files or relative in {f"{name}.bak" for name in state_files}:
-        return True
-    if any(part in HANDSOFF_GENERATED_NAMES for part in parts):
-        return True
-    # Every `.handsoff*` path component, the version pin included: the pin
-    # is Handsoff configuration, not product source. `upgrade --to` rewrites
-    # it on every engine upgrade, which used to stale the evidence of every
-    # completed run in the project (v0.3.25 field-note defect 2). The engine
-    # identity stays auditable through `engine_history` and the engine
-    # recorded on every initialized and agent_session_launching event.
-    if any(part.startswith(".handsoff") for part in parts):
-        return True
-    # #203: the in-flight temp file of Handsoff's own atomic writers
-    # (`..handsoff-live.json.tmp-<pid>-<hex>`, `handsoff-status.json.tmp<pid>`)
-    # exists for a few milliseconds between write and rename. A digest scan
-    # that lands in that window used to see a file the other scan did not,
-    # and a managed reviewer was blamed for a tree it never touched.
-    if any(HANDSOFF_TEMP_COMPONENT.fullmatch(part) for part in parts):
-        return True
-    # handsoff.toml is Handsoff's own configuration, not the product under
-    # test: a live_commands line or a budget tweak must not read as source
-    # drift (#93). What configuration CAN change the meaning of evidence,
-    # the check commands, is bound separately through the verification
-    # config hash stored on every executed record (see evidence_drift).
-    if relative == "handsoff.toml":
-        return True
-    return parts[-1].endswith(".pyc")
 
 
-def _digest_entry(root: Path, relative: str) -> str | None:
-    path = root / relative
-    if path.is_symlink():
-        return hashlib.sha256(("symlink:" + os.readlink(path)).encode("utf-8", "replace")).hexdigest()
-    if not path.is_file():
-        return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def repository_digest_from_entries(entries: dict[str, str | None]) -> str:
@@ -11178,36 +9478,8 @@ def repository_digest_from_entries(entries: dict[str, str | None]) -> str:
     return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
 
 
-def repository_digest(root: Path, cfg: dict | None = None) -> str:
-    """sha256 over the sorted (relative path, file sha256) pairs of every
-    tracked file plus every untracked-not-ignored file when `root` is a git
-    checkout (dirty state included by construction: the working tree
-    content is hashed, not HEAD). A root that is not a git checkout hashes
-    every file under it minus Handsoff's generated names. A tracked file
-    deleted from the working tree contributes a null hash, so a deletion
-    changes the digest too. Gitignored Handsoff state files are omitted by
-    git's untracked-file query, preventing runtime bookkeeping from causing
-    evidence drift."""
-    names = cfg or DEFAULT_CONFIG
-    state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
-    pairs = []
-    for relative in _digest_listing(root, names):
-        if _digest_excluded(relative, state_files):
-            continue
-        pairs.append([relative, _digest_entry(root, relative)])
-    return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
 
 
-def repository_digest_entries(root: Path, cfg: dict | None = None) -> dict[str, str | None]:
-    """Return per-path working-tree digests so a sandbox violation can name files.
-
-    Handsoff state is excluded for the same reason as repository_digest: its own
-    bookkeeping must not look like an agent edit.
-    """
-    names = cfg or load_config(root)
-    state_files = {names["status_file"], names["acceptance_file"], names["event_log"], names["verification_log"]}
-    return {path: _digest_entry(root, path) for path in _digest_listing(root, names)
-            if not _digest_excluded(path, state_files)}
 
 
 def record_session_result(root: Path, session_id: str, kind: str, payload: dict, *,
@@ -11246,19 +9518,6 @@ def record_session_result(root: Path, session_id: str, kind: str, payload: dict,
         return deepcopy(result)
 
 
-def verification_config_hash(cfg: dict) -> str:
-    """The configuration that changes what a targeted check proves: the
-    governance keys, [checks].commands, the per-command timeout, and the
-    regression groups. Distinct from config_hash (which binds decisions to
-    governance policy alone) and deliberately blind to file paths,
-    [agents], [models], [fallback_policy], [recovery], [design_evidence]
-    and tickets, none of which alter a check's meaning."""
-    bound = {key: cfg.get(key) for key in GOVERNANCE_CONFIG_KEYS}
-    bound["check_commands"] = list(cfg.get("check_commands", []))
-    bound["check_timeout_seconds"] = cfg.get("check_timeout_seconds")
-    bound["regressions"] = [{"name": group.get("name"), "commands": list(group.get("commands", []))}
-                            for group in cfg.get("regressions", [])]
-    return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
 
 
 def verification_binding(command: str, repo_digest: str, config_digest: str,

@@ -15,7 +15,7 @@ and pins `handsoff_lib`'s re-export surface to exactly the moved set.
 in the monolith, so each function that needs one imports it by name inside
 its own body:
 
-    from handsoff_lib import HandsoffError, load_config
+    from handsoff_lib import load_config
 
 Deferred rather than module-level because `handsoff_lib` imports this module
 to re-export its symbols, and a module-level import would close that cycle.
@@ -33,6 +33,8 @@ import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+
+from handsoff_core import HandsoffError, load_unique_json, status_path
 
 
 # Adaptive routing is intentionally expressed in capability terms. Model
@@ -142,7 +144,7 @@ def adaptive_catalog_profile(adapter: str, model: str) -> tuple[str, dict] | Non
 
 def validate_adaptive_routing_profiles(value: object) -> dict:
     """Validate a closed, source-cited routing catalog and return a copy."""
-    from handsoff_lib import DEFAULT_AGENT_MODEL, HandsoffError, SELECTABLE_AGENT_ADAPTERS  # #284 deferred: see module docstring
+    from handsoff_lib import DEFAULT_AGENT_MODEL, SELECTABLE_AGENT_ADAPTERS  # #284 deferred: see module docstring
     if not isinstance(value, dict):
         raise HandsoffError("routing_profiles must be a table")
     unknown = set(value) - set(ADAPTIVE_ROUTING_TIERS)
@@ -216,7 +218,6 @@ def validate_adaptive_routing_budgets(value: object) -> dict:
     ``None`` means that a dimension is not capped.  Counters are supplied by
     the mission coordinator, keeping this policy independent of adapters.
     """
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     if not isinstance(value, dict):
         raise HandsoffError("routing_budgets must be a table")
     unknown = set(value) - {"per_mission", "fleet"}
@@ -248,7 +249,6 @@ def evaluate_adaptive_budget(cfg: dict | None = None, *, mission_usage=None, fle
     The first exhausted dimension is reported distinctly; no PREMIUM call is
     authorized while checks are still in flight.
     """
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     budgets = adaptive_routing_budgets(cfg)
     usage = {"per_mission": dict(mission_usage or {}), "fleet": dict(fleet_usage or {})}
     if not deterministic_checks_complete:
@@ -267,7 +267,6 @@ def evaluate_adaptive_budget(cfg: dict | None = None, *, mission_usage=None, fle
 
 def validate_adaptive_risk_policy(value: object) -> dict:
     """Validate the closed, provider-independent mission risk policy."""
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     if not isinstance(value, dict) or set(value) != set(ADAPTIVE_RISK_CLASSES):
         raise HandsoffError("risk_policy must contain exactly the six adaptive risk classes")
     result = {}
@@ -290,7 +289,6 @@ def adaptive_risk_policy(cfg: dict | None = None) -> dict:
 
 def classify_adaptive_risk(risk_class: str) -> str:
     """Validate and return one canonical mission risk class."""
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     if not isinstance(risk_class, str) or risk_class not in ADAPTIVE_RISK_CLASSES:
         raise HandsoffError("risk_class must be one of " + ", ".join(ADAPTIVE_RISK_CLASSES))
     return risk_class
@@ -305,7 +303,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     Review and human approvals are obligations on their native workflow
     phases, not prerequisites for launching the worker that performs the job.
     """
-    from handsoff_lib import DEFAULT_AGENT_MODEL, DEFAULT_MODEL_POLICY, HandsoffError, SELECTABLE_AGENT_ADAPTERS, model_policy_allows, validate_model_policy  # #284 deferred: see module docstring
+    from handsoff_lib import DEFAULT_AGENT_MODEL, DEFAULT_MODEL_POLICY, SELECTABLE_AGENT_ADAPTERS, model_policy_allows, validate_model_policy  # #284 deferred: see module docstring
     profiles = adaptive_routing_profiles(cfg)
     model_policy = validate_model_policy((cfg or {}).get("model_policy", DEFAULT_MODEL_POLICY))
     risk_class = classify_adaptive_risk(risk_class)
@@ -417,7 +415,7 @@ def adaptive_fleet_usage(root: Path, *, current_status: dict | None = None,
     The registry selects roots; each root's status ledger remains the source
     of truth. Unreadable or vanished roots are skipped conservatively.
     """
-    from handsoff_lib import HandsoffError, load_config, load_unique_json, status_path  # #284 deferred: see module docstring
+    from handsoff_lib import load_config  # #284 deferred: see module docstring
     registry = registry or Path(os.environ.get("HANDSOFF_FLEET_REGISTRY", "~/.handsoff/projects.json")).expanduser()
     try:
         payload = json.loads(registry.read_text(encoding="utf-8"))
@@ -442,7 +440,6 @@ def adaptive_fleet_usage(root: Path, *, current_status: dict | None = None,
 
 
 def validate_session_adaptive_routing(value: object) -> dict:
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     required = {"risk_class", "tier", "adapter", "model", "profile", "reason",
                 "reviewer_required", "human_gate_required"}
     if not isinstance(value, dict) or set(value) != required:
@@ -589,7 +586,6 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict 
 
 
 def _adaptive_required_text(value, field, maximum=512):
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     if not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > maximum:
         raise HandsoffError(f"{field} must be a non-empty string of at most {maximum} characters")
     return value
@@ -602,7 +598,6 @@ def _adaptive_mission_binding(mission_id, acceptance_hash):
 
 def validate_adaptive_check_plan(checks, *, mission_id, acceptance_hash):
     """Validate and deterministically order checks before model escalation."""
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     binding = _adaptive_mission_binding(mission_id, acceptance_hash)
     if not isinstance(checks, (list, tuple)) or len(checks) > 32:
         raise HandsoffError("deterministic checks must contain at most 32 items")
@@ -631,7 +626,6 @@ def validate_adaptive_check_plan(checks, *, mission_id, acceptance_hash):
 
 def record_adaptive_check(check, *, outcome, evidence=None, detail=""):
     """Create the auditable result for one already-bound deterministic check."""
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     if not isinstance(check, dict) or not check.get("mission_id") or not check.get("acceptance_hash"):
         raise HandsoffError("deterministic check is missing mission binding")
     if outcome not in ADAPTIVE_ESCALATION_CHECK_OUTCOMES:
@@ -645,7 +639,6 @@ def record_adaptive_check(check, *, outcome, evidence=None, detail=""):
 def adaptive_escalation_records(*, mission_id, acceptance_hash, implementer, reviewer,
                                 supporting_evidence=(), unresolved_question=None):
     """Return separate, mission-bound claim/evidence/question audit records."""
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     binding = _adaptive_mission_binding(mission_id, acceptance_hash)
     records = []
     for role, claim in (("implementer", implementer), ("reviewer", reviewer)):
@@ -680,7 +673,6 @@ def bound_adaptive_escalation(*, disagreement_rounds=0, repair_rounds=0,
                               max_disagreement_rounds=2, max_repair_rounds=2,
                               human_decision=None):
     """Return a terminal decision or a human pause; never permit an open loop."""
-    from handsoff_lib import HandsoffError  # #284 deferred: see module docstring
     for value, name in ((disagreement_rounds, "disagreement_rounds"),
                         (repair_rounds, "repair_rounds"),
                         (max_disagreement_rounds, "max_disagreement_rounds"),
