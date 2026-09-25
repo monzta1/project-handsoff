@@ -1335,6 +1335,14 @@ def build_snapshot(root: Path) -> dict:
     }
 
 
+#: #318: consecutive 60-second ticks the served root must be absent before a
+#: run-owned dashboard retires. Two rather than one, because a single stat is
+#: not evidence a directory is gone for good: a worktree being replaced would
+#: otherwise kill a live board. Two minutes is ample for the reported case,
+#: an orphan that held its port for a day and seventeen hours.
+ORPHAN_ROOT_MISSING_TICKS = 2
+
+
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -1347,6 +1355,10 @@ class DashboardServer(ThreadingHTTPServer):
         self.run_token = run_token
         self.root_sha256 = root_sha256
         self.stopping = False
+        # #318: consecutive ticks on which the served root was absent. A
+        # single stat is not evidence a directory is gone for good, so the
+        # server retires only after ORPHAN_ROOT_MISSING_TICKS of them.
+        self._missing_root_ticks = 0
         self._stop_lock = threading.Lock()
         self._watchdog_stop = threading.Event()
         super().__init__(address, DashboardHandler)
@@ -1383,10 +1395,41 @@ class DashboardServer(ThreadingHTTPServer):
         while not self._watchdog_stop.wait(supervisor.PERFORMANCE_TICK_SECONDS):
             if self.stopping:
                 return
+            # #318: a root that has gone can never be served again, so the
+            # server releases its port instead of answering with nulls. This
+            # is not the early exit #295 forbids: that one is about a PAUSED
+            # run, whose worktree is still present and whose next episode
+            # still needs a clock. A removed worktree has no next episode.
+            if self._orphaned_root():
+                return
             try:
                 supervisor.performance_tick(self.project_root)
             except (lib.HandsoffError, OSError):
                 continue  # a closed or archived run simply has no clock
+
+    def _orphaned_root(self) -> bool:
+        """True once the served root has been absent for enough ticks.
+
+        Existence of the directory is the signal, not the status file: a run
+        mid-write can lack the file for an instant while the directory
+        remains. Run state is not consulted at all, so a pause, a closed run
+        and an archived run are all unaffected by construction.
+        """
+        try:
+            present = self.project_root.is_dir()
+        except OSError:
+            present = False
+        if present:
+            self._missing_root_ticks = 0
+            return False
+        self._missing_root_ticks += 1
+        if self._missing_root_ticks < ORPHAN_ROOT_MISSING_TICKS:
+            return False
+        port = self.server_address[1]
+        print(f"HANDSOFF_DASHBOARD_ORPHANED: root {self.project_root} is gone; releasing port {port}",
+              flush=True)
+        self.request_stop()
+        return True
 
     def _launch_managed_role(self, role: str, task: str, actor: str | None = None) -> int:
         """Launch a managed role. `actor` names who asked for the launch and

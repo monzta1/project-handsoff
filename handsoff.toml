@@ -262,6 +262,7 @@ commands = [
   "python3 -m unittest tests.test_fixture_permissions -v",
   "python3 -m unittest tests.test_template_defaults -v",
   "python3 -m unittest tests.test_playbook_budget -v",
+  "python3 -m unittest tests.test_dashboard_orphan -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
