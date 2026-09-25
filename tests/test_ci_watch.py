@@ -18,6 +18,7 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 T0 = datetime(2026, 9, 21, 1, 35, 25, tzinfo=timezone.utc)
 SECRET = "ghp_SECRETTOKEN4242ABCDEF"
@@ -103,7 +104,7 @@ PREVIOUS_RUN = {"CI": [_run(35550347105, "https://github.com/monzta1/x/actions/r
 class CiWatchTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         # any real gh invocation leaves a marker
         self.shim_dir = Path(tempfile.mkdtemp(prefix="handsoff-gh-shim-"))
         self.gh_marker = self.shim_dir / "gh-was-called"

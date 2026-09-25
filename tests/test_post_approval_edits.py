@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_supervisor as supervisor  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class PostApprovalEditTests(unittest.TestCase):
@@ -123,7 +124,7 @@ class PostApprovalCliTests(HandsoffTestCase):
 
     def test_live_commands_change_after_deployment_approval_keeps_the_approval(self):
         self.init("Config edits are not scope")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")  # the pin counts as content; write it before evidence
+        write_version_pin(self.tmp)  # the pin counts as content; write it before evidence
         self.set_criterion_state("passing", resolved=True)
         reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-1")
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
@@ -144,7 +145,7 @@ class PostApprovalCliTests(HandsoffTestCase):
         # #110: a Phase 7 run knocked back to Phase 5 by fresh evidence must
         # read the Phase 5 default, not the deployment text it carried.
         self.init("Rollback rewrites next_action")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.set_criterion_state("passing", resolved=True)
         reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-1")
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
@@ -163,7 +164,7 @@ class PostApprovalCliTests(HandsoffTestCase):
         # The counterpart: configuration that changes what a check proves
         # does invalidate evidence, through the verification config hash.
         self.init("Check commands are bound")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.set_criterion_state("passing", resolved=True)
         toml = self.tmp / "handsoff.toml"
         toml.write_text(toml.read_text().replace('commands = ["true"]', 'commands = ["true", "false"]'))

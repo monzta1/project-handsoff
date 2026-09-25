@@ -14,6 +14,7 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 ROOT = BIN.parent
 
@@ -28,7 +29,7 @@ class StaleManifestTests(HandsoffTestCase):
         # engine checkout also has prompts/ and the project's pyproject
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
         shutil.copy(ROOT / "pyproject.toml", self.tmp / "pyproject.toml")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def test_an_edited_runtime_file_refuses_every_reader_with_the_command(self):
         self._checkout()
@@ -87,7 +88,7 @@ class StaleManifestTests(HandsoffTestCase):
 
     def test_a_thin_project_keeps_its_own_wording(self):
         # no bin/handsoff_manifest.py: a drop-in, not an engine checkout
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.init("Thin project")
         self.assertIsNone(lib.stale_manifest_refusal(self.tmp))
         target = self.tmp / "dashboard" / "app.js"

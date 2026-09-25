@@ -41,11 +41,33 @@ class FixtureHygieneTests(unittest.TestCase):
         self.assertEqual(offenders, [], "fixtures must write the pin themselves:\n" + "\n".join(offenders))
 
     def test_fixtures_that_need_the_pin_write_it(self):
-        # The five modules named in #111 each write the literal pin now.
+        """The five modules named in #111 each write the pin.
+
+        They used to be required to contain the literal
+        `.handsoff-version").write_text("0.3.*\\n")`. A pin names the major and
+        minor exactly, so v0.4.0, the first minor bump, invalidated that literal
+        in thirty fixtures and in this assertion at once. They call
+        `write_version_pin`, which derives the line from the manifest, so the
+        next bump costs nothing here.
+        """
         for name in ("test_design_convergence", "test_design_review_hold", "test_mission_control_ops",
                      "test_reviewer_sandbox", "test_handsoff_supervisor"):
             text = (ROOT / "tests" / f"{name}.py").read_text(encoding="utf-8")
-            self.assertIn('".handsoff-version").write_text("0.3.*\\n")', text, name)
+            self.assertIn("write_version_pin(", text, name)
+
+    def test_no_fixture_hardcodes_a_version_line(self):
+        """The tax this replaced: a hardcoded pin is invisible until a minor
+        bump, and then it is thirty files at once."""
+        offenders = []
+        for path in sorted((ROOT / "tests").glob("*.py")):
+            if path.name in {Path(__file__).name, "fixture_state.py"}:
+                continue
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if re.search(r'write_text\(\s*"\d+\.\d+\.\*', line):
+                    offenders.append(f"{path.name}:{number}: {line.strip()}")
+        self.assertEqual(offenders, [],
+                         "write the pin with write_version_pin(root), which derives the "
+                         "compatible line from the manifest:\n" + "\n".join(offenders))
 
 
 class RuntimeManifestTests(unittest.TestCase):

@@ -11,6 +11,7 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 sys.path.insert(0, str(BIN))
 import handsoff_cli as cli  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class RulesSetTests(HandsoffTestCase):
@@ -18,7 +19,7 @@ class RulesSetTests(HandsoffTestCase):
         super().setUp()
         import shutil
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         # the dogfood config waives the Pilot's design click (#159); this
         # fixture wants the approval recorded so its binding can be checked
         toml = self.tmp / "handsoff.toml"

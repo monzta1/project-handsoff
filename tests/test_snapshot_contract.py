@@ -17,6 +17,7 @@ from tests.test_handsoff_supervisor import BIN, ROOT, HandsoffTestCase, approve_
 sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 SCHEMA = json.loads((ROOT / "schemas" / "snapshot.schema.json").read_text())
 FIXTURES = ROOT / "tests" / "fixtures" / "snapshots"
@@ -71,7 +72,7 @@ def validate(value, schema, path="$"):
 class SnapshotContractTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _init(self):
         r = run(["init", "Snapshot contract", "--item", "#218"], cwd=self.tmp)

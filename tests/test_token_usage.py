@@ -18,6 +18,7 @@ import handsoff_agent as runtime  # noqa: E402
 import handsoff_broker as broker  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class UsageWatcherTests(unittest.TestCase):
@@ -69,7 +70,7 @@ class UsageOnSessionTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.init("Usage fixture")
         self.set_criterion_state("passing", resolved=True)
         reached = self.advance_to(5, implemented_by="test-implementer")

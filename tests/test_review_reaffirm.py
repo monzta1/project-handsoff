@@ -5,13 +5,14 @@ import json
 import shutil
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
+from tests.fixture_state import write_version_pin
 
 
 class ReviewReaffirmTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _reach_approved_review(self, reviewer="test-reviewer"):
         self.init("Reaffirm fixture")

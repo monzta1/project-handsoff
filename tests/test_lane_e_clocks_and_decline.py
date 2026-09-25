@@ -19,6 +19,7 @@ import handsoff_lib as lib  # noqa: E402
 # _read_pmset_log at import time. Patching handsoff_lib would read the
 # real pmset log instead of the fixture and silently assert nothing.
 import handsoff_projection as projection  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 NOW = datetime(2026, 9, 21, 16, 0, tzinfo=timezone.utc)
 LOG = """2026-09-21 03:20:00 -0400 Sleep               \tEntering Sleep state due to 'Idle Sleep'
@@ -96,7 +97,7 @@ class SleepAwareBoardTests(HandsoffTestCase):
 
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.registry = Path(os.environ["HANDSOFF_FLEET_REGISTRY"])
         self.init("Lane E clocks")
         self.cfg = lib.load_config(self.tmp)
@@ -177,7 +178,7 @@ class SleepAwareBoardTests(HandsoffTestCase):
 class RunnerDeclineTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.init("Lane E decline dispatch")
         r = run(["advance", "2", "20"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout)

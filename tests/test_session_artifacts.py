@@ -6,6 +6,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
 import handsoff_lib as lib
+from tests.fixture_state import write_version_pin
 
 
 class SessionArtifactTests(unittest.TestCase):
@@ -101,7 +102,7 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _phase5(self):
         self.init("Artifacts fixture")

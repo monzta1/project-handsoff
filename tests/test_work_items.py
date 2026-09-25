@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_lib as lib  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))
 from test_handsoff_supervisor import HandsoffTestCase, run, approve_design_review  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 def criterion(cid, requirement, state="not_tested", evidence=None):
@@ -180,7 +181,7 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
         toml = self.tmp / "handsoff.toml"
         toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.assertEqual(run(["criterion-update", "REQ-001", "--requirement", "[#70] First item",
                               "--test", "true"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["criterion-add", "REQ-002", "--type", "supporting", "--verification", "automated",

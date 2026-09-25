@@ -11,6 +11,7 @@ BIN = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN))
 import handsoff_cli as cli
 import handsoff_lib as lib
+from tests.fixture_state import compatible_pin
 
 
 class PromptOverrideTests(unittest.TestCase):
@@ -35,9 +36,9 @@ class PromptOverrideTests(unittest.TestCase):
         self.assertFalse(diagnosis["ok"])
         self.assertIn("HANDSOFF_REVIEW_RESULT:", diagnosis["warnings"][0])
         old = (self.root / lib.VERSION_PIN_FILE).read_text()
-        self.assertIn("prompt_overrides", cli.change_pin(self.root, "0.3.*", dry_run=True, action="upgrade"))
+        self.assertIn("prompt_overrides", cli.change_pin(self.root, compatible_pin(), dry_run=True, action="upgrade"))
         with self.assertRaises(lib.HandsoffError):
-            cli.change_pin(self.root, "0.3.*", dry_run=False, action="upgrade")
+            cli.change_pin(self.root, compatible_pin(), dry_run=False, action="upgrade")
         self.assertEqual((self.root / lib.VERSION_PIN_FILE).read_text(), old)
 
     def test_current_and_undeclared_states(self):

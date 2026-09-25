@@ -7,6 +7,7 @@ from tests.test_handsoff_supervisor import HandsoffTestCase, run
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "bin"))
 import handsoff_lib as lib
+from tests.fixture_state import compatible_pin
 
 
 class EvidenceDriftTests(HandsoffTestCase):
@@ -185,7 +186,7 @@ class EvidenceDriftTests(HandsoffTestCase):
         self.assertEqual(drift["current"], ["REQ-001"], drift)
         self.assertEqual(drift["stale"], [])
         self.assertEqual(drift["changed_paths"], [])
-        pin.write_text("0.3.*\n")
+        pin.write_text(compatible_pin() + "\n")
         self.assertIn("REQ-001", lib.evidence_drift(self.tmp, cfg, self.read_acceptance(),
                                                      lib.load_verifications(self.tmp, cfg)[0])["current"])
         self.drift()

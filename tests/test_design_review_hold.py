@@ -12,6 +12,7 @@ BIN = ROOT / "bin"
 sys.path.insert(0, str(BIN))
 import handsoff_dashboard  # noqa: E402
 import handsoff_lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class TestDesignReviewHold(HandsoffTestCase):
@@ -19,7 +20,7 @@ class TestDesignReviewHold(HandsoffTestCase):
 
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _exhaust(self):
         self.init("Design review hold")

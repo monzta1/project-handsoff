@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_agent as agent  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class BriefingTests(unittest.TestCase):
@@ -61,7 +62,7 @@ class BriefingTests(unittest.TestCase):
     def test_missing_index_refuses_before_session_reservation(self):
         self._config()
         (self.tmp / "index.json").unlink()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         with patch_engine("create_agent_session") as reserve:
             with self.assertRaisesRegex(lib.HandsoffError, "briefing index is missing"):
                 agent.build_launch_spec(self.tmp, "implementer", "do the task",
