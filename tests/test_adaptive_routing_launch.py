@@ -1,5 +1,6 @@
 """REQ-001/REQ-004: default adaptive routing reaches real launch/session paths."""
 import json
+import re
 import os
 import shutil
 import sys
@@ -146,10 +147,15 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
     def test_undersized_fallback_packet_refuses_before_preflight(self):
         self.init("Fallback packet")
         config_path = self.tmp / "handsoff.toml"
-        config_path.write_text(
-            config_path.read_text().replace("reviewer = 80000", "reviewer = 20000"),
-            encoding="utf-8",
-        )
+        # #307: match the reviewer budget by key, not by its current value.
+        # Pinning the literal 80000 meant raising the shipped ceiling made
+        # this replace a no-op: the fixture kept the large ceiling, the
+        # packet was no longer undersized, and the test failed asserting
+        # that nothing was raised rather than that the guard had gone.
+        patched, count = re.subn(r"(?m)^reviewer = \d+$", "reviewer = 20000",
+                                 config_path.read_text())
+        self.assertEqual(count, 1, "expected exactly one reviewer budget line to patch")
+        config_path.write_text(patched, encoding="utf-8")
         preflight = mock.Mock(return_value={"state": "ready"})
         with mock.patch.object(agent.lib, "validate_runtime_integrity"), \
                 mock.patch.object(agent.lib, "launch_preflight", preflight):

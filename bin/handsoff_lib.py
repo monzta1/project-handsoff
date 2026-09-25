@@ -539,6 +539,135 @@ CEILING_ENFORCEMENT = {"codex": "native_rollout_meter", "claude": "wrapper_enfor
 CEILING_BOUND_GRANULARITY = {"native_rollout_meter": "per_turn",
                              "wrapper_enforced": "per_observation"}
 
+#: #307: whether an adapter reports usage BEFORE it exits. This is the fact
+#: that decides whether a ceiling can be enforced by observation at all.
+#: Codex prints `tokens used` exactly once, at exit, so there is nothing to
+#: observe while a turn runs and no reserve can shrink a turn already in
+#: flight. Claude streams usage, so the wrapper stops it at the first report
+#: past the limit. Declared per adapter rather than inferred, because
+#: inferring it needs the very observation the adapter does not provide.
+ADAPTER_INTERMEDIATE_USAGE = {"codex": False, "claude": True}
+
+#: #307: roles whose turns can be arbitrarily large because they run tools.
+#: A read-only turn is small and the existing reserve covers its measured
+#: overshoot (764 tokens); a turn that runs a suite is not bounded by
+#: anything the reserve can do.
+TOOL_RUNNING_ROLES = ("implementer", "reviewer")
+
+#: #307: the worst turn overshoot actually observed, per adapter, with its
+#: provenance. It is a floor under the archive-derived number, not a
+#: replacement for it: the session that motivated this ticket overshot by
+#: 10,535 tokens on 2026-09-23 (hs-d26f19a8a3754328ae26f3a156740692,
+#: ceiling 80,000, limit 77,952, used 88,487, no verdict) and its archive
+#: predates the ceiling_overshoot_tokens field, so the archive alone
+#: reports 560 and would size a ceiling an order of magnitude too small.
+#: A measurement whose record is gone is still a measurement.
+MEASURED_WORST_TURN_OVERSHOOT = {"codex": 10_535}
+
+
+def adapter_reports_usage_before_exit(adapter: str) -> bool:
+    """Whether this adapter's usage can be observed while it still runs."""
+    if adapter not in ADAPTER_INTERMEDIATE_USAGE:
+        raise HandsoffError(
+            f"adapter {adapter!r} has not declared whether it reports usage before exit; "
+            "add it to ADAPTER_INTERMEDIATE_USAGE before selecting it"
+        )
+    return ADAPTER_INTERMEDIATE_USAGE[adapter]
+
+
+def worst_recorded_overshoot(adapter: str, role: str, archives_dir: "Path | None" = None) -> dict:
+    """The largest recorded ceiling overshoot for this adapter and role.
+
+    Read from the archives rather than guessed, and it reports how many
+    samples it had: a bound resting on two observations must not present
+    itself as a measured one.
+    """
+    directory = Path(archives_dir) if archives_dir is not None else archive_dir()
+    worst, samples = 0, 0
+    if not directory.is_dir():
+        return {"tokens": 0, "samples": 0}
+    for path in sorted(directory.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        # The overshoot is recorded on the run's agent_failures map, keyed by
+        # session id, and the adapter and role live on agent_sessions under
+        # the same key. Reading it off the session's own `failure` field
+        # finds nothing and reports zero samples, which reads as "no
+        # overshoot has ever happened" rather than "this query is wrong".
+        status = record.get("status") if isinstance(record.get("status"), dict) else record
+        failures = status.get("agent_failures")
+        sessions = status.get("agent_sessions")
+        if not isinstance(failures, dict) or not isinstance(sessions, dict):
+            continue
+        for session_id, failure in failures.items():
+            if not isinstance(failure, dict):
+                continue
+            overshoot = failure.get("ceiling_overshoot_tokens")
+            if not isinstance(overshoot, int) or overshoot <= 0:
+                continue
+            session = sessions.get(session_id)
+            if not isinstance(session, dict):
+                continue
+            if session.get("adapter") != adapter or session.get("role") != role:
+                continue
+            samples += 1
+            worst = max(worst, overshoot)
+    return {"tokens": worst, "samples": samples}
+
+
+def turn_bound_refusal(*, adapter: str, role: str, ceiling: int, compact_scope: bool,
+                       safe_minimum: int = 0, archives_dir: "Path | None" = None) -> str | None:
+    """Refuse a launch the engine cannot bound, naming both remedies.
+
+    A reserve carves headroom from BELOW the ceiling, so it only helps if
+    the session stops below the limit. Session
+    hs-d26f19a8a3754328ae26f3a156740692 did not: ceiling 80,000, limit
+    77,952, used 88,487, no verdict. Where usage arrives only at exit and
+    the role runs tools, the launch is bounded instead of the budget.
+    """
+    if compact_scope or role not in TOOL_RUNNING_ROLES:
+        return None
+    if adapter_reports_usage_before_exit(adapter):
+        return None
+    measured = worst_recorded_overshoot(adapter, role, archives_dir)
+    floor = MEASURED_WORST_TURN_OVERSHOOT.get(adapter, 0)
+    allowance = max(measured["tokens"], floor)
+    # The number the message gives must be one that PASSES the check below.
+    # Deriving it from the current ceiling understated it whenever the
+    # ceiling was under the safe minimum, so the operator raised the budget
+    # to the suggested figure and was refused again on the retry.
+    needed = safe_minimum + allowance
+    if measured["samples"] and measured["tokens"] >= floor:
+        basis = (f"worst recorded overshoot {measured['tokens']} tokens over "
+                 f"{measured['samples']} recorded overshoot(s)")
+    elif measured["samples"]:
+        basis = (f"the declared worst observed turn for {adapter}, {floor} tokens; the archive "
+                 f"holds only {measured['samples']} overshoot(s), worst {measured['tokens']}, "
+                 "because the session that set this figure predates the recorded field")
+    else:
+        basis = (f"the declared worst observed turn for {adapter}, {floor} tokens; no overshoot "
+                 "is recorded yet for this adapter and role")
+    # The engine cannot stop a turn it cannot see, so this is not a promise
+    # that the ceiling holds. It refuses the ceilings that demonstrably
+    # cannot absorb one bad turn on top of a viable session, and leaves the
+    # rest to run with the exposure recorded. A ceiling that already
+    # accounts for the worst measured turn is the ticket's own second
+    # remedy and is allowed through.
+    if ceiling >= safe_minimum + allowance:
+        return None
+    return (
+        f"{adapter} reports usage only at exit, so a {role} that runs tools cannot be bounded "
+        f"by the {PROTOCOL_RESERVE_TOKENS}-token protocol reserve: a single turn can exceed the "
+        f"whole {ceiling}-token ceiling, and this ceiling cannot absorb one such turn on top of "
+        f"the {safe_minimum} tokens a viable session needs. Either give the launch a compact "
+        f"review scope, so no suite is materialised and turns stay small, or raise "
+        f"[agent_budget].{role} to at least {needed} to cover the worst measured turn ({basis})."
+    )
+
 
 def ceiling_overshoot(usage: object, provider_limit: object) -> int | None:
     """Measure how far past its limit a session actually went.
