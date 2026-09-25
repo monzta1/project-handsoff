@@ -12,6 +12,7 @@ from tests.test_handsoff_supervisor import ROOT, HandsoffTestCase, run
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_agent as agent  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 def routing_record(risk_class="routine"):
@@ -30,7 +31,7 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _phase_four(self):
         status = self.read_status()

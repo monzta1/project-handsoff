@@ -20,6 +20,7 @@ import handsoff_lib as lib  # noqa: E402
 ROOT = BIN.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import shard  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 RED_ON_MAIN = ("test_governance_cross", "test_live_verification_view", "test_packaging",
                "test_reviewer_handoff", "test_claude_adapter")
@@ -74,7 +75,7 @@ class RunnerAndModulesTests(unittest.TestCase):
 class ImplementerFillTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _events(self):
         return [json.loads(l) for l in (self.tmp / "handsoff-events.jsonl").read_text().splitlines() if l.strip()]
@@ -117,7 +118,7 @@ class ImplementerFillTests(HandsoffTestCase):
 class DeclineTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.registry = Path(os.environ["HANDSOFF_FLEET_REGISTRY"])
         self.init("Lane C decline: the #176 shape")
 

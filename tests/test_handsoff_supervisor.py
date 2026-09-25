@@ -28,7 +28,7 @@ from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tests.engine_patch import patch_engine
-from tests.fixture_state import force_acceptance
+from tests.fixture_state import force_acceptance, write_version_pin
 
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
@@ -1073,7 +1073,7 @@ class TestZeroConfigAgentDefaults(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
             "schema": 1,
             "files": {
@@ -1198,7 +1198,7 @@ class TestRecommendedCrewDefaults(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
             "schema": 1,
             "files": {
@@ -8559,7 +8559,7 @@ class TestDesignReviewPacket(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         (self.tmp / "handsoff-overrides.json").write_text(json.dumps({
             "schema": 1,
             "files": {
@@ -9275,7 +9275,7 @@ class TestTieredDesignReviewerProfiles(HandsoffTestCase):
         self.tmp.mkdir()
         shutil.copytree(ROOT / "schemas", self.tmp / "schemas")
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _prepare(self, followup=FOLLOWUP, criteria=("REQ-001",)):
         """Phase 2 with real criteria and no review recorded yet."""

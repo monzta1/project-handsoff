@@ -19,12 +19,13 @@ sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class HostIdentityTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.registry = Path(os.environ["HANDSOFF_FLEET_REGISTRY"])
 
     def _events(self):
@@ -64,7 +65,7 @@ class HostIdentityTests(HandsoffTestCase):
 class ConsoleTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.init("Lane B console")
 
     def test_the_three_engine_rows_are_gone_and_the_engine_view_has_no_previews(self):
@@ -89,7 +90,7 @@ class ConsoleTests(HandsoffTestCase):
 class CiRowTruthTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.shim_dir = Path(tempfile.mkdtemp(prefix="handsoff-gh-shim-"))
         self.gh_marker = self.shim_dir / "gh-was-called"
         shim = self.shim_dir / "gh"

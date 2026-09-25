@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_lib as lib
-from tests.fixture_state import force_status
+from tests.fixture_state import force_status, write_version_pin
 
 
 class StatusTruthTests(unittest.TestCase):
@@ -88,7 +88,7 @@ class StatusTruthTests(unittest.TestCase):
         # callers already held it, hanging status and the dashboard.
         import subprocess, sys
         force_status(self.root, self.cfg, self.status)
-        (self.root / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.root)
         result = subprocess.run([sys.executable, str(ROOT / "bin" / "handsoff_supervisor.py"), "--root",
                                  str(self.root), "status"], capture_output=True, text=True, timeout=30)
         # The hand-built fixture is not a valid run, so status may exit 1

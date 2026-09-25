@@ -10,13 +10,14 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
 import handsoff_broker as broker  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class ReviewerSandboxTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def test_reviewer_spec_isolated_and_supervisor_stays_root(self):
         reviewer = runtime.build_launch_spec(self.tmp, "reviewer", "Review it.",
@@ -138,7 +139,7 @@ class ReviewerGuardAndBrokerTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _reviewer_spec(self):
         return runtime.LaunchSpec(

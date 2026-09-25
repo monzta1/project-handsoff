@@ -27,6 +27,7 @@ from tests.test_session_artifacts import APPROVED, _FakeProcess
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 #: The session that reproduced the defect inside its own fix.
 OBSERVED_CEILING = 48_500
@@ -222,7 +223,7 @@ class TheWrapperStopsAnUnmeteredSession(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def test_usage_past_the_limit_terminates_the_process_group(self):
         stopped = []

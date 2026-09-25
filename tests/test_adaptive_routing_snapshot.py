@@ -10,12 +10,13 @@ from tests.test_snapshot_contract import validate
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def test_legacy_snapshot_is_explicitly_not_used(self):
         self.init("Legacy snapshot")

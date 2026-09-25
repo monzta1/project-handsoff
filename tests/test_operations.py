@@ -12,6 +12,7 @@ from tests.test_handsoff_supervisor import HandsoffTestCase
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
 import handsoff_agent as runtime
 import handsoff_lib as lib
+from tests.fixture_state import write_version_pin
 
 
 def record(**overrides):
@@ -250,7 +251,7 @@ class TestBoundedCancellationAndHygiene(HandsoffTestCase):
         super().setUp()
         import shutil
         shutil.copytree(Path(__file__).resolve().parent.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _host_architect(self):
         """Point the fixture's [agents].architect at host whatever the copied
@@ -382,7 +383,7 @@ class TestPromptsAndLateTelemetry(HandsoffTestCase):
         super().setUp()
         import shutil
         shutil.copytree(Path(__file__).resolve().parent.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def test_every_role_prompt_documents_a_parseable_example(self):
         import re
@@ -425,7 +426,7 @@ class TestAutoReconfirmation(HandsoffTestCase):
     def _approved_at_seven(self):
         from tests.test_handsoff_supervisor import run
         self.init("Auto reconfirmation")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.set_criterion_state("passing", resolved=True)
         reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="reviewer-1")
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)

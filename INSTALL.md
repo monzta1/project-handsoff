@@ -14,7 +14,7 @@ and expose `handsoff` at `$HOME/.local/bin/handsoff`:
 python3 -m venv "$HOME/.local/share/handsoff/venv"
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade pip
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.87/project_handsoff-0.3.87-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.4.0/project_handsoff-0.4.0-py3-none-any.whl"
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install "websockets>=12"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$HOME/.local/share/handsoff/venv/bin/handsoff" "$HOME/.local/bin/handsoff"
@@ -34,8 +34,8 @@ handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
 
-`init` defaults to a compatible patch pin such as `0.3.*`. That lets a project use
-security and bug-fix releases within the same minor line. Pass `--pin v0.3.87` only
+`init` defaults to a compatible patch pin such as `0.4.*`. That lets a project use
+security and bug-fix releases within the same minor line. Pass `--pin v0.4.0` only
 when the project must remain on one exact engine build.
 
 ## One command for the whole house
@@ -52,32 +52,46 @@ version-named environment and do not change scripts, aliases, or LaunchAgents:
 
 ```bash
 "$HOME/.local/share/handsoff/venv/bin/python" -m pip install --upgrade --force-reinstall \
-  "https://github.com/monzta1/project-handsoff/releases/download/v0.3.87/project_handsoff-0.3.87-py3-none-any.whl"
+  "https://github.com/monzta1/project-handsoff/releases/download/v0.4.0/project_handsoff-0.4.0-py3-none-any.whl"
 handsoff version --json
 handsoff doctor /absolute/path/to/project
 ```
 
-A project pinned to the compatible line `0.3.*` (the `init` default) accepts the
+A project pinned to the compatible line `0.4.*` (the `init` default) accepts the
 new patch immediately: no pin bump, no edit inside the project, and no evidence
-drift on its completed runs. A project still on an exact pin is moved to the
+drift on its completed runs.
+
+**A MINOR bump is the exception, and v0.4.0 is the first one.** A pin names the
+major and minor exactly, so a project pinned `0.3.*` refuses a 0.4.0 engine:
+`version_satisfies` compares both components. Every project carried on the
+previous line has to be moved once, and until it is, every ledger command on it
+refuses:
+
+```bash
+handsoff upgrade /absolute/path/to/project --to 0.4.* --dry-run
+handsoff upgrade /absolute/path/to/project --to 0.4.*
+```
+
+That is one command per project, not a per-patch cost: the next bump inside the
+0.4 line needs nothing. A project still on an exact pin is moved to the
 compatible line once, and never needs a per-patch bump again:
 
 ```bash
-handsoff upgrade /absolute/path/to/project --to 0.3.* --dry-run
-handsoff upgrade /absolute/path/to/project --to 0.3.*
+handsoff upgrade /absolute/path/to/project --to 0.4.* --dry-run
+handsoff upgrade /absolute/path/to/project --to 0.4.*
 ```
 
 Keep an exact pin only when the project must stay on one exact engine build
 (strict reproducibility). Then, and only then, record each patch explicitly:
 
 ```bash
-handsoff upgrade /absolute/path/to/project --to v0.3.87 --dry-run
-handsoff upgrade /absolute/path/to/project --to v0.3.87
+handsoff upgrade /absolute/path/to/project --to v0.4.0 --dry-run
+handsoff upgrade /absolute/path/to/project --to v0.4.0
 ```
 
-Replace `v0.3.29` with the release being installed. Instruction files that a
+Replace `v0.4.0` with the release being installed. Instruction files that a
 project keeps for its agents (`AGENTS.md`, a `SKILL.md`, restart prompts) should
-name the compatible line, `0.3.*`, rather than an exact release: the
+name the compatible line, `0.4.*`, rather than an exact release: the
 documentation audit flags an exact release reference that no longer matches the
 installed engine, and editing those files after an upgrade is a product-tree
 change that stales the evidence of every completed run. If they must name an

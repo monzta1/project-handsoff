@@ -20,6 +20,7 @@ sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 import handsoff_supervisor as supervisor  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 ROOT = BIN.parent
 
@@ -27,7 +28,7 @@ ROOT = BIN.parent
 class MissingPinTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.init("Lane A: the floor")
 
     def test_a_pin_error_serves_a_full_snapshot_with_an_unknown_engine_and_the_reason(self):
@@ -96,7 +97,7 @@ class InitWritesThePinTests(HandsoffTestCase):
         self.assertNotIn("HANDSOFF_PIN_WRITTEN", r.stdout)
         self.assertFalse((self.tmp / ".handsoff-version").exists())
         (self.tmp / "bin" / "handsoff_lib.py").unlink()
-        (self.tmp / ".handsoff-version").write_text("9.9.*\n")
+        write_version_pin(self.tmp, "9.9.*")  # deliberately incompatible
         for name in ("handsoff-status.json", "handsoff-acceptance.json", "handsoff-events.jsonl",
                      "handsoff-verifications.jsonl", ".handsoff-event-head.json"):
             (self.tmp / name).unlink(missing_ok=True)
@@ -134,7 +135,7 @@ class LiveSmokeNamesItsPreconditionTests(unittest.TestCase):
 class ReaffirmAfterARulesChangeTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.init("Lane A: reaffirm")
         self.cfg = lib.load_config(self.tmp)
 

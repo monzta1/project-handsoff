@@ -8,7 +8,7 @@ import shutil
 import sys
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
-from tests.fixture_state import force_status
+from tests.fixture_state import force_status, write_version_pin
 
 
 class TestDesignConvergence(HandsoffTestCase):
@@ -17,7 +17,7 @@ class TestDesignConvergence(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         config = self.tmp / "handsoff.toml"
         config.write_text(config.read_text().replace('architect = "auto"', 'architect = "host"'))
 

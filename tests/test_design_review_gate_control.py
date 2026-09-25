@@ -26,6 +26,7 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class TheLimitIsTheMeasuredPercentile(unittest.TestCase):
@@ -101,7 +102,7 @@ class TheExhaustedBudgetReachesThePilot(HandsoffTestCase):
         return status
 
     def _snapshot(self):
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         import handsoff_dashboard as dashboard
         return dashboard.build_snapshot(self.tmp)
 

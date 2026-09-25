@@ -15,6 +15,7 @@ sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class _InputPipe:
@@ -56,7 +57,7 @@ PROGRESS = ('HANDSOFF_PROGRESS: {"criterion": "REQ-001", "state": "done", "test"
 class ImplementerProgressTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.init("Progress fixture")
         self.set_criterion_state("passing", resolved=True)
         # three automated criteria: the fixture's REQ-001 (its test is `true`) plus two

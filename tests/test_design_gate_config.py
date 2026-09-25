@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "bin"))
 sys.path.insert(0, str(ROOT / "tests"))
 import handsoff_lib as lib  # noqa: E402
 from test_handsoff_supervisor import HandsoffTestCase, run  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 def _set_workflow_key(path: Path, key: str, value: str | None) -> None:
@@ -123,7 +124,7 @@ class WaivedGateTests(HandsoffTestCase):
     def test_the_dashboard_never_asks_the_pilot_for_the_design_click(self):
         self.propose()
         self.review()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         import handsoff_dashboard as dashboard
         snapshot = dashboard.build_snapshot(self.tmp)
         request = snapshot.get("input_required") or {}

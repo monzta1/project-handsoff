@@ -19,12 +19,13 @@ sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class HostWaitTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.registry = Path(os.environ["HANDSOFF_FLEET_REGISTRY"])
         r = run(["init", "Lane D host wait", "--by", "codex-implementer"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

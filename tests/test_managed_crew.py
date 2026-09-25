@@ -21,6 +21,7 @@ import handsoff_broker as broker  # noqa: E402
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 from test_handsoff_supervisor import HandsoffTestCase, approve_design_review, run  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 def _commit(root, status):
@@ -34,7 +35,7 @@ class ManagedCrewTests(HandsoffTestCase):
         super().setUp()
         import shutil
         shutil.copytree(ROOT / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _phase(self, number, **fields):
         status = self.read_status()

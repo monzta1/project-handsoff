@@ -15,6 +15,7 @@ sys.path.insert(0, str(BIN))
 import handsoff_cli as cli
 import handsoff_dashboard as dashboard
 import handsoff_lib as lib
+from tests.fixture_state import compatible_pin
 
 CURRENT_VERSION = json.loads((ROOT / "handsoff-runtime.json").read_text())["version"]
 
@@ -36,15 +37,15 @@ class VersionedRuntimeTests(unittest.TestCase):
     def test_thin_init_has_only_config_and_pin_and_reports_exact_engine(self):
         root = self.base / "thin-one"
         result = cli.init_project(root, None)
-        self.assertEqual(result["pin"], "0.3.*")
+        self.assertEqual(result["pin"], compatible_pin())
         self.assertTrue((root / "handsoff.toml").is_file())
-        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), "0.3.*")
+        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), compatible_pin())
         for copied in ("bin", "dashboard", "fleet", "prompts", "schemas", "handsoff-runtime.json"):
             self.assertFalse((root / copied).exists(), copied)
         identity = lib.validate_runtime_integrity(root)
         self.assertEqual(identity["version"], CURRENT_VERSION)
         self.assertEqual(identity["source"], "installed-engine")
-        self.assertEqual(identity["compatibility"], "0.3.*")
+        self.assertEqual(identity["compatibility"], compatible_pin())
         self.assertNotIn("manifest", identity)
         self.assertRegex(identity["manifest_sha256"], r"^[0-9a-f]{64}$")
         diagnosis = cli.doctor(root)
@@ -63,11 +64,11 @@ class VersionedRuntimeTests(unittest.TestCase):
     def test_upgrade_preview_change_and_rollback_preserve_prior_pin(self):
         root = self.base / "upgrade"
         cli.init_project(root, CURRENT_VERSION)
-        preview = cli.change_pin(root, "0.3.*", dry_run=True, action="upgrade")
+        preview = cli.change_pin(root, compatible_pin(), dry_run=True, action="upgrade")
         self.assertEqual(preview["from"], CURRENT_VERSION)
         self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), CURRENT_VERSION)
-        cli.change_pin(root, "0.3.*", dry_run=False, action="upgrade")
-        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), "0.3.*")
+        cli.change_pin(root, compatible_pin(), dry_run=False, action="upgrade")
+        self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), compatible_pin())
         rollback = cli.rollback_pin(root, dry_run=False)
         self.assertEqual(rollback["to"], CURRENT_VERSION)
         self.assertEqual((root / lib.VERSION_PIN_FILE).read_text().strip(), CURRENT_VERSION)
@@ -147,7 +148,7 @@ class VersionedRuntimeTests(unittest.TestCase):
         self.assertTrue(diagnosis["documentation"]["stale"])
         self.assertEqual(diagnosis["documentation"]["canonical_executable"], "/opt/tools/handsoff")
         self.assertEqual(diagnosis["documentation"]["installed_engine"], CURRENT_VERSION)
-        self.assertEqual(diagnosis["documentation"]["supported_project_pin"], "0.3.*")
+        self.assertEqual(diagnosis["documentation"]["supported_project_pin"], compatible_pin())
         self.assertEqual(
             [item["code"] for item in diagnosis["documentation"]["diagnostics"]],
             ["obsolete-release-reference", "obsolete-command-path"],
@@ -262,8 +263,9 @@ class VersionedRuntimeTests(unittest.TestCase):
         field notes, the instruction-file guidance, and the release procedure."""
         install = (ROOT / "INSTALL.md").read_text()
         patch = install.split("## Clean patch upgrade", 1)[1].split("## After an upgrade", 1)[0]
-        self.assertIn("--to 0.3.*", patch)
-        self.assertLess(patch.index("--to 0.3.*"), patch.index("--to v"), "compatible pin must come first")
+        self.assertIn(f"--to {compatible_pin()}", patch)
+        self.assertLess(patch.index(f"--to {compatible_pin()}"), patch.index("--to v"),
+                        "compatible pin must come first")
         self.assertIn("strict reproducibility", patch)
         self.assertIn("[digest] ignore", patch)
         for name in ("AGENTS.md", "SKILL.md"):

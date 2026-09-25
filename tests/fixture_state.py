@@ -57,3 +57,28 @@ def force_acceptance(root, cfg, acceptance, anchor=False):
     if anchor:
         reanchor(root, cfg)
     return acceptance
+
+
+def compatible_pin():
+    """The project pin that accepts the engine in this checkout.
+
+    Derived from handsoff-runtime.json rather than written out, because a pin
+    names the major and minor exactly (`version_satisfies` compares both), so
+    every MINOR bump invalidates a hardcoded one. v0.4.0 was the first minor
+    bump and found the literal `0.3.*` in thirty fixtures plus a hygiene test
+    asserting that exact text, which is the fixture-coupling tax this project
+    keeps paying. Computed here, the next bump costs nothing.
+    """
+    manifest = json.loads((BIN.parent / "handsoff-runtime.json").read_text(encoding="utf-8"))
+    version = str(manifest["version"]).lstrip("v")
+    major, minor = version.split(".")[:2]
+    return f"{major}.{minor}.*"
+
+
+def write_version_pin(root, pin=None):
+    """Write the engine pin a fixture project needs. Defaults to the
+    compatible line for this checkout."""
+    path = Path(root) / ".handsoff-version"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{pin or compatible_pin()}\n", encoding="utf-8")
+    return path

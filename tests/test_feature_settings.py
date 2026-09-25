@@ -14,6 +14,7 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
 sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 
 class FeatureConfigTests(HandsoffTestCase):
@@ -84,7 +85,7 @@ class FeatureSettingsEndpointTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
 
     def _serve(self):
         try:

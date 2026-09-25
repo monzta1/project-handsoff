@@ -16,6 +16,7 @@ sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
 import handsoff_broker as broker  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import write_version_pin
 
 GOOD = {"kind": "design", "decision": "approved", "summary": "fine", "findings": [],
         "structural_blocker": False, "symptom_reproduced": "not_applicable"}
@@ -41,7 +42,7 @@ class LaunchRuleTests(HandsoffTestCase):
     def setUp(self):
         super().setUp()
         shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
-        (self.tmp / ".handsoff-version").write_text("0.3.*\n")
+        write_version_pin(self.tmp)
         self.which_calls = []
 
     def which(self, name):
