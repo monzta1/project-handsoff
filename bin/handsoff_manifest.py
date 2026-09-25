@@ -20,6 +20,7 @@ RUNTIME_FILES = (
     "bin/handsoff_observability.py",
     "bin/handsoff_preflight.py",
     "bin/handsoff_progress.py",
+    "bin/handsoff_routing.py",
     "bin/handsoff_regress.py",
     "bin/handsoff_release_runtime.py",
     "bin/handsoff_release_transaction.py",
