@@ -929,3 +929,17 @@ def ensure_regression_config_is_disjoint(cfg: dict, root: Path) -> None:
                 raise HandsoffError(
                     f"focused check overlaps gated regression group {name}: {command}"
                 )
+
+
+#: #284: these two live below the ledger because handsoff_schema needs them
+#: and sits under the ledger, which cannot be imported from below. The ledger
+#: still names both, so every existing importer is unaffected.
+MAX_WORK_ITEMS = 64
+
+
+VERIFICATION_REQUIREMENTS = {
+    "automated": {"checks"},
+    "manual": {"manual"},
+    "browser": {"browser"},
+    "automated_and_browser": {"checks", "browser"},
+}

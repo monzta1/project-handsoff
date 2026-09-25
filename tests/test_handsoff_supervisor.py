@@ -28,6 +28,7 @@ from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tests.engine_patch import patch_engine
+from tests.fixture_state import force_acceptance
 
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
@@ -6764,9 +6765,10 @@ class TestCriteriaTransaction(HandsoffTestCase):
         # A legacy registry flaw the field validator cannot see on the way
         # in: an untouched criterion with neither tests nor evidence.
         next(c for c in acceptance["criteria"] if c["id"] == "REQ-004")["tests"] = []
-        with self.lib.project_lock(self.tmp):
-            self.lib.commit(self.tmp, cfg, status=status, acceptance=acceptance,
-                            event_kind="test_legacy_flaw", event_message="legacy registry flaw fixture")
+        # Placed on disk, not committed: commit validates the registry now and
+        # would refuse exactly this flaw, which is the flaw the test needs to
+        # already be there. That is how a legacy registry really arrives.
+        force_acceptance(self.tmp, cfg, acceptance, anchor=True)
         before = self._snapshot()
         r = self._apply([self._add("REQ-005"), {"op": "update", "id": "REQ-002", "fields": {"requirement": "#44 x"}}])
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)

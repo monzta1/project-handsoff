@@ -26,6 +26,7 @@ RUNTIME_FILES = (
     "bin/handsoff_workflow.py",
     "bin/handsoff_agent_runtime.py",
     "bin/handsoff_resources.py",
+    "bin/handsoff_schema.py",
     "bin/handsoff_ledger.py",
     "bin/handsoff_routing.py",
     "bin/handsoff_regress.py",

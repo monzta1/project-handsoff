@@ -205,8 +205,40 @@ source may not contain `write_text(`, `durable_replace(` or `commit(` -- which
 is what makes criterion 3, validate the proposed state before persisting it, a
 property of the boundary rather than a habit at each call site.
 
+## Stage 8: schema validation, and what it was for
+
+`handsoff_schema` is the only extraction that was not about size. Criterion 3
+asks that state transitions validate proposed state before persistence, and
+the measurement said 71 functions committed a status, 55 validated first and
+16 did not. Validating at those 16 call sites would have made the count zero
+without making the property true, because nothing stopped a seventeenth.
+
+The validators sat in `handsoff_agent_runtime`, ABOVE the ledger, so only a
+caller could reach them. That is why the criterion was a habit. Their
+transitive closure turned out to be 108 symbols with no reference back into
+the runtime and exactly two dependencies on the ledger, both plain constants:
+`MAX_WORK_ITEMS` and `VERIFICATION_REQUIREMENTS`. Those moved to
+`handsoff_config` and the closure to `handsoff_schema`, below the ledger, and
+`commit` now validates what it is about to write.
+
+The risk was measured rather than argued: a temporary probe inside `commit`
+reported every status it was about to persist that failed validation, over the
+whole suite. Twenty-one, every one a fixture building a malformed document on
+purpose. Those fixtures now write the file through `tests/fixture_state.py`,
+which is also how a corrupt file really arrives.
+
+Three of them were not fixture problems. `recover_run` wrote
+`trigger: "protocol_silent"`, which was missing from `RECOVERY_TRIGGERS`, so
+every protocol-silence recovery had been persisting a recovery attempt outside
+the declared closed set. The same path wrote a `protocol_silence` failure whose
+reason carries the measured limit, which the classification rule allowed only
+for `dispatch_failed`. Several fixtures wrote a `deployment_approved` of
+`{"by": "test"}`, with no `at` and no `acceptance_hash` -- a state the engine
+cannot produce, which those tests had been asserting against. None of this was
+reachable while the validators lived above the ledger.
+
 **Re-export keeps the monolith naming every moved symbol**, so extracting a
-subsystem barely reduces the line count (15,013 to 8,344 after seven extractions,
+subsystem barely reduces the line count (15,013 to 8,346 after eight extractions,
 which is 44 percent out and still leaves the largest file in the tree).
 Line count is the wrong measure. What changes is that the boundary is
 enforced: `tests/test_routing_boundary.py` holds the import allowlist,

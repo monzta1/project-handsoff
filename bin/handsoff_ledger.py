@@ -42,7 +42,9 @@ from handsoff_core import (
     status_path,
 )
 from handsoff_routing import adaptive_deployment_approval_required
-from handsoff_config import (
+from handsoff_config import (  # noqa: F401
+    MAX_WORK_ITEMS,
+    VERIFICATION_REQUIREMENTS,
     DEFAULT_CONFIG,
     DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
     DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
@@ -51,6 +53,7 @@ from handsoff_config import (
     FEATURES,
     load_config,
 )
+from handsoff_schema import validate_acceptance_schema, validate_status_schema
 
 
 
@@ -88,18 +91,7 @@ OUTPUT_LIVENESS_FILE = ".handsoff-output-liveness.json"
 WORK_ITEM_TAG_PATTERN = re.compile(r"^\[(#\d{1,9}|[a-z0-9][a-z0-9-]{0,39})\]\s")
 
 
-MAX_WORK_ITEMS = 64
-
-
 ANALYSIS_DIR = ".handsoff-analysis"
-
-
-VERIFICATION_REQUIREMENTS = {
-    "automated": {"checks"},
-    "manual": {"manual"},
-    "browser": {"browser"},
-    "automated_and_browser": {"checks", "browser"},
-}
 
 
 def event_log_path(root: Path, cfg: dict) -> Path:
@@ -178,6 +170,26 @@ def commit(root: Path, cfg: dict, *, status: dict | None = None, acceptance: dic
     # Recomputing item progress while its changed criteria are temporarily
     # reset would make the just-written amendment contradict its own frozen
     # snapshot and render an otherwise valid run invalid.
+    # #284 criterion 3: the proposed document is validated HERE, below every
+    # caller, so a transition cannot persist a state nothing checked. Before
+    # this, 16 of 71 status-committing functions validated nothing, and the
+    # criterion was a habit rather than a property. Measured across the whole
+    # suite before the change: 21 commits wrote a status that fails this, all
+    # from fixtures constructing a malformed document on purpose. A test that
+    # needs a corrupt file on disk writes the file, which is also how a corrupt
+    # file really arrives -- never through a recorded transition.
+    if status is not None:
+        errors = validate_status_schema(status)
+        if errors:
+            raise HandsoffError(
+                "refusing to persist an invalid status: " + "; ".join(errors[:4])
+                + (f" (+{len(errors) - 4} more)" if len(errors) > 4 else ""))
+    if acceptance is not None:
+        errors = validate_acceptance_schema(acceptance)
+        if errors:
+            raise HandsoffError(
+                "refusing to persist an invalid acceptance registry: " + "; ".join(errors[:4])
+                + (f" (+{len(errors) - 4} more)" if len(errors) > 4 else ""))
     preserve_progress = bool(status is not None and status.pop("_preserve_progress", False))
     if status is not None and "work_item_delivery" in status and open_amendment(status) is None and not preserve_progress:
         progress_acceptance = acceptance

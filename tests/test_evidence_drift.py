@@ -104,7 +104,7 @@ class EvidenceDriftTests(HandsoffTestCase):
         self.assertIn("REQ-001", gate.stdout + gate.stderr)
 
         status = self.read_status()
-        status.update({"phase_number": 7, "phase": "Deployment authorization", "progress": 70})
+        status.update({"phase_number": 7, "phase": lib.PHASES[7], "progress": 70})
         lib.commit(self.tmp, cfg, status=status, event_kind="test-phase",
                    event_message="Set fixture to Phase 7 for dashboard drift input")
         import handsoff_dashboard as dashboard

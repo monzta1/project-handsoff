@@ -223,7 +223,8 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
         cfg = lib.load_config(self.tmp)
         status = self.read_status()
-        status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat()}
+        status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat(),
+                                        "acceptance_hash": lib.acceptance_hash(self.read_acceptance()["criteria"])}
         lib.commit(self.tmp, cfg, status=status, event_kind="test_deployment_approved", event_message="test")
         before = [item["id"] for item in self.read_acceptance()["work_items"]]
         synced = run(["work-items-sync", "--by", "supervisor", "--item", "#91"], cwd=self.tmp)
@@ -286,7 +287,8 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
         cfg = lib.load_config(self.tmp)
         status = self.read_status()
-        status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat()}
+        status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat(),
+                                        "acceptance_hash": lib.acceptance_hash(self.read_acceptance()["criteria"])}
         lib.commit(self.tmp, cfg, status=status, event_kind="test_deployment_approved", event_message="test")
         removed = run(["work-item-remove", "issue-90", "--by", "supervisor"], cwd=self.tmp)
         self.assertEqual(removed.returncode, 0, removed.stdout)

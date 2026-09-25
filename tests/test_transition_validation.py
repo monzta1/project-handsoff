@@ -1,160 +1,220 @@
 """#284 criterion 3: state transitions validate proposed state before persistence.
 
-**This criterion is not met, and this module records how far off it is
-rather than asserting a property that does not hold.** It was the criterion
-I closed #284 on without examining, so the point here is a number that
-cannot drift, not a claim.
+**This criterion is now met structurally, and this module asserts the
+property.** It previously recorded a ratchet instead, because the criterion
+did not hold: measured across `handsoff_lib`, `handsoff_supervisor` and
+`handsoff_ledger`, 71 functions committed a status, 55 validated the proposed
+state first and 16 did not. Validating at 16 more call sites would have made
+the count zero without making the property true, because nothing stopped a
+seventeenth.
 
-Measured across `handsoff_lib`, `handsoff_supervisor` and
-`handsoff_ledger`: 71 functions commit a status. 55 validate the proposed
-state first, by schema validation or by computing the gates
-(`compute_errors`, `gate_progress`, `completion_error`,
-`lane_gate_refusal`). 16 do not.
+What made it structural was a layering change, not a rule. The schema
+validators sat in `handsoff_agent_runtime`, ABOVE the ledger, so only a caller
+could reach them. Their transitive closure turned out to be 108 symbols with
+no reference back into the runtime and only two dependencies on the ledger,
+both plain constants. Moving those constants to `handsoff_config` and the
+closure to `handsoff_schema`, below the ledger, let `commit` call them itself.
 
-A first attempt at this measurement looked only for
-`validate_status_schema` and reported 56 unvalidated, which would have been
-a false alarm: `cmd_advance` validates through `compute_errors` and the
-gate helpers, not the schema validator. A narrow query is evidence about
-the query.
+The risk was measured before the change rather than argued about: a temporary
+probe inside `commit` reported every status it was about to write that failed
+validation, across the whole suite. Twenty-one, all from fixtures constructing
+a malformed document on purpose. Those fixtures now write the file directly,
+which is also how a corrupt file really arrives -- never through a recorded
+transition.
 
-Most of the 16 are not transitions at all: `ci_view`, `cmd_heartbeat`,
-`cmd_background_wait_start`/`_end` and `cmd_design_review_packet` record
-observations, and `cmd_init` creates a run with no prior state to validate
-against. Several are genuine transitions and are the real gap:
-`record_stall_transition`, `cmd_human_pause_start`/`_end`, `cmd_recover`,
-`record_design_decline`, `cmd_amendment_review`.
-
-The extraction did not change any of this; the functions moved wholesale.
-The ratchet below stops it getting worse while the gap is closed.
+A first attempt at the original measurement looked only for
+`validate_status_schema` and reported 56 unvalidated, which would have been a
+false alarm: `cmd_advance` validates through `compute_errors` and the gate
+helpers, not the schema validator. A narrow query is evidence about the query.
 """
 import ast
-import pathlib
+import json
+import sys
 import unittest
 
-from tests.test_handsoff_supervisor import BIN
+from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
 
-SOURCES = ("handsoff_lib", "handsoff_supervisor", "handsoff_ledger")
-
-#: Ways a function can validate the state it is about to persist.
-VALIDATORS = ("validate_status_schema", "validate_acceptance_schema", "compute_errors",
-              "gate_progress", "completion_error", "lane_gate_refusal",
-              "ensure_no_launched_regression", "_assert_agent_telemetry_integrity",
-              "refusal", "validate_")
-
-#: The functions that commit a status without validating it first, as measured
-#: at stage 4. This set may SHRINK and must never grow: a new unvalidated
-#: write is a new way to persist a state nothing checked.
-#:
-#: Not transitions (they record an observation, or create the run):
-#:   ci_view, ci_watch_start, questions_prompt_section, cmd_heartbeat,
-#:   cmd_background_wait_start, cmd_background_wait_end,
-#:   cmd_design_review_packet, cmd_init
-#: Genuine transitions, and the actual gap criterion 3 names:
-#:   record_stall_transition, record_design_decline, cmd_human_pause_start,
-#:   cmd_human_pause_end, cmd_recover, cmd_amendment_review,
-#:   cmd_design_review_authorize, cmd_design_review_escalate
-KNOWN_UNVALIDATED = {
-    "handsoff_lib.ci_view",
-    "handsoff_lib.ci_watch_start",
-    "handsoff_lib.questions_prompt_section",
-    "handsoff_lib.record_design_decline",
-    "handsoff_lib.record_stall_transition",
-    "handsoff_supervisor.cmd_amendment_review",
-    "handsoff_supervisor.cmd_background_wait_end",
-    "handsoff_supervisor.cmd_background_wait_start",
-    "handsoff_supervisor.cmd_design_review_authorize",
-    "handsoff_supervisor.cmd_design_review_escalate",
-    "handsoff_supervisor.cmd_design_review_packet",
-    "handsoff_supervisor.cmd_heartbeat",
-    "handsoff_supervisor.cmd_human_pause_end",
-    "handsoff_supervisor.cmd_human_pause_start",
-    "handsoff_supervisor.cmd_init",
-    "handsoff_supervisor.cmd_recover",
-}
+sys.path.insert(0, str(BIN))
+import handsoff_lib as lib  # noqa: E402
 
 
-def _measure():
-    validated, unvalidated = set(), set()
-    for module in SOURCES:
-        path = BIN / f"{module}.py"
-        src = path.read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        for fn in [n for n in ast.walk(tree)
-                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
-            commits = any(
-                isinstance(c, ast.Call)
-                and getattr(c.func, "id", getattr(c.func, "attr", None)) == "commit"
-                and any(k.arg == "status" for k in c.keywords)
-                for c in ast.walk(fn))
-            if not commits:
-                continue
-            calls = {getattr(c.func, "attr", getattr(c.func, "id", ""))
-                     for c in ast.walk(fn) if isinstance(c, ast.Call)}
-            name = f"{module}.{fn.name}"
-            if any(any(v in c for v in VALIDATORS) for c in calls):
-                validated.add(name)
-            else:
-                unvalidated.add(name)
-    return validated, unvalidated
+def _function(module, name):
+    src = (BIN / f"{module}.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+    return src, fn
 
 
-class TheGapIsPinnedAndMayOnlyShrink(unittest.TestCase):
-    """The ratchet. Criterion 3 is open; this stops it widening."""
+class TheLedgerValidatesBeforeItPersists(unittest.TestCase):
+    """The property, at the one place every transition goes through."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.validated, cls.unvalidated = _measure()
+    def setUp(self):
+        self.src, self.fn = _function("handsoff_ledger", "commit")
 
-    def test_no_new_unvalidated_status_write_appears(self):
-        new = sorted(self.unvalidated - KNOWN_UNVALIDATED)
-        self.assertEqual(new, [],
-                         "these functions persist a status without validating the proposed "
-                         "state first, and are not in the recorded set. Either validate "
-                         "before commit, or add it with the reason it is not a transition.")
+    def _line_of(self, *needles):
+        """First line inside commit calling any of `needles`."""
+        for node in ast.walk(self.fn):
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", getattr(node.func, "attr", None))
+                if name in needles:
+                    return node.lineno
+        return None
 
-    def test_a_closed_gap_is_removed_from_the_record(self):
-        """An entry kept after it starts validating overstates the gap."""
-        stale = sorted(KNOWN_UNVALIDATED - self.unvalidated)
-        self.assertEqual(stale, [],
-                         "these now validate; remove them from KNOWN_UNVALIDATED so the "
-                         "recorded gap stays honest")
+    def test_commit_validates_the_status_and_the_acceptance_registry(self):
+        body = ast.get_source_segment(self.src, self.fn) or ""
+        self.assertIn("validate_status_schema", body)
+        self.assertIn("validate_acceptance_schema", body)
 
-    def test_the_majority_already_validate(self):
-        """Guards against a measurement that silently stops finding anything."""
-        self.assertGreaterEqual(len(self.validated), 50,
-                                f"only {len(self.validated)} validated; the matcher is broken")
-        self.assertGreater(len(self.validated), len(self.unvalidated))
+    def test_it_validates_before_it_writes_anything(self):
+        """Order is the whole claim. Validating after the write would leave
+        the invalid document on disk and the journal describing it."""
+        validated = self._line_of("validate_status_schema", "validate_acceptance_schema")
+        wrote = self._line_of("write_ahead", "atomic_write_json", "append_event")
+        self.assertIsNotNone(validated, "commit does not validate at all")
+        self.assertIsNotNone(wrote, "commit does not write at all; the matcher is broken")
+        self.assertLess(validated, wrote,
+                        "commit validates after it has already written")
 
-    def test_the_measurement_is_not_vacuous(self):
-        total = len(self.validated) + len(self.unvalidated)
-        self.assertGreaterEqual(total, 65, f"only found {total} status-committing functions")
+    def test_the_validators_live_below_the_ledger(self):
+        """The layering is what makes this possible; an import from above
+        would be a cycle and the property would have to go back to callers."""
+        imported_from = {}
+        for node in ast.parse(self.src).body:
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    imported_from[alias.name] = node.module
+        for name in ("validate_status_schema", "validate_acceptance_schema"):
+            self.assertEqual(imported_from.get(name), "handsoff_schema", name)
 
 
-class TheLedgerDoesNotValidateOnBehalfOfCallers(unittest.TestCase):
-    """Why this is a caller-side property at all.
+class NoTransitionCanPersistAnUncheckedStatus(HandsoffTestCase):
+    """Behaviour, not source shape."""
 
-    `commit` documents it: "Caller must hold project_lock for the entire
-    surrounding read-validate-write". If it validated internally this
-    criterion would be structural rather than a per-call-site habit, and
-    that is the obvious way to close the gap.
+    def test_an_invalid_status_is_refused_and_nothing_is_written(self):
+        self.init("Transition validation")
+        cfg = lib.load_config(self.tmp)
+        path = lib.status_path(self.tmp, cfg)
+        before = path.read_text(encoding="utf-8")
+        broken = json.loads(before)
+        broken.pop("feature")
+        with self.assertRaises(lib.HandsoffError) as caught:
+            with lib.project_lock(self.tmp):
+                lib.commit(self.tmp, cfg, status=broken,
+                           event_kind="fixture", event_message="should not land")
+        self.assertIn("refusing to persist an invalid status", str(caught.exception))
+        self.assertIn("feature", str(caught.exception),
+                      "the refusal must name the field so it is actionable")
+        self.assertEqual(path.read_text(encoding="utf-8"), before,
+                         "the status file changed despite the refusal")
+
+    def test_an_invalid_acceptance_registry_is_refused(self):
+        self.init("Transition validation")
+        cfg = lib.load_config(self.tmp)
+        path = lib.acceptance_path(self.tmp, cfg)
+        before = path.read_text(encoding="utf-8")
+        broken = json.loads(before)
+        broken["criteria"] = "not a list"
+        with self.assertRaises(lib.HandsoffError) as caught:
+            with lib.project_lock(self.tmp):
+                lib.commit(self.tmp, cfg, acceptance=broken,
+                           event_kind="fixture", event_message="should not land")
+        self.assertIn("refusing to persist an invalid acceptance registry", str(caught.exception))
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_a_valid_status_still_commits(self):
+        """Guards against a gate that refuses everything, which would pass
+        both tests above and break the engine."""
+        self.init("Transition validation")
+        cfg = lib.load_config(self.tmp)
+        status = json.loads(lib.status_path(self.tmp, cfg).read_text(encoding="utf-8"))
+        status["next_action"] = "carry on"
+        with lib.project_lock(self.tmp):
+            event = lib.commit(self.tmp, cfg, status=status,
+                               event_kind="fixture", event_message="valid write")
+        self.assertTrue(event)
+        written = json.loads(lib.status_path(self.tmp, cfg).read_text(encoding="utf-8"))
+        self.assertEqual(written["next_action"], "carry on")
+
+
+class CommitIsTheOnlyWayAStatusReachesTheDisk(unittest.TestCase):
+    """Validation at `commit` only covers every transition if `commit` is the
+    only writer. A second path would reopen the gap silently.
+
+    Matching `atomic_write_json(status_path(...))` literally would miss a
+    write through a local variable, so the whole inventory of JSON writes is
+    pinned instead: every call site with the expression it writes to. A new
+    one, however it spells its target, has to be added here and looked at.
     """
 
-    def test_commit_does_not_validate_the_status_it_writes(self):
-        src = (BIN / "handsoff_ledger.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        fn = next(n for n in ast.walk(tree)
-                  if isinstance(n, ast.FunctionDef) and n.name == "commit")
-        body = ast.get_source_segment(src, fn) or ""
-        self.assertNotIn("validate_status_schema", body,
-                         "commit now validates; criterion 3 can become structural and this "
-                         "test and the ratchet above should be replaced by that")
+    #: module.function -> the first argument's source, for every
+    #: atomic_write_json call in bin/. Only the two in `commit` name the run's
+    #: status and acceptance documents; the rest write registries, journals,
+    #: caches and in-flight records that are not the run state.
+    ATOMIC_WRITE_TARGETS = {
+        ("handsoff_cli.change_pin", "_history_path(root)"),
+        ("handsoff_cli.migrate_project", "root / lib.OVERRIDES_FILE"),
+        ("handsoff_fleet.save_registry", "path"),
+        ("handsoff_fleet_signals._persist", "self.path"),
+        ("handsoff_ledger.append_event", "event_head_path(root)"),
+        ("handsoff_ledger.commit", "acceptance_path(root, cfg)"),
+        ("handsoff_ledger.commit", "status_path(root, cfg)"),
+        ("handsoff_ledger.write_ahead", "write_ahead_path(root)"),
+        ("handsoff_lib._write_ci_side", "ci_side_path(root)"),
+        ("handsoff_lib.launch_preflight", "path"),
+        ("handsoff_lib.run_design_evidence", "design_evidence_path(root)"),
+        ("handsoff_lib.write_dashboard_owner", "path"),
+        ("handsoff_regress._write", "inventory_path(root)"),
+        ("handsoff_regress._write", "progress_path(root)"),
+        ("handsoff_regress.main", "inventory_path(root)"),
+        ("handsoff_supervisor._load_close_transaction", "path"),
+        ("handsoff_supervisor._runtime_write", "path"),
+        ("handsoff_supervisor.cmd_verify", "snapshot"),
+        ("handsoff_supervisor.cmd_verify_live", "inflight_path"),
+        ("handsoff_supervisor.on_progress", "inflight_path"),
+        ("handsoff_supervisor.persist", "path"),
+    }
 
-    def test_commit_documents_that_the_caller_validates(self):
-        src = (BIN / "handsoff_ledger.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        fn = next(n for n in ast.walk(tree)
-                  if isinstance(n, ast.FunctionDef) and n.name == "commit")
-        self.assertIn("read-validate-write", ast.get_docstring(fn) or "")
+    def _measure(self):
+        found = set()
+        for path in sorted(BIN.glob("handsoff_*.py")):
+            src = path.read_text(encoding="utf-8")
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            for fn in [n for n in ast.walk(tree)
+                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+                for node in ast.walk(fn):
+                    if not isinstance(node, ast.Call) or not node.args:
+                        continue
+                    name = getattr(node.func, "id", getattr(node.func, "attr", None))
+                    if name != "atomic_write_json":
+                        continue
+                    target = ast.get_source_segment(src, node.args[0]) or "?"
+                    found.add((f"{path.stem}.{fn.name}", target))
+        return found
+
+    def test_the_inventory_of_json_writes_is_unchanged(self):
+        found = self._measure()
+        self.assertEqual(
+            sorted(found - self.ATOMIC_WRITE_TARGETS), [],
+            "a new JSON write appeared; if it writes the run's status or acceptance it must "
+            "go through commit, which validates, and otherwise add it here")
+        self.assertEqual(
+            sorted(self.ATOMIC_WRITE_TARGETS - found), [],
+            "these are recorded but no longer exist; a stale entry hides the next one")
+
+    def test_only_commit_names_the_status_and_acceptance_documents(self):
+        writers = {fn for fn, target in self.ATOMIC_WRITE_TARGETS
+                   if "status_path" in target or "acceptance_path" in target}
+        self.assertEqual(writers, {"handsoff_ledger.commit"},
+                         "something other than commit writes the run's own documents")
+
+    def test_the_measurement_is_not_vacuous(self):
+        """A matcher that found nothing would pass both tests above."""
+        self.assertGreaterEqual(len(self._measure()), 20,
+                                "the matcher stopped finding JSON writes")
 
 
 if __name__ == "__main__":

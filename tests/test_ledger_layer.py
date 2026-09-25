@@ -34,7 +34,10 @@ LEDGER_SOURCE = BIN / "handsoff_ledger.py"
 CONTRACT = pathlib.Path(__file__).parent / "fixtures" / "ledger_contract_pre_extraction.json"
 
 #: The layers the ledger may import. Each sits below it, so none can cycle.
-ALLOWED_ENGINE_IMPORTS = {"handsoff_core", "handsoff_routing", "handsoff_config"}
+#: handsoff_schema joined them in #284: commit validates the document it is
+#: about to persist, which is only possible while the validators sit below it.
+ALLOWED_ENGINE_IMPORTS = {"handsoff_core", "handsoff_routing", "handsoff_config",
+                          "handsoff_schema"}
 
 
 class ThePersistedShapeIsUnchanged(unittest.TestCase):

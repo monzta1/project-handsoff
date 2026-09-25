@@ -251,8 +251,20 @@ class RecoveryTests(unittest.TestCase):
         status = self.read_status()
         status.update(phase_number=2, phase=lib.PHASES[2], status="in_progress",
                       design_review_attempts=1,
-                      design_review={"decision": "changes_requested", "findings": [
-                          {"id": "F1.1", "text": "Specify the timeout boundary"}]},
+                      # The engine never writes a design_review without `by`
+                      # and `architect`; commit validates that now, so the
+                      # fixture records the shape design-review really writes.
+                      design_review={"decision": "changes_requested",
+                                     "at": now.isoformat(), "by": "reviewer",
+                                     "architect": "architect",
+                                     "summary": "bound the external calls",
+                                     "design_hash": lib.design_hash(
+                                         json.loads((self.root / "handsoff-acceptance.json")
+                                                    .read_text()).get("criteria", [])),
+                                     "config_hash": lib.config_hash(lib.load_config(self.root)),
+                                     "attempt": 1,
+                                     "findings": [
+                                         {"id": "F1.1", "text": "Specify the timeout boundary"}]},
                       agent_sessions={sid: self.session(sid, "architect", "running", now.isoformat())},
                       current_agent_sessions={"architect": sid})
         self.commit_status(status)

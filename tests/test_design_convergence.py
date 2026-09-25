@@ -8,6 +8,7 @@ import shutil
 import sys
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
+from tests.fixture_state import force_status
 
 
 class TestDesignConvergence(HandsoffTestCase):
@@ -90,9 +91,11 @@ class TestDesignConvergence(HandsoffTestCase):
     def test_design_review_findings_are_bounded_to_32_and_512(self):
         self._phase_two()
         status = self.read_status()
+        # Deliberately malformed: 40 findings of 700 characters, with none of
+        # the fields a real review carries. The claim is that the READER bounds
+        # it, so it is placed on disk rather than committed.
         status["design_review"] = {"findings": [{"text": "x" * 700} for _ in range(40)]}
-        lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
-                   event_kind="test_review", event_message="bounded review")
+        force_status(self.tmp, lib.load_config(self.tmp), status)
         findings = lib.managed_design_context(self.tmp, "architect")["prior_findings"]
         self.assertEqual(len(findings), 32)
         self.assertTrue(all(len(item["text"]) == 512 for item in findings))

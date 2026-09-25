@@ -28,6 +28,7 @@ LAYERS = [
     "handsoff_core",
     "handsoff_routing",
     "handsoff_config",
+    "handsoff_schema",
     "handsoff_ledger",
     "handsoff_resources",
     "handsoff_agent_runtime",

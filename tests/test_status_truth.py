@@ -11,6 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_lib as lib
+from tests.fixture_state import force_status
 
 
 class StatusTruthTests(unittest.TestCase):
@@ -22,10 +23,24 @@ class StatusTruthTests(unittest.TestCase):
         (self.root / "handsoff-acceptance.json").write_text("{}")
         self.now = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
         self.sid = "hs-" + "1" * 32
-        self.status = {"status": "in_progress", "updated_at": "2026-01-01T00:00:00+00:00",
-                       "phase_number": 2, "agent_sessions": {self.sid: {
+        # A complete status, because record_stall_transition is real engine
+        # code: it reads this file and commits, and commit validates. The
+        # liveness fields under test are the ones set below.
+        self.status = {"feature": "Status truth", "phase_number": 2,
+                       "phase": lib.PHASES[2], "progress": 20,
+                       "status": "in_progress", "updated_at": "2026-01-01T00:00:00+00:00",
+                       "next_action": "fixture",
+                       "requirement_coverage": {"total": 0, "passing": 0, "failing": 0,
+                                                "not_tested": 0, "blocked": 0,
+                                                "original_symptom_resolved": False},
+                       "verification_head": None, "events": [],
+                       "agent_sessions": {self.sid: {
                            "session_id": self.sid, "role": "implementer", "state": "running",
-                           "started_at": "2026-01-01T00:00:00+00:00"}},
+                           "actor": "fixture", "adapter": "codex", "requested_model": "default",
+                           "reported_model": None, "resolution_source": "configured",
+                           "started_at": "2026-01-01T00:00:00+00:00",
+                           "running_at": "2026-01-01T00:00:00+00:00",
+                           "ended_at": None, "exit_code": None}},
                        "current_agent_sessions": {"implementer": self.sid}}
 
     def tearDown(self):
@@ -52,9 +67,9 @@ class StatusTruthTests(unittest.TestCase):
         # the lock, so a fresh beacon seen by two concurrent readers is
         # ledgered as one stall_cleared, never two.
         self.status["stall_reported"] = True
-        with lib.project_lock(self.root):
-            lib.commit(self.root, self.cfg, status=self.status, event_kind="test_stall_reported",
-                       event_message="fixture")
+        # A partial status by design: this isolates liveness, so it is placed
+        # on disk rather than committed, which would now refuse it.
+        force_status(self.root, self.cfg, self.status)
         self.beacon(self.now - timedelta(seconds=2))
 
         def reader():
@@ -72,9 +87,7 @@ class StatusTruthTests(unittest.TestCase):
         # Regression: liveness_view used to take the project lock while its
         # callers already held it, hanging status and the dashboard.
         import subprocess, sys
-        with lib.project_lock(self.root):
-            lib.commit(self.root, self.cfg, status=self.status, event_kind="test_fixture",
-                       event_message="fixture status on disk")
+        force_status(self.root, self.cfg, self.status)
         (self.root / ".handsoff-version").write_text("0.3.*\n")
         result = subprocess.run([sys.executable, str(ROOT / "bin" / "handsoff_supervisor.py"), "--root",
                                  str(self.root), "status"], capture_output=True, text=True, timeout=30)
