@@ -1,0 +1,269 @@
+{
+  "budgets": {
+    "fleet": {
+      "concurrent_premium_agents": null,
+      "premium_calls": null,
+      "repair_rounds": null,
+      "total_calls": null
+    },
+    "per_mission": {
+      "concurrent_premium_agents": null,
+      "premium_calls": null,
+      "repair_rounds": null,
+      "total_calls": null
+    }
+  },
+  "classify_routine": "routine",
+  "profiles": {
+    "FAST": {
+      "adapter": "claude",
+      "capabilities": [
+        "multilingual",
+        "text",
+        "tool_use",
+        "vision"
+      ],
+      "limits": {
+        "context_tokens": 200000,
+        "output_tokens": 64000
+      },
+      "model": "claude-haiku-4-5-20251001",
+      "pricing": {
+        "input_per_mtok": 1.0,
+        "output_per_mtok": 5.0
+      },
+      "source": "https://platform.claude.com/docs/en/models/overview"
+    },
+    "PREMIUM": {
+      "adapter": "claude",
+      "capabilities": [
+        "extended_thinking",
+        "multilingual",
+        "text",
+        "tool_use",
+        "vision"
+      ],
+      "limits": {
+        "context_tokens": 1000000,
+        "output_tokens": 128000
+      },
+      "model": "claude-opus-5",
+      "pricing": {
+        "input_per_mtok": 5.0,
+        "output_per_mtok": 25.0
+      },
+      "source": "https://platform.claude.com/docs/en/models/overview"
+    },
+    "STANDARD": {
+      "adapter": "claude",
+      "capabilities": [
+        "extended_thinking",
+        "multilingual",
+        "text",
+        "tool_use",
+        "vision"
+      ],
+      "limits": {
+        "context_tokens": 1000000,
+        "output_tokens": 128000
+      },
+      "model": "claude-sonnet-5",
+      "pricing": {
+        "input_per_mtok": 2.0,
+        "output_per_mtok": 10.0
+      },
+      "source": "https://platform.claude.com/docs/en/models/overview"
+    }
+  },
+  "risk_classes": [
+    "routine",
+    "elevated",
+    "security_sensitive",
+    "persistence_migration",
+    "shared_infrastructure",
+    "irreversible"
+  ],
+  "risk_policy": {
+    "elevated": {
+      "human_gate_required": false,
+      "irreversible": false,
+      "min_tier": "STANDARD",
+      "reviewer_required": true
+    },
+    "irreversible": {
+      "human_gate_required": true,
+      "irreversible": true,
+      "min_tier": "PREMIUM",
+      "reviewer_required": true
+    },
+    "persistence_migration": {
+      "human_gate_required": true,
+      "irreversible": false,
+      "min_tier": "PREMIUM",
+      "reviewer_required": true
+    },
+    "routine": {
+      "human_gate_required": false,
+      "irreversible": false,
+      "min_tier": "FAST",
+      "reviewer_required": false
+    },
+    "security_sensitive": {
+      "human_gate_required": true,
+      "irreversible": false,
+      "min_tier": "PREMIUM",
+      "reviewer_required": true
+    },
+    "shared_infrastructure": {
+      "human_gate_required": true,
+      "irreversible": false,
+      "min_tier": "PREMIUM",
+      "reviewer_required": true
+    }
+  },
+  "route_checks_in_flight": {
+    "budget": {
+      "field": null,
+      "reason": "deterministic_checks_in_flight",
+      "scope": null,
+      "state": "paused"
+    },
+    "human_gate_required": false,
+    "model_policy": {
+      "allowed_adapters": [
+        "codex",
+        "claude"
+      ],
+      "denied_models": [],
+      "quota_substitution": true
+    },
+    "profile": null,
+    "reason": "deterministic_checks_in_flight",
+    "required_capabilities": [],
+    "reviewer_required": false,
+    "risk_class": "routine",
+    "risk_policy": {
+      "human_gate_required": false,
+      "irreversible": false,
+      "min_tier": "FAST",
+      "reviewer_required": false
+    },
+    "state": "paused",
+    "tier": null
+  },
+  "route_no_tiers": {
+    "detail": "No available configured profile satisfies the required policy and hard model constraints",
+    "human_gate_required": false,
+    "model_policy": {
+      "allowed_adapters": [
+        "codex",
+        "claude"
+      ],
+      "denied_models": [],
+      "quota_substitution": true
+    },
+    "profile": null,
+    "reason": "required_capability_unavailable",
+    "required_capabilities": [],
+    "reviewer_required": false,
+    "risk_class": "routine",
+    "risk_policy": {
+      "human_gate_required": false,
+      "irreversible": false,
+      "min_tier": "FAST",
+      "reviewer_required": false
+    },
+    "state": "paused",
+    "tier": null
+  },
+  "route_premium": {
+    "human_gate_required": true,
+    "model_policy": {
+      "allowed_adapters": [
+        "codex",
+        "claude"
+      ],
+      "denied_models": [],
+      "quota_substitution": true
+    },
+    "profile": {
+      "adapter": "claude",
+      "capabilities": [
+        "extended_thinking",
+        "multilingual",
+        "text",
+        "tool_use",
+        "vision"
+      ],
+      "limits": {
+        "context_tokens": 1000000,
+        "output_tokens": 128000
+      },
+      "model": "claude-opus-5",
+      "pricing": {
+        "input_per_mtok": 5.0,
+        "output_per_mtok": 25.0
+      },
+      "source": "https://platform.claude.com/docs/en/models/overview"
+    },
+    "reason": "qualified_profile",
+    "required_capabilities": [],
+    "reviewer_required": true,
+    "risk_class": "irreversible",
+    "risk_policy": {
+      "human_gate_required": true,
+      "irreversible": true,
+      "min_tier": "PREMIUM",
+      "reviewer_required": true
+    },
+    "state": "selected",
+    "tier": "PREMIUM"
+  },
+  "route_routine": {
+    "human_gate_required": false,
+    "model_policy": {
+      "allowed_adapters": [
+        "codex",
+        "claude"
+      ],
+      "denied_models": [],
+      "quota_substitution": true
+    },
+    "profile": {
+      "adapter": "claude",
+      "capabilities": [
+        "multilingual",
+        "text",
+        "tool_use",
+        "vision"
+      ],
+      "limits": {
+        "context_tokens": 200000,
+        "output_tokens": 64000
+      },
+      "model": "claude-haiku-4-5-20251001",
+      "pricing": {
+        "input_per_mtok": 1.0,
+        "output_per_mtok": 5.0
+      },
+      "source": "https://platform.claude.com/docs/en/models/overview"
+    },
+    "reason": "qualified_profile",
+    "required_capabilities": [],
+    "reviewer_required": false,
+    "risk_class": "routine",
+    "risk_policy": {
+      "human_gate_required": false,
+      "irreversible": false,
+      "min_tier": "FAST",
+      "reviewer_required": false
+    },
+    "state": "selected",
+    "tier": "FAST"
+  },
+  "tiers": [
+    "FAST",
+    "STANDARD",
+    "PREMIUM"
+  ]
+}

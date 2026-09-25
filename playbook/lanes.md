@@ -74,11 +74,18 @@ files cite; a red job on the PR is a wasted CI round. Regenerate the
 runtime manifest after the last edit to bin/, prompts/, schemas/ or
 dashboard/ (the engine refuses until you do, and names the command).
 
-**Parallel lanes.** One worktree per lane off `main`. Run two lanes at once
-only when they touch different files; the second to land rebases (keep both
-sides, then `node --check` and `python3 -c "import ast"` on every merged
-file), regenerates the manifest, re-verifies, reaffirms. Landing is serial
-by construction: one installed engine, one live verification at a time.
+**Parallel lanes are for separate RELEASES.** Anything landing in one release
+is ONE run with N items. Concurrency is free inside it: one design, then build
+the items side by side in one worktree. Three tickets shipped together on
+2026-09-25 as three runs cost 3 design reviews, 3 implementation reviews, 4 CI
+passes and 3 rebase cycles against one of each; the rebases existed only
+because the work sat on three branches racing to land.
+
+Separate releases only: one worktree per lane off `main`, two at once only if
+they touch different files. The second to land rebases (keep both sides, then
+`node --check` and `python3 -c "import ast"` on every merged file), regenerates
+the manifest, re-verifies, reaffirms. Landing is serial: one installed engine,
+one live verification at a time.
 
 **One criterion per Implementer launch (#215).** When the registry has
 more than three automated criteria, brief the managed Implementer one
