@@ -114,8 +114,10 @@ class ThePlanNumbersMatchTheCode(unittest.TestCase):
         second number must still describe the file."""
         actual = len(LIB.read_text(encoding="utf-8").splitlines())
         # The monolith shrinks with every stage, so the pattern must not be
-        # pinned to the range it happened to be in when this was written.
-        claimed = [int(m.replace(",", "")) for m in re.findall(r"\b1\d,\d{3}\b", self.text)]
+        # pinned to the range it happened to be in when this was written --
+        # \b1\d,\d{3}\b was, and would have failed for every count under
+        # 10,000 no matter what the document said.
+        claimed = [int(m.replace(",", "")) for m in re.findall(r"\b\d{1,2},\d{3}\b", self.text)]
         self.assertIn(actual, claimed,
                       f"handsoff_lib.py is {actual} lines; the plan names {sorted(set(claimed))}")
 

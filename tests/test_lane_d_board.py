@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
 sys.path.insert(0, str(BIN))
@@ -76,15 +78,19 @@ class HostWaitTests(HandsoffTestCase):
         # not by editing timestamps: the view is asked as if 30 minutes passed
         real = lib.host_wait_view
         future = datetime.now(timezone.utc) + timedelta(minutes=30)
-        later = mock.patch.object(lib, "host_wait_view", lambda *a, **k: real(*a, now=future, **{k2: v for k2, v in k.items() if k2 != "now"}))
-        with later:
+        # a factory, not one context manager: patch_engine is entered twice below
+        def later():
+            return patch_engine("host_wait_view",
+                                lambda *a, **k: real(*a, now=future,
+                                                     **{k2: v for k2, v in k.items() if k2 != "now"}))
+        with later():
             snapshot = dashboard.build_snapshot(self.tmp)
         self.assertIsNotNone(snapshot["host_wait"])
         self.assertEqual(snapshot["host_wait"]["family"], "codex")
         self.assertEqual(snapshot["supervisor"]["label"], "Waiting on the host")
         self.assertIn("LAUNCH ROLE", snapshot["supervisor"]["next_action"])
         fleet.register_project(self.tmp, self.registry)
-        with later:
+        with later():
             card = next(p for p in fleet.build_fleet(self.registry)["projects"] if p["root"] == str(self.tmp.resolve()))
         self.assertEqual(card["host_wait"]["family"], "codex")
         self.assertEqual(card["host_wait"]["action"], "launch design-review attempt 2")

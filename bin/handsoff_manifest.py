@@ -22,6 +22,7 @@ RUNTIME_FILES = (
     "bin/handsoff_progress.py",
     "bin/handsoff_config.py",
     "bin/handsoff_core.py",
+    "bin/handsoff_projection.py",
     "bin/handsoff_agent_runtime.py",
     "bin/handsoff_resources.py",
     "bin/handsoff_ledger.py",

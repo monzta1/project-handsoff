@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_agent as agent  # noqa: E402
@@ -99,8 +101,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         shutil.copytree(PLAYBOOK, copy)
         (copy / "huge.md").write_text("x" * (lib.MAX_PLAYBOOK_SECTION_BYTES + 1))
         big = {**index, "files": [*index["files"], {"file": "huge.md", "topics": ["lanes"]}]}
-        with mock.patch.object(lib, "playbook_index", return_value=big), \
-                mock.patch.object(lib, "playbook_root", return_value=copy):
+        with patch_engine("playbook_index", return_value=big), \
+                patch_engine("playbook_root", return_value=copy):
             with self.assertRaisesRegex(lib.HandsoffError, "over 16384"):
                 lib.playbook_section("lanes")
         # a project with its own [briefing] KB gets both, playbook first

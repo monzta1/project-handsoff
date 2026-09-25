@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.engine_patch import patch_engine
+
 from tests.test_handsoff_supervisor import ROOT, BIN, normalize_fixture_config, run
 
 CURRENT_VERSION = json.loads((ROOT / "handsoff-runtime.json").read_text())["version"]
@@ -434,7 +436,7 @@ class EngineBadgeTests(_FleetFixture):
         self.assertEqual({**fleet.fleet_engine_identity(), "install_blocked": None}, snapshot["engine"])  # #216
 
     def test_an_unreadable_manifest_reads_unknown(self):
-        with mock.patch.object(lib, "engine_root", return_value=self.base / "nowhere"):
+        with patch_engine("engine_root", return_value=self.base / "nowhere"):
             self.assertEqual(fleet.fleet_engine_identity(), {"version": "unknown", "source": "unknown"})
 
     def test_the_route_and_the_stream_serve_it(self):

@@ -39,11 +39,11 @@ anything below.**
 | **Configuration** | **45** | core, routing | many | **extracted, stage 2** |
 | **Evidence and event ledger** | **54** | core, routing, config | 76 | **extracted, stage 3** |
 | **Engine resources and briefing** | **14** | core, ledger | 16 | **extracted, stage 4** |
+| **Agent runtime** | **154** | core, routing, config, ledger, resources | 57 | **extracted, stage 5** |
 | Fleet registry | n/a | n/a | n/a | **already its own module** |
 | **Model routing** | **36** | **14** | **11** | **extracted, v0.3.87** |
 | Storage and transactions | 34 | 33 | 72 | pending |
 | Workflow state machine | 9 | 39 | 5 | pending |
-| Agent runtime | 101 | 79 | 54 | pending |
 | Dashboard projection | 102 | 83 | 20 | pending |
 
 At the first extraction the monolith was 15,013 lines across 466 top-level
@@ -144,8 +144,46 @@ existed nowhere, overstating the remaining coupling by one.
 module's actual imports in both directions, because a rule that only asks
 "is every import declared" cannot see an entry that names nothing.
 
+## Re-export is not a shim for monkey-patching
+
+`handsoff_lib` re-exports every moved symbol, so no caller changed. It does
+NOT redirect attribute patching. An extracted module that does
+`from handsoff_ledger import commit` binds that name at import time, so
+`mock.patch.object(handsoff_lib, "commit")` no longer reaches it.
+
+That surfaced in `test_telemetry_is_optional_non_gating_and_failure_safe`,
+which patched `handsoff_lib.commit` to prove a write failure propagates and
+leaves no state behind. It passed while `create_agent_session` lived in the
+monolith and failed the moment it moved, because the assertion silently
+stopped exercising the path it named. Tests that patch a moved symbol must
+patch the module that now owns the call.
+
+The alternative, importing modules rather than names (`import
+handsoff_ledger` then `handsoff_ledger.commit(...)`), would keep a single
+patch point at the cost of a module lookup per call. It is not done here.
+
+What is done instead is `tests/engine_patch.patch_engine`, which replaces the
+name on every module that binds it. Two tests had already failed this way
+while staying green: one patched `lib.commit` while the commit ran inside
+handsoff_agent_runtime, and the sleep tests patched `lib._read_pmset_log`
+while handsoff_projection called its own binding and read the operator's real
+pmset log, 281 intervals where the fixture supplied 1. Neither failed; both
+simply stopped testing what they named.
+
+There is no static rule that separates the broken patches from the working
+ones. `lib.playbook_section` is defined in the monolith and calls
+`playbook_index()` bare, so that resolves in the monolith's namespace and a
+patch on `lib.playbook_index` does reach it; `handsoff_projection._read_pmset_log`
+is called bare inside its own module, so a patch on the monolith does not.
+Which one a test hits depends on the call path it drives, and four attempts at
+deciding that from the syntax gave both false positives and false negatives.
+So the rule is not "work out the call path" but "replace every binding":
+`test_module_layers.py` derives the moved set from the trees and refuses any
+`mock.patch.object(lib, "<moved name>")`, making the inert patch unexpressible
+rather than merely detectable.
+
 **Re-export keeps the monolith naming every moved symbol**, so extracting a
-subsystem barely reduces the line count (15,013 to 12,734 after five extractions).
+subsystem barely reduces the line count (15,013 to 9,260 after seven extractions).
 Line count is the wrong measure. What changes is that the boundary is
 enforced: `tests/test_routing_boundary.py` holds the import allowlist,
 refuses a definition no routing symbol reaches, and pins the re-export

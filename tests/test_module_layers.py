@@ -31,13 +31,31 @@ LAYERS = [
     "handsoff_ledger",
     "handsoff_resources",
     "handsoff_agent_runtime",
+    "handsoff_projection",
 ]
 
 STDLIB_OK = {
     "__future__", "json", "os", "re", "copy", "datetime", "pathlib", "hashlib",
     "uuid", "fcntl", "math", "shlex", "tomllib", "subprocess", "fnmatch",
-    "sysconfig", "contextlib", "shutil",
+    "sysconfig", "contextlib", "shutil", "threading",
 }
+
+
+def _top_level_names(tree):
+    """Names the module itself defines at top level: def, class, and assignment.
+
+    Imported names are deliberately excluded -- a re-export is not a definition,
+    and treating it as one would say a symbol lives in two places at once.
+    """
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
 
 
 def _tree(module):
@@ -345,6 +363,81 @@ class TheLayersOnlyPointDownward(unittest.TestCase):
                     if root.startswith("handsoff"):
                         continue
                     self.assertIn(root, STDLIB_OK, f"{module} imports {root}")
+
+
+class NoTestPatchesAMovedSymbolOnTheMonolith(unittest.TestCase):
+    """#284: re-export keeps callers working; it does not redirect patching.
+
+    An extracted module does `from handsoff_ledger import commit`, which
+    binds the name at import time. `mock.patch.object(handsoff_lib, "commit")`
+    then patches something nothing calls, and the test passes while
+    exercising the real code path it meant to intercept.
+
+    That happened twice. `test_telemetry_is_optional_non_gating_and_failure_safe`
+    patched `lib.commit` to prove a write failure propagates, and it only
+    failed because it asserted a raise. The sleep-accounting tests patched
+    `lib._read_pmset_log` and silently read the machine's real pmset log,
+    returning 281 intervals where the fixture had 1. The second kind is
+    worse: a patch that quietly does nothing and still reports green.
+
+    This finds them mechanically, before either shape can ship.
+    """
+
+    def _symbols_that_left_the_monolith(self):
+        """name -> the extracted module that now defines it."""
+        moved = {}
+        lib_own = _top_level_names(_tree("handsoff_lib"))
+        for module in LAYERS:
+            for name in _top_level_names(_tree(module)) - lib_own:
+                moved.setdefault(name, module)
+        return moved
+
+    def test_the_moved_set_is_derived_not_guessed(self):
+        """Pins the three symbols whose bindings caused real silent failures,
+        so a later extraction cannot quietly drop them out of the guard."""
+        moved = self._symbols_that_left_the_monolith()
+        self.assertEqual(moved.get("commit"), "handsoff_ledger")
+        self.assertEqual(moved.get("_read_pmset_log"), "handsoff_projection")
+        self.assertEqual(moved.get("create_agent_session"), "handsoff_agent_runtime")
+        self.assertNotIn("playbook_section", moved, "still defined in the monolith")
+
+    def test_every_patch_of_a_moved_symbol_goes_through_patch_engine(self):
+        """mock.patch.object(lib, "X") replaces one binding of X.
+
+        Once X lives in another module, each importer holds its own binding,
+        and whether the monolith's is the one the test drives depends on the
+        call path -- which no static check can decide. Two tests got it wrong
+        and stayed green: one patched lib.commit while the commit ran inside
+        handsoff_agent_runtime, and the sleep tests patched lib._read_pmset_log
+        while handsoff_projection read the operator's real pmset log. So the
+        rule is not "reason about the call path" but "patch every binding":
+        tests.engine_patch.patch_engine does that, and makes an inert patch
+        unexpressible rather than merely detectable.
+        """
+        moved = self._symbols_that_left_the_monolith()
+        offenders = []
+        for path in sorted((BIN.parent / "tests").glob("test_*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or len(node.args) < 2:
+                    continue
+                if getattr(node.func, "attr", None) != "object":
+                    continue
+                target, name = node.args[0], node.args[1]
+                if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
+                    continue
+                if getattr(target, "id", getattr(target, "attr", None)) not in {"lib", "handsoff_lib"}:
+                    continue
+                if name.value in moved:
+                    offenders.append(f"{path.name}:{node.lineno} patches handsoff_lib."
+                                     f"{name.value}, which now lives in {moved[name.value]}")
+        self.assertEqual(offenders, [],
+                         "patch these with tests.engine_patch.patch_engine(\"<name>\", ...), which "
+                         "replaces the name on every module that binds it; patching the monolith "
+                         "alone leaves the other bindings pointing at the real implementation")
 
 
 class EveryModuleIsRegisteredWhereItMustBe(unittest.TestCase):
