@@ -551,6 +551,20 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     # planner already refused a reserve that cannot fit.
     provider_limit = budget_decision["provider_limit"]
     ceiling_enforcement = lib.adapter_ceiling_enforcement(adapter)
+    # #307: where usage arrives only at exit, no reserve can bound a turn
+    # already in flight, so the launch is bounded instead of the budget.
+    # Refusing here costs nothing; letting it run costs the whole ceiling
+    # and returns no verdict, which is what session
+    # hs-d26f19a8a3754328ae26f3a156740692 did.
+    # compact_scope is False because #290 built the compact review scope and
+    # never wired it to a launch: lib.materialize_compact_scope has no
+    # production caller, only its own tests. Until it has one, the ceiling
+    # is the only remedy a caller can actually take, and the refusal says so.
+    turn_refusal = lib.turn_bound_refusal(
+        adapter=adapter, role=role, ceiling=token_budget, compact_scope=False,
+        safe_minimum=budget_decision["safe_minimum"])
+    if turn_refusal:
+        raise lib.HandsoffError(f"managed launch refused before session creation: {turn_refusal}")
     if provider_limit < budget_decision["safe_minimum"]:
         raise lib.HandsoffError(
             "managed launch refused before session creation: rendered packet estimates "

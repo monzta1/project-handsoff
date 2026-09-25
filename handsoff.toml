@@ -90,7 +90,7 @@ reviewer = []
 architect = 40000
 supervisor = 24000
 implementer = 120000
-reviewer = 80000
+reviewer = 92000
 
 [recovery]
 enabled = true
@@ -263,6 +263,7 @@ commands = [
   "python3 -m unittest tests.test_template_defaults -v",
   "python3 -m unittest tests.test_playbook_budget -v",
   "python3 -m unittest tests.test_dashboard_orphan -v",
+  "python3 -m unittest tests.test_turn_bound -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
