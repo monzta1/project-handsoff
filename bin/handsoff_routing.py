@@ -11,19 +11,24 @@ The boundary is enforced, not merely drawn. `tests/test_routing_boundary.py`
 holds the import allowlist, refuses a definition no routing symbol reaches,
 and pins `handsoff_lib`'s re-export surface to exactly the moved set.
 
-**Declared migration coupling.** The primitives this module needs still live
-in the monolith, so each function that needs one imports it by name inside
-its own body:
+**Declared migration coupling.** Each function that needs a primitive from
+another layer imports it by name inside its own body:
 
-    from handsoff_lib import load_config
+    from handsoff_config import load_config
 
-Deferred rather than module-level because `handsoff_lib` imports this module
-to re-export its symbols, and a module-level import would close that cycle.
-Naming the primitives per function keeps the dependency visible to a reader
-of that function and lets the boundary test enumerate it. This is a recorded
-step, not a finished decoupling: `docs/ARCHITECTURE-MIGRATION.md` names what
-has to move into a shared core before these imports can become ordinary
-module-level ones.
+Deferred rather than module-level because `handsoff_config` imports this
+module -- `DEFAULT_CONFIG` embeds the adaptive routing defaults -- and a
+module-level import would close that cycle. Naming the primitives per function
+keeps the dependency visible to a reader of that function and lets the
+boundary test enumerate it.
+
+Each import names the module that DEFINES the symbol, not the monolith that
+re-exports it. That distinction was worth making: eleven of these once read
+`from handsoff_lib import ...`, which resolved only through a re-export and
+made the dependency look like the whole 8,346-line file. Nine now name the
+layer they actually depend on, and two remain on the monolith,
+`_canonical_provider_model` and `_agent_assignment`, which is what
+`docs/ARCHITECTURE-MIGRATION.md` records as remaining work.
 """
 from __future__ import annotations
 
@@ -144,7 +149,7 @@ def adaptive_catalog_profile(adapter: str, model: str) -> tuple[str, dict] | Non
 
 def validate_adaptive_routing_profiles(value: object) -> dict:
     """Validate a closed, source-cited routing catalog and return a copy."""
-    from handsoff_lib import DEFAULT_AGENT_MODEL, SELECTABLE_AGENT_ADAPTERS  # #284 deferred: see module docstring
+    from handsoff_config import DEFAULT_AGENT_MODEL, SELECTABLE_AGENT_ADAPTERS  # #284 deferred: see module docstring
     if not isinstance(value, dict):
         raise HandsoffError("routing_profiles must be a table")
     unknown = set(value) - set(ADAPTIVE_ROUTING_TIERS)
@@ -303,7 +308,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     Review and human approvals are obligations on their native workflow
     phases, not prerequisites for launching the worker that performs the job.
     """
-    from handsoff_lib import DEFAULT_AGENT_MODEL, DEFAULT_MODEL_POLICY, SELECTABLE_AGENT_ADAPTERS, model_policy_allows, validate_model_policy  # #284 deferred: see module docstring
+    from handsoff_config import DEFAULT_AGENT_MODEL, DEFAULT_MODEL_POLICY, SELECTABLE_AGENT_ADAPTERS, model_policy_allows, validate_model_policy  # #284 deferred: see module docstring
     profiles = adaptive_routing_profiles(cfg)
     model_policy = validate_model_policy((cfg or {}).get("model_policy", DEFAULT_MODEL_POLICY))
     risk_class = classify_adaptive_risk(risk_class)
@@ -390,7 +395,7 @@ def _adaptive_model_reconciliation(session: dict) -> dict:
 
 def adaptive_usage(status: dict) -> dict:
     """Derive budget counters only from the run's committed ledgers."""
-    from handsoff_lib import AGENT_SESSION_LIVE_STATES  # #284 deferred: see module docstring
+    from handsoff_schema import AGENT_SESSION_LIVE_STATES  # #284 deferred: see module docstring
     sessions = (status or {}).get("agent_sessions") or {}
     routed = [session for session in sessions.values()
               if isinstance(session, dict) and isinstance(session.get("adaptive_routing"), dict)]
@@ -415,7 +420,7 @@ def adaptive_fleet_usage(root: Path, *, current_status: dict | None = None,
     The registry selects roots; each root's status ledger remains the source
     of truth. Unreadable or vanished roots are skipped conservatively.
     """
-    from handsoff_lib import load_config  # #284 deferred: see module docstring
+    from handsoff_config import load_config  # #284 deferred: see module docstring
     registry = registry or Path(os.environ.get("HANDSOFF_FLEET_REGISTRY", "~/.handsoff/projects.json")).expanduser()
     try:
         payload = json.loads(registry.read_text(encoding="utf-8"))
@@ -468,7 +473,9 @@ def adaptive_deployment_approval_required(status: dict, cfg: dict) -> bool:
 def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict | None = None,
                               events: list[dict] | None = None) -> dict:
     """Build the total dashboard shape from recorded routing/session facts."""
-    from handsoff_lib import AGENT_SESSION_LIVE_STATES, PHASES, _agent_assignment, actor_family  # #284 deferred: see module docstring
+    from handsoff_schema import AGENT_SESSION_LIVE_STATES, PHASES  # #284 deferred: see module docstring
+    from handsoff_projection import actor_family  # #284 deferred: see module docstring
+    from handsoff_lib import _agent_assignment  # #284 deferred: see module docstring
     effective_cfg = dict(cfg or {})
     if isinstance(status.get("model_policy"), dict):
         effective_cfg["model_policy"] = status["model_policy"]

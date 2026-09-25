@@ -49,11 +49,21 @@ ALLOWED_DEFERRED_IMPORTS = {"handsoff_lib"}
 #: The primitives the extraction left behind, named in
 #: docs/ARCHITECTURE-MIGRATION.md as what must move into a shared core
 #: before the deferred imports can become ordinary ones.
-DECLARED_DEFERRED_PRIMITIVES = {
-    "AGENT_SESSION_LIVE_STATES", "DEFAULT_AGENT_MODEL", "DEFAULT_MODEL_POLICY",
-    "PHASES", "SELECTABLE_AGENT_ADAPTERS", "_agent_assignment",
-    "_canonical_provider_model", "actor_family", "load_config",
-    "model_policy_allows", "validate_model_policy",
+DECLARED_DEFERRED_PRIMITIVES = {"_agent_assignment", "_canonical_provider_model"}
+
+#: Deferred imports that now name the LAYER that defines the symbol rather than
+#: the monolith. Still deferred, because config sits above routing (DEFAULT_CONFIG
+#: embeds routing defaults) and a module-level import would close that cycle --
+#: but the dependency is on one layer, not on 8,346 lines. #284 criterion 2 asks
+#: for a subsystem extracted "without importing the entire monolith", and this is
+#: what closed the gap between that wording and the code: eleven monolith
+#: primitives became two.
+DECLARED_DEFERRED_BY_LAYER = {
+    "handsoff_config": {"DEFAULT_AGENT_MODEL", "DEFAULT_MODEL_POLICY", "load_config",
+                        "model_policy_allows", "validate_model_policy",
+                        "SELECTABLE_AGENT_ADAPTERS"},
+    "handsoff_schema": {"AGENT_SESSION_LIVE_STATES", "PHASES"},
+    "handsoff_projection": {"actor_family"},
 }
 
 #: Primitives stage 1 moved into the core, which routing now imports at module
@@ -179,6 +189,35 @@ class NothingUnrelatedEntersTheBoundary(unittest.TestCase):
         self.assertEqual(
             sorted(imported - DECLARED_DEFERRED_PRIMITIVES), [],
             "these primitives are imported from the monolith without being declared")
+
+
+    def test_every_deferred_layer_import_is_declared(self):
+        """Closed both ways, like the monolith list above. A deferred import
+        that names a layer is still coupling; it is just honest coupling."""
+        found = {}
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom) and node.module in DECLARED_DEFERRED_BY_LAYER:
+                found.setdefault(node.module, set()).update(a.name for a in node.names)
+        self.assertEqual(found, DECLARED_DEFERRED_BY_LAYER,
+                         "the per-layer deferred imports and their declaration disagree")
+
+    def test_no_deferred_import_names_a_symbol_the_monolith_no_longer_owns(self):
+        """The point of the change: importing `load_config` from the monolith
+        worked only because the monolith re-exports it. Naming the layer says
+        where it lives, so a later move surfaces here instead of silently
+        resolving through a re-export."""
+        lib_defined = set()
+        for node in ast.parse((BIN / "handsoff_lib.py").read_text(encoding="utf-8")).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                lib_defined.add(node.name)
+            elif isinstance(node, ast.Assign):
+                lib_defined |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "handsoff_lib":
+                for alias in node.names:
+                    self.assertIn(alias.name, lib_defined,
+                                  f"line {node.lineno} imports {alias.name} from the monolith, "
+                                  "which only re-exports it; name the module that defines it")
 
     def test_core_primitives_are_imported_at_module_level_not_deferred(self):
         """Stage 1's payoff, asserted rather than assumed.

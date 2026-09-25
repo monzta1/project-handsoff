@@ -41,13 +41,19 @@ anything below.**
 | **Engine resources and briefing** | **14** | core, ledger | 16 | **extracted, stage 4** |
 | **Agent runtime** | **154** | core, routing, config, ledger, resources | 57 | **extracted, stage 5** |
 | Fleet registry | n/a | n/a | n/a | **already its own module** |
-| **Model routing** | **36** | **14** | **11** | **extracted, v0.3.87** |
-| Storage and transactions | 34 | 33 | 72 | pending |
-| Workflow state machine | 9 | 39 | 5 | pending |
-| Dashboard projection | 102 | 83 | 20 | pending |
+| **Model routing** | **36** | **2** | **11** | **extracted, v0.3.87** |
+| **Dashboard projection** | **44** | core, routing, config, ledger, resources, agent_runtime | 20 | **extracted, stage 6** |
+| **Workflow state machine** | **47** | core, config, routing, ledger, resources, agent_runtime | 12 | **extracted, stage 7** |
+| **Schema validation** | **108** | core, config, routing | many | **extracted, stage 8** |
+| **Storage and transactions** | **13 + 54** | **0 / core, routing, config** | 121 / 76 | **extracted, split across core and ledger** |
+
+All seven subsystems #284 names are extracted. Storage is not a separate
+module: its primitives are in `handsoff_core` (paths, locking, atomic write)
+and its transactional write in `handsoff_ledger` (`commit`, `write_ahead`),
+which is where the journal has to live.
 
 At the first extraction the monolith was 15,013 lines across 466 top-level
-definitions.
+definitions. It is now 8,346 across 349.
 
 ## Stage 1: the core primitives
 
@@ -98,10 +104,18 @@ the monolith with it.
    inferred subsystems from responsibilities rather than from the file
    layout, and the first version of this plan repeated that by grouping on
    keywords. Only `fleet_public_origins` remains in the monolith.
-6. **Workflow state machine**, then **agent runtime** and **dashboard
-   projection**. Seeding "workflow" by keyword produced a 188-symbol
-   closure, which means the seeds reached half the file rather than a
-   boundary. Seed it from the reference graph, as stage 1 was.
+6. **Agent runtime** (done, stage 5), then **dashboard projection** (stage 6),
+   then the **workflow state machine** (stage 7). Seeding "workflow" by
+   keyword produced a 188-symbol closure, which means the seeds reached half
+   the file rather than a boundary. Seeded from the reference graph after the
+   layers below were out, the same concern closed at 47 symbols with zero
+   leaks. The order mattered more than the seeds: every dependency the early
+   closure would have dragged along was already in a lower layer by then.
+7. **Schema validation** (done, stage 8), which was not on this list. It was
+   not about size: the validators had to sit BELOW the ledger for `commit` to
+   call them, and that is what turned criterion 3 from a per-call-site habit
+   into a property. Extraction order is set by coupling, but this one was set
+   by a required direction of dependency.
 
 ## Public interfaces and persisted schemas
 
@@ -111,6 +125,11 @@ the monolith with it.
 | Fleet registry | `fleet_registry_path`, register and forget | `~/.handsoff/projects.json` | engine maintainer |
 | Evidence ledger | `commit`, `verify_log`, `evidence_drift` | `handsoff-events.jsonl`, `handsoff-verifications.jsonl`, `.handsoff-event-head.json` | engine maintainer |
 | Storage | `load_unique_json`, `status_path`, `project_lock` | `handsoff-status.json`, `handsoff-acceptance.json` | engine maintainer |
+| Schema validation | `validate_status_schema`, `validate_acceptance_schema`, and the closed sets they enforce | none of its own; it validates the two above | engine maintainer |
+| Workflow state machine | `compute_errors`, `gate_progress`, `lane_gate_refusal`, `ci_gate_errors`, `full_design_required`, `plan_criteria_transaction`, `derive_work_items` | none of its own; it decides what may be written | engine maintainer |
+| Agent runtime | `create_agent_session`, `transition_agent_session`, `validate_agent_actor`, `design_review_budget` | `status.agent_sessions`, `status.current_agent_sessions` | engine maintainer |
+| Run projection | `live_status`, `operation_inventory`, `host_wait_view`, `machine_sleep_intervals` | none; it is the read side | engine maintainer |
+| Engine resources | `engine_root`, `engine_resource_path`, `playbook_index`, `playbook_root` | `playbook/index.json` | engine maintainer |
 
 No extraction may change a persisted schema. Where a subsystem owns one, the
 extraction is contract-equivalent by construction: the same bytes are written
@@ -118,31 +137,60 @@ before and after.
 
 ## Remaining migration boundaries
 
-**Model routing still imports the monolith.** Each function that needs a
-primitive imports it by name inside its own body:
+**Model routing's deferred imports: eleven became two.** Routing sits at the
+bottom, above only the core, because `handsoff_config` imports it --
+`DEFAULT_CONFIG` embeds the adaptive routing defaults. So a module-level
+import of anything above it would close a cycle, and each function that needs
+a primitive imports it inside its own body.
 
-```python
-from handsoff_lib import HandsoffError, load_config
-```
+What changed is which module those imports name. Eleven of them read
+`from handsoff_lib import ...`, which resolved only because the monolith
+re-exports the symbol, and made the dependency look like the whole file. Nine
+now name the layer that defines what they use:
 
-Deferred rather than module-level, because `handsoff_lib` imports
-`handsoff_routing` to re-export its symbols and a module-level import would
-close that cycle. This is a recorded step, not a finished decoupling.
+| Layer | Primitives routing defers on |
+|---|---|
+| `handsoff_config` | `load_config`, `DEFAULT_AGENT_MODEL`, `DEFAULT_MODEL_POLICY`, `SELECTABLE_AGENT_ADAPTERS`, `model_policy_allows`, `validate_model_policy` |
+| `handsoff_schema` | `AGENT_SESSION_LIVE_STATES`, `PHASES` |
+| `handsoff_projection` | `actor_family` |
+| `handsoff_lib` | `_canonical_provider_model`, `_agent_assignment` |
 
-To lift it, these fourteen primitives must move into a shared core that both
-modules import: `HandsoffError`, `load_config`, `load_unique_json`,
-`status_path`, `actor_family`, `model_policy_allows`, `validate_model_policy`,
-`_agent_assignment`, `_canonical_provider_model`, `PHASES`,
-`AGENT_SESSION_LIVE_STATES`, `DEFAULT_AGENT_MODEL`, `DEFAULT_MODEL_POLICY`,
-`SELECTABLE_AGENT_ADAPTERS`. That is stage 4 (storage) plus a small constants
-module, and it is the point at which the deferred imports become ordinary ones.
+Only the last row is remaining work. `tests/test_routing_boundary.py` pins
+both lists closed in both directions and refuses a deferred import that names
+the monolith for a symbol the monolith only re-exports, so a later move
+surfaces there instead of resolving silently through the re-export.
 
-An earlier draft of this list also named `acceptance_hash`, which the moved
-code uses only as a local name and never imports. It was a primitive that
-existed nowhere, overstating the remaining coupling by one.
-`tests/test_routing_boundary.py` now compares the declared list against the
-module's actual imports in both directions, because a rule that only asks
-"is every import declared" cannot see an entry that names nothing.
+An earlier draft of the monolith list also named `acceptance_hash`, which the
+moved code uses only as a local name and never imports. It was a primitive
+that existed nowhere, overstating the coupling by one. That is why the test
+compares in both directions: a rule that only asks "is every import declared"
+cannot see an entry that names nothing.
+
+**What is left in the monolith, measured.** `handsoff_lib` is 8,346 lines and
+349 top-level symbols. Seven clusters in it close cleanly under the reference
+graph and are the obvious next extractions:
+
+| Cluster | Symbols | Lines |
+|---|---|---|
+| recovery and relaunch | 26 | ~687 |
+| metrics and views | 33 | ~700 |
+| design review | 31 | ~601 |
+| reporting | 14 | ~280 |
+| run close | 11 | ~247 |
+| questions | 14 | ~241 |
+| checks execution | 4 | ~134 |
+
+That is roughly 2,900 lines, which would leave about 5,400. Beyond those the
+symbols are small and the seams are not obvious, and this is exactly where
+name-prefix grouping misled four separate attempts: the boundary has to come
+from the reference graph, never from what things are called. For scale, the
+other engine modules run 205 to 2,200 lines, so a defensible end state for
+`handsoff_lib` is 2,000 to 3,000 -- reachable, but the last stretch is a long
+tail rather than another seven clean cuts.
+
+Line count is not the measure that matters. What the extraction bought is that
+the audit and the gates can no longer reach the agent runtime, and that
+`commit` validates what it writes because the validators now sit below it.
 
 ## Re-export is not a shim for monkey-patching
 
