@@ -27,7 +27,12 @@ from pathlib import Path
 #: sweep would drift as the module grows; this list is the contract, and a
 #: function named here that no longer exists is an error, not a silent skip.
 GATE_FUNCTIONS = {
-    "handsoff_lib.py": ("compute_errors", "design_review_budget", "gate_progress"),
+    # #284: `design_review_budget` moved to the agent runtime with the rest of
+    # the session lifecycle. This map is named rather than discovered, so an
+    # extraction that relocates a gate must say so here; the analyser refusing
+    # a gate it cannot find is the contract working, not a false alarm.
+    "handsoff_lib.py": ("compute_errors", "gate_progress"),
+    "handsoff_agent_runtime.py": ("design_review_budget",),
     "handsoff_supervisor.py": ("refresh_performance_state",),
     "handsoff_agent.py": ("build_launch_spec", "build_profile_launch_spec"),
 }

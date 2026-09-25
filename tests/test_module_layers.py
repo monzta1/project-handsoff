@@ -30,12 +30,13 @@ LAYERS = [
     "handsoff_config",
     "handsoff_ledger",
     "handsoff_resources",
+    "handsoff_agent_runtime",
 ]
 
 STDLIB_OK = {
     "__future__", "json", "os", "re", "copy", "datetime", "pathlib", "hashlib",
     "uuid", "fcntl", "math", "shlex", "tomllib", "subprocess", "fnmatch",
-    "sysconfig", "contextlib",
+    "sysconfig", "contextlib", "shutil",
 }
 
 
@@ -43,51 +44,226 @@ def _tree(module):
     return ast.parse((BIN / f"{module}.py").read_text(encoding="utf-8"))
 
 
-def _bound_names(tree):
-    bound = set(dir(builtins)) | {"__file__", "__name__", "__doc__"}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
-            bound.add(node.name)
-        elif isinstance(node, ast.Assign):
-            bound |= {t.id for t in node.targets if isinstance(t, ast.Name)}
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            bound.add(node.target.id)
-        elif isinstance(node, ast.arg):
-            bound.add(node.arg)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
+def _target_names(target):
+    """Every name a binding target introduces, at any nesting depth.
+
+    `for key, (minimum, maximum) in bounds.items():` nests a tuple inside
+    the loop target. Unpacking one level only reported those inner names as
+    unbound, which is a false alarm about correct code and exactly as
+    useless as a missed real one.
+    """
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_target_names(e) for e in target.elts)) if target.elts else set()
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    return set()
+
+
+def _scope_bindings(node):
+    """Names bound directly in ONE scope, not descending into nested scopes.
+
+    A nested function contributes only its own name here. Its parameters and
+    locals belong to its scope, not this one.
+    """
+    bound = set()
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = node.args
+        bound |= {a.arg for a in list(args.args) + list(args.posonlyargs) + list(args.kwonlyargs)}
+        if args.vararg:
+            bound.add(args.vararg.arg)
+        if args.kwarg:
+            bound.add(args.kwarg.arg)
+    for child in _walk_scope(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(child.name)  # the NAME only; its body is its own scope
+        elif isinstance(child, ast.Assign):
+            for t in child.targets:
+                bound |= _target_names(t)
+        elif isinstance(child, (ast.AnnAssign, ast.AugAssign)) and isinstance(child.target, ast.Name):
+            bound.add(child.target.id)
+        elif isinstance(child, (ast.Import, ast.ImportFrom)):
+            for alias in child.names:
                 bound.add((alias.asname or alias.name).split(".")[0])
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            bound.add(node.name)
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            target = node.target
-            if isinstance(target, ast.Name):
-                bound.add(target.id)
-            elif isinstance(target, ast.Tuple):
-                bound |= {e.id for e in target.elts if isinstance(e, ast.Name)}
-        elif isinstance(node, ast.withitem) and isinstance(getattr(node, "optional_vars", None), ast.Name):
-            bound.add(node.optional_vars.id)
-        elif isinstance(node, ast.Tuple) and isinstance(getattr(node, "ctx", None), ast.Store):
-            bound |= {e.id for e in node.elts if isinstance(e, ast.Name)}
-        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
-            bound.add(node.target.id)
+        elif isinstance(child, ast.ExceptHandler) and child.name:
+            bound.add(child.name)
+        elif isinstance(child, (ast.For, ast.AsyncFor, ast.comprehension)):
+            bound |= _target_names(child.target)
+        elif isinstance(child, ast.withitem) and getattr(child, "optional_vars", None) is not None:
+            bound |= _target_names(child.optional_vars)
+        elif isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            bound.add(child.target.id)
+        elif isinstance(child, ast.Global):
+            bound |= set(child.names)
     return bound
+
+
+def _nested_scopes(node):
+    """The scopes defined directly inside this one.
+
+    A class body is a scope too. Treating it as part of the enclosing one
+    let class attributes leak outwards, so `class C: token = 1` satisfied a
+    bare `token` elsewhere in the module. That is the same shared pool this
+    walker exists to prevent, relocated to classes.
+    """
+    return [c for c in _walk_scope(node)
+            if isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))]
+
+
+def _walk_scope(node):
+    """Every node inside `node`, stopping at each nested function or lambda.
+
+    Pooling nested scopes together is the bug this file exists to catch: it
+    is what let a parameter in one function satisfy an unbound reference in
+    a sibling. The boundary has to be respected while walking, not patched
+    afterwards.
+    """
+    out = []
+    bodies = []
+    if isinstance(node, ast.Module):
+        bodies = [node.body]
+    elif isinstance(node, ast.Lambda):
+        bodies = [[node.body]]
+    else:
+        bodies = [getattr(node, "body", [])]
+        for extra in ("orelse", "finalbody", "handlers", "decorator_list"):
+            bodies.append(getattr(node, extra, []) or [])
+    stack = [n for body in bodies for n in body]
+    while stack:
+        current = stack.pop()
+        out.append(current)
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue  # a new scope: its insides are not ours
+        for child in ast.iter_child_nodes(current):
+            stack.append(child)
+    return out
+
+
+def _loads_in_scope(node):
+    return {n.id for n in _walk_scope(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+
+
+def _unresolved(tree):
+    """Every name used in a scope that nothing in its chain binds."""
+    builtin = set(dir(builtins)) | {"__file__", "__name__", "__doc__"}
+    unresolved = set()
+
+    def visit(scope, inherited):
+        own = _scope_bindings(scope)
+        visible = inherited | own
+        unresolved.update(_loads_in_scope(scope) - visible)
+        for nested in _nested_scopes(scope):
+            if isinstance(scope, ast.ClassDef):
+                # Python does not give a method the class body's names: a
+                # method reading a class attribute by bare name raises
+                # NameError. So a scope inside a class inherits what
+                # encloses the CLASS, not the class body.
+                visit(nested, inherited)
+            else:
+                visit(nested, visible)
+
+    visit(tree, builtin)
+    return sorted(unresolved)
 
 
 class EveryExtractedModuleResolves(unittest.TestCase):
     """The check stage 4 needed and did not have."""
 
     def test_no_module_references_an_unbound_name(self):
+        """Scope by scope, because a shared pool cannot answer this.
+
+        Two earlier versions of this check were wrong in the same way. The
+        first pooled every parameter in the module, so a parameter named
+        `design_hash` in `create_agent_session` satisfied an unbound
+        `design_hash(...)` in `open_review_attempt` and shipped a NameError.
+        The second respected the module boundary but still merged nested
+        sibling closures, so two closures inside one function shared a pool
+        and the same masking returned one level down. A scope sees its
+        enclosing chain and its own bindings; never its siblings'.
+        """
         for module in LAYERS:
-            tree = _tree(module)
-            bound = _bound_names(tree)
-            used = {n.id for n in ast.walk(tree)
-                    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-            unresolved = sorted(used - bound)
+            unresolved = _unresolved(_tree(module))
             self.assertEqual(unresolved, [],
                              f"{module} references names nothing binds: {unresolved}. "
                              "This is the NameError shape that only appears when the "
                              "function is called, not when the module imports.")
+
+    def test_the_checker_catches_a_sibling_closure_masking_a_name(self):
+        """The checker is the thing most likely to be wrong here, so it is
+        tested against the pattern it exists to find, which already occurs
+        in handsoff_lib.py: sibling closures with same-named parameters."""
+        source = (
+            "def outer():\n"
+            "    def first(token):\n"
+            "        return token\n"
+            "    def second():\n"
+            "        return token\n"  # unbound: `token` belongs to first()
+            "    return first, second\n"
+        )
+        self.assertIn("token", _unresolved(ast.parse(source)),
+                      "a sibling closure's parameter is masking an unbound name")
+
+    def test_the_checker_accepts_a_genuine_enclosing_binding(self):
+        """The mirror case: a nested scope may read its enclosing scope."""
+        source = (
+            "def outer(token):\n"
+            "    def inner():\n"
+            "        return token\n"
+            "    return inner\n"
+        )
+        self.assertEqual(_unresolved(ast.parse(source)), [])
+
+    def test_a_class_attribute_does_not_leak_into_the_enclosing_scope(self):
+        """`class C: token = 1` must not satisfy a bare `token` elsewhere.
+
+        Treating a class body as part of its enclosing scope was the same
+        shared pool as the sibling-closure bug, relocated to classes.
+        """
+        source = (
+            "class C:\n"
+            "    token = 1\n"
+            "def f():\n"
+            "    return token\n"
+        )
+        self.assertIn("token", _unresolved(ast.parse(source)))
+
+    def test_a_method_does_not_inherit_the_class_body(self):
+        """Verified against the interpreter: a method reading a class
+        attribute by bare name raises NameError, so the checker must not
+        pretend that name is visible."""
+        source = (
+            "class C:\n"
+            "    token = 1\n"
+            "    def m(self):\n"
+            "        return token\n"
+        )
+        self.assertIn("token", _unresolved(ast.parse(source)))
+
+    def test_a_class_body_may_still_read_its_enclosing_scope(self):
+        source = (
+            "LIMIT = 3\n"
+            "class C:\n"
+            "    cap = LIMIT\n"
+        )
+        self.assertEqual(_unresolved(ast.parse(source)), [])
+
+    def test_the_checker_unpacks_nested_binding_targets(self):
+        """`for key, (low, high) in pairs:` binds three names, not one."""
+        source = (
+            "def f(pairs):\n"
+            "    for key, (low, high) in pairs:\n"
+            "        print(key, low, high)\n"
+        )
+        self.assertEqual(_unresolved(ast.parse(source)), [])
+
+    def test_the_checker_binds_lambda_and_comprehension_targets(self):
+        source = (
+            "PAIRS = {k: v for k, v in ()}\n"
+            "KEY = sorted([], key=lambda row: row.id)\n"
+        )
+        self.assertEqual(_unresolved(ast.parse(source)), [])
 
     def test_every_module_imports_in_isolation(self):
         """Imported in a subprocess so an already-loaded monolith cannot mask
