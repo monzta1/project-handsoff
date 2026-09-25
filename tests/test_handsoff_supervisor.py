@@ -27,6 +27,7 @@ import re
 from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tests.engine_patch import patch_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
@@ -13160,7 +13161,6 @@ import json, os, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tests.engine_patch import patch_engine
 (Path(os.environ["MINER_FAKE_LOG"])).write_text(json.dumps(sys.argv[1:]))
 mode = os.environ.get("MINER_FAKE_MODE", "ok")
 if mode == "fail":

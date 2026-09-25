@@ -51,7 +51,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
     def test_every_playbook_file_is_in_the_manifest_and_the_wheel(self):
         files = sorted(p.name for p in PLAYBOOK.iterdir() if p.is_file())
         self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md",
-                                 "lessons-agents.md", "lessons-evidence.md", "lessons-lane.md",
+                                 "lessons-agents.md", "lessons-binding.md",
+                                 "lessons-evidence.md", "lessons-lane.md",
                                  "protocol.md", "reviewers.md"])
         manifest = json.loads((ROOT / "handsoff-runtime.json").read_text())
         for name in files:
@@ -65,7 +66,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         index = json.loads((PLAYBOOK / "index.json").read_text())
         self.assertEqual(index["always_load"], ["INDEX.md", "lanes.md"])
         self.assertEqual(set(index["topics"]), {"lanes", "landing", "reviewers", "protocol",
-                                                "lessons-lane", "lessons-agents", "lessons-evidence"})
+                                                "lessons-lane", "lessons-agents",
+                                                "lessons-evidence", "lessons-binding"})
         for item in index["files"]:
             self.assertTrue((PLAYBOOK / item["file"]).is_file(), item["file"])
         for name in files:

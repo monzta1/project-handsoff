@@ -31,9 +31,11 @@ import handsoff_lib as lib  # noqa: E402
 PLAYBOOK = BIN.parent / "playbook"
 
 #: Free bytes a topic must leave under the cap. Set from measurement, not
-#: taste: the three lessons topics leave 4,787 to 6,135, so 4,096 is a real
-#: margin every one of them clears while still refusing a topic that has
-#: grown into the space the next lesson needs.
+#: taste: the lessons topics leave 4,350 to 7,357, so 4,096 is a real margin
+#: every one of them clears while still refusing a topic that has grown into
+#: the space the next lesson needs. It has already done that job once:
+#: lessons-evidence fell to 3,314 and the three lessons that pushed it there
+#: became lessons-binding.md rather than evicting four older ones.
 MIN_TOPIC_SLACK_BYTES = 4096
 
 #: Topics that do not meet the margin, each with the reason and the slack
