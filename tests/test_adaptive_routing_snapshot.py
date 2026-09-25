@@ -43,13 +43,26 @@ class AdaptiveRoutingSnapshotTests(HandsoffTestCase):
         }])
 
     def test_new_default_run_is_routing_ready_before_its_first_call(self):
+        """Ready, and honest about having chosen nothing yet.
+
+        This test used to assert the header carried FAST / claude /
+        claude-haiku-4-5-20251001 on a run with no sessions at all, which is
+        #333: a model computed at read time presented as the model that ran. A
+        Pilot reading it had no way to know routing had not run. The header is
+        now empty until something is recorded or reported, and the computed
+        choice keeps its own name.
+        """
         self.init("Default routing snapshot")
         snapshot = dashboard.build_snapshot(self.tmp)["adaptive_routing"]
-        self.assertTrue(snapshot["used"])
+        self.assertTrue(snapshot["used"], "a risk_class means the run is governed by routing")
         self.assertEqual(snapshot["risk_class"], "routine")
-        self.assertEqual((snapshot["tier"], snapshot["adapter"], snapshot["model"]), (
-            "FAST", "claude", "claude-haiku-4-5-20251001",
-        ))
+        self.assertEqual((snapshot["tier"], snapshot["adapter"], snapshot["model"]),
+                         (None, None, None),
+                         "nothing ran, so the header names nothing")
+        self.assertEqual(snapshot["header_source"], "projection")
+        self.assertEqual(snapshot["would_route_to"], {
+            "tier": "FAST", "adapter": "claude", "model": "claude-haiku-4-5-20251001",
+        }, "what routing would choose is still shown, under its own name")
         self.assertEqual(snapshot["calls_by_tier"], {"FAST": 0, "STANDARD": 0, "PREMIUM": 0})
         self.assertEqual(snapshot["selections"], [])
 

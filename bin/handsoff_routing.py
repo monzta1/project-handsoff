@@ -587,7 +587,11 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict 
             "actor": actor, "purpose": PHASES.get(2, "Design debate"), "phase_number": 2,
             "started_at": event.get("at"), "ended_at": following,
             "adaptive": False, "tier": None,
-            "adapter": actor_family(actor) or host.get("family") or "host",
+            # The snapshot contract allows codex, claude or host; actor_family
+            # returns "unknown" for an actor it cannot place, which is not one
+            # of them. Same narrowing the other host legs do.
+            "adapter": next((family for family in (actor_family(actor), host.get("family"))
+                             if family in {"codex", "claude"}), "host"),
             "model": model_class, "requested_model": None, "model_source": "host_runtime",
             "model_consistency": "not_applicable",
             "reason": "design_proposal" if attempt in (None, 0)

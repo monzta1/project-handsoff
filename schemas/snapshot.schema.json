@@ -60,73 +60,396 @@
     "durability": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["level", "file_fsync", "directory_fsync", "reason"],
+      "required": [
+        "level",
+        "file_fsync",
+        "directory_fsync",
+        "reason"
+      ],
       "properties": {
-        "level": {"enum": ["full", "best_effort"]},
-        "file_fsync": {"type": "boolean"},
-        "directory_fsync": {"type": "boolean"},
-        "reason": {"type": ["string", "null"]}
+        "level": {
+          "enum": [
+            "full",
+            "best_effort"
+          ]
+        },
+        "file_fsync": {
+          "type": "boolean"
+        },
+        "directory_fsync": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "adaptive_routing": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["used", "risk_class", "tier", "adapter", "model", "token_usage", "estimated_cost", "duration_ms", "escalation_reason", "repair_rounds", "review_rounds", "active_premium_scope", "outcome", "calls_by_tier", "selections", "pause"],
+      "required": [
+        "used",
+        "risk_class",
+        "tier",
+        "adapter",
+        "model",
+        "token_usage",
+        "estimated_cost",
+        "duration_ms",
+        "escalation_reason",
+        "repair_rounds",
+        "review_rounds",
+        "active_premium_scope",
+        "outcome",
+        "calls_by_tier",
+        "selections",
+        "pause",
+        "would_route_to",
+        "header_source"
+      ],
       "properties": {
-        "used": {"type": "boolean"},
-        "risk_class": {"enum": [null, "routine", "elevated", "security_sensitive", "persistence_migration", "shared_infrastructure", "irreversible"]},
-        "tier": {"enum": [null, "FAST", "STANDARD", "PREMIUM"]},
-        "adapter": {"enum": [null, "codex", "claude"]},
-        "model": {"type": ["string", "null"]},
-        "token_usage": {
-          "type": "object", "additionalProperties": false,
-          "required": ["input", "output", "total"],
-          "properties": {"input": {"type": "integer", "minimum": 0}, "output": {"type": "integer", "minimum": 0}, "total": {"type": "integer", "minimum": 0}}
+        "used": {
+          "type": "boolean"
         },
-        "estimated_cost": {"type": ["number", "null"], "minimum": 0},
-        "duration_ms": {"type": ["integer", "null"], "minimum": 0},
-        "escalation_reason": {"type": ["string", "null"]},
-        "repair_rounds": {"type": "integer", "minimum": 0},
-        "review_rounds": {"type": "integer", "minimum": 0},
-        "active_premium_scope": {"enum": [null, "mission", "fleet"]},
-        "outcome": {"enum": [null, "accepted", "rejected", "human_pause"]},
+        "risk_class": {
+          "enum": [
+            null,
+            "routine",
+            "elevated",
+            "security_sensitive",
+            "persistence_migration",
+            "shared_infrastructure",
+            "irreversible"
+          ]
+        },
+        "tier": {
+          "enum": [
+            null,
+            "FAST",
+            "STANDARD",
+            "PREMIUM"
+          ]
+        },
+        "adapter": {
+          "enum": [
+            null,
+            "codex",
+            "claude"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "output",
+            "total"
+          ],
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "estimated_cost": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "escalation_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repair_rounds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_rounds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_premium_scope": {
+          "enum": [
+            null,
+            "mission",
+            "fleet"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            null,
+            "accepted",
+            "rejected",
+            "human_pause"
+          ]
+        },
         "calls_by_tier": {
-          "type": "object", "additionalProperties": false,
-          "required": ["FAST", "STANDARD", "PREMIUM"],
-          "properties": {"FAST": {"type": "integer", "minimum": 0}, "STANDARD": {"type": "integer", "minimum": 0}, "PREMIUM": {"type": "integer", "minimum": 0}}
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "FAST",
+            "STANDARD",
+            "PREMIUM"
+          ],
+          "properties": {
+            "FAST": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "STANDARD": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "PREMIUM": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         },
         "selections": {
           "type": "array",
           "items": {
-            "type": "object", "additionalProperties": false,
-            "required": ["session_id", "role", "actor", "purpose", "phase_number", "started_at", "ended_at", "adaptive", "tier", "adapter", "model", "requested_model", "model_source", "model_consistency", "reason", "state"],
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "session_id",
+              "role",
+              "actor",
+              "purpose",
+              "phase_number",
+              "started_at",
+              "ended_at",
+              "adaptive",
+              "tier",
+              "adapter",
+              "model",
+              "requested_model",
+              "model_source",
+              "model_consistency",
+              "reason",
+              "state"
+            ],
             "properties": {
-              "session_id": {"type": "string"}, "role": {"enum": ["architect", "supervisor", "implementer", "reviewer"]},
-              "actor": {"type": "string"}, "purpose": {"type": "string"}, "phase_number": {"type": ["integer", "null"], "minimum": 1, "maximum": 8},
-              "started_at": {"type": ["string", "null"]}, "ended_at": {"type": ["string", "null"]},
-              "adaptive": {"type": "boolean"}, "tier": {"enum": [null, "FAST", "STANDARD", "PREMIUM"]}, "adapter": {"enum": ["codex", "claude", "host"]},
-              "model": {"type": ["string", "null"]}, "requested_model": {"type": ["string", "null"]},
-              "model_source": {"enum": ["adapter_reported", "adaptive_selection", "exact_request", "not_reported", "host_runtime", "host_runtime_unavailable"]},
-              "model_consistency": {"enum": ["not_applicable", "pending_verification", "matched", "mismatch"]},
-              "reason": {"type": "string"},
-              "state": {"enum": ["launching", "running", "completed", "failed", "timed_out", "cancelled", "failed_to_start"]},
-              "budget_decision": {"type": ["object", "null"]},
-              "usage": {"type": ["object", "null"]}
+              "session_id": {
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "architect",
+                  "supervisor",
+                  "implementer",
+                  "reviewer"
+                ]
+              },
+              "actor": {
+                "type": "string"
+              },
+              "purpose": {
+                "type": "string"
+              },
+              "phase_number": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1,
+                "maximum": 8
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ended_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "adaptive": {
+                "type": "boolean"
+              },
+              "tier": {
+                "enum": [
+                  null,
+                  "FAST",
+                  "STANDARD",
+                  "PREMIUM"
+                ]
+              },
+              "adapter": {
+                "enum": [
+                  "codex",
+                  "claude",
+                  "host"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requested_model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_source": {
+                "enum": [
+                  "adapter_reported",
+                  "adaptive_selection",
+                  "exact_request",
+                  "not_reported",
+                  "host_runtime",
+                  "host_runtime_unavailable"
+                ]
+              },
+              "model_consistency": {
+                "enum": [
+                  "not_applicable",
+                  "pending_verification",
+                  "matched",
+                  "mismatch"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "launching",
+                  "running",
+                  "completed",
+                  "failed",
+                  "timed_out",
+                  "cancelled",
+                  "failed_to_start"
+                ]
+              },
+              "budget_decision": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "usage": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
             }
           }
         },
         "pause": {
-          "type": ["object", "null"], "additionalProperties": false,
-          "required": ["reason", "scope"],
-          "properties": {"reason": {"type": "string"}, "scope": {"enum": ["mission", "fleet"]}}
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "reason",
+            "scope"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "scope": {
+              "enum": [
+                "mission",
+                "fleet"
+              ]
+            }
+          }
+        },
+        "header_source": {
+          "enum": [
+            null,
+            "routed",
+            "reported",
+            "projection"
+          ],
+          "description": "#333: where the header's tier/adapter/model came from -- a recorded routing decision, a model a session reported, or a read-time projection. The panel labels itself from this instead of presenting all three alike."
+        },
+        "would_route_to": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "tier",
+            "adapter",
+            "model"
+          ],
+          "description": "#333: what routing WOULD choose, computed at read time. Kept out of the header, which reports only what a session recorded or reported.",
+          "properties": {
+            "tier": {
+              "enum": [
+                null,
+                "FAST",
+                "STANDARD",
+                "PREMIUM"
+              ]
+            },
+            "adapter": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
         }
       }
     },
     "initialized": {
       "type": "boolean"
     },
-    "model_policy": {"type": "object"},
-    "launch_preflight": {"type": "object"},
+    "model_policy": {
+      "type": "object"
+    },
+    "launch_preflight": {
+      "type": "object"
+    },
     "generated_at": {
       "type": "string"
     },
@@ -173,21 +496,40 @@
       }
     },
     "lane": {
-      "type": ["string", "null"],
-      "enum": ["full", "design", "review", null]
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "full",
+        "design",
+        "review",
+        null
+      ]
     },
     "phases_run": {
       "type": "array",
-      "items": {"type": "integer", "minimum": 1, "maximum": 8},
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8
+      },
       "uniqueItems": true
     },
     "phases_waived": {
       "type": "array",
-      "items": {"type": "integer", "minimum": 1, "maximum": 8},
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8
+      },
       "uniqueItems": true
     },
     "design_document": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "input_required": {
       "type": "object",
@@ -518,7 +860,10 @@
     },
     "regression": {},
     "test_progress": {
-      "type": ["object", "null"]
+      "type": [
+        "object",
+        "null"
+      ]
     },
     "review": {},
     "settings": {},

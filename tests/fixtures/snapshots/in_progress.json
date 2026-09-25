@@ -50,7 +50,7 @@
  },
  "adaptive_routing": {
   "active_premium_scope": null,
-  "adapter": "claude",
+  "adapter": null,
   "calls_by_tier": {
    "FAST": 0,
    "PREMIUM": 0,
@@ -59,20 +59,26 @@
   "duration_ms": null,
   "escalation_reason": null,
   "estimated_cost": null,
-  "model": "claude-haiku-4-5-20251001",
+  "header_source": "projection",
+  "model": null,
   "outcome": null,
   "pause": null,
   "repair_rounds": 0,
   "review_rounds": 0,
   "risk_class": "routine",
   "selections": [],
-  "tier": "FAST",
+  "tier": null,
   "token_usage": {
    "input": 0,
    "output": 0,
    "total": 0
   },
-  "used": true
+  "used": true,
+  "would_route_to": {
+   "adapter": "claude",
+   "model": "claude-haiku-4-5-20251001",
+   "tier": "FAST"
+  }
  },
  "amendment": null,
  "audit": {
@@ -133,58 +139,58 @@
   "reason": null
  },
  "engine": {
-  "compatibility": "v0.3.79",
-  "manifest_sha256": "4afe30d97d1ad06b46d19aa08fe592ac2f72275a3f6029af16a8a8a93ba34d91",
+  "compatibility": "v0.3.87",
+  "manifest_sha256": "7dd34a34a65600372937748c5f1e4a938ae538984302231bffb580b78f92d320",
   "source": "project-drop-in",
   "source_root": "<root>",
-  "version": "v0.3.79"
+  "version": "v0.3.87"
  },
  "escalation": null,
  "events": [
   {
-   "acceptance_sha256": "c437e8c8eac3a449de08ed1cfde79e49b76201a850c7e08be7c3efe711cef09b",
-   "at": "2026-09-23T19:28:37.789955+00:00",
-   "hash": "7ffa2d4553159cad1ea334d22ce0958e8b283b30e85465acca0cc7a25953d5da",
+   "acceptance_sha256": "58e78d1e3aba30f8cf8dba78ca8321ef699e25ba91ee6e2680dac02e18587bb0",
+   "at": "2026-09-25T19:56:51.487141+00:00",
+   "hash": "b6e1b686f6a409f18d90a69ebfa3ddd32fa105375646f9d0bece1fba172f50f8",
    "kind": "phase_advanced",
    "message": "Advanced to Design debate",
    "phase_number": 2,
-   "prev_hash": "10f6724101ba4953d2a2455bd886254c95ad87e0975059aefad8ada55f4d124f",
+   "prev_hash": "33286fa940edd5bfdbd564ef9b30f5ca75fe10bd5ea582fab59d43c1562b50a4",
    "progress": 20,
-   "status_sha256": "e417cb3174dd105a50204ba74de56a3d18cd22edf7943a0cd222aded5bc1c727"
+   "status_sha256": "d57aaffdd53e0ccfc397136e331730f45fe4be7ffafe5fd8e41886e21222941b"
   },
   {
-   "acceptance_sha256": "c437e8c8eac3a449de08ed1cfde79e49b76201a850c7e08be7c3efe711cef09b",
-   "at": "2026-09-23T19:28:37.653067+00:00",
-   "hash": "10f6724101ba4953d2a2455bd886254c95ad87e0975059aefad8ada55f4d124f",
+   "acceptance_sha256": "58e78d1e3aba30f8cf8dba78ca8321ef699e25ba91ee6e2680dac02e18587bb0",
+   "at": "2026-09-25T19:56:51.290080+00:00",
+   "hash": "33286fa940edd5bfdbd564ef9b30f5ca75fe10bd5ea582fab59d43c1562b50a4",
    "kind": "approval_posture_recorded",
-   "message": "Execution profile safe: design approval required, deployment approval required",
-   "prev_hash": "12b770f7762543b21fab3fc4eefba319daa5047643dc5ebeec21af05098590e3",
-   "profile": "safe",
+   "message": "Execution profile dogfood: design approval required, deployment approval required",
+   "prev_hash": "0fae71eaf99d3be364ff104543f9b684097e1ba010cabf60e0675d410127941f",
+   "profile": "dogfood",
    "require_deployment_approval": true,
    "require_design_approval": true,
-   "status_sha256": "263714d0fb24ddf3b4c74df2c89e2db9ffc4ea035f8816abcadf48ece29d0dbf",
+   "status_sha256": "d69c29bd5ca9fd8da556e709494ce22583a409efb6b132db105705e5f1661b2a",
    "waivers_active": false
   },
   {
-   "acceptance_sha256": "c437e8c8eac3a449de08ed1cfde79e49b76201a850c7e08be7c3efe711cef09b",
-   "at": "2026-09-23T19:28:37.652229+00:00",
+   "acceptance_sha256": "58e78d1e3aba30f8cf8dba78ca8321ef699e25ba91ee6e2680dac02e18587bb0",
+   "at": "2026-09-25T19:56:51.288905+00:00",
    "by": null,
    "engine": {
-    "manifest_sha256": "4afe30d97d1ad06b46d19aa08fe592ac2f72275a3f6029af16a8a8a93ba34d91",
+    "manifest_sha256": "7dd34a34a65600372937748c5f1e4a938ae538984302231bffb580b78f92d320",
     "source": "project-drop-in",
-    "version": "v0.3.79"
+    "version": "v0.3.87"
    },
-   "hash": "12b770f7762543b21fab3fc4eefba319daa5047643dc5ebeec21af05098590e3",
+   "hash": "0fae71eaf99d3be364ff104543f9b684097e1ba010cabf60e0675d410127941f",
    "kind": "initialized",
    "message": "Handsoff initialized for 'Snapshot contract'",
    "pin_written": null,
    "prev_hash": "GENESIS",
    "project_root": "<root>",
-   "status_sha256": "263714d0fb24ddf3b4c74df2c89e2db9ffc4ea035f8816abcadf48ece29d0dbf",
+   "status_sha256": "d69c29bd5ca9fd8da556e709494ce22583a409efb6b132db105705e5f1661b2a",
    "ticket_lock": "evaluated"
   }
  ],
- "generated_at": "2026-09-23T19:28:37.806590+00:00",
+ "generated_at": "2026-09-25T19:56:51.507663+00:00",
  "host": {
   "actor": null,
   "family": "unknown",
@@ -218,7 +224,7 @@
   "detail": "no managed process is running",
   "ended_at": null,
   "exit_code": null,
-  "last_activity_at": "2026-09-23T19:28:37.789033+00:00",
+  "last_activity_at": "2026-09-25T19:56:51.485472+00:00",
   "process_signal": "none",
   "role": null,
   "seconds_since_activity": 0,
@@ -234,10 +240,10 @@
    "state": "unavailable"
   },
   "design_review_attempts": 0,
-  "elapsed_seconds": 0.205,
+  "elapsed_seconds": 0.307,
   "ended_at": null,
   "failed_sessions": 0,
-  "generated_at": "2026-09-23T19:28:37.857484+00:00",
+  "generated_at": "2026-09-25T19:56:51.596251+00:00",
   "implementation_review_attempts": 0,
   "largest_sessions": [],
   "managed_sessions": 0,
@@ -252,8 +258,8 @@
    "8": 0.0
   },
   "phase_seconds": {
-   "1": 0.138,
-   "2": 0.068,
+   "1": 0.198,
+   "2": 0.109,
    "3": 0.0,
    "4": 0.0,
    "5": 0.0,
@@ -261,12 +267,12 @@
    "7": 0.0,
    "8": 0.0
   },
-  "phase_started_at": "2026-09-23T19:28:37.789955+00:00",
+  "phase_started_at": "2026-09-25T19:56:51.487141+00:00",
   "pilot_wait_seconds": 0.0,
   "recovery_attempts": 0,
   "replacement_count": 0,
   "sessions": [],
-  "started_at": "2026-09-23T19:28:37.652229+00:00",
+  "started_at": "2026-09-25T19:56:51.288905+00:00",
   "tokens": {
    "cached": null,
    "coverage": "0/0 sessions",
@@ -294,17 +300,17 @@
     "migrate_preview": "handsoff migrate <root> --dry-run",
     "rollback": "handsoff rollback <root>",
     "rollback_preview": "handsoff rollback <root> --dry-run",
-    "upgrade": "handsoff upgrade <root> --to v0.3.79",
-    "upgrade_preview": "handsoff upgrade <root> --to v0.3.79 --dry-run"
+    "upgrade": "handsoff upgrade <root> --to v0.3.87",
+    "upgrade_preview": "handsoff upgrade <root> --to v0.3.87 --dry-run"
    },
-   "compatibility": "v0.3.79",
+   "compatibility": "v0.3.87",
    "execution": "unavailable",
    "execution_reason": "execution is not offered while a dashboard is serving this root",
-   "pin": "v0.3.79",
+   "pin": "v0.3.87",
    "reason": null,
    "source": "project-drop-in",
    "source_root": "<root>",
-   "version": "v0.3.79"
+   "version": "v0.3.87"
   },
   "inventory": [
    {
@@ -408,7 +414,7 @@
     "tone": "primary"
    },
    {
-    "action_id": "pause:da0f2288ba891459",
+    "action_id": "pause:6ee7e66ddc6d07a0",
     "availability": "actionable",
     "consequence": "Pause the mission",
     "kind": "pause",
@@ -428,7 +434,7 @@
     "tone": "primary"
    },
    {
-    "action_id": "run_close:da0f2288ba891459",
+    "action_id": "run_close:6ee7e66ddc6d07a0",
     "availability": "actionable",
     "consequence": "Close the run and release resources",
     "kind": "run_close",
@@ -525,10 +531,10 @@
  },
  "operator_actions": [
   {
-   "action_id": "pause:da0f2288ba891459",
-   "binding": "da0f2288ba891459",
+   "action_id": "pause:6ee7e66ddc6d07a0",
+   "binding": "6ee7e66ddc6d07a0",
    "consequence": "Records an explicit Pilot pause",
-   "created_at": "2026-09-23T19:28:37.789033+00:00",
+   "created_at": "2026-09-25T19:56:51.485472+00:00",
    "kind": "pause",
    "label": "Pause mission",
    "operation": "human-pause-start",
@@ -541,10 +547,10 @@
    "type": "pause"
   },
   {
-   "action_id": "run_close:da0f2288ba891459",
-   "binding": "da0f2288ba891459",
+   "action_id": "run_close:6ee7e66ddc6d07a0",
+   "binding": "6ee7e66ddc6d07a0",
    "consequence": "Records closure and releases run-owned resources",
-   "created_at": "2026-09-23T19:28:37.789033+00:00",
+   "created_at": "2026-09-25T19:56:51.485472+00:00",
    "kind": "run_close",
    "label": "Cleanly close run",
    "operation": "run-close",
@@ -558,21 +564,21 @@
   }
  ],
  "performance": {
-  "active_seconds": 0.205626,
+  "active_seconds": 0.307988,
   "block_new_work": false,
   "bottleneck": {
    "phase": "1",
-   "seconds": 0.138
+   "seconds": 0.198
   },
   "breaches": 0,
   "episode_id": "episode-1",
-  "forecast_remaining_seconds": 0.822504,
-  "forecast_total_seconds": 1.02813,
-  "forecast_variance_seconds": -7198.97187,
+  "forecast_remaining_seconds": 1.2319520000000002,
+  "forecast_total_seconds": 1.53994,
+  "forecast_variance_seconds": -7198.46006,
   "overall_percent": 20,
   "pause_seconds": 7200,
   "paused_at": null,
-  "run_id": "run-12b770f7762543b21fab3fc4eefba319",
+  "run_id": "run-0fae71eaf99d3be364ff104543f9b684",
   "schema": "handsoff.performance_view",
   "state": "active",
   "transition": "none",
@@ -653,7 +659,7 @@
   "effective_max_review_rounds": 3,
   "explicit_approval": true,
   "live_verification": true,
-  "max_autonomous_design_reviews": 2,
+  "max_autonomous_design_reviews": 3,
   "max_design_rounds": 3,
   "max_review_rounds": 3,
   "review_cap_overrides": 0,
@@ -662,7 +668,7 @@
  "project": {
   "feature": "Snapshot contract",
   "logo_url": null,
-  "name": "handsoff-test-a_rfqmgu"
+  "name": "handsoff-test-vnvmv60l"
  },
  "questions": {
   "answered": [],
@@ -1001,7 +1007,7 @@
   "amendment": null,
   "amendments": [],
   "approval_posture": {
-   "profile": "safe",
+   "profile": "dogfood",
    "require_deployment_approval": true,
    "require_design_approval": true,
    "waivers_active": false
@@ -1026,7 +1032,7 @@
    "detail": "no managed process is running",
    "ended_at": null,
    "exit_code": null,
-   "last_activity_at": "2026-09-23T19:28:37.789033+00:00",
+   "last_activity_at": "2026-09-25T19:56:51.485472+00:00",
    "process_signal": "none",
    "role": null,
    "seconds_since_activity": 0,
@@ -1078,7 +1084,7 @@
   "stall_warning": null,
   "status": "in_progress",
   "summary": "",
-  "updated_at": "2026-09-23T19:28:37.789033+00:00",
+  "updated_at": "2026-09-25T19:56:51.485472+00:00",
   "verification_head": "GENESIS",
   "verification_progress": 20,
   "work_item_delivery": {
@@ -1104,7 +1110,7 @@
   "headline": "Holding trajectory until Mission Objectives are verified, Pilot.",
   "label": "Objectives unresolved",
   "latest_event": {
-   "at": "2026-09-23T19:28:37.789955+00:00",
+   "at": "2026-09-25T19:56:51.487141+00:00",
    "kind": "phase_advanced",
    "message": "Advanced to Design debate"
   },
@@ -1147,7 +1153,7 @@
   "items": [
    {
     "blocker": "",
-    "created_at": "2026-09-23T19:28:37.645367+00:00",
+    "created_at": "2026-09-25T19:56:51.279003+00:00",
     "criteria": [
      "REQ-001"
     ],
@@ -1167,7 +1173,7 @@
     "required": true,
     "status": "not_started",
     "title": "Issue #218",
-    "updated_at": "2026-09-23T19:28:37.645367+00:00",
+    "updated_at": "2026-09-25T19:56:51.279003+00:00",
     "url": ""
    }
   ],
