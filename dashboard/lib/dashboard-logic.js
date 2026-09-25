@@ -447,10 +447,26 @@ function adaptiveRoutingView(routing) {
     review_rounds: Number(source.review_rounds) || 0,
     active_premium_scope: source.active_premium_scope || null,
     outcome: source.outcome || null,
+    // #333: the header used to show a model computed at read time as the model
+    // that ran. header_source says which it is, so the label can say so too:
+    // a recorded routing decision, a model a session reported, or a projection.
+    header_source: source.header_source || null,
+    would_route_to: source.would_route_to && typeof source.would_route_to === "object"
+      ? { tier: source.would_route_to.tier || null, adapter: source.would_route_to.adapter || null,
+          model: source.would_route_to.model || null }
+      : null,
     calls_by_tier: Object.fromEntries(ADAPTIVE_ROUTING_TIERS.map((tier) => [tier, Number(calls[tier]) || 0])),
     selections: adaptiveJourneySelections(source.selections),
     pause: pause ? { state: "paused", reason: pause.reason || "unavailable", scope: pause.scope || null } : null,
   };
+}
+
+function adaptiveRoutingModelLabel(routing) {
+  const view = adaptiveRoutingView(routing);
+  if (view.header_source === "routed") return "SELECTED MODEL";
+  if (view.header_source === "reported") return "MODEL THAT RAN";
+  if (view.would_route_to) return "WOULD ROUTE TO";
+  return "SELECTED MODEL";
 }
 
 function adaptiveRoutingPauseLabel(routing) {
@@ -1005,6 +1021,7 @@ if (typeof module !== "undefined" && module.exports) {
     ciNote,
     progressSummaryLabel,
     adaptiveRoutingView,
+    adaptiveRoutingModelLabel,
     adaptiveJourneySelections,
   };
 }

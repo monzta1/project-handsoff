@@ -67,18 +67,39 @@ class ThePersistedShapeIsUnchanged(unittest.TestCase):
         out["repository_digest_one_file"] = lib.repository_digest(root, lib.DEFAULT_CONFIG)
         return out
 
+    #: The commit the fixture was captured from: v0.3.87, the last release whose
+    #: handsoff_lib.py still defined these functions. This was `origin/main`
+    #: when the check was written, which stopped being a provenance check the
+    #: moment the extraction merged: main then held the extracted module, so the
+    #: assertion failed for the one reason it is not meant to detect. A
+    #: provenance check has to name a commit, never a moving ref.
+    PRE_EXTRACTION_COMMIT = "1687e3afeaf7909cbecaef3279f3c5271a4a6834"
+
     def test_the_fixture_was_taken_before_the_extraction(self):
         """A fixture regenerated after the move would prove nothing, so this
-        checks it against the file git still holds."""
+        checks it against the file git still holds at that commit."""
         self.assertTrue(CONTRACT.is_file())
         self.assertGreaterEqual(len(self.baseline), 9)
-        result = subprocess.run(["git", "show", "origin/main:bin/handsoff_lib.py"],
-                                cwd=BIN.parent, capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "show", f"{self.PRE_EXTRACTION_COMMIT}:bin/handsoff_lib.py"],
+            cwd=BIN.parent, capture_output=True, text=True)
         if result.returncode != 0:
-            self.skipTest("origin/main unavailable")
+            self.skipTest(f"{self.PRE_EXTRACTION_COMMIT} unavailable (shallow clone)")
         for name in ("repository_digest", "acceptance_hash", "design_hash"):
             self.assertIn(f"def {name}", result.stdout,
                           f"{name} was not in the pre-extraction module; the fixture is not a baseline")
+
+    def test_the_pinned_commit_is_genuinely_pre_extraction(self):
+        """Guards the pin itself: if it were updated to a commit after the
+        move, the test above would pass while proving nothing."""
+        result = subprocess.run(
+            ["git", "show", f"{self.PRE_EXTRACTION_COMMIT}:bin/handsoff_lib.py"],
+            cwd=BIN.parent, capture_output=True, text=True)
+        if result.returncode != 0:
+            self.skipTest(f"{self.PRE_EXTRACTION_COMMIT} unavailable (shallow clone)")
+        self.assertNotIn("from handsoff_ledger import", result.stdout,
+                         "the pinned commit already imports the extracted ledger, so it is "
+                         "not a pre-extraction baseline")
 
     def test_every_hash_and_digest_is_byte_identical(self):
         now = json.loads(json.dumps(self._now(), sort_keys=True, default=str))

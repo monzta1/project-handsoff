@@ -512,18 +512,19 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict 
         except (KeyError, TypeError, ValueError):
             pass
     risk_class = status.get("risk_class")
+    # #333: the header used to fall back to a model computed at READ time when
+    # no session carried a routing decision, and present it as the model that
+    # ran, with a tier and an outcome. On a run whose reviewer adapter is pinned
+    # -- which skips routing entirely -- it named a 1 dollar per Mtok model
+    # while both sessions ran a premium one, and said the choice was accepted.
+    # The panel is the only place a Pilot sees what is spending their budget.
+    #
+    # The header is now derived from the rows it already has, in order of
+    # authority: a recorded routing decision, else a model a session actually
+    # reported, else nothing. The read-time computation is still useful, so it
+    # is kept under its own name and never mixed into the header.
     latest = routed[-1]["adaptive_routing"] if routed else {}
-    if not latest and risk_class:
-        ready = route_adaptive_profile(
-            effective_cfg, required_capabilities=("text", "tool_use"),
-            risk_class=risk_class, deterministic_checks_complete=True,
-        )
-        if ready.get("state") == "selected":
-            latest = {
-                "tier": ready["tier"],
-                "adapter": ready["profile"]["adapter"],
-                "model": ready["profile"]["model"],
-            }
+    header_source = "routed" if latest else None
     escalation = status.get("adaptive_escalation") if isinstance(status.get("adaptive_escalation"), dict) else {}
     repairs = sum(1 for attempt in (status.get("review_attempts") or [])
                   if isinstance(attempt, dict) and attempt.get("disposition") == "changes_requested")
@@ -557,6 +558,46 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict 
             "model_consistency": "not_applicable", "reason": "host_runtime",
             "state": "completed" if phase5 else "running",
         })
+    # #334: a host Architect never opens a managed session, so a journey
+    # rendered from sessions shows it once from the crew list and drops it the
+    # moment real sessions exist. `[agents] architect = "host"` is the
+    # checked-in default here, so that is every run by default. The design
+    # proposal is the most consequential artifact of Phase 2 and the Architect
+    # is who produced it; a journey that loses the role implies nobody designed
+    # the change.
+    #
+    # The ledger already holds what is needed. One leg per recorded proposal,
+    # from the `design_proposal_recorded` events, so a design revised two or
+    # three times keeps the account of who revised it; the status record is the
+    # fallback when the events are not supplied.
+    proposal = status.get("design_proposal") if isinstance(status.get("design_proposal"), dict) else None
+    recorded = [event for event in events
+                if event.get("kind") == "design_proposal_recorded" and not event.get("session_id")]
+    if not recorded and proposal and not proposal.get("session_id"):
+        recorded = [{"architect": proposal.get("architect"), "at": proposal.get("at"),
+                     "based_on_review_attempt": proposal.get("based_on_review_attempt")}]
+    for index, event in enumerate(recorded):
+        actor = event.get("architect")
+        if not isinstance(actor, str) or not actor.strip():
+            continue
+        following = recorded[index + 1]["at"] if index + 1 < len(recorded) else None
+        attempt = event.get("based_on_review_attempt")
+        selections.append({
+            "session_id": f"host-design-proposal-{index + 1}", "role": "architect",
+            "actor": actor, "purpose": PHASES.get(2, "Design debate"), "phase_number": 2,
+            "started_at": event.get("at"), "ended_at": following,
+            "adaptive": False, "tier": None,
+            # The snapshot contract allows codex, claude or host; actor_family
+            # returns "unknown" for an actor it cannot place, which is not one
+            # of them. Same narrowing the other host legs do.
+            "adapter": next((family for family in (actor_family(actor), host.get("family"))
+                             if family in {"codex", "claude"}), "host"),
+            "model": model_class, "requested_model": None, "model_source": "host_runtime",
+            "model_consistency": "not_applicable",
+            "reason": "design_proposal" if attempt in (None, 0)
+                      else f"design_proposal_revision_{attempt}",
+            "state": "completed" if following or proposal else "running",
+        })
     if host_role and model_class and not live_managed and status.get("status") not in {"complete", "blocked"} \
             and not isinstance(status.get("human_pause"), dict):
         family = host.get("family") if host.get("family") in {"codex", "claude"} else "host"
@@ -571,6 +612,25 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict 
         })
     selections.sort(key=lambda item: (item.get("started_at") is None, item.get("started_at") or "",
                                       item.get("session_id") or ""))
+    if not latest:
+        reported = [item for item in selections
+                    if isinstance(item.get("model"), str) and item["model"].strip()]
+        if reported:
+            last = reported[-1]
+            latest = {"tier": last.get("tier"), "adapter": last.get("adapter"),
+                      "model": last.get("model")}
+            header_source = "reported"
+    would_route_to = None
+    if not routed and risk_class:
+        ready = route_adaptive_profile(
+            effective_cfg, required_capabilities=("text", "tool_use"),
+            risk_class=risk_class, deterministic_checks_complete=True,
+        )
+        if ready.get("state") == "selected":
+            would_route_to = {"tier": ready["tier"], "adapter": ready["profile"]["adapter"],
+                              "model": ready["profile"]["model"]}
+            if not latest:
+                header_source = "projection"
     return {
         # `used` means the run is governed by adaptive routing. Calls remain
         # separately auditable in calls_by_tier and selections, so a newly
@@ -585,7 +645,16 @@ def adaptive_routing_snapshot(status: dict, cfg: dict | None = None, host: dict 
         "active_premium_scope": "mission" if any(
             session.get("state") in AGENT_SESSION_LIVE_STATES
             and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in routed) else None,
-        "outcome": escalation.get("outcome"), "calls_by_tier": calls,
+        # An escalation outcome describes a routing decision. With no session
+        # carrying one, reporting "accepted" says a choice was made and
+        # approved when none was: #333 saw exactly that.
+        "outcome": escalation.get("outcome") if routed else None,
+        "would_route_to": would_route_to,
+        # Where the header's tier/adapter/model came from: a recorded routing
+        # decision, a model a session reported, a read-time projection, or
+        # nothing. The panel labels itself from this rather than guessing.
+        "header_source": header_source,
+        "calls_by_tier": calls,
         "selections": selections,
         "pause": ({"reason": escalation.get("reason"), "scope": "mission"}
                   if escalation.get("outcome") == "human_pause" else None),

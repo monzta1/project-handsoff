@@ -157,8 +157,10 @@ function renderAdaptiveRouting(routing, modelPolicy = state.modelPolicy, launchP
     ? `${incident.adapter}/${incident.model} · ${incident.category} · ${incident.reason}`
     : "Exact adapter/model check runs before session creation");
   set("routing-avoided-retries", String(Number(launchPreflight?.avoided_retries) || 0));
-  set("routing-tier", view.tier || "—");
-  set("routing-model", view.model || "—");
+  // #333: say whether this model ran or is only what routing would choose.
+  set("routing-model-label", adaptiveRoutingModelLabel(routing));
+  set("routing-tier", view.tier || view.would_route_to?.tier || "—");
+  set("routing-model", view.model || view.would_route_to?.model || "—");
   set("routing-tokens", view.token_usage.total.toLocaleString());
   set("routing-cost", view.estimated_cost == null ? "—" : `$${Number(view.estimated_cost).toFixed(4)}`);
   set("routing-duration", view.duration_ms == null ? "—" : `${view.duration_ms} ms`);
