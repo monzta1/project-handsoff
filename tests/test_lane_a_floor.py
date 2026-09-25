@@ -157,7 +157,7 @@ class ReaffirmAfterARulesChangeTests(HandsoffTestCase):
         recorded = status["review"]["rules_hash"]
         real_entries = lib.rules_set_entries
         bumped = {**real_entries(self.tmp), "engine:version": "v9.9.9"}
-        with mock.patch.object(lib, "rules_set_entries", return_value=bumped):
+        with patch_engine("rules_set_entries", return_value=bumped):
             errors = lib.rules_binding_errors(self.tmp, self.cfg, status["review"], "review gate")
             self.assertEqual(len(errors), 1)
             self.assertIn("engine:version", errors[0])

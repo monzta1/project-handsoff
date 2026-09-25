@@ -182,8 +182,32 @@ So the rule is not "work out the call path" but "replace every binding":
 `mock.patch.object(lib, "<moved name>")`, making the inert patch unexpressible
 rather than merely detectable.
 
+## Stage 7: the workflow state machine
+
+The last of the seven subsystems #284 names. Forty-seven symbols, 1,110 lines:
+the audit that decides whether a phase may be left (`compute_errors` and the
+per-concern error functions it composes), the gates that refuse an action
+outright (`lane_gate_refusal`, `ci_gate_errors`, `full_design_required`), the
+criteria transaction that validates a whole batch of edits before any of it is
+written, the work-item derivation the phases are scored against, and the launch
+rules that bind to a phase.
+
+The boundary was derived, not named: seeding the graph with the eight gate
+functions the supervisor calls on the advance path and taking the transitive
+closure gave 47 symbols with zero leaks, every dependency already in a layer
+below. The same seeds against the pre-stage-5 tree would have dragged 188
+symbols, which is the whole argument for extracting bottom-up.
+
+`handsoff_workflow` is the decide side against `handsoff_projection`'s read
+side: everything in it answers "may this state be written", and nothing in it
+writes. `tests/test_workflow_layer.py` holds that as a rule -- the module
+source may not contain `write_text(`, `durable_replace(` or `commit(` -- which
+is what makes criterion 3, validate the proposed state before persisting it, a
+property of the boundary rather than a habit at each call site.
+
 **Re-export keeps the monolith naming every moved symbol**, so extracting a
-subsystem barely reduces the line count (15,013 to 9,260 after seven extractions).
+subsystem barely reduces the line count (15,013 to 8,344 after seven extractions,
+which is 44 percent out and still leaves the largest file in the tree).
 Line count is the wrong measure. What changes is that the boundary is
 enforced: `tests/test_routing_boundary.py` holds the import allowlist,
 refuses a definition no routing symbol reaches, and pins the re-export

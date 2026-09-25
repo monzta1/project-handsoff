@@ -21,7 +21,7 @@ trimmed, so a file that grows is shortened by its author.
 | lessons-lane | lessons-lane.md | phases, criteria, tickets, parallel lanes, releases |
 | lessons-agents | lessons-agents.md | launching, waiting on, and bounding managed roles |
 | lessons-evidence | lessons-evidence.md | manifests, tests, proofs and their claims |
-| lessons-binding | lessons-binding.md | module boundaries, name binding, inert patches |
+| lessons-binding | lessons-binding.md | boundaries, bindings, tests that miss |
 | protocol | protocol.md | writing or reading a managed role's lines: every prefix and its fields |
 
 A managed launch's text is assembled in this order: the playbook (this

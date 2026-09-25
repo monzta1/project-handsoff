@@ -32,6 +32,7 @@ LAYERS = [
     "handsoff_resources",
     "handsoff_agent_runtime",
     "handsoff_projection",
+    "handsoff_workflow",
 ]
 
 STDLIB_OK = {

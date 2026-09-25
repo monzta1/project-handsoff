@@ -28,7 +28,7 @@ package-dir = {"" = "bin"}
 py-modules = [
   "handsoff_agent", "handsoff_broker", "handsoff_cli", "handsoff_close_transaction",
   "handsoff_dashboard", "handsoff_fleet", "handsoff_fleet_signals", "handsoff_lib", "handsoff_manifest",
-  "handsoff_observability", "handsoff_preflight", "handsoff_progress", "handsoff_regress", "handsoff_config", "handsoff_agent_runtime", "handsoff_core", "handsoff_projection", "handsoff_resources", "handsoff_ledger", "handsoff_routing", "handsoff_release_runtime", "handsoff_release_transaction", "handsoff_runtime_control",
+  "handsoff_observability", "handsoff_preflight", "handsoff_progress", "handsoff_regress", "handsoff_config", "handsoff_agent_runtime", "handsoff_core", "handsoff_projection", "handsoff_workflow", "handsoff_resources", "handsoff_ledger", "handsoff_routing", "handsoff_release_runtime", "handsoff_release_transaction", "handsoff_runtime_control",
   "handsoff_supervisor", "handsoff_tranche", "handsoff_update", "validate_handsoff_status"
 ]
 
