@@ -34,13 +34,13 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
                                cwd=str(thin), capture_output=True, text=True, timeout=30)
         self.assertEqual(index.returncode, 0, index.stderr)
         self.assertTrue(index.stdout.startswith("# Handsoff playbook"))
-        for topic in ("lanes", "landing", "reviewers", "lessons"):
+        for topic in ("lanes", "landing", "reviewers", "lessons-lane"):
             self.assertIn(f"| {topic} |", index.stdout)
-        lessons = subprocess.run([sys.executable, str(ROOT / "bin" / "handsoff_cli.py"), "playbook", "lessons"],
+        lessons = subprocess.run([sys.executable, str(ROOT / "bin" / "handsoff_cli.py"), "playbook", "lessons-lane"],
                                  cwd=str(thin), capture_output=True, text=True, timeout=30)
         self.assertEqual(lessons.returncode, 0, lessons.stderr)
-        self.assertTrue(lessons.stdout.startswith("# Lessons, each one cost a round"))
-        self.assertIn("Regenerate the runtime manifest", lessons.stdout)
+        self.assertTrue(lessons.stdout.startswith("# Lessons: running and landing a lane"))
+        self.assertIn("One `[#N]` tag per criterion", lessons.stdout)
         bad = subprocess.run([sys.executable, str(ROOT / "bin" / "handsoff_cli.py"), "playbook", "nope"],
                              cwd=str(thin), capture_output=True, text=True, timeout=30)
         self.assertEqual(bad.returncode, 1)
@@ -48,7 +48,9 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
 
     def test_every_playbook_file_is_in_the_manifest_and_the_wheel(self):
         files = sorted(p.name for p in PLAYBOOK.iterdir() if p.is_file())
-        self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md", "lessons.md", "protocol.md", "reviewers.md"])
+        self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md",
+                                 "lessons-agents.md", "lessons-evidence.md", "lessons-lane.md",
+                                 "protocol.md", "reviewers.md"])
         manifest = json.loads((ROOT / "handsoff-runtime.json").read_text())
         for name in files:
             self.assertIn(f"playbook/{name}", manifest["files"], name)
@@ -60,7 +62,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         self.assertIn('"playbook/lanes.md"', (ROOT / "bin" / "handsoff_manifest.py").read_text())
         index = json.loads((PLAYBOOK / "index.json").read_text())
         self.assertEqual(index["always_load"], ["INDEX.md", "lanes.md"])
-        self.assertEqual(set(index["topics"]), {"lanes", "landing", "reviewers", "lessons", "protocol"})
+        self.assertEqual(set(index["topics"]), {"lanes", "landing", "reviewers", "protocol",
+                                                "lessons-lane", "lessons-agents", "lessons-evidence"})
         for item in index["files"]:
             self.assertTrue((PLAYBOOK / item["file"]).is_file(), item["file"])
         for name in files:
@@ -80,10 +83,10 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         self.assertLess(text.index("# Handsoff playbook"), text.index("# Sandbox"))
         self.assertLess(text.index("# Sandbox"), text.index("ROLE PROMPT"))
         self.assertLess(text.index("ROLE PROMPT"), text.index("# Assigned task"))
-        self.assertNotIn("## playbook/lessons.md", text, "a topic rides only when asked")
+        self.assertNotIn("## playbook/lessons-lane.md", text, "a topic rides only when asked")
         with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
-            with_topic = agent.build_role_input(tmp, "reviewer", "review it", "lessons")
-        self.assertIn("## playbook/lessons.md", with_topic)
+            with_topic = agent.build_role_input(tmp, "reviewer", "review it", "lessons-lane")
+        self.assertIn("## playbook/lessons-lane.md", with_topic)
         # every topic's section fits the bound the engine enforces at launch (F1.2)
         index = json.loads((PLAYBOOK / "index.json").read_text())
         for name in sorted(index["topics"]):
@@ -113,12 +116,12 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         self.assertIn("## UI.md", both)
         # a topic named in both indexes rides from both (F1.1); one in neither is refused
         collide = json.loads((tmp / "index.json").read_text())
-        collide["topics"]["lessons"] = "the project's own lessons"
-        collide["files"].append({"file": "UI.md", "topics": ["lessons"]})
+        collide["topics"]["lessons-lane"] = "the project's own lessons"
+        collide["files"].append({"file": "UI.md", "topics": ["lessons-lane"]})
         (tmp / "index.json").write_text(json.dumps(collide))
         with mock.patch.object(agent, "_role_prompt", return_value="ROLE PROMPT"):
-            shared = agent.build_role_input(tmp, "implementer", "build it", "lessons")
-        self.assertIn("## playbook/lessons.md", shared)
+            shared = agent.build_role_input(tmp, "implementer", "build it", "lessons-lane")
+        self.assertIn("## playbook/lessons-lane.md", shared)
         self.assertIn("## UI.md", shared)
         with self.assertRaisesRegex(lib.HandsoffError, "not declared in the index: nowhere"):
             lib.briefing_section(tmp, lib.load_config(tmp), "nowhere")
@@ -128,7 +131,9 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         """Bullet-level: every lesson bullet in the local KB names a thing
         the playbook also names (its first distinctive words)."""
         local = LOCAL_KB.read_text()
-        playbook = "\n".join((PLAYBOOK / n).read_text() for n in ("lanes.md", "landing.md", "reviewers.md", "lessons.md")).lower()
+        playbook = "\n".join((PLAYBOOK / n).read_text() for n in ("lanes.md", "landing.md", "reviewers.md",
+                                                   "lessons-lane.md", "lessons-agents.md",
+                                                   "lessons-evidence.md")).lower()
         lessons = local.split("**Lessons of 2026-09-21")[1] if "**Lessons of 2026-09-21" in local else ""
         bullets = [b.strip() for b in re.split(r"\n- ", lessons) if b.strip()][1:]
         keys = {

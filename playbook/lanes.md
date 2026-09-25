@@ -3,7 +3,7 @@
 The host recipe: worktree off `main`; board; criteria; independently approved
 design; implementation; verification; review; PR; release; installed-engine
 live check; written close. Read this before `init`, `landing.md` before Phase
-6, and `lessons.md` once per session.
+6, and the lessons topic that fits the work once per session.
 
 **One run, N tickets.** Tickets landing together use one `init`, worktree,
 PR, and release. Tag each criterion `[#N]`. Split only independent releases.
