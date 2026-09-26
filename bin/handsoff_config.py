@@ -943,3 +943,38 @@ VERIFICATION_REQUIREMENTS = {
     "browser": {"browser"},
     "automated_and_browser": {"checks", "browser"},
 }
+
+# #300: moved down from handsoff_lib so handsoff_evidence can use the ONE
+# rule instead of its own `run_kind == "test"` comparison. That comparison
+# is the exact defect #317 fixed: it misses the 100 archives written before
+# run_kind existed, whose kind is decided by the repo-name prefix.
+# #49: a run whose root name starts with one of these is a test fixture,
+# a self-check, a drop-in or a benchmark run, never a product run.
+FIXTURE_ROOT_PREFIXES = (
+    "handsoff-test-", "handsoff-selfcheck", "handsoff-dropin", "handsoff-benchmark", "handsoff-fixture",
+)
+RUN_KINDS = ("test", "product")
+
+#: #317: the ONE rule that decides what an archive is. Three readers used to
+#: disagree about the same files. The Miner's answer was the correct one and
+#: is adopted here: an explicit run_kind wins, and without one the repo name,
+#: or the file name when the repo is absent, decides by prefix.
+#:
+#: The leniency it replaces mattered. `tokens_per_ticket` excluded only an
+#: exact run_kind of "test", so the 100 archives written before #49 added the
+#: field all passed as product, including the 81 that were fixture runs, and
+#: those figures ride on every Fleet card.
+#:
+#: An unexpected value is NOT honoured. Trusting it would let a typo or a
+#: hand-edited archive declare itself product; falling through to the name
+#: rule keeps the decision on evidence the archive cannot fake about itself.
+def classify_archive_record(record: object, file_name: str = "") -> str:
+    """Return "test" or "product" for one archive record."""
+    kind = record.get("run_kind") if isinstance(record, dict) else None
+    if isinstance(kind, str) and kind in RUN_KINDS:
+        return kind
+    repo = record.get("repo") if isinstance(record, dict) else None
+    name = repo if isinstance(repo, str) and repo else (file_name or "")
+    if any(name.startswith(prefix) for prefix in FIXTURE_ROOT_PREFIXES):
+        return "test"
+    return "product"

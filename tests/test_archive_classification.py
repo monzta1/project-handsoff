@@ -156,7 +156,10 @@ class ReadersAreRegisteredNotRemembered(unittest.TestCase):
             declared[name] = f"reader via {callable_name}"
         for name, reason in lib.ARCHIVE_CLASSIFICATION_WRITERS.items():
             declared[name] = f"writer: {reason}"
-        declared["handsoff_lib.classify_archive_record"] = "the shared rule itself"
+        # #300: the rule moved down to handsoff_config so handsoff_evidence,
+        # which sits above config and below the monolith, can use it instead
+        # of a private `run_kind == "test"` comparison.
+        declared["handsoff_config.classify_archive_record"] = "the shared rule itself"
 
         modules = {path.stem for path in BIN.glob("handsoff_*.py")}
         expected = {name for name in declared if name.split(".")[0] in modules}
