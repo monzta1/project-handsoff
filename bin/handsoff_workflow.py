@@ -766,7 +766,15 @@ CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "stat
                            # for it (a test born with the feature), with the reason audited
                            "baseline", "baseline_reason",
                            # #169: N green runs in a row, with a seed per attempt
-                           "repeat", "seed_env")
+                           "repeat", "seed_env",
+                           # #349: WHICH function the criterion claims its tests
+                           # detect the loss of. Part of the criterion spec, so
+                           # `criterion_spec_hash` binds it and changing it
+                           # invalidates the recorded proof. A review found that
+                           # with the symbol chosen at proof time instead, a
+                           # proof against an irrelevant symbol stayed valid
+                           # evidence for that criterion forever.
+                           "mutation_target", "mutation_symbol")
 
 
 MAX_REPEAT = 50
@@ -840,6 +848,26 @@ def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> lis
         errors.append("'seed_env' must be an environment variable name (A-Z, 0-9, _)")
     if fields.get("seed_env") and not fields.get("repeat"):
         errors.append("'seed_env' needs repeat")
+    for field in ("mutation_target", "mutation_symbol"):
+        value = fields.get(field)
+        if field in fields and value is not None and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"'{field}' must be a non-empty string or null")
+    if "mutation_target" in fields and fields.get("mutation_target"):
+        target = fields["mutation_target"]
+        if Path(target).is_absolute() or ".." in Path(target).parts:
+            errors.append("'mutation_target' must be a path inside the project, relative and without '..'")
+    # The pair is meaningless apart: a file with no symbol names nothing to
+    # neutralise, and a symbol with no file cannot be located.
+    declared = [f for f in ("mutation_target", "mutation_symbol") if fields.get(f)]
+    if len(declared) == 1:
+        errors.append("'mutation_target' and 'mutation_symbol' must be set together")
+    # #349: the policy that requires mutation evidence requires the criterion to
+    # SAY what it claims its tests detect. Without it the symbol is chosen at
+    # proof time, which is the author choosing what counts as proved.
+    if fields.get("verification") == "automated_and_mutation" and len(declared) != 2:
+        errors.append("a criterion with verification automated_and_mutation must declare "
+                      "'mutation_target' and 'mutation_symbol': the function whose loss its "
+                      "tests must detect, chosen at design time and bound to the criterion hash")
     return errors
 
 

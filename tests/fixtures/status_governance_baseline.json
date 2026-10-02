@@ -1,0 +1,1905 @@
+{
+  "active_work_item": null,
+  "agent_failures": {
+    "hs-34f08924118c418fa2ac7a9b8b4fbe5f": {
+      "acknowledged": true,
+      "at": "2026-09-22T11:31:19.363793+00:00",
+      "category": "token_budget_exhaustion",
+      "progress_summary": {
+        "done": [],
+        "partial": [],
+        "untouched": [
+          "REQ-001",
+          "REQ-002",
+          "REQ-003",
+          "REQ-004",
+          "REQ-005",
+          "REQ-006",
+          "REQ-007",
+          "REQ-008",
+          "REQ-009",
+          "REQ-010",
+          "REQ-011"
+        ]
+      },
+      "reason": "managed role exhausted its token budget",
+      "session_id": "hs-34f08924118c418fa2ac7a9b8b4fbe5f",
+      "tail_sha256": "ff98d7d5dd8f7a2c30339220fcb0c47ae8a9f4c36dd593e5be5e7485c8e73e49"
+    },
+    "hs-61ae0c9f5e4e44899701542ffd3eb658": {
+      "acknowledged": true,
+      "at": "2026-09-22T11:11:06.667823+00:00",
+      "category": "orchestration_noop",
+      "reason": "Supervisor exited without a broker request or Pilot question",
+      "session_id": "hs-61ae0c9f5e4e44899701542ffd3eb658",
+      "tail_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "hs-8052c6a8ec794a53ba4615c604f98866": {
+      "acknowledged": true,
+      "at": "2026-09-22T13:13:33.339356+00:00",
+      "category": "token_budget_exhaustion",
+      "reason": "managed role exhausted its token budget",
+      "session_id": "hs-8052c6a8ec794a53ba4615c604f98866",
+      "tail_sha256": "58c4676e1b12aa283cdbac868b38ce0386cd81e970bbfc3218a27bfe582b7c4c"
+    }
+  },
+  "agent_replacements": [
+    {
+      "action": "pilot_pause",
+      "at": "2026-09-22T11:11:06.901955+00:00",
+      "attempt": 0,
+      "cap": 2,
+      "category": "orchestration_noop",
+      "from_session_id": "hs-61ae0c9f5e4e44899701542ffd3eb658",
+      "handoff": null,
+      "planner_reason": "non_recoverable_failure",
+      "reason": "non_recoverable_failure",
+      "replacement_id": "hr-66c1ea430e4e4a96be83064a15bc80b8",
+      "role": "architect",
+      "selected_profile": null,
+      "skipped": [],
+      "state": "pilot_pause",
+      "to_session_id": null,
+      "trigger": "runtime_failure"
+    },
+    {
+      "action": "pilot_pause",
+      "at": "2026-09-22T11:31:19.601273+00:00",
+      "attempt": 0,
+      "cap": 2,
+      "category": "token_budget_exhaustion",
+      "from_session_id": "hs-34f08924118c418fa2ac7a9b8b4fbe5f",
+      "handoff": null,
+      "planner_reason": "non_recoverable_failure",
+      "reason": "non_recoverable_failure",
+      "replacement_id": "hr-de8eb52e52f443ebab060380e600dc51",
+      "role": "implementer",
+      "selected_profile": null,
+      "skipped": [],
+      "state": "pilot_pause",
+      "to_session_id": null,
+      "trigger": "runtime_failure"
+    },
+    {
+      "action": "pilot_pause",
+      "at": "2026-09-22T13:13:33.962354+00:00",
+      "attempt": 0,
+      "cap": 2,
+      "category": "token_budget_exhaustion",
+      "from_session_id": "hs-8052c6a8ec794a53ba4615c604f98866",
+      "handoff": null,
+      "planner_reason": "non_recoverable_failure",
+      "reason": "non_recoverable_failure",
+      "replacement_id": "hr-2bf98cfc5b3c48b6865127b7f2b0cfa4",
+      "role": "reviewer",
+      "selected_profile": null,
+      "skipped": [],
+      "state": "pilot_pause",
+      "to_session_id": null,
+      "trigger": "runtime_failure"
+    }
+  ],
+  "agent_sessions": {
+    "hs-0f2be106798843399d4dfc44179c381b": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:37:43.896920+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:34:13.501093+00:00",
+      "session_id": "hs-0f2be106798843399d4dfc44179c381b",
+      "started_at": "2026-09-22T11:34:13.456274+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 106066
+      }
+    },
+    "hs-19a731b44d104e399437c31661f1cd8d": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:58:41.256463+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:50:49.535435+00:00",
+      "session_id": "hs-19a731b44d104e399437c31661f1cd8d",
+      "started_at": "2026-09-22T11:50:49.467304+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 97524
+      }
+    },
+    "hs-23d7c308cf69406eb4f0ad1d1be76804": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:34:06.987262+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:32:12.007474+00:00",
+      "session_id": "hs-23d7c308cf69406eb4f0ad1d1be76804",
+      "started_at": "2026-09-22T12:32:11.960339+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 29392
+      }
+    },
+    "hs-27c9f668265f4db08bf1a6896dafb512": {
+      "actor": "codex-reviewer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T13:15:08.866067+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 5,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "result": {
+        "adopted_at": null,
+        "adopted_by": null,
+        "kind": "review",
+        "payload": {
+          "decision": "approved",
+          "findings": [],
+          "kind": "implementation",
+          "structural_blocker": false,
+          "summary": "The finding is fully addressed: review lanes now face unconditional Phase 6, 95% progress, work-item, and terminal status gates. The adopted implementation anchor requires provenance, while green acceptance and evidence gates still prevent adoption with unevidenced criteria. The four tests cover these paths.",
+          "symptom_reproduced": "not_applicable",
+          "tests_executed": "yes"
+        },
+        "recorded_at": "2026-09-22T13:15:06.633363+00:00"
+      },
+      "role": "reviewer",
+      "running_at": "2026-09-22T13:14:11.854706+00:00",
+      "session_id": "hs-27c9f668265f4db08bf1a6896dafb512",
+      "started_at": "2026-09-22T13:14:11.453979+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 11935
+      }
+    },
+    "hs-34f08924118c418fa2ac7a9b8b4fbe5f": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:31:19.363793+00:00",
+      "exit_code": 1,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:26:32.119734+00:00",
+      "session_id": "hs-34f08924118c418fa2ac7a9b8b4fbe5f",
+      "started_at": "2026-09-22T11:26:32.055105+00:00",
+      "state": "failed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 120298
+      }
+    },
+    "hs-35cc5ecd0ab64092ac96946fb2d54442": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:49:17.639933+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:45:53.280493+00:00",
+      "session_id": "hs-35cc5ecd0ab64092ac96946fb2d54442",
+      "started_at": "2026-09-22T11:45:53.003529+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 45852
+      }
+    },
+    "hs-51b1b72d2b1f4ecf86b06b54f45d958b": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:44:47.507259+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:39:29.670789+00:00",
+      "session_id": "hs-51b1b72d2b1f4ecf86b06b54f45d958b",
+      "started_at": "2026-09-22T11:39:29.618445+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 101805
+      }
+    },
+    "hs-582244ce92bf47adbed8bf87768e106f": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:33:16.162377+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "progress": [
+        {
+          "at": "2026-09-22T11:33:15.801628+00:00",
+          "criterion": "REQ-003",
+          "note": "",
+          "state": "done",
+          "test": "python3 -m unittest tests.test_lane_design -v"
+        }
+      ],
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:32:33.144081+00:00",
+      "session_id": "hs-582244ce92bf47adbed8bf87768e106f",
+      "started_at": "2026-09-22T11:32:33.099788+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 40864
+      }
+    },
+    "hs-5e856349bc75467aad7e233617741da1": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:25:48.002236+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:23:05.163855+00:00",
+      "session_id": "hs-5e856349bc75467aad7e233617741da1",
+      "started_at": "2026-09-22T11:23:05.114225+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 67841
+      }
+    },
+    "hs-61ae0c9f5e4e44899701542ffd3eb658": {
+      "actor": "codex-architect",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:11:06.667823+00:00",
+      "exit_code": 1,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 2,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "architect",
+      "running_at": "2026-09-22T11:10:25.171576+00:00",
+      "session_id": "hs-61ae0c9f5e4e44899701542ffd3eb658",
+      "started_at": "2026-09-22T11:10:25.122679+00:00",
+      "state": "failed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 35888
+      }
+    },
+    "hs-73adfde0b9e14eb8b655c3d368500dca": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:23:56.224443+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:21:20.529757+00:00",
+      "session_id": "hs-73adfde0b9e14eb8b655c3d368500dca",
+      "started_at": "2026-09-22T12:21:20.437045+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 56709
+      }
+    },
+    "hs-76d1152b15f345bb958ef1c11f1c9429": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T13:01:16.867120+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:54:39.971420+00:00",
+      "session_id": "hs-76d1152b15f345bb958ef1c11f1c9429",
+      "started_at": "2026-09-22T12:54:39.922883+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 74061
+      }
+    },
+    "hs-7f304e15d38f4749be53285b7fb108bc": {
+      "actor": "codex-reviewer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:14:16.916507+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 2,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "result": {
+        "adopted_at": null,
+        "adopted_by": null,
+        "kind": "review",
+        "payload": {
+          "decision": "changes_requested",
+          "findings": [
+            "acceptance_not_met: Specify that design-lane advance 3 and init --from-design retain every Phase 1\u20133 gate, including human design approval where required, and that all lane refusals preflight without mutation.",
+            "incorrect_implementation: Define init --lane review --adopt behavior when the resolved commit author is missing or unknown: refuse before writing, or persist a verifiable identity that the Phase 6 independence gate can compare; never permit review with an unenforceable implementer identity."
+          ],
+          "kind": "design",
+          "structural_blocker": false,
+          "summary": "The proposal is directionally sound but leaves two integrity-critical behaviors undefined: preservation of the existing Phase 3 approval gate and unknown commit-author handling for review lanes.",
+          "symptom_reproduced": "not_applicable",
+          "tests_executed": "no"
+        },
+        "recorded_at": "2026-09-22T11:14:15.748164+00:00"
+      },
+      "role": "reviewer",
+      "running_at": "2026-09-22T11:13:36.872211+00:00",
+      "session_id": "hs-7f304e15d38f4749be53285b7fb108bc",
+      "started_at": "2026-09-22T11:13:36.608232+00:00",
+      "state": "completed",
+      "tier": "primary",
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 34164
+      }
+    },
+    "hs-8052c6a8ec794a53ba4615c604f98866": {
+      "actor": "codex-reviewer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T13:13:33.339356+00:00",
+      "exit_code": 1,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 5,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "reviewer",
+      "running_at": "2026-09-22T13:06:48.090915+00:00",
+      "session_id": "hs-8052c6a8ec794a53ba4615c604f98866",
+      "started_at": "2026-09-22T13:06:47.675800+00:00",
+      "state": "failed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 81075
+      }
+    },
+    "hs-8565584387a34c3c8eb5ca8f98b48f3e": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:27:08.838998+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:24:45.598782+00:00",
+      "session_id": "hs-8565584387a34c3c8eb5ca8f98b48f3e",
+      "started_at": "2026-09-22T12:24:45.552015+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 93575
+      }
+    },
+    "hs-9538b2d98e484f3d87bd38c7b8401a9f": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:07:03.572269+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:00:46.319804+00:00",
+      "session_id": "hs-9538b2d98e484f3d87bd38c7b8401a9f",
+      "started_at": "2026-09-22T12:00:46.259542+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 97797
+      }
+    },
+    "hs-a5c5f5f11dc44e39b95d584d4fc34e1f": {
+      "actor": "codex-architect",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:13:03.905004+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 2,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "result": {
+        "adopted_at": null,
+        "adopted_by": null,
+        "kind": "design",
+        "payload": {
+          "approach": [
+            "Data shape: status fields lane (full|design|review), phases_run and phases_waived (sorted disjoint integer arrays 1..8), inherited_waived (sorted integer array), implementation_adopted, taken_up_from, design_document, review_report (nullable objects); records are bounded and trust-hashed where stated.",
+            "Keep lane entry and phase gates in the shared library, with supervisor commands re-checking them so hand-crafted status cannot enter Phase 3; require a real approved non-Architect review bound to the current design hash.",
+            "Use design.html with schema version 1 and one canonical sorted-key JSON block; validate the block before rendering deterministic human-readable HTML from it, never parse the block from page prose.",
+            "Preflight all lane refusals before mutation and require status, acceptance, and both ledgers to remain byte-identical; write design.html and review_report.md in the run root beside handsoff-status.json.",
+            "Make archive analysis select only rules for phases in phases_run; waived phases are never treated as passed and no lane-specific rule loosens an existing gate."
+          ],
+          "constraints": [
+            "Patch release only; preserve behavior for existing runs without a lane field.",
+            "Use only the acceptance commands already present in handsoff.toml.",
+            "Implement within bin/handsoff_lib.py, bin/handsoff_supervisor.py, schemas/, dashboard/, and targeted tests."
+          ],
+          "decisions": [
+            "Legacy status without lane remains full-lane with unchanged behavior.",
+            "Lane values are full, design, or review; phases_run and phases_waived are sorted, disjoint, and cover the lane decision explicitly.",
+            "Design entry reaches Phase 3 only with matching criteria hash and an approved independent non-Architect review; matching hash without approval reaches Phase 2.",
+            "Review entry adopts a resolved commit and starts at Phase 5; it exits at Phase 6 and never deploys."
+          ],
+          "summary": "Add explicit design and review lanes while preserving full-lane behavior for legacy runs and enforcing complete phase gates for every phase a lane runs.",
+          "tradeoffs": [
+            "Persisting explicit waived and inherited phase state increases status and ledger detail but makes skipped work auditable and preserves trust-chain intent.",
+            "Keeping machine-readable JSON separate from rendered prose makes round-tripping deterministic and prevents page edits from becoming evidence.",
+            "Run-root artifacts simplify ownership, hashing, and archival at the cost of keeping generated documents inside each run directory."
+          ],
+          "verification": [
+            "Run python3 -m unittest tests.test_lane_design -v and tests.test_from_design -v.",
+            "Run python3 -m unittest tests.test_lane_review -v.",
+            "Run node --test tests/dashboard/lane_phases.test.js.",
+            "Verify repeated design rendering is byte-identical and refusal snapshots prove status, acceptance, and both ledgers are unchanged."
+          ]
+        },
+        "recorded_at": "2026-09-22T11:13:03.802768+00:00"
+      },
+      "role": "architect",
+      "running_at": "2026-09-22T11:12:41.577797+00:00",
+      "session_id": "hs-a5c5f5f11dc44e39b95d584d4fc34e1f",
+      "started_at": "2026-09-22T11:12:41.531458+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 17224
+      }
+    },
+    "hs-ac26cfc961864426a1736abf98a2dd31": {
+      "actor": "codex-architect",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:14:59.965502+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 2,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "result": {
+        "adopted_at": null,
+        "adopted_by": null,
+        "kind": "design",
+        "payload": {
+          "approach": [
+            "Data shape: status stores lane as full|design|review; phases_run and phases_waived as sorted disjoint integer arrays 1..8; inherited_waived as sorted integers; implementation_adopted, taken_up_from, design_document, and review_report as bounded nullable objects; review identity fields are non-empty actor strings.",
+            "Keep lane entry and phase gates in the shared library, with supervisor commands re-checking them so hand-crafted status cannot enter Phase 3.",
+            "Design-lane advance 3 and init --from-design use the identical Phase 3 gate as full runs: current-hash approved independent review by a non-Architect, plus human design_approved when requires_design_approval is true. A project-level false waiver remains project policy; missing carried evidence enters Phase 2.",
+            "Preflight every lane refusal, including all design and review gates, before mutation; status, acceptance, verification ledger, and event ledger remain byte-identical after refusal.",
+            "init --lane review --adopt refuses before writing if the resolved commit has no usable author identity; otherwise it records that author and the adopting actor, and Phase 6 requires the reviewer to differ from both when they differ.",
+            "Use design.html with schema version 1 and one canonical sorted-key JSON block; validate it before deterministic rendering and never parse page prose.",
+            "Make archive analysis select only rules for phases in phases_run; waived phases are never treated as passed."
+          ],
+          "constraints": [
+            "Patch release only; preserve behavior for existing runs without a lane field.",
+            "Use only the acceptance commands already present in handsoff.toml.",
+            "Implement within bin/handsoff_lib.py, bin/handsoff_supervisor.py, schemas/, dashboard/, and targeted tests."
+          ],
+          "decisions": [
+            "Legacy status without lane remains full-lane with unchanged behavior.",
+            "Lane values are full, design, or review; phases_run and phases_waived are sorted, disjoint, and cover the lane decision explicitly.",
+            "Design entry reaches Phase 3 only with matching criteria hash, an approved independent non-Architect review, and human approval when required; otherwise it reaches Phase 2.",
+            "Review entry adopts only commits with a usable author identity, records the resolved sha, author, typed ref, and adopting actor, and starts at Phase 5.",
+            "Phase 6 independence rejects a reviewer matching either the adopted commit author or adopting actor; both identities are recorded even when distinct.",
+            "Prior finding F1.1 resolved: design advance 3 and init --from-design retain all Phase 1\u20133 gates, and every lane refusal preflights without mutation.",
+            "Prior finding F1.2 resolved: review adoption refuses an unknown or missing commit author before writing, ensuring Phase 6 always compares concrete identities."
+          ],
+          "summary": "Add explicit design and review lanes while preserving full-lane behavior for legacy runs and enforcing every applicable phase gate.",
+          "tradeoffs": [
+            "Persisting explicit waived and inherited phase state increases status and ledger detail but makes skipped work auditable and preserves trust-chain intent.",
+            "Refusing adoption without a usable commit author avoids an unenforceable Phase 6 independence check.",
+            "Keeping machine-readable JSON separate from rendered prose makes round-tripping deterministic and prevents page edits becoming evidence."
+          ],
+          "verification": [
+            "Run python3 -m unittest tests.test_lane_design -v and tests.test_from_design -v.",
+            "Run python3 -m unittest tests.test_lane_review -v.",
+            "Run node --test tests/dashboard/lane_phases.test.js.",
+            "Verify repeated design rendering is byte-identical and refusal snapshots prove status, acceptance, verification ledger, and event ledger are unchanged.",
+            "Verify review adoption refuses missing or unknown authors before creating run state and that Phase 6 rejects reviewers matching either recorded identity."
+          ]
+        },
+        "recorded_at": "2026-09-22T11:14:59.926605+00:00"
+      },
+      "role": "architect",
+      "running_at": "2026-09-22T11:14:41.287677+00:00",
+      "session_id": "hs-ac26cfc961864426a1736abf98a2dd31",
+      "started_at": "2026-09-22T11:14:41.236071+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 9857
+      }
+    },
+    "hs-b80a9108ddea48b8b3de33d9a73d43dd": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:17:50.815768+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "progress": [
+        {
+          "at": "2026-09-22T12:17:50.788268+00:00",
+          "criterion": "REQ-004",
+          "note": "",
+          "state": "done",
+          "test": "node --test tests/dashboard/lane_phases.test.js"
+        }
+      ],
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:13:54.900946+00:00",
+      "session_id": "hs-b80a9108ddea48b8b3de33d9a73d43dd",
+      "started_at": "2026-09-22T12:13:54.818740+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 92377
+      }
+    },
+    "hs-c61494147169420c908f25d2ed48f3a4": {
+      "actor": "codex-reviewer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:44:51.075144+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 5,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "result": {
+        "adopted_at": null,
+        "adopted_by": null,
+        "kind": "review",
+        "payload": {
+          "decision": "changes_requested",
+          "findings": [
+            "acceptance_not_met: bin/handsoff_lib.py:6140-6149 excludes lane=review from Phase 6/progress evidence gates, allowing Phase 6 with failing criteria or no resolved symptom. Remove the exception or add equivalent mandatory checks; lanes may alter phases, not gates."
+          ],
+          "kind": "implementation",
+          "structural_blocker": false,
+          "summary": "Review lane bypasses full acceptance and symptom evidence gates before Phase 6 and at 95% progress.",
+          "symptom_reproduced": "not_applicable",
+          "tests_executed": "yes"
+        },
+        "recorded_at": "2026-09-22T12:44:49.234425+00:00"
+      },
+      "role": "reviewer",
+      "running_at": "2026-09-22T12:40:40.030902+00:00",
+      "session_id": "hs-c61494147169420c908f25d2ed48f3a4",
+      "started_at": "2026-09-22T12:40:39.621108+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 51587
+      }
+    },
+    "hs-ccd5106b476e4c299509f232c30efae8": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T11:21:36.877683+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "progress": [
+        {
+          "at": "2026-09-22T11:21:36.022949+00:00",
+          "criterion": "REQ-001",
+          "note": "",
+          "state": "done",
+          "test": "python3 -m unittest tests.test_lane_design -v"
+        },
+        {
+          "at": "2026-09-22T11:21:36.658921+00:00",
+          "criterion": "REQ-002",
+          "note": "",
+          "state": "done",
+          "test": "python3 -m unittest tests.test_lane_design -v"
+        }
+      ],
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T11:16:16.932126+00:00",
+      "session_id": "hs-ccd5106b476e4c299509f232c30efae8",
+      "started_at": "2026-09-22T11:16:16.880412+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 88188
+      }
+    },
+    "hs-cf4694e18e60451db5c67d1f4fcfc78f": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:53:41.618727+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:45:41.419375+00:00",
+      "session_id": "hs-cf4694e18e60451db5c67d1f4fcfc78f",
+      "started_at": "2026-09-22T12:45:41.282861+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 117701
+      }
+    },
+    "hs-da9efef576124ed6be7fd80d78310e2b": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:31:09.682283+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:28:34.946682+00:00",
+      "session_id": "hs-da9efef576124ed6be7fd80d78310e2b",
+      "started_at": "2026-09-22T12:28:34.900928+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 42707
+      }
+    },
+    "hs-e83f275c55ec4bd3b4e8b6f7e187a771": {
+      "actor": "codex-implementer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": null,
+      "ended_at": "2026-09-22T12:12:08.863709+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": null,
+      "phase_number": 4,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "role": "implementer",
+      "running_at": "2026-09-22T12:07:55.556072+00:00",
+      "session_id": "hs-e83f275c55ec4bd3b4e8b6f7e187a771",
+      "started_at": "2026-09-22T12:07:55.510051+00:00",
+      "state": "completed",
+      "tier": null,
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 88912
+      }
+    },
+    "hs-f1ea587f50924c059493e27a7c6ce8cd": {
+      "actor": "codex-reviewer",
+      "adapter": "codex",
+      "amendment_id": null,
+      "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+      "ended_at": "2026-09-22T11:15:42.880123+00:00",
+      "exit_code": 0,
+      "host_session_id": null,
+      "packet_id": "f8465b3a972dcd352fb6b3df4967ed9b",
+      "phase_number": 2,
+      "reported_model": null,
+      "requested_model": "default",
+      "resolution_source": "configured",
+      "result": {
+        "adopted_at": null,
+        "adopted_by": null,
+        "kind": "review",
+        "payload": {
+          "decision": "approved",
+          "findings": [],
+          "kind": "design",
+          "structural_blocker": false,
+          "summary": "Both prior findings are resolved: lane entry and design completion retain the full Phase 1\u20133 gates with preflight-only refusals, and review adoption refuses unusable commit authors while recording concrete author and adopter identities for Phase 6 independence checks.",
+          "symptom_reproduced": "not_applicable",
+          "tests_executed": "no"
+        },
+        "recorded_at": "2026-09-22T11:15:41.794344+00:00"
+      },
+      "role": "reviewer",
+      "running_at": "2026-09-22T11:15:32.659867+00:00",
+      "session_id": "hs-f1ea587f50924c059493e27a7c6ce8cd",
+      "started_at": "2026-09-22T11:15:32.516217+00:00",
+      "state": "completed",
+      "tier": "primary",
+      "usage": {
+        "source": "adapter",
+        "tokens_in": null,
+        "tokens_out": null,
+        "tokens_total": 8885
+      }
+    }
+  },
+  "amendment": null,
+  "amendments": [],
+  "background_wait": null,
+  "ci": {
+    "ended_at": "2026-09-22T13:20:55.569571+00:00",
+    "expected_seconds": 115.0,
+    "expected_source": "https://github.com/monzta1/project-handsoff/actions/runs/35672163866, https://github.com/monzta1/project-handsoff/actions/runs/35671929409, https://github.com/monzta1/project-handsoff/actions/runs/35671504011, https://github.com/monzta1/project-handsoff/actions/runs/35668829749, https://github.com/monzta1/project-handsoff/actions/runs/35667902708",
+    "failed_check": null,
+    "head": "81f713a8ed6579bc1a61233b367e062a5ae01111",
+    "pr": 247,
+    "started_at": "2026-09-22T13:16:12.312645+00:00",
+    "state": "passed",
+    "url": "https://github.com/monzta1/project-handsoff/pull/247",
+    "watched_by": "claude-supervisor"
+  },
+  "current_agent_sessions": {
+    "architect": "hs-ac26cfc961864426a1736abf98a2dd31",
+    "implementer": "hs-76d1152b15f345bb958ef1c11f1c9429",
+    "reviewer": "hs-27c9f668265f4db08bf1a6896dafb512"
+  },
+  "deployment_approved": null,
+  "design_approved": null,
+  "design_proposal": {
+    "approach": [
+      "Data shape: status stores lane as full|design|review; phases_run and phases_waived as sorted disjoint integer arrays 1..8; inherited_waived as sorted integers; implementation_adopted, taken_up_from, design_document, and review_report as bounded nullable objects; review identity fields are non-empty actor strings.",
+      "Keep lane entry and phase gates in the shared library, with supervisor commands re-checking them so hand-crafted status cannot enter Phase 3.",
+      "Design-lane advance 3 and init --from-design use the identical Phase 3 gate as full runs: current-hash approved independent review by a non-Architect, plus human design_approved when requires_design_approval is true. A project-level false waiver remains project policy; missing carried evidence enters Phase 2.",
+      "Preflight every lane refusal, including all design and review gates, before mutation; status, acceptance, verification ledger, and event ledger remain byte-identical after refusal.",
+      "init --lane review --adopt refuses before writing if the resolved commit has no usable author identity; otherwise it records that author and the adopting actor, and Phase 6 requires the reviewer to differ from both when they differ.",
+      "Use design.html with schema version 1 and one canonical sorted-key JSON block; validate it before deterministic rendering and never parse page prose.",
+      "Make archive analysis select only rules for phases in phases_run; waived phases are never treated as passed."
+    ],
+    "architect": "codex-architect",
+    "at": "2026-09-22T11:14:59.950991+00:00",
+    "based_on_review_attempt": 1,
+    "constraints": [
+      "Patch release only; preserve behavior for existing runs without a lane field.",
+      "Use only the acceptance commands already present in handsoff.toml.",
+      "Implement within bin/handsoff_lib.py, bin/handsoff_supervisor.py, schemas/, dashboard/, and targeted tests."
+    ],
+    "decisions": [
+      "Legacy status without lane remains full-lane with unchanged behavior.",
+      "Lane values are full, design, or review; phases_run and phases_waived are sorted, disjoint, and cover the lane decision explicitly.",
+      "Design entry reaches Phase 3 only with matching criteria hash, an approved independent non-Architect review, and human approval when required; otherwise it reaches Phase 2.",
+      "Review entry adopts only commits with a usable author identity, records the resolved sha, author, typed ref, and adopting actor, and starts at Phase 5.",
+      "Phase 6 independence rejects a reviewer matching either the adopted commit author or adopting actor; both identities are recorded even when distinct.",
+      "Prior finding F1.1 resolved: design advance 3 and init --from-design retain all Phase 1\u20133 gates, and every lane refusal preflights without mutation.",
+      "Prior finding F1.2 resolved: review adoption refuses an unknown or missing commit author before writing, ensuring Phase 6 always compares concrete identities."
+    ],
+    "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+    "proposal_hash": "a3f19847f47838860b7989043cdf8d4133a443a417fe09419d1b717cf51aa8b2",
+    "provenance": {
+      "actor": "codex-architect",
+      "executable": "/home/operator/Projects/project-handsoff-lanes/bin/handsoff_agent.py",
+      "host_session_id": null,
+      "pid": 59450,
+      "recorded_at": "2026-09-22T11:14:59.950991+00:00"
+    },
+    "session_id": "hs-ac26cfc961864426a1736abf98a2dd31",
+    "summary": "Add explicit design and review lanes while preserving full-lane behavior for legacy runs and enforcing every applicable phase gate.",
+    "tradeoffs": [
+      "Persisting explicit waived and inherited phase state increases status and ledger detail but makes skipped work auditable and preserves trust-chain intent.",
+      "Refusing adoption without a usable commit author avoids an unenforceable Phase 6 independence check.",
+      "Keeping machine-readable JSON separate from rendered prose makes round-tripping deterministic and prevents page edits becoming evidence."
+    ],
+    "verification": [
+      "Run python3 -m unittest tests.test_lane_design -v and tests.test_from_design -v.",
+      "Run python3 -m unittest tests.test_lane_review -v.",
+      "Run node --test tests/dashboard/lane_phases.test.js.",
+      "Verify repeated design rendering is byte-identical and refusal snapshots prove status, acceptance, verification ledger, and event ledger are unchanged.",
+      "Verify review adoption refuses missing or unknown authors before creating run state and that Phase 6 rejects reviewers matching either recorded identity."
+    ]
+  },
+  "design_review": {
+    "architect": "codex-architect",
+    "at": "2026-09-22T11:15:42.572741+00:00",
+    "attempt": 2,
+    "by": "codex-reviewer",
+    "config_hash": "5152427583f5f223973367ce2d706ff5e27a878074249847487b025f94687ec3",
+    "decision": "approved",
+    "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+    "findings": [],
+    "head": "e2954c88cb17b49ab752aed2641758c09bde2865",
+    "proposal_hash": "a3f19847f47838860b7989043cdf8d4133a443a417fe09419d1b717cf51aa8b2",
+    "reviewer_profile": {
+      "adapter": "codex",
+      "model": "default",
+      "reason": "no_followup_configured",
+      "tier": "primary"
+    },
+    "scope_hash": "f7ffc0d714029c8e585763868596485211f4d56dd7cad851f72f5576ed04de53",
+    "structural_blocker": false,
+    "summary": "Both prior findings are resolved: lane entry and design completion retain the full Phase 1\u20133 gates with preflight-only refusals, and review adoption refuses unusable commit authors while recording concrete author and adopter identities for Phase 6 independence checks."
+  },
+  "design_review_attempts": 2,
+  "design_review_authorization": null,
+  "design_review_history": [
+    {
+      "attempt": 1,
+      "by": "codex-reviewer",
+      "criteria_ids": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009",
+        "REQ-010",
+        "REQ-011"
+      ],
+      "criterion_hashes": {
+        "REQ-001": "d98c56183bee2b2573fe92469d539b9eedc6084117635073d6373c4d191d73fd",
+        "REQ-002": "00e87426f6c9728ea5ca5b80101b8cce2a81499b84a11850b810c772c4a96395",
+        "REQ-003": "3b3de7ecced6fe7f41c433a4021cbdae8c337f3d2764a7cab54fbda3b64840e4",
+        "REQ-004": "e8bed7e59b7f34f8a75bebb39650cd48e4976309b48fd732fc2b7a020af23e48",
+        "REQ-005": "359367b7f4cc16ce193704ed002ff543c2c860100e140077b08f75885bda1c21",
+        "REQ-006": "0554da215e540085ff3d25e4e108af7c7f3d03b6f9fba6d9eeacf8d9feac7c8c",
+        "REQ-007": "3b4ace2955a4fb61231082a81c5f32f4887ead3f6a1b61162e97afa8347919c9",
+        "REQ-008": "f37794795bb0b123eddaa1330579c60bd1510b54d953e1399aac4186df9d4b46",
+        "REQ-009": "c1a1295b18eccbc4f7ab0fe306f5f9a08464bb9fee50a34cb52ea57b063705b9",
+        "REQ-010": "7864952bf9496548b449a65d84ba2a84396fa5c57357635eb24d58cc53a8114b",
+        "REQ-011": "c962da3b2a27efaabd25d53725445f4c085bc5630af5770e24a068d38550f455"
+      },
+      "decision": "changes_requested",
+      "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+      "findings": [
+        {
+          "id": "F1.1",
+          "text": "acceptance_not_met: Specify that design-lane advance 3 and init --from-design retain every Phase 1\u20133 gate, including human design approval where required, and that all lane refusals preflight without mutation."
+        },
+        {
+          "id": "F1.2",
+          "text": "incorrect_implementation: Define init --lane review --adopt behavior when the resolved commit author is missing or unknown: refuse before writing, or persist a verifiable identity that the Phase 6 independence gate can compare; never permit review with an unenforceable implementer identity."
+        }
+      ],
+      "head": "e2954c88cb17b49ab752aed2641758c09bde2865",
+      "proposal_hash": "05d032ada784f0c1057acd967e0645699e582bedfa38752c03ab9482adb4a9dc",
+      "structural_blocker": false
+    },
+    {
+      "attempt": 2,
+      "by": "codex-reviewer",
+      "criteria_ids": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009",
+        "REQ-010",
+        "REQ-011"
+      ],
+      "criterion_hashes": {
+        "REQ-001": "d98c56183bee2b2573fe92469d539b9eedc6084117635073d6373c4d191d73fd",
+        "REQ-002": "00e87426f6c9728ea5ca5b80101b8cce2a81499b84a11850b810c772c4a96395",
+        "REQ-003": "3b3de7ecced6fe7f41c433a4021cbdae8c337f3d2764a7cab54fbda3b64840e4",
+        "REQ-004": "e8bed7e59b7f34f8a75bebb39650cd48e4976309b48fd732fc2b7a020af23e48",
+        "REQ-005": "359367b7f4cc16ce193704ed002ff543c2c860100e140077b08f75885bda1c21",
+        "REQ-006": "0554da215e540085ff3d25e4e108af7c7f3d03b6f9fba6d9eeacf8d9feac7c8c",
+        "REQ-007": "3b4ace2955a4fb61231082a81c5f32f4887ead3f6a1b61162e97afa8347919c9",
+        "REQ-008": "f37794795bb0b123eddaa1330579c60bd1510b54d953e1399aac4186df9d4b46",
+        "REQ-009": "c1a1295b18eccbc4f7ab0fe306f5f9a08464bb9fee50a34cb52ea57b063705b9",
+        "REQ-010": "7864952bf9496548b449a65d84ba2a84396fa5c57357635eb24d58cc53a8114b",
+        "REQ-011": "c962da3b2a27efaabd25d53725445f4c085bc5630af5770e24a068d38550f455"
+      },
+      "decision": "approved",
+      "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+      "findings": [],
+      "head": "e2954c88cb17b49ab752aed2641758c09bde2865",
+      "proposal_hash": "a3f19847f47838860b7989043cdf8d4133a443a417fe09419d1b717cf51aa8b2",
+      "structural_blocker": false
+    }
+  ],
+  "design_review_packet": {
+    "attempt": 2,
+    "criteria_delta": {
+      "added": [],
+      "changed": [],
+      "removed": [],
+      "unchanged": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009",
+        "REQ-010",
+        "REQ-011"
+      ]
+    },
+    "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+    "dispositions": {
+      "rejected": [],
+      "resolved": [
+        "F1.1",
+        "F1.2"
+      ],
+      "unresolved": []
+    },
+    "evidence": [],
+    "files_changed_since_previous": [],
+    "findings": [
+      {
+        "disposition": "resolved",
+        "id": "F1.1",
+        "note": null,
+        "text": "acceptance_not_met: Specify that design-lane advance 3 and init --from-design retain every Phase 1\u20133 gate, including human design approval where required, and that all lane refusals preflight without mutation."
+      },
+      {
+        "disposition": "resolved",
+        "id": "F1.2",
+        "note": null,
+        "text": "incorrect_implementation: Define init --lane review --adopt behavior when the resolved commit author is missing or unknown: refuse before writing, or persist a verifiable identity that the Phase 6 independence gate can compare; never permit review with an unenforceable implementer identity."
+      }
+    ],
+    "instructions": "Verify the revision: changed criteria, unresolved and rejected findings, new material. Repository access remains available to challenge any omission or stale fact.",
+    "new_findings_since": [
+      "F1.1",
+      "F1.2"
+    ],
+    "packet_id": "f8465b3a972dcd352fb6b3df4967ed9b",
+    "previous_attempt": 1,
+    "previous_design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+    "previous_head": "e2954c88cb17b49ab752aed2641758c09bde2865",
+    "previous_proposal_hash": "05d032ada784f0c1057acd967e0645699e582bedfa38752c03ab9482adb4a9dc",
+    "proposal_changed": true,
+    "proposal_hash": "a3f19847f47838860b7989043cdf8d4133a443a417fe09419d1b717cf51aa8b2",
+    "repository": {
+      "branch": "claude/lanes-239-241",
+      "dirty": true,
+      "head": "e2954c88cb17b49ab752aed2641758c09bde2865"
+    },
+    "stale": false,
+    "stale_reasons": []
+  },
+  "design_reviewer_selection": {
+    "current": {
+      "actor": "codex-reviewer",
+      "adapter": "codex",
+      "attempt": 2,
+      "model": "default",
+      "reason": "no_followup_configured",
+      "selected_at": "2026-09-22T11:15:32.516217+00:00",
+      "session_id": "hs-f1ea587f50924c059493e27a7c6ce8cd",
+      "tier": "primary"
+    }
+  },
+  "design_round": 0,
+  "escalation": null,
+  "events": [],
+  "feature": "Lanes: a run can be a subset of phases, never a subset of gates. Design lane (1 to 3) exits with design.html; init --from-design takes a design file up at the phase its evidence earns; review lane (5 to 6) adversarially reviews adopted code and never deploys.",
+  "human_pause": null,
+  "implemented_by": "codex-implementer",
+  "last_heartbeat_at": null,
+  "last_heartbeat_owner": null,
+  "legacy_review_round_offset": 0,
+  "live_verification_id": "vr-43545f2c7dcc4cb4b65b0121c42709b2",
+  "next_action": "Run closed by the Pilot. Reopen it from Mission Control to continue.",
+  "original_symptom_evidence_id": "vr-ce96548661ae4e769e686dc45e1427b9",
+  "pending_questions": [],
+  "phase": "Live verified",
+  "phase_number": 8,
+  "progress": 100,
+  "reassurance": "",
+  "recovery_attempts": [],
+  "recovery_lease": null,
+  "regression_requests": [],
+  "release_plan": {
+    "full_regression_eligible": false,
+    "full_regression_override_reason": null,
+    "planned_at": "2026-09-22T13:29:56.431040+00:00",
+    "planned_by": "claude-supervisor",
+    "regression_groups": [
+      "python-full",
+      "dashboard-full"
+    ],
+    "release_class": "patch",
+    "targeted_checks": [
+      {
+        "command": "python3 -m unittest tests.test_offline_and_closed -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/offline_and_closed.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/fleet_sections.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/fleet_favicon.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_amendment_dispatch -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_gate_banners -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/gate_banners.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_live_verification_view -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/live_verification.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_session_artifacts -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_claude_adapter -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_adapter_preflight -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_agent_budget -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_reviewer_sandbox -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_post_approval_edits -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_work_items -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_advance_progress -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_design_binding -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_status_truth -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/agent_panel_states.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_supervisor_recovery -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_design_convergence -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_governance_cross -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_mission_control_ops -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/operator_coverage.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/fleet_open_dashboard.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/live_status.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/metrics.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_managed_crew -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_remote_access -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_operations -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_failing_first -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_launch_rules -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_ticket_lock -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_feature_settings -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/feature_settings.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_state -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_token_usage -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_repeat_runs -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_rules_binding -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_report_posting -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/tranche2.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "scripts/no-test-docs-note.sh tests/manual-docs-note",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/operation_telemetry.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_evidence_drift -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_design_review_hold -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_host_roles -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_packaging -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_handsoff_supervisor.TestSmallFixLane -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/work_item_lanes.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_handsoff_supervisor.TestBacklogPlanner -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_work_items.RemovedWorkItemsStayRemoved -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_handsoff_supervisor.TestAmendmentLane.test_a_managed_reviewer_verdict_during_an_open_amendment_is_the_amendment_review -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet.ProjectLogoTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_design_binding.DesignReviewerSelectionIsPersisted -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/tranche_planner.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_handsoff_supervisor.TestRecoveryNoManagedSession -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_prompt_overrides -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_run_triage -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fixture_hygiene -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_regress -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_review_reaffirm -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_launch_precheck -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_config_governance -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_signals.FleetSnapshotTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_signals.GitHubSignalTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_signals.BeakonSignalTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_signals.SignalCacheTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/fleet_signals.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_metrics.IssueCollectorTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_metrics.MetricsServerTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/fleet_metrics.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/fleet_metrics_series.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_metrics.ConditionalReaderTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_metrics.ConditionalCollectorTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_design_gate_config -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_metrics.RegistryWakeTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_briefing -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet_metrics.RepoDedupeTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/engine_badge.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet.EngineBadgeTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_fleet.DashboardOpenTests -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/web/metrics_function.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/web/metrics_site.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 tests/live_metrics_site_smoke.py",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/role_words.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_ci_watch -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/ci_row.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_a_floor -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_b_page -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/lane_b_page.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_c_suite -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_d_board -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/lane_d_board.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_e_clocks_and_decline -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/lane_e_clocks.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_stale_manifest -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_playbook -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_h_fleet -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_session_artifacts -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_handsoff_supervisor.TestMinerShim -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_launch_rules -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_packaging -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_update -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_landing_page -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_docs_only_path -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_protocol_contract -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_snapshot_contract -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/run_vocabulary.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_install_check -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/install_check.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_implementer_progress -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/implementer_progress.test.js",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_governance_docs tests.test_config_governance tests.test_design_gate_config -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_design -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_from_design -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "python3 -m unittest tests.test_lane_review -v",
+        "reason": "configured focused check"
+      },
+      {
+        "command": "node --test tests/dashboard/lane_phases.test.js",
+        "reason": "configured focused check"
+      }
+    ],
+    "version": "v0.3.73"
+  },
+  "requirement_coverage": {
+    "blocked": 0,
+    "failing": 0,
+    "not_tested": 0,
+    "original_symptom_resolved": true,
+    "passing": 11
+  },
+  "requires_design_approval": false,
+  "requires_design_review": true,
+  "retry_count": 0,
+  "review": {
+    "acceptance_hash": "dc49f02a76e86089918e70644ba16e3eda225e39d89afeb10866863a1e7056ee",
+    "at": "2026-09-22T14:00:45.609835+00:00",
+    "by": "codex-reviewer",
+    "checklist": {
+      "all_criteria_verified": "yes",
+      "evidence_attached": "yes",
+      "symptom_reproduced": "not_applicable",
+      "symptom_resolved": "yes"
+    },
+    "config_hash": "5152427583f5f223973367ce2d706ff5e27a878074249847487b025f94687ec3",
+    "implementer_profile": {
+      "adapter": "codex",
+      "effective_adapter": "codex",
+      "model": "default",
+      "source": {
+        "adapter": "explicit",
+        "model": "explicit"
+      }
+    },
+    "profiles_distinct": false,
+    "reaffirmed_attempt": 2,
+    "reaffirmed_from_acceptance_hash": "6340967bc8209d104bf7639b421a4675b3a8f210f1d1e07de8b80b696e1c8932",
+    "reviewer_profile": {
+      "adapter": "codex",
+      "effective_adapter": "codex",
+      "model": "default",
+      "source": {
+        "adapter": "explicit",
+        "model": "explicit"
+      }
+    },
+    "rules_entries": {
+      ".claude/settings.json": null,
+      ".claude/settings.local.json": null,
+      ".codex/config.toml": null,
+      "AGENTS.md": null,
+      "CLAUDE.md": null,
+      "engine:prompts/reviewer.md": "d2c3194682050755ea5a5b860513a4925d9e955a798c3ccca7378b90275ca7e0",
+      "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
+      "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
+      "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
+      "engine:version": "v0.3.73",
+      "handsoff.toml": "6ef24ff320444dd00c9701272a380b592692912599da7af9d033311865c8aee7"
+    },
+    "rules_hash": "ced981611bc98a0ac62b47324cca17e2716bc9f9459504cd392fa56d110898f7",
+    "scope_hash": "f7ffc0d714029c8e585763868596485211f4d56dd7cad851f72f5576ed04de53",
+    "tests_executed": "yes"
+  },
+  "review_attempts": [
+    {
+      "acceptance_hash": "033e848f0aea3289b2027dcdebd49c93dd22878cbe5ea7abbcdcf65eb972d815",
+      "attempt": 1,
+      "attempt_id": "ha-341f1b01734b4c1e84d4452c53ee1e26",
+      "closed_at": "2026-09-22T12:44:50.948866+00:00",
+      "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+      "disposition": "changes_requested",
+      "findings": [
+        {
+          "code": "acceptance_not_met",
+          "summary": "bin/handsoff_lib.py:6140-6149 excludes lane=review from Phase 6/progress evidence gates, allowing Phase 6 with failing criteria or no resolved symptom. Remove the exception or add equivalent mandatory checks; lanes may alter phases, not gates."
+        }
+      ],
+      "opened_at": "2026-09-22T12:40:39.621915+00:00",
+      "opened_by": "codex-reviewer",
+      "phase_number": 5,
+      "reviewer": "codex-reviewer",
+      "session_ids": [
+        "hs-c61494147169420c908f25d2ed48f3a4"
+      ],
+      "tests_executed": "yes",
+      "trigger": "initial",
+      "trigger_detail": ""
+    },
+    {
+      "acceptance_hash": "dc49f02a76e86089918e70644ba16e3eda225e39d89afeb10866863a1e7056ee",
+      "attempt": 2,
+      "attempt_id": "ha-3dbd23e006b3419bbf3665ee757f7cc4",
+      "closed_at": "2026-09-22T13:15:08.280571+00:00",
+      "design_hash": "fbc38c1dfe655685472a3185c4f723e84597ec66b8fa3ee7c15fce027a008487",
+      "disposition": "approved",
+      "findings": [],
+      "opened_at": "2026-09-22T13:06:47.676734+00:00",
+      "opened_by": "codex-reviewer",
+      "phase_number": 5,
+      "reaffirmed_at": "2026-09-22T14:00:45.609835+00:00",
+      "reviewer": "codex-reviewer",
+      "session_ids": [
+        "hs-8052c6a8ec794a53ba4615c604f98866",
+        "hs-27c9f668265f4db08bf1a6896dafb512"
+      ],
+      "tests_executed": "yes",
+      "trigger": "changes_requested",
+      "trigger_detail": ""
+    }
+  ],
+  "review_cap_overrides": [],
+  "review_round": 2,
+  "reviewed_by": "codex-reviewer",
+  "reviewer_checklist": {
+    "all_criteria_verified": "yes",
+    "evidence_attached": "yes",
+    "symptom_reproduced": "not_applicable",
+    "symptom_resolved": "yes"
+  },
+  "reviewer_implementer_bindings": {
+    "hs-27c9f668265f4db08bf1a6896dafb512": {
+      "adapter": "codex",
+      "bound_at": "2026-09-22T13:14:11.455761+00:00",
+      "implementer_session_id": "hs-76d1152b15f345bb958ef1c11f1c9429",
+      "model": "default",
+      "reviewer_session_id": "hs-27c9f668265f4db08bf1a6896dafb512"
+    },
+    "hs-7f304e15d38f4749be53285b7fb108bc": {
+      "adapter": "codex",
+      "bound_at": "2026-09-22T11:13:36.608639+00:00",
+      "implementer_session_id": null,
+      "model": "default",
+      "reviewer_session_id": "hs-7f304e15d38f4749be53285b7fb108bc"
+    },
+    "hs-8052c6a8ec794a53ba4615c604f98866": {
+      "adapter": "codex",
+      "bound_at": "2026-09-22T13:06:47.676884+00:00",
+      "implementer_session_id": "hs-76d1152b15f345bb958ef1c11f1c9429",
+      "model": "default",
+      "reviewer_session_id": "hs-8052c6a8ec794a53ba4615c604f98866"
+    },
+    "hs-c61494147169420c908f25d2ed48f3a4": {
+      "adapter": "codex",
+      "bound_at": "2026-09-22T12:40:39.622048+00:00",
+      "implementer_session_id": "hs-23d7c308cf69406eb4f0ad1d1be76804",
+      "model": "default",
+      "reviewer_session_id": "hs-c61494147169420c908f25d2ed48f3a4"
+    },
+    "hs-f1ea587f50924c059493e27a7c6ce8cd": {
+      "adapter": "codex",
+      "bound_at": "2026-09-22T11:15:32.517109+00:00",
+      "implementer_session_id": null,
+      "model": "default",
+      "reviewer_session_id": "hs-f1ea587f50924c059493e27a7c6ce8cd"
+    }
+  },
+  "run_closed": {
+    "at": "2026-09-22T14:03:43.372895+00:00",
+    "by": "claude-supervisor",
+    "cancelled_active": false,
+    "outcome": "closed",
+    "reason": "Lanes shipped in v0.3.73: design lane, init --from-design, review lane. Eleven criteria evidenced, design and implementation independently reviewed by Codex, live verified against the installed engine, issues #239, #240 and #241 closed with written results.",
+    "session_ids": []
+  },
+  "stall_reported": false,
+  "status": "complete",
+  "summary": "",
+  "updated_at": "2026-09-22T14:03:43.372895+00:00",
+  "verification_head": "de8e1a96f0b58b9ed6a46434fcb4e941ee82c26f8d3060b97c0c22c80530f5df",
+  "warnings": [],
+  "work_item_delivery": {
+    "issue-239": {
+      "baseline_head": null,
+      "confirmed_at": null,
+      "confirmed_by": null,
+      "escalation_reason": null,
+      "facts": null,
+      "implemented_by": "codex-implementer",
+      "lane": "full",
+      "requested_lane": "full",
+      "review_hash": null,
+      "reviewed_by": null
+    },
+    "issue-240": {
+      "baseline_head": null,
+      "confirmed_at": null,
+      "confirmed_by": null,
+      "escalation_reason": null,
+      "facts": null,
+      "implemented_by": "codex-implementer",
+      "lane": "full",
+      "requested_lane": "full",
+      "review_hash": null,
+      "reviewed_by": null
+    },
+    "issue-241": {
+      "baseline_head": null,
+      "confirmed_at": null,
+      "confirmed_by": null,
+      "escalation_reason": null,
+      "facts": null,
+      "implemented_by": "codex-implementer",
+      "lane": "full",
+      "requested_lane": "full",
+      "review_hash": null,
+      "reviewed_by": null
+    }
+  }
+}

@@ -66,3 +66,24 @@ with the number.
   read as None because the host polled the wrong key (#308).
 - A derived-set test must not pass vacuously: name what it analyses, refuse a
   computed name, floor the count.
+- A green suite is not a tested suite. Stubbing one refusal in
+  `validate_status_schema` to `return []` passed all 1,727 tests. Before
+  claiming a criterion is covered, neutralise the function it names and watch
+  the test fail: `mutation-proof CRIT --target FILE --symbol FUNCTION --by ME`.
+  The engine applies the mutation in a throwaway copy and records nothing when
+  the test still passes.
+- Mutation-prove your own new tests, not only the code. Four of the suites in
+  this run had a symbol that could be gutted while every test passed, and the
+  one that mattered was the guard against a mutation escaping into the real
+  checkout.
+- A test whose evidence lives in gitignored local state passes on the author's
+  machine and nowhere else. A sweep over `.handsoff-archive/` read as proof of
+  archive compatibility here, and would have failed in CI and inside a
+  mutation copy; the fix is a real archived document committed as a fixture.
+- Key membership is a fact no value comparison can recover. `get(role,
+  DEFAULT)` cannot tell an operator who chose the default from one who chose
+  nothing, so record WHICH keys were present where the parsed table is still
+  in hand.
+- When a rule names the strongest member of a set, derive it from the set.
+  `_verification_downgrade` hardcoded `automated_and_browser` as the top, so
+  the next policy added above it would have been silently droppable.

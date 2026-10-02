@@ -157,7 +157,10 @@ AGENT_SESSION_RESOLUTION_SOURCES = {
 # the tiered selection, otherwise exactly "primary" or "followup".
 AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_number", "result", "host_session_id", "usage",
                                  "adaptive_routing",
-                                 "budget_decision", "reviewer_isolation", "amendment_id", "progress"}  # #215: per-criterion progress the Implementer reported
+                                 "budget_decision", "reviewer_isolation", "amendment_id", "progress",
+                                 # #347: the effort this session actually ran at. OPTIONAL, so
+                                 # every session recorded before the field existed stays valid.
+                                 "reasoning_effort"}
 
 
 #: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
@@ -325,8 +328,15 @@ def validate_session_budget_decision(value: object) -> dict:
     # #290: sessions recorded before the protocol reserve existed keep their
     # two older shapes, so archives stay readable.
     reserve = {"reserved_protocol_tokens", "provider_limit"}
+    # #342: which number won, and by how much. A fifth shape rather than an
+    # optional field, because the engine validates these against EXACT sets:
+    # the four arrive together or not at all, and every session recorded
+    # before this existed keeps its own shape.
+    authority = {"calculated_ceiling", "configured_explicitly", "ceiling_source",
+                 "ceiling_divergence"}
     if not isinstance(value, dict) or set(value) not in {
-            frozenset(legacy), frozenset(legacy | sizing), frozenset(legacy | sizing | reserve)}:
+            frozenset(legacy), frozenset(legacy | sizing), frozenset(legacy | sizing | reserve),
+            frozenset(legacy | sizing | reserve | authority)}:
         raise HandsoffError("budget_decision has invalid fields")
     if value.get("role") not in ROLE_BUDGET_FLOORS:
         raise HandsoffError("budget_decision role is invalid")
@@ -341,6 +351,36 @@ def validate_session_budget_decision(value: object) -> dict:
     if not isinstance(value.get("followup"), bool) or value.get("basis") not in {
             "legacy_configured_ceiling", "risk_role_packet_scope"}:
         raise HandsoffError("budget_decision followup or basis is invalid")
+    if authority <= set(value):
+        if value.get("ceiling_source") not in {"configured", "calculated"}:
+            raise HandsoffError("budget_decision ceiling_source is invalid")
+        if not isinstance(value.get("configured_explicitly"), bool):
+            raise HandsoffError("budget_decision configured_explicitly must be a boolean")
+        calculated = value.get("calculated_ceiling")
+        if calculated is not None and (not isinstance(calculated, int)
+                                       or isinstance(calculated, bool) or calculated < 0):
+            raise HandsoffError("budget_decision calculated_ceiling must be a non-negative integer or null")
+        divergence = value.get("ceiling_divergence")
+        if not isinstance(divergence, int) or isinstance(divergence, bool) or divergence < 0:
+            raise HandsoffError("budget_decision ceiling_divergence must be a non-negative integer")
+        # The arithmetic, not just the types. A recorded divergence that does
+        # not follow from the recorded numbers would be a fact in the ledger
+        # that no reader could reproduce, which is the shape of every defect
+        # this run is fixing.
+        if calculated is None:
+            # The legacy `risk_class is None` path computes nothing, so there is
+            # no adaptive figure to diverge FROM. Leaving the check to the
+            # `is not None` branch meant any divergence at all validated here,
+            # which is a number in the ledger that no reader can reproduce.
+            if divergence != 0:
+                raise HandsoffError("budget_decision records a divergence with no calculated ceiling to diverge from")
+        else:
+            adaptive = min(value["configured_ceiling"], calculated)
+            if value["ceiling"] - adaptive != divergence:
+                raise HandsoffError("budget_decision ceiling_divergence does not follow from its own numbers")
+        if value["ceiling_source"] == "configured" and value["configured_explicitly"] \
+                and value["ceiling"] != value["configured_ceiling"]:
+            raise HandsoffError("budget_decision claims the configured ceiling won but did not apply it")
     if sizing <= set(value):
         if value.get("estimator") != "ceil_utf8_bytes_over_3":
             raise HandsoffError("budget_decision estimator is invalid")

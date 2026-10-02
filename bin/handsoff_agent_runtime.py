@@ -482,7 +482,10 @@ def stale_manifest_refusal(root: Path) -> str | None:
 #: ok=False when any passed (baseline_invalid). It never satisfies the
 #: checks requirement; it is what the failing-first gate asks for behind
 #: the later green run.
-VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline"}
+# #349: "mutation" is evidence that the criterion's own test FAILS when the
+# behaviour it names is removed. Every other kind proves something happened;
+# this one proves the test would notice if it stopped happening.
+VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline", "mutation"}
 
 
 
@@ -695,7 +698,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          amendment_id: str | None = None,
                          adaptive_routing: dict | None = None,
                          budget_decision: dict | None = None,
-                         reviewer_isolation: dict | None = None) -> dict:
+                         reviewer_isolation: dict | None = None,
+                         reasoning_effort: str | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
@@ -868,6 +872,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session["adaptive_routing"] = deepcopy(adaptive_routing)
         if budget_decision is not None:
             session["budget_decision"] = deepcopy(budget_decision)
+        if reasoning_effort is not None:
+            session["reasoning_effort"] = reasoning_effort
         if reviewer_isolation is not None:
             session["reviewer_isolation"] = deepcopy(reviewer_isolation)
         sessions[session_id] = session

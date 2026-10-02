@@ -189,6 +189,9 @@ DEFAULT_CONFIG = {
     },
     "agents": {role: profile["adapter"] for role, profile in RECOMMENDED_CREW.items()},
     "models": {role: profile["model"] for role, profile in RECOMMENDED_CREW.items()},
+    # #347: role -> effort. Absent means the adapter's own default, which is
+    # what every project got before this existed.
+    "model_reasoning": {},
     "fallbacks": {
         "architect": [],
         "supervisor": [],
@@ -197,6 +200,9 @@ DEFAULT_CONFIG = {
     },
     "max_failovers_per_role": DEFAULT_MAX_FAILOVERS_PER_ROLE,
     "agent_token_budgets": dict(DEFAULT_AGENT_TOKEN_BUDGETS),
+    # #342: the roles whose ceiling the operator set by hand. Empty in the
+    # defaults, because a default is by definition not a choice.
+    "agent_token_budgets_explicit": [],
     "adapters": {},
     "followup_design_token_budget": None,
     "reviewer_followup": None,
@@ -245,6 +251,15 @@ LEGACY_UNCONFIGURED_AGENT_ADAPTER = "configure-me"
 
 AGENT_SETTING_ADAPTERS = (AUTO_AGENT_ADAPTER, *SELECTABLE_AGENT_ADAPTERS)
 
+#: #347: reasoning effort was inherited silently from the operator's global
+#: ~/.codex/config.toml, so two runs of the same lane on the same engine with
+#: the same handsoff.toml could do different work for a reason the ledger did
+#: not record. A project may now pin it per role as [models].<role>_reasoning.
+#: Closed, because an unrecognised value would otherwise reach the adapter and
+#: be rejected there, after the session was reserved.
+REASONING_EFFORTS = ("low", "medium", "high")
+REASONING_KEY_SUFFIX = "_reasoning"
+
 
 DEFAULT_AGENT_MODEL = "default"
 
@@ -281,11 +296,13 @@ def load_config(root: Path) -> dict:
     cfg = dict(DEFAULT_CONFIG)
     cfg["agents"] = dict(DEFAULT_CONFIG["agents"])
     cfg["models"] = dict(DEFAULT_CONFIG["models"])
+    cfg["model_reasoning"] = dict(DEFAULT_CONFIG["model_reasoning"])
     cfg["adaptive_routing_profiles"] = deepcopy(ADAPTIVE_DEFAULT_PROFILES)
     cfg["adaptive_routing_budgets"] = deepcopy(ADAPTIVE_DEFAULT_BUDGETS)
     cfg["risk_policy"] = deepcopy(ADAPTIVE_DEFAULT_RISK_POLICY)
     cfg["fallbacks"] = {role: [] for role in DEFAULT_CONFIG["fallbacks"]}
     cfg["agent_token_budgets"] = dict(DEFAULT_AGENT_TOKEN_BUDGETS)
+    cfg["agent_token_budgets_explicit"] = []
     cfg["adapters"] = {}
     cfg["design_evidence"] = []
     cfg["profile_sources"] = {
@@ -455,6 +472,26 @@ def load_config(root: Path) -> dict:
             # so the runner's own default is used and labelled as such.
             cfg["models"][role] = DEFAULT_AGENT_MODEL
             cfg["profile_sources"][role]["model"] = RUNNER_DEFAULT_PROFILE_SOURCE
+    # #347: [models].<role>_reasoning. Validated by name as well as by value:
+    # with no unknown-key check on [models], a typo like implementr_reasoning
+    # would otherwise be read as nothing at all and the operator would believe
+    # the setting had taken effect.
+    for key, value in models.items():
+        if not key.endswith(REASONING_KEY_SUFFIX):
+            continue
+        role = key[: -len(REASONING_KEY_SUFFIX)]
+        if role not in SELECTABLE_AGENT_ROLES:
+            raise HandsoffError(
+                f"handsoff.toml: models.{key} names no role; expected one of "
+                + ", ".join(f"{name}{REASONING_KEY_SUFFIX}" for name in sorted(SELECTABLE_AGENT_ROLES))
+            )
+        if value not in REASONING_EFFORTS:
+            raise HandsoffError(
+                f"handsoff.toml: models.{key} must be one of "
+                + ", ".join(REASONING_EFFORTS)
+            )
+        cfg["model_reasoning"][role] = value
+
     # #37: the follow-up reviewer profile is enabled only by BOTH keys.
     # Half a profile is refused rather than guessed, and "auto" is not a
     # profile (the follow-up must be a specific adapter so the independence
@@ -500,6 +537,16 @@ def load_config(root: Path) -> dict:
             "handsoff.toml: agent_budget has unknown keys: "
             + ", ".join(sorted(unknown_budget_roles))
         )
+    # #342 REQ-001: WHICH roles the operator set is a separate fact from what
+    # the number is, and only key membership can carry it. `get(role, default)`
+    # collapses the two: an operator who writes `implementer = 80000` -- the
+    # same value as the built-in default -- is indistinguishable from one who
+    # wrote nothing, so comparing the value against the default cannot decide
+    # whether a human chose it. The planner needs that distinction to know
+    # whether the ceiling is an authority or a cap, so it is recorded here, at
+    # the only point where the parsed table is still in hand.
+    cfg["agent_token_budgets_explicit"] = sorted(
+        role for role in SELECTABLE_AGENT_ROLES if role in agent_budget)
     for role in SELECTABLE_AGENT_ROLES:
         value = agent_budget.get(role, DEFAULT_AGENT_TOKEN_BUDGETS[role])
         if not isinstance(value, int) or isinstance(value, bool) \
@@ -942,6 +989,9 @@ VERIFICATION_REQUIREMENTS = {
     "manual": {"manual"},
     "browser": {"browser"},
     "automated_and_browser": {"checks", "browser"},
+    # #349: the test must pass, and must fail when the engine removes the
+    # behaviour. Opt-in per criterion, so no existing project changes.
+    "automated_and_mutation": {"checks", "mutation"},
 }
 
 # #300: moved down from handsoff_lib so handsoff_evidence can use the ONE

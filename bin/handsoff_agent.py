@@ -56,6 +56,9 @@ class LaunchSpec:
     # Deterministic pre-launch sizing facts; estimates are not usage.
     budget_decision: dict | None = None
     reviewer_isolation: dict | None = None
+    # #347: the effort this launch was given, recorded on the session so a
+    # run can be explained afterwards rather than only observed at launch.
+    reasoning_effort: str | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -96,9 +99,29 @@ def _effective_token_budget(configured: int, role: str, context: dict | None) ->
     return configured
 
 
+def _claude_allowed_tools(cfg: dict, root: Path, role: str, *, which=shutil.which) -> list[str]:
+    """The Claude allowlist for one role, from ONE implementation.
+
+    #343 REQ-003 names both launch builders because the two had their own copy
+    of this expression and #347 had just shipped with one of its two sites
+    threaded and the other not. A shared function is the only version of
+    "both builders agree" that cannot drift.
+
+    Reviewer: the read-only set, so the review can open the project and run
+    its tests but cannot edit it. Architect and supervisor: unchanged, the
+    empty allowlist they have always had. Implementer: unchanged.
+    """
+    if role == "reviewer":
+        return list(lib.REVIEWER_READ_ONLY_TOOLS)
+    if role in {"supervisor", "architect"}:
+        return []
+    return lib.implementer_allowed_tools(cfg, root, which)
+
+
 def _codex_argv(executable: str, role: str, model: str, token_budget: int,
-                *, reviewer_sandbox: bool = False) -> list[str]:
-    return lib.codex_argv(executable, role, model, token_budget, reviewer_sandbox=reviewer_sandbox)
+                *, reviewer_sandbox: bool = False, reasoning: str | None = None) -> list[str]:
+    return lib.codex_argv(executable, role, model, token_budget,
+                          reviewer_sandbox=reviewer_sandbox, reasoning=reasoning)
 
 
 def _reviewer_scratch(root: Path, adapter: str, role: str, *, create: bool = True) -> Path | None:
@@ -539,6 +562,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         pass
     budget_decision = lib.plan_role_token_budget(
         configured_ceiling=cfg["agent_token_budgets"][role], role=role,
+        # #342: key membership, never a comparison against the default.
+        configured_explicitly=role in cfg["agent_token_budgets_explicit"],
         risk_class=(run_status or {}).get("risk_class"),
         packet_bytes=len(stdin.encode("utf-8")), criteria_count=criteria_count,
         changed_files=(len(implementation_delta["changed_files"])
@@ -580,12 +605,27 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         # recommended default or an explicit selection can land here.
         raise lib.HandsoffError(lib.unavailable_adapter_message(role, adapter, model, resolution_source))
     executable = str(Path(executable).resolve())
+    # #343 REQ-004/REQ-008: before the scratch directory, before the session,
+    # before the review attempt. A Claude reviewer that cannot read the project
+    # produced a packet-only review that still SPENT one of the two autonomous
+    # attempts, so the refusal has to land where nothing has been consumed yet.
+    # Gated on this exact pair: architect and supervisor share the reviewer's
+    # empty allowlist and run from the project root, and a probe that applied
+    # to every role would refuse launches #343 never asked to change.
+    if role == "reviewer" and adapter == "claude":
+        access = lib.reviewer_read_access(root)
+        if not access["readable"]:
+            raise lib.HandsoffError(
+                "managed Claude reviewer launch refused before session reservation: "
+                + access["reason"])
     scratch = _reviewer_scratch(root, adapter, role, create=not inspection)
     if adapter == "codex":
-        argv = _codex_argv(executable, role, model, provider_limit, reviewer_sandbox=scratch is not None)
+        argv = _codex_argv(executable, role, model, provider_limit,
+                           reviewer_sandbox=scratch is not None,
+                           reasoning=cfg["model_reasoning"].get(role))
     else:
-        allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(cfg, root, which)
-        argv = lib.claude_argv(executable, role, allowed, model)
+        allowed = _claude_allowed_tools(cfg, root, role, which=which)
+        argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
     if not skip_preflight and not inspection \
             and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
         preflight = lib.launch_preflight(
@@ -617,6 +657,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         adaptive_routing=adaptive_routing,
         budget_decision=budget_decision,
         reviewer_isolation=isolation,
+        reasoning_effort=cfg["model_reasoning"].get(role),
     )
 
 
@@ -658,16 +699,34 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
             f"reviewer fallback refused before session reservation: {isolation['reason']} "
             f"(adapter={adapter}, decision={isolation['decision']})"
         )
+    # #343 REQ-004/REQ-008: before the scratch directory, before the session,
+    # before the review attempt. A Claude reviewer that cannot read the project
+    # produced a packet-only review that still SPENT one of the two autonomous
+    # attempts, so the refusal has to land where nothing has been consumed yet.
+    # Gated on this exact pair: architect and supervisor share the reviewer's
+    # empty allowlist and run from the project root, and a probe that applied
+    # to every role would refuse launches #343 never asked to change.
+    if role == "reviewer" and adapter == "claude":
+        access = lib.reviewer_read_access(root)
+        if not access["readable"]:
+            raise lib.HandsoffError(
+                "managed Claude reviewer launch refused before session reservation: "
+                + access["reason"])
     scratch = _reviewer_scratch(root, adapter, role)
     # #290: the codex argv is built once, below, after the budget decision
     # exists, so the meter can be set to the provider limit. Building it
     # here as well left a second copy metered on the whole ceiling.
     argv = []
     if adapter != "codex":
-        allowed = [] if role in {"reviewer", "supervisor", "architect"} else lib.implementer_allowed_tools(cfg, root)
-        argv = lib.claude_argv(executable, role, allowed, model)
+        allowed = _claude_allowed_tools(cfg, root, role)
+        argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
     budget_decision = lib.plan_role_token_budget(
         configured_ceiling=configured_budget, role=role,
+        # The failover path. #347 shipped with one of its two launch builders
+        # threaded and the other not, which left every failed-over role on the
+        # old behaviour; the same mistake here would mean an explicit budget
+        # silently stops applying the moment a role fails over once.
+        configured_explicitly=role in cfg["agent_token_budgets_explicit"],
         risk_class=status.get("risk_class"), packet_bytes=len(task.encode("utf-8")),
         followup=True,
     )
@@ -688,7 +747,9 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         # nothing held back for its verdict: the very overshoot this lane
         # exists to bound, on the path taken precisely when a session has
         # already failed once.
-        argv = _codex_argv(executable, role, model, provider_limit, reviewer_sandbox=scratch is not None)
+        argv = _codex_argv(executable, role, model, provider_limit,
+                           reviewer_sandbox=scratch is not None,
+                           reasoning=cfg["model_reasoning"].get(role))
     if not skip_preflight and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
         preflight = lib.launch_preflight(
             root, adapter=adapter, model=model, executable=executable,
@@ -708,6 +769,7 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         project_root=str(root.resolve()),
         budget_decision=budget_decision,
         reviewer_isolation=isolation,
+        reasoning_effort=cfg["model_reasoning"].get(role),
     )
 
 
@@ -1109,6 +1171,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             adaptive_routing=spec.adaptive_routing,
             budget_decision=spec.budget_decision,
             reviewer_isolation=isolation,
+            reasoning_effort=spec.reasoning_effort,
         )
     else:
         session = lib.claim_precreated_agent_session(

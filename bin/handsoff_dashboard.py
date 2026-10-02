@@ -1123,7 +1123,11 @@ def build_snapshot(root: Path) -> dict:
             return None
         fields = ("session_id", "role", "actor", "adapter", "requested_model",
                   "reported_model", "resolution_source", "state", "started_at",
-                  "running_at", "ended_at", "exit_code", "tier")
+                  "running_at", "ended_at", "exit_code", "tier",
+                  # #347: what effort the session actually ran at. The tuple is
+                  # closed, so a field absent here never reaches the page
+                  # however faithfully the record carries it.
+                  "reasoning_effort")
         view = {field: session.get(field) for field in fields}
         view["reviewer_isolation"] = deepcopy(session.get("reviewer_isolation")) \
             if isinstance(session.get("reviewer_isolation"), dict) else None

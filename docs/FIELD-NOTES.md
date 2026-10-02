@@ -271,3 +271,112 @@ click, not the last thing before the reviewer.
 
 This entry is the proof: a Markdown-only pull request that ran the `docs`
 job alone and merged without a version bump, a release or a live run.
+
+### v0.4.1 field notes: the operator's budget, the reviewer's eyes, and a gate that mutates its own code (#342 #343 #347 #349, 2026-10-02)
+
+Four defects from one real run of the v0.4.0 engine on another project
+(Team Hub v2, October 1-2). The run finished and raised a green pull request;
+roughly half its wall-clock went into working around these.
+
+1. **An explicit `[agent_budget]` key was accepted and then ignored (#342).**
+   Cause: `ceiling = min(configured, max(floor, calculated))` makes the
+   configured number a cap and never an authority, so every value above the
+   calculated one produces the same ceiling: `implementer = 500000` and
+   `= 80000` were the same run. Managed Codex launches exhausted at 74k to 80k
+   tokens, each exhaustion costing a half-written work item, and the operator
+   abandoned the managed launcher for raw `codex exec`. Fix: `load_config`
+   records WHICH roles the operator set, by key membership rather than by
+   comparing the value against the built-in default, since an operator who
+   writes the default value has still made a choice. An explicit key is the
+   ceiling; the calculated figure is recorded beside it as `calculated_ceiling`
+   with a signed `ceiling_divergence` the schema re-derives from the record's
+   own numbers, and each Mission Control journey leg names which number was
+   applied and by how much the two differ. An unset role behaves exactly as
+   before. Measured on this repository: a managed implementer launch went from
+   `limit_tokens=57952` to `117952` against a configured 120,000.
+
+2. **The managed Claude reviewer could not read the project it was reviewing
+   (#343).** Cause: the reviewer runs from an external scratch directory by
+   design, and Claude Code refuses reads outside its working directory, so with
+   no `--add-dir` every read came back "Path is outside allowed working
+   directories". The first design review was packet-only and still consumed one
+   of the two autonomous attempts. The operator's workaround was to add the
+   project to `permissions.additionalDirectories` in their own
+   `~/.claude/settings.json`, which changes every Claude session on the
+   machine. Fix: `claude_argv` passes `--add-dir <absolute project root>` for
+   the reviewer role only, with a read-only tool allowlist that contains no
+   file-editing tool; both launch builders go through one shared
+   `_claude_allowed_tools`, because the two had their own copy of that
+   expression and #347 had just shipped with one of its two sites threaded and
+   the other not. A read probe runs before the scratch directory, the session
+   and the review attempt exist, gated on `role == "reviewer" and adapter ==
+   "claude"`: `launch_preflight` takes no role, and architect and supervisor
+   share the reviewer's empty allowlist, so a global probe would refuse
+   launches #343 never asked to change. The adapter pre-flight probes with the
+   new argv shape, since its whole purpose is that a flag the CLI refuses fails
+   there rather than at launch.
+
+3. **Reasoning effort was inherited silently from the operator's global
+   `~/.codex/config.toml` (#347).** Every implementer ran at `low` and it was
+   only discovered by reading the Codex session output. Fix: `[models]
+   <role>_reasoning`, validated against the permitted values and refusing a
+   misspelled role by name; the flag reaches both launch builders, the session
+   records what it ran at, and the dashboard prints it beside the model.
+
+4. **Nothing asked whether a passing test would notice the code breaking
+   (#349).** This one was not in the field report. It is why the other three
+   took a day each to find. `verify` records that a `[checks]` command exited
+   zero; no gate anywhere asks whether that command would still exit zero with
+   the implementation gutted. Four measurements of the same hole, in one day
+   against v0.4.0: five design-critique rounds found eleven acceptance criteria
+   a no-op implementation would have satisfied; a hand mutation of freshly
+   written tests found two escapes in nine attempts; 115 of 542 recorded
+   sessions were reviewer approvals carrying `tests_executed: no`, which the
+   review gate accepted; and stubbing one refusal in `validate_status_schema`
+   to `return []` passed the entire 1,727-test suite.
+
+   Fix: `bin/handsoff_mutation.py` and a `mutation-proof` command. The engine
+   replaces a named top-level function's body with `return None` inside a
+   throwaway copy, runs the criterion's own configured tests before and after,
+   and records a `mutation` verification only when they passed before and
+   failed after. Each half rules out a different lie: passing before rules out
+   a suite that was already red and would "detect" everything; failing after
+   rules out a test that executes the code and asserts nothing. A failed proof
+   records NOTHING, because a ledger entry reading "this test does not detect
+   this" is a durable artifact that looks like evidence and means its opposite.
+   The author never performs the mutation and never supplies the verdict, since
+   "I mutation-tested it" is exactly the unverified claim this exists to stop,
+   and the author cannot choose the command either: it is the criterion's own
+   `tests`, joined with `&&` so every test must pass before and any may fail
+   after. The new `automated_and_mutation` policy is opt-in per criterion, so
+   no existing project changes.
+
+   It found real gaps immediately, including in its own suite: `_source_digest`
+   could be neutralised to `return None` and all 34 tests still passed, which
+   meant the guard against a mutation escaping into a real checkout was
+   covered by nothing. Three tests were added for the guard itself.
+
+   An independent review then found four more, two of them blocking, and all
+   four are now reproduced as tests. The proof was forgeable: a function called
+   while the module loads, named by no test, raised when neutralised, so the
+   command "failed after" and an irrelevant symbol reported `ok: true`. A
+   differential import check fixes it, and the symbol is no longer chosen at
+   proof time at all -- the criterion declares `mutation_target` and
+   `mutation_symbol`, the `automated_and_mutation` policy requires them, and
+   they sit inside `criterion_spec_hash`, so the design review sees the claim
+   and changing it discards the proof. The review also found that pointing the
+   target at a non-Python file raised SyntaxError out of the CLI as a traceback
+   rather than a refusal; that the escape guard digested only `bin/` and
+   `dashboard/` while nothing restricted the target, so an escape into a target
+   elsewhere returned normally with the real file mutated on disk; and that
+   `neutralize` and `where_defined` disagreed about what "defined" means, so
+   the re-export hint was blind to methods while the mutation would happily
+   change one.
+
+Lessons, for the playbook: a green suite is not a tested suite, so neutralise
+the function a criterion names and watch its test fail; mutation-prove the new
+tests and not only the new code; a test whose evidence lives in gitignored
+local state passes on the author's machine and nowhere else; key membership is
+a fact no value comparison can recover; and when a rule names the strongest
+member of a set, derive it from the set rather than naming it, or the next
+member added above it is silently droppable.

@@ -26,6 +26,7 @@ sys.path.insert(0, str(BIN))
 #: BELOW it and nothing above, which is what keeps the graph acyclic.
 LAYERS = [
     "handsoff_core",
+    "handsoff_mutation",
     "handsoff_routing",
     "handsoff_config",
     "handsoff_schema",
@@ -36,10 +37,19 @@ LAYERS = [
     "handsoff_workflow",
 ]
 
+#: The subset of LAYERS carved OUT of handsoff_lib. Those have callers that
+#: predate the extraction and reached the symbol through the monolith, so the
+#: monolith must still re-export them. A module written directly at its own
+#: layer, never part of the monolith, has no such caller: requiring a
+#: re-export for it would push generic names like `prove` and `EXCLUDED` into
+#: the one namespace every caller imports, for a compatibility promise nobody
+#: is owed. Every OTHER property in this file is checked over all of LAYERS.
+EXTRACTED_FROM_THE_MONOLITH = [m for m in LAYERS if m != "handsoff_mutation"]
+
 STDLIB_OK = {
     "__future__", "json", "os", "re", "copy", "datetime", "pathlib", "hashlib",
     "uuid", "fcntl", "math", "shlex", "tomllib", "subprocess", "fnmatch",
-    "sysconfig", "contextlib", "shutil", "threading",
+    "sysconfig", "contextlib", "shutil", "threading", "ast", "tempfile", "sys",
 }
 
 
@@ -460,7 +470,9 @@ class EveryModuleIsRegisteredWhereItMustBe(unittest.TestCase):
         tree = ast.parse((BIN / "handsoff_lib.py").read_text(encoding="utf-8"))
         reexported = {node.module for node in ast.walk(tree)
                       if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("handsoff")}
-        for module in LAYERS:
+        self.assertTrue(set(EXTRACTED_FROM_THE_MONOLITH) <= set(LAYERS),
+                        "the extracted subset must name real layers")
+        for module in EXTRACTED_FROM_THE_MONOLITH:
             self.assertIn(module, reexported,
                           f"handsoff_lib does not re-export {module}; callers would break")
 

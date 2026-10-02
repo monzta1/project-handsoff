@@ -131,10 +131,13 @@ function routingHandoff(previous, current) {
 }
 
 function routingModelLabel(item) {
-  if (item?.model) return item.model;
-  return item?.model_source === "host_runtime_unavailable"
+  // #347: the effort rides beside the model, because a leg that says only
+  // which model ran cannot explain why two runs of the same lane differed.
+  const effort = item?.reasoning_effort ? ` · ${String(item.reasoning_effort).toUpperCase()} EFFORT` : "";
+  if (item?.model) return `${item.model}${effort}`;
+  return (item?.model_source === "host_runtime_unavailable"
     ? "HOST VARIANT NOT EXPOSED"
-    : "UNREPORTED";
+    : "UNREPORTED") + effort;
 }
 
 function renderAdaptiveRouting(routing, modelPolicy = state.modelPolicy, launchPreflight = state.launchPreflight) {
@@ -306,6 +309,30 @@ function renderAdaptiveRouting(routing, modelPolicy = state.modelPolicy, launchP
         ["USAGE", item.usage?.source === "adapter" && Number.isFinite(Number(item.usage.tokens_total)) ? `${Number(item.usage.tokens_total).toLocaleString()} actual` : "not reported"],
         ["WHY", decision ? String(decision.basis || "configured").replaceAll("_", " ") : "host/configured"],
       ];
+      // #342 REQ-002. The field report's complaint was not that the number
+      // was wrong but that it was silent: `[agent_budget] implementer =
+      // 500000` was accepted, capped to 80,000, and nothing anywhere said so.
+      // Whichever number won, this line names it and names the other one, so
+      // an operator reading a leg never has to infer it from the arithmetic.
+      if (decision && decision.ceiling_source) {
+        const engineEstimate = Number(decision.calculated_ceiling);
+        const divergence = Number(decision.ceiling_divergence) || 0;
+        if (decision.ceiling_source === "configured") {
+          const origin = decision.configured_explicitly
+            ? "operator-set in handsoff.toml"
+            : "configured ceiling";
+          budgetFacts.push(["CEILING", divergence > 0 && Number.isFinite(engineEstimate)
+            ? `${origin} · ${divergence.toLocaleString()} above the engine's own estimate of ${engineEstimate.toLocaleString()}`
+            : origin]);
+        } else {
+          const configured = Number(decision.configured_ceiling);
+          const capped = Number.isFinite(configured) && Number.isFinite(engineEstimate)
+            && configured > engineEstimate;
+          budgetFacts.push(["CEILING", capped
+            ? `engine-calculated · the ${configured.toLocaleString()} configured ceiling was not applied, set [agent_budget] to make it authoritative`
+            : "engine-calculated from risk, packet and scope"]);
+        }
+      }
       const isolation = item.reviewer_isolation;
       if (isolation) {
         budgetFacts.push(
