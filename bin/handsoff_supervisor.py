@@ -2229,8 +2229,19 @@ def cmd_verify(args) -> int:
         audit_errors = _audit_errors(root, cfg, status, existing_records, verification_problems)
         if audit_errors:
             return _print_audit_block(audit_errors)
+        if getattr(args, "all", False):
+            # #363: every criterion whose policy needs checks, in registry
+            # order, through the same union path as a named list
+            if getattr(args, "expect_fail", False):
+                print("SHIP_FEATURE_BLOCKED: --all does not apply to --expect-fail; record each baseline with --criterion")
+                return 1
+            args.criterion = [c["id"] for c in acceptance.get("criteria", [])
+                              if "checks" in lib.VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+            if not args.criterion:
+                print("SHIP_FEATURE_BLOCKED: --all found no automated criteria in the registry")
+                return 1
         criteria = [_criterion(acceptance, cid) for cid in args.criterion]
-        missing = [cid for cid, criterion in zip(args.criterion, criteria) if criterion is None]
+        missing =[cid for cid, criterion in zip(args.criterion, criteria) if criterion is None]
         if missing:
             print(f"SHIP_FEATURE_BLOCKED: unknown criteria: {', '.join(missing)}")
             return 1
@@ -5637,8 +5648,12 @@ def build_parser() -> argparse.ArgumentParser:
                                 "LaunchAgent and manual launches leave this off)")
 
     verify = sub.add_parser("verify")
-    verify.add_argument("--criterion", action="append", required=True,
-                        help="criterion id to bind this run to; repeat for more than one")
+    verify_scope = verify.add_mutually_exclusive_group(required=True)
+    verify_scope.add_argument("--criterion", action="append",
+                              help="criterion id to bind this run to; repeat for more than one")
+    verify_scope.add_argument("--all", action="store_true",
+                              help="#363: verify every automated criterion in the registry in one run; "
+                                   "each distinct command is launched once")
     verify.add_argument("--by", required=True)
     verify.add_argument("--no-cache", action="store_true",
                         help="launch every needed command even when an eligible record for its binding exists")

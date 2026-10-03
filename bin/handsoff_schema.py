@@ -399,13 +399,21 @@ def _validate_failure_classification(value: object) -> dict:
     # dispatch_failed and protocol_silence carry their own reason rather than the
     # canonical label: the first names the dispatch that failed, the second the
     # measured silence and the configured limit ("no protocol output in 30
-    # minutes (limit 15)"), which is the whole value of the record. Every other
+    # minutes (limit 15)"), which is the whole value of the record.
+    # protocol_refused (#361) carries the validation error that refused the
+    # result, and orchestration_noop one of its role-named reasons. Every other
     # category must match its label exactly so a category cannot be relabelled.
-    FREE_REASON = {"dispatch_failed", "protocol_silence"}
-    if category not in FAILURE_CATEGORIES or (category not in FREE_REASON and value.get("reason") != _FAILURE_REASON_LABELS.get(category)):
+    FREE_REASON = {"dispatch_failed", "protocol_silence", "protocol_refused"}
+    if category not in FAILURE_CATEGORIES:
         raise HandsoffError("agent failure classification is not from the closed set")
-    if category == "dispatch_failed" and (not isinstance(value.get("reason"), str) or not value["reason"].strip() or len(value["reason"]) > 200):
-        raise HandsoffError("dispatch failure reason must be 1 to 200 characters")
+    if category == "orchestration_noop":
+        if value.get("reason") not in _ORCHESTRATION_NOOP_REASONS:
+            raise HandsoffError("agent failure classification is not from the closed set")
+    elif category not in FREE_REASON and value.get("reason") != _FAILURE_REASON_LABELS.get(category):
+        raise HandsoffError("agent failure classification is not from the closed set")
+    if category in {"dispatch_failed", "protocol_refused"} and (not isinstance(value.get("reason"), str) or not value["reason"].strip() or len(value["reason"]) > 200):
+        raise HandsoffError("dispatch failure reason must be 1 to 200 characters" if category == "dispatch_failed"
+                            else "protocol refusal reason must be 1 to 200 characters")
     digest = value.get("tail_sha256")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise HandsoffError("agent failure classification digest is invalid")
@@ -1815,7 +1823,7 @@ FAILURE_CATEGORIES = (
     "runtime_environment", "process_crash", "non_zero_exit", "unknown", "still_running", "presumed_lost",
     "reviewer_modified_project",
     "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
-    "protocol_silence", "model_identity_mismatch",
+    "protocol_silence", "model_identity_mismatch", "protocol_refused",
 )
 
 
@@ -1841,7 +1849,16 @@ _FAILURE_REASON_LABELS = {
     "network": "network connection to a dependency failed",
     "target_service": "target service reported a failure",
     "model_identity_mismatch": "provider reported a different model than requested",
+    "protocol_refused": "managed role structured result was refused by validation",
 }
+
+
+# #361: orchestration_noop names the role that produced nothing. The first
+# entry is the canonical label; a recorded reason must be one of these.
+_ORCHESTRATION_NOOP_REASONS = (
+    _FAILURE_REASON_LABELS["orchestration_noop"],
+    "Architect exited without a structured design proposal, decline or Pilot question",
+)
 
 
 QUESTION_ID_PATTERN = re.compile(r"^qn-[0-9a-f]{32}$")
