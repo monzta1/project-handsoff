@@ -161,15 +161,13 @@ class TestAgentTokenBudget(HandsoffTestCase):
         with self.assertRaisesRegex(lib.HandsoffError, "task exceeds"):
             runtime.build_role_input(self.tmp, "architect", "x" * (runtime.MAX_AGENT_TASK_BYTES + 1))
 
-        self.assertEqual(runtime._effective_token_budget(40_000, "architect", {"review_attempts": 1}), 16_000)
-        self.assertEqual(runtime._effective_token_budget(40_000, "reviewer", {"review_attempts": 2}), 16_000)
-        # #114: with no packet but a derived follow-up budget, the derived
-        # value wins over the 16k constant (still capped by the role ceiling).
-        self.assertEqual(runtime._effective_token_budget(80_000, "reviewer",
-                         {"review_attempts": 2, "followup_design_token_budget": 52_000}), 52_000)
-        self.assertEqual(runtime._effective_token_budget(40_000, "reviewer",
-                         {"review_attempts": 2, "followup_design_token_budget": 52_000}), 40_000)
-        self.assertEqual(runtime._effective_token_budget(40_000, "architect", {"review_attempts": 0}), 40_000)
+        # #352: followup_design is accepted, has no effect, and is named inert.
+        config.write_text(text.replace("[agent_budget]", "[agent_budget]\nfollowup_design = 100000", 1))
+        loaded = lib.load_config(self.tmp)
+        self.assertEqual(loaded["inert_settings"], ["agent_budget.followup_design"])
+        self.assertNotIn("followup_design_token_budget", loaded)
+        config.write_text(text)
+        self.assertEqual(lib.load_config(self.tmp)["inert_settings"], [])
 
     def test_supervisor_narration_without_protocol_is_a_failed_session(self):
         self.init("Fail fast on no-op orchestration")

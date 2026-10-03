@@ -74,7 +74,6 @@ MAX_AGENT_TASK_BYTES = 16 * 1024
 READER_DRAIN_SECONDS = 60
 MAX_REPLACEMENT_INPUT_BYTES = 64 * 1024
 MAX_SUPERVISOR_REQUESTS = 8
-FOLLOWUP_DESIGN_TOKEN_BUDGET = 16_000
 IMPLEMENTATION_REVIEW_PACKET_HEADING = "# Implementation review delta"
 
 # Managed coding roles need the repository shell, not the user's entire
@@ -82,22 +81,6 @@ IMPLEMENTATION_REVIEW_PACKET_HEADING = "# Implementation review delta"
 # surfaces materially reduces the fixed prompt paid again on every tool
 # turn while leaving the OS sandbox and core shell/edit tools intact.
 CODEX_DISABLED_FEATURES = lib.CODEX_DISABLED_FEATURES
-
-
-def _effective_token_budget(configured: int, role: str, context: dict | None) -> int:
-    """Follow-up design turns receive the packet, not another discovery budget."""
-    if role in {"architect", "reviewer"} and isinstance(context, dict) \
-            and int(context.get("review_attempts", 0) or 0) > 0:
-        packet_bytes = int(context.get("packet_stdin_bytes", 0) or 0) or len(str(context.get("packet_stdin", "")).encode())
-        if not packet_bytes:
-            # #114: a host Architect's proposal carries no managed packet, but
-            # build_launch_spec has already derived a budget from the full
-            # role input; the 16k constant is only for callers that give
-            # neither.
-            return min(configured, int(context.get("followup_design_token_budget") or FOLLOWUP_DESIGN_TOKEN_BUDGET))
-        default = max(40_000, packet_bytes // 3 + 30_000)
-        return min(configured, context.get("followup_design_token_budget", default))
-    return configured
 
 
 def _claude_allowed_tools(cfg: dict, root: Path, role: str, *, which=shutil.which) -> list[str]:
@@ -703,9 +686,8 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if not executable:
         raise lib.HandsoffError(f"reserved {adapter} executable is no longer available")
     executable = str(Path(executable).resolve())
-    # #352: no follow-up reduction here; plan_role_token_budget below decides,
-    # exactly as on the primary path. The `_effective_token_budget` call that
-    # stood here was overwritten before anything read it.
+    # #352: plan_role_token_budget below decides the ceiling, exactly as on
+    # the primary path.
     configured_budget = cfg["agent_token_budgets"][role]
     isolation = lib.reviewer_isolation_contract(adapter, cfg) if role == "reviewer" else None
     if isolation is not None and isolation["decision"] != "enforce":

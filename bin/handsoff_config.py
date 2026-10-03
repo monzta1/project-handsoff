@@ -204,7 +204,6 @@ DEFAULT_CONFIG = {
     # defaults, because a default is by definition not a choice.
     "agent_token_budgets_explicit": [],
     "adapters": {},
-    "followup_design_token_budget": None,
     "reviewer_followup": None,
     "recovery": {
         "enabled": True, "max_attempts": 3, "lease_minutes": 15,
@@ -556,11 +555,10 @@ def load_config(root: Path) -> dict:
                 f"{MIN_AGENT_TOKEN_BUDGET} to {MAX_AGENT_TOKEN_BUDGET}"
             )
         cfg["agent_token_budgets"][role] = value
-    followup_budget = agent_budget.get("followup_design")
-    if followup_budget is not None:
-        if not isinstance(followup_budget, int) or isinstance(followup_budget, bool) or followup_budget < MIN_AGENT_TOKEN_BUDGET:
-            raise HandsoffError("handsoff.toml: agent_budget.followup_design must be a positive integer")
-        cfg["followup_design_token_budget"] = followup_budget
+    # #352: `followup_design` has had no effect since v0.3.77, when the launch
+    # path stopped reading it. It is still accepted, so a project that sets it
+    # keeps loading, and `doctor` names it as inert rather than reading it.
+    cfg["inert_settings"] = ["agent_budget.followup_design"] if "followup_design" in agent_budget else []
     for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
         value = checks.get(toml_key, cfg[config_key])
         if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
