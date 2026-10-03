@@ -481,6 +481,20 @@ def removed_work_item_ids(acceptance: dict) -> set[str]:
     return out
 
 
+def _explicit_issue_ref(text: str) -> tuple[int, str] | None:
+    """An explicit --item naming a ticket: `#N [title]`, a bare `N`, or
+    `issue-N`. #351: a bare `349` was slugged to `ask-349` beside the
+    `issue-349` its criterion tag already derived, a duplicate item with no
+    criteria that blocked completion until removed by hand."""
+    issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", text)
+    if issue:
+        return int(issue.group(1)), (issue.group(2) or "").strip()
+    bare = re.fullmatch(r"\s*(?:issue-)?([1-9][0-9]{0,8})\s*", text, re.I)
+    if bare:
+        return int(bare.group(1)), ""
+    return None
+
+
 def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None,
                               explicit_items: list[str] | None = None) -> list[dict]:
     """Derive stable scope from criterion tags, feature issue refs and legacy display metadata."""
@@ -502,7 +516,15 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
 
     if explicit_items:
         for item in explicit_items[:MAX_WORK_ITEMS]:
-            add_text(item)
+            ref = _explicit_issue_ref(item)
+            if ref is None:
+                add_text(item)
+                continue
+            number, supplied = ref
+            identities[f"issue-{number}"] = (
+                "issue", number,
+                supplied or tickets.get(number, {}).get("title") or f"Issue #{number}",
+            )
     else:
         # Explicit separators are promises. A segment containing issue refs
         # contributes those issues; a segment without one remains a plain ask.
@@ -540,8 +562,8 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
     # caller clears the tombstone in the same commit (clear_work_item_tombstones).
     explicit_ids = set()
     for item in explicit_items or []:
-        issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", item)
-        explicit_ids.add(f"issue-{int(issue.group(1))}" if issue else f"ask-{_work_item_slug(item)}")
+        ref = _explicit_issue_ref(item)
+        explicit_ids.add(f"issue-{ref[0]}" if ref else f"ask-{_work_item_slug(item)}")
     for item_id in removed_work_item_ids(acceptance):
         if item_id not in tagged and item_id not in explicit_ids:
             identities.pop(item_id, None)

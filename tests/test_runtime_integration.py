@@ -50,7 +50,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
             self.root, status=self.status, events=self.events, now=self.now + timedelta(minutes=120),
         )
         args = mock.Mock(root=str(self.root), by="supervisor", reason="scope reduced after reevaluation",
-                         evidence_hash=hashlib.sha256(b"review").hexdigest())
+                         evidence_hash=None)
         with mock.patch.object(supervisor, "datetime") as clock:
             clock.now.return_value = self.now + timedelta(minutes=121)
             clock.side_effect = lambda *values, **kwargs: datetime(*values, **kwargs)
@@ -58,6 +58,31 @@ class RuntimeIntegrationTests(unittest.TestCase):
         record = json.loads((self.root / supervisor.RUNTIME_CONTROL_DIR / supervisor.PERFORMANCE_RECORD).read_text())
         self.assertEqual(record["episodes"][-1]["state"], "active")
         self.assertEqual(len(record["episodes"]), 2)
+
+    def test_resume_is_bound_to_the_paused_episode(self):
+        """#350: --evidence-hash was required, stored, and never checked."""
+        supervisor.refresh_performance_state(
+            self.root, status=self.status, events=self.events, now=self.now + timedelta(minutes=120),
+        )
+        path = self.root / supervisor.RUNTIME_CONTROL_DIR / supervisor.PERFORMANCE_RECORD
+        paused = json.loads(path.read_text())
+        expected = supervisor.runtime_control.content_hash(paused["episodes"][-1])
+        wrong = mock.Mock(root=str(self.root), by="supervisor", reason="r",
+                          evidence_hash=hashlib.sha256(b"review").hexdigest())
+        with self.assertRaisesRegex(supervisor.lib.HandsoffError, expected):
+            supervisor.cmd_performance_resume(wrong)
+        self.assertEqual(json.loads(path.read_text()), paused)
+        right = mock.Mock(root=str(self.root), by="supervisor", reason="r", evidence_hash=expected)
+        with mock.patch.object(supervisor, "datetime") as clock:
+            clock.now.return_value = self.now + timedelta(minutes=121)
+            clock.side_effect = lambda *values, **kwargs: datetime(*values, **kwargs)
+            self.assertEqual(supervisor.cmd_performance_resume(right), 0)
+        record = json.loads(path.read_text())
+        self.assertEqual(record["resume_decisions"][-1]["evidence_hash"], expected)
+        self.assertEqual((record["resume_decisions"][-1]["actor"], record["resume_decisions"][-1]["reason"]),
+                         ("supervisor", "r"))
+        self.assertIsNone(supervisor.build_parser().parse_args(
+            ["performance-resume", "--by", "s", "--reason", "r"]).evidence_hash)
 
     def test_a_persisted_open_human_hold_is_closed_by_the_later_end_event(self):
         open_events = self.events + [{

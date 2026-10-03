@@ -1915,29 +1915,61 @@ def adapter_preflight(cfg: dict, root: Path, which=shutil.which, runner=subproce
             executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
             item = {"state": "not_checked", "reason": "executable missing", "checked_at": datetime.now(timezone.utc).isoformat(), "executable": str(executable) if executable else None}
             if executable:
-                # Field-note defect 1 (v0.3.22): probe with the launch argv
-                # shape (no model override) so a flag the CLI refuses fails here.
-                if adapter == "codex":
-                    argv = codex_argv(str(executable), "reviewer", DEFAULT_AGENT_MODEL, PREFLIGHT_TOKEN_BUDGET, reviewer_sandbox=True)
-                else:
-                    # #343: the probe's whole purpose is that "a flag the CLI
-                    # refuses fails HERE". The reviewer launch now carries
-                    # `--add-dir` and a non-empty allowlist, so a probe still
-                    # using the old shape would report reachable and the real
-                    # launch would exit 1 on a flag this never tried.
-                    argv = claude_argv(str(executable), "reviewer",
-                                       list(REVIEWER_READ_ONLY_TOOLS), DEFAULT_AGENT_MODEL,
-                                       project_root=root)
-                try:
-                    completed = runner(argv, input="Reply with OK", text=True, capture_output=True, timeout=timeout, cwd=str(scratch))
-                    item.update(_preflight_outcome(completed))
-                except subprocess.TimeoutExpired:
-                    item.update(state="unreachable", reason="timeout")
+                # #355: probe each model this project assigns to the adapter.
+                # Probing DEFAULT_AGENT_MODEL let the adapter's own global
+                # config pick the model, so a project naming a usable model
+                # was reported unreachable, and one naming an unusable model
+                # was reported reachable.
+                probes = []
+                for model in _preflight_models(cfg, adapter):
+                    probe = _probe_adapter_model(adapter, str(executable), model, root, scratch, runner, timeout)
+                    probes.append({"model": model, **probe})
+                failed = [p for p in probes if p["state"] != "reachable"]
+                first = failed[0] if failed else probes[0]
+                item.update(state=first["state"], reason=first["reason"])
+                if failed and len(probes) > 1:
+                    item["reason"] = f"model {first['model']}: {first['reason']}"
+                item["models"] = probes
             result[adapter] = item
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     (root / PREFLIGHT_FILE).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
+
+
+def _preflight_models(cfg: dict, adapter: str) -> list[str]:
+    """The distinct models this project's roles run on `adapter`, in role
+    order; DEFAULT_AGENT_MODEL when no role is assigned to it, so an adapter
+    the project does not use is still reported on its own resolution."""
+    agents = cfg.get("agents") or {}
+    models = cfg.get("models") or {}
+    found = []
+    for role, assigned in agents.items():
+        if assigned != adapter:
+            continue
+        model = models.get(role) or DEFAULT_AGENT_MODEL
+        if model not in found:
+            found.append(model)
+    return found or [DEFAULT_AGENT_MODEL]
+
+
+def _probe_adapter_model(adapter: str, executable: str, model: str, root: Path,
+                         scratch: Path, runner, timeout) -> dict:
+    # Field-note defect 1 (v0.3.22): probe with the launch argv shape so a
+    # flag, or a model, the CLI refuses fails here rather than at launch.
+    if adapter == "codex":
+        argv = codex_argv(executable, "reviewer", model, PREFLIGHT_TOKEN_BUDGET, reviewer_sandbox=True)
+    else:
+        # #343: the reviewer launch carries `--add-dir` and a non-empty
+        # allowlist, so the probe carries them too.
+        argv = claude_argv(executable, "reviewer", list(REVIEWER_READ_ONLY_TOOLS), model,
+                           project_root=root)
+    try:
+        completed = runner(argv, input="Reply with OK", text=True, capture_output=True,
+                           timeout=timeout, cwd=str(scratch))
+        return _preflight_outcome(completed)
+    except subprocess.TimeoutExpired:
+        return {"state": "unreachable", "reason": "timeout"}
 
 
 PREFLIGHT_OK_BEFORE_BUDGET_REASON = "OK before trailing token-budget exhaustion"

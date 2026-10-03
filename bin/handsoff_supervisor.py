@@ -5494,16 +5494,26 @@ def cmd_performance_resume(args) -> int:
         history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
         if history is None:
             raise lib.HandsoffError("no performance episode exists to resume")
+        # #350: the resume is bound to the paused episode it reopens. The
+        # engine computes the hash; a supplied value must match it, so a
+        # resume prepared against an earlier pause cannot clear a later one.
+        expected = runtime_control.content_hash(history["episodes"][-1])
+        supplied = getattr(args, "evidence_hash", None)
+        if supplied is not None and supplied != expected:
+            raise lib.HandsoffError(
+                f"performance-resume refused: --evidence-hash {supplied} does not match the "
+                f"paused episode {history['episodes'][-1]['episode_id']}, whose hash is {expected}; "
+                "omit the flag to bind to the current pause")
         at = datetime.now(timezone.utc)
         decision = {
             "decision_id": f"resume-{uuid.uuid4().hex}", "action": "resume", "actor": args.by,
-            "reason": args.reason, "evidence_hash": args.evidence_hash, "at": at.isoformat(),
+            "reason": args.reason, "evidence_hash": expected, "at": at.isoformat(),
         }
         resumed = runtime_control.resume_performance(
             history, decision, f"episode-{len(history['episodes']) + 1}",
         )
         _runtime_write(root, PERFORMANCE_RECORD, resumed)
-    print("PERFORMANCE_RESUMED")
+    print(f"PERFORMANCE_RESUMED: bound to paused episode hash {expected}")
     return 0
 
 
@@ -6106,7 +6116,10 @@ def build_parser() -> argparse.ArgumentParser:
     performance_resume = sub.add_parser("performance-resume", help="open a new episode after explicit reevaluation")
     performance_resume.add_argument("--by", required=True)
     performance_resume.add_argument("--reason", required=True)
-    performance_resume.add_argument("--evidence-hash", required=True)
+    performance_resume.add_argument(
+        "--evidence-hash", default=None,
+        help="optional: sha256 of the paused episode this resume answers; the engine "
+             "computes it, and a value that does not match is refused with the expected one")
 
     return p
 

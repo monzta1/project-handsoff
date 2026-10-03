@@ -59,13 +59,42 @@ class ReviewerSandboxTests(HandsoffTestCase):
         text = text.replace("compatibility_mode = true", "compatibility_mode = false")
         text = text.replace("compatibility_approved = true", "compatibility_approved = false")
         toml.write_text(text)
-        before = set(__import__("pathlib").Path("/tmp").glob("handsoff-reviewer-*"))
+        # mkdtemp honours TMPDIR, so globbing a literal /tmp could never see a leak.
+        tmpdir = __import__("pathlib").Path(__import__("tempfile").gettempdir())
+        before = set(tmpdir.glob("handsoff-reviewer-*"))
         with self.assertRaisesRegex(lib.HandsoffError, "before session reservation"):
             runtime.build_launch_spec(self.tmp, "reviewer", "Review it.",
                                       which=lambda name: f"/usr/local/bin/{name}")
-        after = set(__import__("pathlib").Path("/tmp").glob("handsoff-reviewer-*"))
+        after = set(tmpdir.glob("handsoff-reviewer-*"))
         self.assertEqual(after, before)
         self.assertFalse((self.tmp / "handsoff-status.json").exists())
+
+    def test_preflight_refusal_removes_the_reviewer_scratch(self):
+        """#348: every pre-flight failure category, not only the isolation
+        refusal above, leaves no scratch directory behind."""
+        import os
+        import tempfile
+        import handsoff_lib as lib
+        made = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def recording_mkdtemp(*args, **kwargs):
+            made.append(real_mkdtemp(*args, **kwargs))
+            return made[-1]
+
+        blocked = {"state": "blocked", "category": "model_unavailable", "reason": "model refused"}
+        which = lambda name: "/usr/local/bin/codex" if name == "codex" else None  # noqa: E731
+        with mock.patch.dict(os.environ, {"HANDSOFF_SKIP_PREFLIGHT": "0"}), \
+                mock.patch.object(runtime.tempfile, "mkdtemp", side_effect=recording_mkdtemp), \
+                mock.patch.object(lib, "launch_preflight", return_value=blocked):
+            with self.assertRaisesRegex(lib.HandsoffError, "preflight blocked"):
+                runtime.build_launch_spec(self.tmp, "reviewer", "Review it.", which=which)
+            with self.assertRaisesRegex(lib.HandsoffError, "preflight blocked"):
+                runtime.build_profile_launch_spec(self.tmp, "reviewer", "Review it.",
+                                                  {"adapter": "codex", "model": "gpt-test"}, which=which)
+        self.assertEqual(len(made), 2)
+        for path in made:
+            self.assertFalse(os.path.exists(path), path)
 
     def test_compatibility_contract_requires_explicit_approval_and_detects_tampering(self):
         import handsoff_lib as lib

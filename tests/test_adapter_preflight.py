@@ -232,3 +232,58 @@ class PreflightBudgetAndScratchCwdTests(unittest.TestCase):
         self.assertEqual(item["state"], "unreachable")
         self.assertNotIn("sk-secret", item["reason"])
         self.assertLessEqual(len(item["reason"]), 220)
+
+
+class PreflightProbesConfiguredModelsTests(unittest.TestCase):
+    """#355: the probe used the adapter's own default model, so a project
+    naming a usable model was reported unreachable and one naming an unusable
+    model was reported reachable. It now probes each model the project
+    assigns to the adapter."""
+
+    def setUp(self):
+        import os
+        self._skip = os.environ.pop("HANDSOFF_SKIP_PREFLIGHT", None)
+
+    def tearDown(self):
+        import os
+        if self._skip is not None:
+            os.environ["HANDSOFF_SKIP_PREFLIGHT"] = self._skip
+
+    def run_probe(self, cfg_models, refused):
+        seen = []
+
+        class Completed:
+            def __init__(self, code, err):
+                self.returncode, self.stderr, self.stdout = code, err, ""
+
+        def runner(argv, **kwargs):
+            model = argv[argv.index("--model") + 1] if "--model" in argv else "default"
+            seen.append(model)
+            if model in refused:
+                return Completed(1, f"model {model} is not supported")
+            return Completed(0, "")
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            codex = root / "codex"; codex.write_text("#!/bin/sh\nexit 0\n"); codex.chmod(0o755)
+            cfg = {"adapters": {"codex": str(codex)},
+                   "agents": {"architect": "claude", "reviewer": "codex", "implementer": "codex"},
+                   "models": cfg_models}
+            item = lib.adapter_preflight(cfg, root, lambda _: None, runner=runner)["codex"]
+        return item, seen
+
+    def test_configured_model_is_probed_not_the_adapter_default(self):
+        item, seen = self.run_probe({"reviewer": "gpt-good", "implementer": "gpt-good"}, refused={"default"})
+        self.assertEqual(seen, ["gpt-good"])
+        self.assertEqual(item["state"], "reachable")
+
+    def test_an_unusable_configured_model_is_unreachable(self):
+        item, seen = self.run_probe({"reviewer": "gpt-good", "implementer": "gpt-bad"}, refused={"gpt-bad"})
+        self.assertEqual(seen, ["gpt-good", "gpt-bad"])
+        self.assertEqual(item["state"], "unreachable")
+        self.assertIn("model gpt-bad", item["reason"])
+        self.assertEqual([p["model"] for p in item["models"]], ["gpt-good", "gpt-bad"])
+
+    def test_unassigned_adapter_still_probes_its_default(self):
+        self.assertEqual(lib._preflight_models({"agents": {"reviewer": "claude"}, "models": {}}, "codex"),
+                         [lib.DEFAULT_AGENT_MODEL])

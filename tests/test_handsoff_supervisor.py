@@ -6475,8 +6475,11 @@ class TestOutputLiveness(HandsoffTestCase):
 
         # The same run with the record stale reads the existing warning in both
         # places; the warning counts from the freshest signal, the 20 minute
-        # old output, not the 30 minute old workflow timestamps.
-        self._output(1, real=True, age=1200)
+        # old output, not the 30 minute old workflow timestamps. #353: 1230
+        # seconds, not 1200, because the warning floors to whole minutes and
+        # the CLI and the dashboard sample `now` milliseconds apart; exactly
+        # 1200 let one reading floor to 19 and the other to 20.
+        self._output(1, real=True, age=1230)
         stale_payload = self._status_payload()
         self.assertIn("no update in 20 minutes", stale_payload["stall_warning"])
         self.assertEqual(stale_payload["activity"]["stall_warning"], stale_payload["stall_warning"])
