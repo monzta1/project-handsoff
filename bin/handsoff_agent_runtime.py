@@ -822,14 +822,13 @@ def _workspace_manifest_path(workspace: dict) -> Path:
 
 
 def _path_digest(path: Path) -> str | None:
-    """File type, executable bit and content of one path: a host chmod with
-    no content change is a change, as git itself records it."""
+    """File type, every permission bit and content of one path: a host chmod
+    with no content change (0644 to 0600 as much as to 0755) is a change."""
     if path.is_symlink():
         return hashlib.sha256(("symlink:" + os.readlink(path)).encode("utf-8", "replace")).hexdigest()
     if not path.is_file():
         return None
-    executable = "x" if path.stat().st_mode & 0o111 else "-"
-    return f"file:{executable}:{_file_sha256(path)}"
+    return f"file:{(path.stat().st_mode & 0o7777):04o}:{_file_sha256(path)}"
 
 
 def _path_kind(path: Path) -> str:
@@ -862,22 +861,41 @@ def _apply_refusal(root: Path, workspace: Path, changed: list[str]) -> list[str]
 
 
 def _apply_changes(root: Path, workspace: Path, changed: list[str]) -> None:
-    """Write every changed path, or none: each existing target is backed up
-    before it is touched, and any failure restores every target and removes
-    every directory the apply created before the error propagates."""
-    backup = Path(tempfile.mkdtemp(prefix="handsoff-apply-"))
+    """Write every changed path, or none.
+
+    Every source is first copied into a staging directory inside the
+    project (a `.handsoff*` component, so the repository digest ignores it),
+    before any target is touched: a full disk or any copy error fails here
+    with the project unchanged. Targets are then swapped with renames on the
+    same filesystem, each existing target moved aside first. Any failure
+    rolls back with renames in reverse. If a rollback step itself fails the
+    staging directory, holding every moved-aside original, is KEPT and the
+    error names it; it is removed only after a clean apply or rollback.
+    An overwritten file keeps the project's permission bits except the
+    executable bit, which follows the session (#359 review attempt 2)."""
+    staging = Path(tempfile.mkdtemp(prefix=".handsoff-apply-", dir=root))
+    staged, aside = staging / "staged", staging / "aside"
+    staged.mkdir()
+    aside.mkdir()
+    try:
+        for index, path in enumerate(changed):
+            source = workspace / path
+            if source.is_symlink() or source.exists():
+                shutil.copy2(source, staged / str(index), follow_symlinks=False)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     undo = []
     try:
         for index, path in enumerate(changed):
-            source, target = workspace / path, root / path
+            target, new = root / path, staged / str(index)
+            mode = None
             if target.is_symlink() or target.is_file():
-                saved = backup / str(index)
-                shutil.copy2(target, saved, follow_symlinks=False)
-                target.unlink()
-                undo.append(lambda target=target, saved=saved: (
-                    target.unlink(missing_ok=True),
-                    shutil.copy2(saved, target, follow_symlinks=False)))
-            if not (source.is_symlink() or source.exists()):
+                if not target.is_symlink():
+                    mode = (target.stat().st_mode & 0o7777)
+                os.rename(target, aside / str(index))
+                undo.append(lambda target=target, saved=aside / str(index): os.rename(saved, target))
+            if not (new.is_symlink() or new.exists()):
                 continue
             missing = []
             parent = target.parent
@@ -887,17 +905,24 @@ def _apply_changes(root: Path, workspace: Path, changed: list[str]) -> None:
             for directory in reversed(missing):
                 directory.mkdir()
                 undo.append(lambda directory=directory: directory.rmdir())
-            undo.append(lambda target=target: target.unlink(missing_ok=True))
-            shutil.copy2(source, target, follow_symlinks=False)
+            if mode is not None and not new.is_symlink():
+                os.chmod(new, (mode & ~0o111) | ((new.stat().st_mode & 0o7777) & 0o111))
+            os.rename(new, target)
+            undo.append(lambda target=target, new=new: os.rename(target, new))
     except BaseException:
+        rollback_errors = []
         for step in reversed(undo):
             try:
                 step()
-            except OSError:
-                pass
+            except OSError as exc:
+                rollback_errors.append(str(exc))
+        if rollback_errors:
+            raise HandsoffError(
+                f"apply rollback incomplete; originals kept in {aside.relative_to(root)} "
+                f"under the project root ({rollback_errors[0][:80]})")
+        shutil.rmtree(staging, ignore_errors=True)
         raise
-    finally:
-        shutil.rmtree(backup, ignore_errors=True)
+    shutil.rmtree(staging, ignore_errors=True)
 
 
 def _owned_snapshot(cwd: Path, owned: list[str]) -> dict:
@@ -936,7 +961,10 @@ def create_implementer_workspace(root: Path, session: dict) -> Path:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target, follow_symlinks=False)
         seeded[relative] = _path_digest(target)
-    manifest = {"seeded": seeded, "owned": _owned_snapshot(path, session.get("owned_paths") or [])}
+    # The host-edit baseline is the PROJECT's owned files at launch, not the
+    # worktree's: git checks files out 0644/0755, so a host file at 0600
+    # would otherwise read as a host edit at apply time.
+    manifest = {"seeded": seeded, "owned": _owned_snapshot(root, session.get("owned_paths") or [])}
     _workspace_manifest_path(workspace).write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     return path
 

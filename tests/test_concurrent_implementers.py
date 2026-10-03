@@ -348,24 +348,93 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertEqual(failure["category"], "ownership_violation")
         self.assertIn("file into a directory or back: b.txt", failure["reason"])
 
-    def test_a_failure_mid_apply_restores_every_target(self):
-        def work(cwd):
-            for name in ("a.txt", "b.txt", "c.txt"):
-                (cwd / name).write_text(f"{name} by agent\n")
-            (cwd / "src" / "deep").mkdir()
-            (cwd / "src" / "deep" / "new.py").write_text("new\n")
+    def _three_file_work(self, cwd):
+        for name in ("a.txt", "b.txt", "c.txt"):
+            (cwd / name).write_text(f"{name} by agent\n")
+        (cwd / "src" / "deep").mkdir()
+        (cwd / "src" / "deep" / "new.py").write_text("new\n")
+
+    def test_a_disk_error_while_staging_touches_no_target(self):
+        # review attempt 2: persistent ENOSPC on the second write; every
+        # copy now goes to staging first, so no target is touched at all
         real = shutil.copy2
+        calls = []
 
         def copy2(src, dst, **kwargs):
-            if Path(dst).resolve() == (self.tmp / "c.txt").resolve() and "handsoff-apply-" not in str(src):
-                raise OSError("disk full")
+            if ".handsoff-apply-" in str(dst):
+                calls.append(dst)
+                if len(calls) >= 2:
+                    raise OSError(28, "No space left on device")
             return real(src, dst, **kwargs)
         before = self._tree()
         with mock.patch("sys.stdout", io.StringIO()), mock.patch.object(agent_runtime.shutil, "copy2", copy2):
-            code, error = self._launch(self._spec("a.txt", "b.txt", "c.txt", "src"), work=work)
+            code, error = self._launch(self._spec("a.txt", "b.txt", "c.txt", "src"), work=self._three_file_work)
         self.assertIsNotNone(error)
-        self.assertIn("disk full", str(error))
+        self.assertIn("No space left", str(error))
+        self.assertEqual(self._tree(), before, "a staging failure leaves the project untouched")
+        self.assertEqual(list(self.tmp.glob(".handsoff-apply-*")), [], "staging removed")
+
+    def test_a_rename_failure_mid_swap_rolls_every_target_back(self):
+        real = os.rename
+        swaps = []
+
+        def rename(src, dst):
+            if "/staged/" in str(src) and ".handsoff-apply-" in str(src):
+                swaps.append(dst)
+                if len(swaps) == 3:
+                    raise OSError(5, "I/O error")
+            return real(src, dst)
+        before = self._tree()
+        with mock.patch("sys.stdout", io.StringIO()), mock.patch.object(agent_runtime.os, "rename", rename):
+            code, error = self._launch(self._spec("a.txt", "b.txt", "c.txt", "src"), work=self._three_file_work)
+        self.assertIsNotNone(error)
         self.assertEqual(self._tree(), before, "every target is restored, created directories removed")
+        self.assertEqual(list(self.tmp.glob(".handsoff-apply-*")), [], "staging removed after a clean rollback")
+
+    def test_a_failed_rollback_keeps_the_originals_and_names_them(self):
+        real = os.rename
+        state = {"swaps": 0}
+
+        def rename(src, dst):
+            text = str(src)
+            if "/staged/" in text and ".handsoff-apply-" in text:
+                state["swaps"] += 1
+                if state["swaps"] == 2:
+                    raise OSError(5, "I/O error")
+            if "/aside/" in text and ".handsoff-apply-" in text:
+                raise OSError(5, "rollback I/O error")
+            return real(src, dst)
+        original_a = self._read("a.txt")
+        with mock.patch("sys.stdout", io.StringIO()), mock.patch.object(agent_runtime.os, "rename", rename):
+            code, error = self._launch(self._spec("a.txt", "b.txt", "c.txt", "src"), work=self._three_file_work)
+        self.assertIsNotNone(error)
+        self.assertIn("apply rollback incomplete", str(error))
+        kept = list(self.tmp.glob(".handsoff-apply-*/aside/*"))
+        self.assertTrue(kept, "the moved-aside originals are kept, never deleted")
+        self.assertIn(original_a, [p.read_text() for p in kept])
+        self.assertIn(kept[0].parent.parent.name, str(error), "the error names where the originals are")
+
+    def test_a_host_chmod_to_0600_is_refused_and_the_mode_kept(self):
+        def work(cwd):
+            (cwd / "a.txt").write_text("a by agent\n")
+            (self.tmp / "a.txt").chmod(0o600)  # not the executable bit
+        with mock.patch("sys.stdout", io.StringIO()):
+            code, error = self._launch(self._spec("a.txt"), work=work)
+        self.assertIsNotNone(error)
+        self.assertEqual((self.tmp / "a.txt").stat().st_mode & 0o7777, 0o600)
+        self.assertNotEqual(self._read("a.txt"), "a by agent\n")
+
+    def test_an_untouched_0600_file_is_applied_and_keeps_its_mode(self):
+        # the baseline is the project at launch, not git's 0644 checkout
+        (self.tmp / "a.txt").chmod(0o600)
+
+        def work(cwd):
+            (cwd / "a.txt").write_text("a by agent\n")
+        with mock.patch("sys.stdout", io.StringIO()):
+            code, error = self._launch(self._spec("a.txt"), work=work)
+        self.assertIsNone(error, error)
+        self.assertEqual(self._read("a.txt"), "a by agent\n")
+        self.assertEqual((self.tmp / "a.txt").stat().st_mode & 0o7777, 0o600)
 
     def test_a_host_chmod_of_an_owned_file_is_refused_and_the_mode_kept(self):
         def work(cwd):
