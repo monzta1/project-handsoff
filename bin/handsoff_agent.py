@@ -1896,6 +1896,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         if applied["state"] != "applied":
             reason = {"outside_ownership": "workspace changed paths outside its ownership: ",
                       "host_edit": "host changed owned paths since launch: ",
+                      "type_transition": "workspace changed a file into a directory or back: ",
                       }.get(applied["reason"], "workspace apply failed: ")
             reason = (reason + (", ".join(applied["paths"]) or applied.get("detail", "")))[:200]
             end_session("failed", exit_code=1,

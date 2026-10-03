@@ -117,7 +117,7 @@ reviewer = []
 architect = 40000
 supervisor = 24000
 implementer = 120000
-reviewer = 92000
+reviewer = 200000
 
 [recovery]
 enabled = true

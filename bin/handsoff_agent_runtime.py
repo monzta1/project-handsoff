@@ -822,9 +822,82 @@ def _workspace_manifest_path(workspace: dict) -> Path:
 
 
 def _path_digest(path: Path) -> str | None:
+    """File type, executable bit and content of one path: a host chmod with
+    no content change is a change, as git itself records it."""
     if path.is_symlink():
         return hashlib.sha256(("symlink:" + os.readlink(path)).encode("utf-8", "replace")).hexdigest()
-    return _file_sha256(path) if path.is_file() else None
+    if not path.is_file():
+        return None
+    executable = "x" if path.stat().st_mode & 0o111 else "-"
+    return f"file:{executable}:{_file_sha256(path)}"
+
+
+def _path_kind(path: Path) -> str:
+    if path.is_symlink():
+        return "symlink"
+    if path.is_dir():
+        return "dir"
+    if path.is_file():
+        return "file"
+    return "absent" if not os.path.lexists(path) else "other"
+
+
+def _apply_refusal(root: Path, workspace: Path, changed: list[str]) -> list[str]:
+    """Every changed path whose apply would change a file into a directory
+    or back, or meet anything that is not a regular file or symlink. Checked
+    before anything is written, so such an apply never starts."""
+    refused = []
+    for path in changed:
+        source, target = _path_kind(workspace / path), _path_kind(root / path)
+        if source in {"dir", "other"} or target in {"dir", "other"}:
+            refused.append(path)
+            continue
+        parent = Path(path).parent
+        while str(parent) not in {"", "."}:
+            if _path_kind(root / parent) not in {"dir", "absent"}:
+                refused.append(path)
+                break
+            parent = parent.parent
+    return refused
+
+
+def _apply_changes(root: Path, workspace: Path, changed: list[str]) -> None:
+    """Write every changed path, or none: each existing target is backed up
+    before it is touched, and any failure restores every target and removes
+    every directory the apply created before the error propagates."""
+    backup = Path(tempfile.mkdtemp(prefix="handsoff-apply-"))
+    undo = []
+    try:
+        for index, path in enumerate(changed):
+            source, target = workspace / path, root / path
+            if target.is_symlink() or target.is_file():
+                saved = backup / str(index)
+                shutil.copy2(target, saved, follow_symlinks=False)
+                target.unlink()
+                undo.append(lambda target=target, saved=saved: (
+                    target.unlink(missing_ok=True),
+                    shutil.copy2(saved, target, follow_symlinks=False)))
+            if not (source.is_symlink() or source.exists()):
+                continue
+            missing = []
+            parent = target.parent
+            while not parent.exists():
+                missing.append(parent)
+                parent = parent.parent
+            for directory in reversed(missing):
+                directory.mkdir()
+                undo.append(lambda directory=directory: directory.rmdir())
+            undo.append(lambda target=target: target.unlink(missing_ok=True))
+            shutil.copy2(source, target, follow_symlinks=False)
+    except BaseException:
+        for step in reversed(undo):
+            try:
+                step()
+            except OSError:
+                pass
+        raise
+    finally:
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def _owned_snapshot(cwd: Path, owned: list[str]) -> dict:
@@ -887,8 +960,10 @@ def apply_implementer_workspace(root: Path, session_id: str) -> dict:
     digest's structural exclusion: `.handsoff*` components and the ledgers)
     are neither attributed nor applied, so a session that ran verify in its
     worktree is not refused for them. All or nothing: a changed path outside
-    owned_paths, or an owned file the host changed in the project since it
-    was seeded, refuses the whole apply and nothing is copied.
+    owned_paths, an owned file the host changed (content, type or executable
+    bit) in the project since it was seeded, or a file/directory type
+    transition refuses the whole apply and nothing is copied; a failure
+    while copying restores every target before it propagates.
     Returns {state, paths}."""
     root = Path(root).resolve()
     with project_lock(root):
@@ -915,15 +990,10 @@ def apply_implementer_workspace(root: Path, session_id: str) -> dict:
         collided = sorted(path for path in set(before) | set(now) if before.get(path) != now.get(path))
         if collided:
             return {"state": "refused", "reason": "host_edit", "paths": collided[:64]}
-        for path in changed:
-            source, target = workspace / path, root / path
-            if source.is_symlink() or source.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.is_symlink() or target.is_file():
-                    target.unlink()
-                shutil.copy2(source, target, follow_symlinks=False)
-            elif target.is_symlink() or target.exists():
-                target.unlink()
+        transitions = _apply_refusal(root, workspace, changed)
+        if transitions:
+            return {"state": "refused", "reason": "type_transition", "paths": transitions[:64]}
+        _apply_changes(root, workspace, changed)
         return {"state": "applied", "paths": changed[:64]}
 
 

@@ -17,6 +17,7 @@ from unittest import mock
 
 from datetime import datetime, timedelta, timezone
 
+from tests.engine_patch import patch_engine
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 from tests.fixture_state import write_version_pin
 
@@ -319,6 +320,95 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertEqual(failure["changed_paths"], ["a.txt"])
         self.assertIn("host changed owned paths since launch: a.txt", failure["reason"])
 
+    def _tree(self):
+        """Every project file's bytes and mode, the git and Handsoff state aside."""
+        tree = {}
+        for path in sorted(self.tmp.rglob("*")):
+            relative = path.relative_to(self.tmp).as_posix()
+            if relative.split("/")[0] == ".git" or relative.startswith(("handsoff-", ".handsoff")):
+                continue
+            kind = "dir" if path.is_dir() and not path.is_symlink() else "file"
+            tree[relative] = (kind, path.stat().st_mode,
+                              path.read_bytes() if kind == "file" else None)
+        return tree
+
+    def test_a_file_replaced_by_a_directory_is_refused_and_nothing_is_applied(self):
+        def work(cwd):
+            (cwd / "a.txt").write_text("a by agent\n")
+            (cwd / "b.txt").unlink()
+            (cwd / "b.txt").mkdir()
+            (cwd / "b.txt" / "inner").write_text("inner\n")
+        before = self._tree()
+        with mock.patch("sys.stdout", io.StringIO()):
+            code, error = self._launch(self._spec("a.txt", "b.txt"), work=work)
+        self.assertIsNotNone(error)
+        self.assertEqual(self._tree(), before, "a refused apply leaves the project byte-identical")
+        status = self.read_status()
+        failure = status["agent_failures"][status["current_agent_sessions"]["implementer"]]
+        self.assertEqual(failure["category"], "ownership_violation")
+        self.assertIn("file into a directory or back: b.txt", failure["reason"])
+
+    def test_a_failure_mid_apply_restores_every_target(self):
+        def work(cwd):
+            for name in ("a.txt", "b.txt", "c.txt"):
+                (cwd / name).write_text(f"{name} by agent\n")
+            (cwd / "src" / "deep").mkdir()
+            (cwd / "src" / "deep" / "new.py").write_text("new\n")
+        real = shutil.copy2
+
+        def copy2(src, dst, **kwargs):
+            if Path(dst).resolve() == (self.tmp / "c.txt").resolve() and "handsoff-apply-" not in str(src):
+                raise OSError("disk full")
+            return real(src, dst, **kwargs)
+        before = self._tree()
+        with mock.patch("sys.stdout", io.StringIO()), mock.patch.object(agent_runtime.shutil, "copy2", copy2):
+            code, error = self._launch(self._spec("a.txt", "b.txt", "c.txt", "src"), work=work)
+        self.assertIsNotNone(error)
+        self.assertIn("disk full", str(error))
+        self.assertEqual(self._tree(), before, "every target is restored, created directories removed")
+
+    def test_a_host_chmod_of_an_owned_file_is_refused_and_the_mode_kept(self):
+        def work(cwd):
+            (cwd / "a.txt").write_text("a by agent\n")
+            (self.tmp / "a.txt").chmod(0o755)  # the host changes only the mode
+        with mock.patch("sys.stdout", io.StringIO()):
+            code, error = self._launch(self._spec("a.txt"), work=work)
+        self.assertIsNotNone(error)
+        self.assertEqual(self._read("a.txt"), ORIGINAL["a.txt"])
+        self.assertEqual((self.tmp / "a.txt").stat().st_mode & 0o777, 0o755)
+        status = self.read_status()
+        failure = status["agent_failures"][status["current_agent_sessions"]["implementer"]]
+        self.assertIn("host changed owned paths since launch: a.txt", failure["reason"])
+
+    def _with_workspace(self, session_id):
+        session = self.read_status()["agent_sessions"][session_id]
+        lib.create_implementer_workspace(self.tmp, session)
+        path = Path(session["workspace"]["path"])
+        seed = Path(session["workspace"]["path"] + ".seed.json")
+        self.assertTrue(path.is_dir() and seed.is_file())
+        return path, seed
+
+    def _worktrees(self):
+        listed = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=self.tmp,
+                                check=True, capture_output=True, text=True).stdout
+        return [Path(line[len("worktree "):]).resolve() for line in listed.splitlines()
+                if line.startswith("worktree ")]
+
+    def test_run_close_removes_every_cancelled_implementers_worktree_and_seed(self):
+        first, second = self._hold("a.txt"), self._hold("b.txt")
+        resources = []
+        for session in (first, second):
+            lib.transition_agent_session(self.tmp, session["session_id"], "running")
+            resources.append(self._with_workspace(session["session_id"]))
+        # no launcher survives to run its own cleanup
+        lib.close_run(self.tmp, by="test-pilot", reason="closing both", cancel_active=True,
+                      release_dashboard=False,
+                      terminate_process=lambda root, session: {"session_id": session["session_id"]})
+        for path, seed in resources:
+            self.assertFalse(path.exists(), path)
+            self.assertFalse(seed.exists(), seed)
+            self.assertNotIn(path.resolve(), self._worktrees())
+
     def test_owns_is_normalized_and_scopes_the_claude_edit_allowlist(self):
         claude_only = lambda name: "/usr/local/bin/claude" if name == "claude" else None
         with mock.patch.object(runtime.lib, "validate_runtime_integrity"), \
@@ -480,13 +570,38 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertEqual(assessment["state"], "worker_silent", assessment)
         self.assertEqual(assessment["lost_session_id"], lost["session_id"])
         launched = []
-        with mock.patch.object(lib, "load_config", return_value=cfg):
+        with patch_engine("load_config", return_value=cfg):
             lib.recover_run(self.tmp, actor="watchdog",
                             launcher=lambda role, **kwargs: launched.append((role, kwargs)) or True)
         self.assertEqual(launched, [("implementer", {"owned_paths": ["a.txt"]})])
         sessions = self.read_status()["agent_sessions"]
         self.assertEqual(sessions[lost["session_id"]]["state"], "failed")
         self.assertEqual(sessions[alive["session_id"]]["state"], "running")
+
+    def test_recovery_removes_the_lost_implementers_worktree_and_seed(self):
+        lost, alive = self._hold("a.txt"), self._hold("b.txt")
+        lost_path, lost_seed = self._with_workspace(lost["session_id"])
+        alive_path, alive_seed = self._with_workspace(alive["session_id"])
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=120)).isoformat()
+        status = self.read_status()
+        status.update(phase_number=4, phase=lib.PHASES[4])
+        for sid in (lost["session_id"], alive["session_id"]):
+            status["agent_sessions"][sid].update(state="running", started_at=stale, running_at=stale,
+                                                 phase_number=4)
+        cfg = lib.load_config(self.tmp)
+        with lib.project_lock(self.tmp):
+            lib.commit(self.tmp, cfg, status=status, event_kind="test_setup", event_message="test_setup")
+        lib.write_live_beacon(self.tmp, session_id=alive["session_id"], role="implementer",
+                              state="running", pid=os.getpid())
+        cfg["agents"]["implementer"] = "codex"
+        with patch_engine("load_config", return_value=cfg):
+            lib.recover_run(self.tmp, actor="watchdog", launcher=lambda role, **kwargs: True)
+        self.assertEqual(self.read_status()["agent_sessions"][lost["session_id"]]["state"], "failed")
+        self.assertFalse(lost_path.exists())
+        self.assertFalse(lost_seed.exists())
+        self.assertNotIn(lost_path.resolve(), self._worktrees())
+        # the live session's worktree is its own launcher's to remove
+        self.assertTrue(alive_path.is_dir() and alive_seed.is_file())
 
     def test_questions_from_either_session_reach_status_with_their_session_id(self):
         first, second = self._hold("a.txt"), self._hold("b.txt")

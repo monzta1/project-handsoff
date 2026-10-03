@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import posixpath
 import re
 from copy import deepcopy
 from datetime import datetime
@@ -181,7 +180,6 @@ def validate_owned_paths(value: object) -> list[str]:
     for path in value:
         if not isinstance(path, str) or not 1 <= len(path) <= MAX_OWNED_PATH_LENGTH \
                 or path.startswith("/") or "\\" in path or "\x00" in path \
-                or posixpath.normpath(path) != path \
                 or any(part in {"", ".", ".."} for part in path.split("/")):
             raise HandsoffError(f"owned path {path!r} is not a normalized project-relative path")
     if len(set(value)) != len(value):

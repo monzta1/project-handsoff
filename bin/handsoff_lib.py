@@ -4111,6 +4111,11 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         # #359: the replacement of an implementer that declared ownership
         # declares the same paths, so it runs in its own worktree as well.
         lost = (status.get("agent_sessions") or {}).get(assessment.get("lost_session_id") or "")
+        lost_record = (proposed.get("agent_sessions") or {}).get(assessment.get("lost_session_id") or "")
+        if isinstance(lost_record, dict) and lost_record.get("state") not in AGENT_SESSION_LIVE_STATES:
+            # the lost session's launcher is presumed gone with it, so its
+            # worktree and seed record are removed here, not left behind
+            remove_implementer_workspace(root, lost_record)
         owned = list(lost["owned_paths"]) if isinstance(lost, dict) and lost.get("owned_paths") else None
     ok = False
     launch_error = None
@@ -7802,7 +7807,12 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
                               else f"Pilot cleanly closed the run: {why}"), by=actor, outcome=outcome,
                extra_events=list(extra_events or []),
                cancelled_active=bool(live), session_ids=[item["session_id"] for item in live])
-    dashboard = release_run_dashboard(root) if release_dashboard else {
+        # #359: a cancelled implementer's worktree and seed record go with it;
+        # its launcher's own cleanup never runs once that process is gone,
+        # and removal is idempotent when it does.
+        for session in live:
+            remove_implementer_workspace(root, session)
+    dashboard =release_run_dashboard(root) if release_dashboard else {
         "released": False, "reason": "dashboard release delegated to caller",
     }
     return {"closed": True, "already_closed": False, "run_closed": proposed["run_closed"],
