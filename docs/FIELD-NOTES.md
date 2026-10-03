@@ -494,3 +494,10 @@ Two defects found by projecting 542 recorded managed sessions (#300) and on a v0
 The implementation review took three attempts; each found a real gap in stream handling (a stdout verdict hiding a stderr packet, a stderr question lost to long diagnostics, stderr verdicts read only on a non-zero exit), each now a test that fails without its fix.
 
 Lesson: when a result can arrive on two streams, decide eligibility only after reading both, on every exit path, not just the failing one you were thinking about.
+
+### v0.4.5 field notes: the same tests run over and over, and a refusal reported as nothing (#363 #361, 2026-10-03)
+
+1. **The #341/#345 lane recorded 65 test runs to prove 7 criteria (#363).** Cause, mostly process: `verify` already ran the union of repeated `--criterion` flags once (#43), but the playbook said to pass one criterion per call, so a shared command ran once per criterion; and two edits after `verify` (a version and docs bump, a one-line test fix) each re-ran every criterion and the mutation proof. Fix: `verify --all` verifies every criterion whose policy includes checks in one call, so each distinct command runs once; `playbook/lanes.md` and `docs/REFERENCE.md` say one `verify --all` per round, after the bump, notes and docs. Also fixed: `[digest] ignore` was outside both hashes, so widening it silently un-staled evidence; it is now bound into `config_hash` and `verification_config_hash` while non-empty, and an absent or empty list keeps every existing hash.
+2. **A refused architect proposal was recorded as `orchestration_noop` with the Supervisor's sentence (#361).** Cause: every architect failure path used the one no-op classification, whose reason label names the Supervisor, and the validation error never reached the record. Fix: a new `protocol_refused` category whose reason (and the launcher's stderr) names the refused field, its index and the limit, and an architect that emits nothing gets an architect reason.
+
+Lesson: before filing an engine fix for a cost, read whether the engine already avoids it and the instructions are what spend it.

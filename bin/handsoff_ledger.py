@@ -369,7 +369,18 @@ def config_hash(cfg: dict) -> str:
     for name, (default, _text) in FEATURES.items():
         if feature_enabled(cfg, name) != default:
             bound["features." + name] = feature_enabled(cfg, name)
+    _bind_digest_ignore(bound, cfg)
     return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()
+
+
+def _bind_digest_ignore(bound: dict, cfg: dict) -> None:
+    """#363: [digest] ignore decides which files the repository digest
+    sees, so changing it changes what evidence and a review cover. Bound
+    only while non-empty, sorted and deduplicated, so a run without it
+    keeps every recorded hash byte for byte and reordering stales nothing."""
+    ignores = sorted({item for item in cfg.get("digest_ignore") or [] if isinstance(item, str)})
+    if ignores:
+        bound["digest_ignore"] = ignores
 
 
 def _design_hash_current(recorded: object, status: dict, acceptance: dict) -> bool:
@@ -909,4 +920,5 @@ def verification_config_hash(cfg: dict) -> str:
     bound["check_timeout_seconds"] = cfg.get("check_timeout_seconds")
     bound["regressions"] = [{"name": group.get("name"), "commands": list(group.get("commands", []))}
                             for group in cfg.get("regressions", [])]
+    _bind_digest_ignore(bound, cfg)
     return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()

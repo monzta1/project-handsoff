@@ -19,7 +19,8 @@ variant from a family; record unavailable only when the runtime hides it.
 
 **Criteria.**
 - Automated test strings must already appear verbatim in `[checks] commands`.
-- `verify` always takes `--criterion REQ-00n --by <you>`; bare `verify` fails.
+- Run one `verify --all --by <you>` per round, only after the version bump,
+  field notes and documentation are finished.
 - A remote CI/device criterion is `manual`; evidence is its own run/read-back,
   not a local build or a test that merely reads its configuration.
 - A criterion that says "every reader" (every command, every page, every
@@ -64,7 +65,7 @@ both models plus `provider_quota`. Ask only when no route is allowed. Auth,
 runtime, and per-session token-cap failures are not quota; size caps by role,
 risk, and packet.
 
-**Tree changes after verify are evidence drift.** Re-run every `verify`,
+**Tree changes after verify are evidence drift.** Re-run `verify --all`,
 then `record-review --by <reviewer> --reaffirm --tests-executed yes
 --symptom-reproduced not_applicable`. This includes a rebase onto a moved
 `main` and a documented line count.
@@ -78,8 +79,7 @@ dashboard/ (the engine refuses until you do, and names the command).
 is ONE run with N items. Concurrency is free inside it: one design, then build
 the items side by side in one worktree. Three tickets shipped together on
 2026-09-25 as three runs cost 3 design reviews, 3 implementation reviews, 4 CI
-passes and 3 rebase cycles against one of each; the rebases existed only
-because the work sat on three branches racing to land.
+passes and 3 rebase cycles against one of each; the rebases came only from three branches racing to land.
 
 Separate releases only: one worktree per lane off `main`, two at once only if
 they touch different files. The second to land rebases (keep both sides, then

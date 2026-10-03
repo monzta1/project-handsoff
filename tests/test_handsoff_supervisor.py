@@ -11021,7 +11021,7 @@ class TestFailureClassification(unittest.TestCase):
         params = set(inspect.signature(lib.classify_runtime_failure).parameters)
         self.assertEqual(params, {
             "exit_code", "timed_out", "cancelled", "orchestration_noop",
-            "stderr_tail", "stdout_tail",
+            "stderr_tail", "stdout_tail", "role",
         })
         self.assertTrue(callable(lib.stall_warning))  # still exists, untouched, sole authority on silence
 
@@ -11054,7 +11054,7 @@ class TestFailureClassification(unittest.TestCase):
         # and a digest -- nothing else.
         self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
         self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
-        self.assertEqual(len(lib.FAILURE_CATEGORIES), 21)
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 22)
         closed_set_reasons = {
             "cancelled": "run was cancelled",
             "timeout": "runner exceeded its timeout",
@@ -11077,6 +11077,7 @@ class TestFailureClassification(unittest.TestCase):
             "no_artifact": lib._FAILURE_REASON_LABELS["no_artifact"],
             "protocol_silence": "session produced no protocol output within the configured limit",
             "model_identity_mismatch": "provider reported a different model than requested",
+            "protocol_refused": "managed role structured result was refused by validation",
         }
         self.assertEqual(set(lib.FAILURE_CATEGORIES), set(closed_set_reasons))
         self.assertEqual(set(lib._FAILURE_REASON_LABELS), set(lib.FAILURE_CATEGORIES))

@@ -1640,6 +1640,13 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     persist_new(architect_results, "design")
                 elif spec.role == "architect" and line.startswith(DECLINE_RESULT_PREFIX):
                     _parse_architect_decline_line(line, architect_declines, protocol_errors)
+        if spec.role == "architect":
+            # #361: a refused proposal is named on this path too; a non-zero
+            # exit after it must not hide the validation diagnostic.
+            refused = next((error for error in protocol_errors
+                            if error.startswith("invalid Architect design proposal")), None)
+            if refused:
+                _end_protocol_refused(end_session, refused, session_id)
         if beacon is not None and beacon.operation_terminated:
             operation = lib.current_operation(root, session_id) or {}
             failure = {"category": "external_timeout",
@@ -1708,6 +1715,12 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                                           recovered_from_rule=True, refused_text=recovered_results[-1]["text"])
             except lib.HandsoffError:
                 pass
+        refused = next((error for error in protocol_errors
+                        if error.startswith("invalid Architect design proposal")), None)
+        if spec.role == "architect" and refused:
+            # #361: the proposal was written and refused by validation; the
+            # reason names the refused field, its index and the limit.
+            _end_protocol_refused(end_session, refused, session_id)
         end_session(
             "failed", exit_code=1,
             # A malformed structured request is a deterministic contract
@@ -1715,7 +1728,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             # generic non-zero exit made execute_with_recovery spend every
             # fallback on the same bad request and ultimately obscure the
             # still-valid workflow decision with a recovery hold.
-            failure=lib.classify_runtime_failure(orchestration_noop=True),
+            failure=lib.classify_runtime_failure(orchestration_noop=True, role=spec.role),
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
     if capture_supervisor and not supervisor_requests and question_lines[0] == 0:
@@ -1727,15 +1740,12 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             "Supervisor exited without a broker request or Pilot question", session_id,
         )
     if len(architect_results) > 1 or len(architect_declines) > 1 or (architect_results and architect_declines):
-        end_session(
-            "failed", exit_code=1,
-            failure=lib.classify_runtime_failure(orchestration_noop=True),
-        )
-        raise AgentLaunchError("Architect emitted more than one structured outcome (proposal or decline)", session_id)
+        _end_protocol_refused(end_session, "Architect emitted more than one structured outcome (proposal or decline)",
+                              session_id)
     if spec.role == "architect" and not architect_results and not architect_declines and question_lines[0] == 0:
         end_session(
             "failed", exit_code=1,
-            failure=lib.classify_runtime_failure(orchestration_noop=True),
+            failure=lib.classify_runtime_failure(orchestration_noop=True, role=spec.role),
         )
         raise AgentLaunchError("Architect exited without a structured design proposal or Pilot question", session_id)
     if architect_requests:
@@ -1746,13 +1756,10 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             try:
                 code = broker.execute_architect_criteria(root, request, capability=broker._SUPERVISOR_HOST_CAPABILITY)
             except lib.HandsoffError as exc:
-                end_session("failed", exit_code=1,
-                                            failure=lib.classify_runtime_failure(orchestration_noop=True))
-                raise AgentLaunchError(f"Architect criteria request rejected: {str(exc)[:200]}", session_id) from exc
+                _end_protocol_refused(end_session, f"Architect criteria request rejected: {str(exc)[:160]}", session_id)
             if code != 0:
-                end_session("failed", exit_code=1,
-                                            failure=lib.classify_runtime_failure(orchestration_noop=True))
-                raise AgentLaunchError("Architect criteria transaction was refused by criteria-apply", session_id)
+                _end_protocol_refused(end_session, "Architect criteria transaction was refused by criteria-apply",
+                                      session_id)
     if architect_declines:
         # #177: the decline is recorded as a pending state the design
         # reviewer resolves; the session's actor is the architect of record.
@@ -1839,6 +1846,19 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     for problem in question_errors:
         sys.stderr.write(f"HANDSOFF_QUESTION_WARNING: {problem}\n")
     return 0
+
+
+def _end_protocol_refused(end_session, reason: str, session_id: str):
+    """#361: end a session whose structured result the host refused, with
+    the refusal as its reason, and print it: recovery replaces the
+    AgentLaunchError message with its own pause reason, so stderr is the
+    only place the launcher's caller reads why."""
+    reason = reason.strip()[:200]
+    end_session("failed", exit_code=1,
+                failure={"category": "protocol_refused", "reason": reason,
+                         "tail_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest()})
+    sys.stderr.write(f"HANDSOFF_AGENT_REFUSED: {reason}\n")
+    raise AgentLaunchError(reason, session_id)
 
 
 def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,

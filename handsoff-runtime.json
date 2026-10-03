@@ -1,6 +1,6 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "aab701effd282770fa30ee1dac2c62374235ce6fd3729000fa60a3a3a04f67a9",
+    "bin/handsoff_agent.py": "94989bd76b3f6132c8d155cfa18e6449359e360f765a2994714de724753be774",
     "bin/handsoff_agent_runtime.py": "29aa25410cbabb8d2ce8a62a59bbc8f5af4db6f1929ab2c8fbc7a91c7b472dbb",
     "bin/handsoff_broker.py": "3adaa7a23c4e1d08077011088aef16451816dcfa1e66681c2e764b723e6f7463",
     "bin/handsoff_cli.py": "1a666c092e32fcdca364d03039dafb3ed418e4adaea858576dbcfa4a59d9fd02",
@@ -11,8 +11,8 @@
     "bin/handsoff_evidence.py": "f165222647ec17f947547507f4a12c0fab4e199d5140ca08319800895ad1539d",
     "bin/handsoff_fleet.py": "5bcf4dd30df282818fc0ef5377e39e589747e358bf7fe26f21f99874aea3ba4b",
     "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
-    "bin/handsoff_ledger.py": "d410d63afd11c4a6ccd41f66a26a471c353689d68afa32b1b9be678d7eb40c55",
-    "bin/handsoff_lib.py": "51f5e08a98220c1b643e4eea8e546672f4e18607e3ecfcb4f06edbc7f22028e9",
+    "bin/handsoff_ledger.py": "bf79ba4b5cb2579a377974b5495b6c53589ad0d83fdd9de0f410c383417f77e5",
+    "bin/handsoff_lib.py": "79fa747d25c213d3eb966c75e5fee20038c8a35135cada11be756584aee80cc9",
     "bin/handsoff_manifest.py": "ae54f8fb3154891c1913bfe11d73eb1fa994e990af7e0ad40f6d3728c85121d4",
     "bin/handsoff_mutation.py": "e34053e5f474239bf8e267e26f9a081fa985b3d4bf1ef74b7233b9ea97e22d96",
     "bin/handsoff_observability.py": "81acabac58691dac7fe17c8dbbdc9290a3ac3671ee9bdd0b1a8a7f1faefbfd61",
@@ -25,8 +25,8 @@
     "bin/handsoff_resources.py": "b6eb4b32bcf781b38ea0aa1c8398a047add8dc00f59e9b2ad3093af6df0a949f",
     "bin/handsoff_routing.py": "c0a676987fae6728d8903a950719debfafc543e451afece63872ebbeebb8d5f0",
     "bin/handsoff_runtime_control.py": "9e0e6c5b8bc849982f99f53287ff9925c5972883a4b37460a3d6bc3dadeedb1e",
-    "bin/handsoff_schema.py": "2d32995fd3f2536ad4f20da489a32b869c7f96aec26edf62ef3bfa6be083bd6f",
-    "bin/handsoff_supervisor.py": "a1d2917b0e387a7aa605f19733c41edcaebb77fd49d879f3f9173e966fdfca10",
+    "bin/handsoff_schema.py": "88681d687dde55cb2dc45734d9fa8f662fd90c24e17c244dd68af679807da81e",
+    "bin/handsoff_supervisor.py": "cdc8704c0cbfdcb2f68ef2d7ffcd13d3b18a3a97c9f0730850437e6c7c04849e",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/handsoff_update.py": "e2ceb0ac37c35495344be13f27674129ad7a27250bd7cf30c2b8b81021455b48",
     "bin/handsoff_workflow.py": "79ab325d026fd2721835accebe7926c87300c5d768dcbeee2307653eb0dbe777",
@@ -47,7 +47,7 @@
     "playbook/INDEX.md": "779c32bd31e976a097c955a49206988505763051a699187628e2bc8a29a84deb",
     "playbook/index.json": "9f5025de10f7ef7c215cc50c167a30a0cf59a83ec7f74a91286f19f3b3b11fb1",
     "playbook/landing.md": "0dd3377efa183046980801b8a1b54dfc194de75d72186aa3cfd28e4e5ac96634",
-    "playbook/lanes.md": "6c56011fd3e79b9c6831ced4ecbb532c02d23fae105ee9c18f9e2713e73de56c",
+    "playbook/lanes.md": "e62f54b511aab7a12cc50273c3e257d9f4db995e97bb78fed61ace54d8d45f22",
     "playbook/lessons-agents.md": "44406794b3218c6c49dc50adebabfdcd89edba15c86385d87bed8d4293d90e8e",
     "playbook/lessons-binding.md": "01e7360a49ede0e7917e468060385129916763cf63e20ebdfa902655eae36bdf",
     "playbook/lessons-evidence.md": "ff2b6b81cf2c7a2d13fd4b1a51ea3d4fd30b511caa3ac5cd19eb58719ac2a1ce",
@@ -69,5 +69,5 @@
     "templates/handsoff.toml": "da9cc7f7289a5bd4a61856acd47fb7ecfbf6423b2af8d5f0d7f9c3c8c9ee8d5f"
   },
   "schema": 1,
-  "version": "v0.4.4"
+  "version": "v0.4.5"
 }

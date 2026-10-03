@@ -172,6 +172,7 @@ from handsoff_schema import (  # noqa: E402,F401
     WORK_ITEM_KINDS,
     WORK_ITEM_LANES,
     _FAILURE_REASON_LABELS,
+    _ORCHESTRATION_NOOP_REASONS,
     _HEX64,
     _amendment_record_errors,
     _design_review_findings_errors,
@@ -3748,9 +3749,9 @@ def validate_design_proposal(value: object) -> dict:
         if not isinstance(items, list) or not minimum <= len(items) <= 8:
             raise HandsoffError(f"design proposal {field} must contain {minimum} to 8 items")
         cleaned = []
-        for item in items:
+        for index, item in enumerate(items):
             if not isinstance(item, str) or not item.strip() or len(item.strip()) > 512:
-                raise HandsoffError(f"design proposal {field} item length {len(item.strip()) if isinstance(item, str) else 0}; each item must be 1 to 512 characters")
+                raise HandsoffError(f"design proposal {field} item length {len(item.strip()) if isinstance(item, str) else 0} at {field}[{index}]; each item must be 1 to 512 characters")
             cleaned.append(item.strip())
         result[field] = cleaned
     return result
@@ -6413,7 +6414,7 @@ _TAIL_PATTERNS = (
 def classify_runtime_failure(*, exit_code: int | None = None, timed_out: bool = False,
                               cancelled: bool = False, orchestration_noop: bool = False,
                               stderr_tail: str = "",
-                              stdout_tail: str = "") -> dict:
+                              stdout_tail: str = "", role: str | None = None) -> dict:
     """Turn a launched agent's raw outcome into one of FAILURE_CATEGORIES.
     Never returns the scanned text itself, only a category, a fixed-set
     reason label, and a digest of it -- the tail can be credential-bearing
@@ -6427,6 +6428,8 @@ def classify_runtime_failure(*, exit_code: int | None = None, timed_out: bool = 
     (exit_code absent, tail present but unrecognized) or still_running
     (exit_code absent, tail empty -- nothing has happened yet). exit_code is
     never 0 here: a clean exit is not a failure signal in the first place.
+    An orchestration_noop from the Architect names the Architect (#361);
+    every other role keeps the Supervisor label.
     """
     tail = (stderr_tail or "") + (stdout_tail or "")
     tail_sha256 = hashlib.sha256(tail.encode("utf-8", "replace")).hexdigest()
@@ -6449,9 +6452,12 @@ def classify_runtime_failure(*, exit_code: int | None = None, timed_out: bool = 
                 category = "unknown"
             else:
                 category = "still_running"
+    reason = _FAILURE_REASON_LABELS[category]
+    if category == "orchestration_noop" and role == "architect":
+        reason = _ORCHESTRATION_NOOP_REASONS[1]
     return {
         "category": category,
-        "reason": _FAILURE_REASON_LABELS[category],
+        "reason": reason,
         "tail_sha256": tail_sha256,
     }
 
