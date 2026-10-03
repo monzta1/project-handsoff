@@ -1640,6 +1640,13 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     persist_new(architect_results, "design")
                 elif spec.role == "architect" and line.startswith(DECLINE_RESULT_PREFIX):
                     _parse_architect_decline_line(line, architect_declines, protocol_errors)
+        if spec.role == "architect":
+            # #361: a refused proposal is named on this path too; a non-zero
+            # exit after it must not hide the validation diagnostic.
+            refused = next((error for error in protocol_errors
+                            if error.startswith("invalid Architect design proposal")), None)
+            if refused:
+                _end_protocol_refused(end_session, refused, session_id)
         if beacon is not None and beacon.operation_terminated:
             operation = lib.current_operation(root, session_id) or {}
             failure = {"category": "external_timeout",

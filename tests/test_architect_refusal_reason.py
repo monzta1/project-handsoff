@@ -76,6 +76,15 @@ class ArchitectRefusalReasonTests(HandsoffTestCase):
         # deterministic: recovery must not spend a fallback on the same refusal
         self.assertNotIn("protocol_refused", lib.RECOVERABLE_FAILURE_CATEGORIES)
 
+    def test_a_refused_proposal_then_a_non_zero_exit_is_still_named(self):
+        # implementation review attempt 1: the non-zero-exit branch ran first
+        # and recorded non_zero_exit with a generic reason
+        session, failure, message, stderr = self._launch("architect", _proposal(), returncode=1)
+        self.assertEqual(failure["category"], "protocol_refused")
+        for text in (failure["reason"], stderr):
+            self.assertIn("approach[2]", text)
+            self.assertIn("512", text)
+
     def test_protocol_refused_carries_a_bounded_free_reason(self):
         digest = "0" * 64
         record = lib._validate_failure_classification(
