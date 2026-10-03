@@ -87,3 +87,19 @@ with the number.
 - When a rule names the strongest member of a set, derive it from the set.
   `_verification_downgrade` hardcoded `automated_and_browser` as the top, so
   the next policy added above it would have been silently droppable.
+- A message that names a command is not a tested message. Removing two flags
+  from a CLI left the Phase 5 gap message printing them, and the test passed
+  because it checked the command NAME. Parse the flags out of the message and
+  ask argparse whether each one exists.
+- Never hold the project lock across work that writes no state. Three suite
+  runs inside one `with project_lock` blocked `heartbeat`, which is the signal
+  the watchdog reads. Release it, and re-establish what it protected on
+  reacquisition: the spec hash and the source digest, re-checked.
+- A hand-built argparse Namespace in a test drifts the moment the CLI gains a
+  flag. Parse real argv through the parser, so a new required flag is a parser
+  error rather than an AttributeError in code that was correct.
+- No fixed number of repeats makes an unsound command sound. Any N is defeated
+  by an N+1-strike resource, and a flaky suite forges a result by chance.
+  Repetition buys a confidence level; report it as one and name the residual.
+- When a limit cannot be fixed, write it down at full width. A limit described
+  more narrowly than it is reads as exotic and gets discounted.

@@ -30,6 +30,20 @@ from tests.test_handsoff_supervisor import (
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_mutation as mutation  # noqa: E402
+import handsoff_supervisor as supervisor  # noqa: E402
+from tests.engine_patch import patch_engine  # noqa: E402
+
+
+def _accepted_flags(command):
+    """The long flags `command` really accepts, read from the CLI itself.
+
+    Asked of the live parser rather than restated here: a hard-coded list is
+    exactly what let the gap message and the CLI drift apart.
+    """
+    done = subprocess.run([sys.executable, str(BIN / "handsoff_supervisor.py"), command, "--help"],
+                          capture_output=True, text=True, timeout=60)
+    import re
+    return set(re.findall(r"--[a-z][a-z-]+", done.stdout))
 
 
 SUBJECT = textwrap.dedent('''
@@ -281,14 +295,18 @@ class ACommandThatIsNotReproducibleProvesNothing(unittest.TestCase):
         marker = Path(tempfile.mkdtemp(prefix="handsoff-mutation-marker-")) / "once"
         record = mutation.prove(self.subject(marker), command=f"{sys.executable} check.py",
                                 target="bin/subject.py", symbol="refuse_unknown", timeout=60)
-        self.assertTrue(record["passed_before"], record)
+        self.assertEqual(record["clean_exit_codes"][0], 0, record)
+        self.assertNotEqual(set(record["clean_exit_codes"]), {0},
+                            "the fixture no longer reproduces a command that stops passing")
         self.assertFalse(record["reproducible"], record)
         self.assertFalse(record["ok"],
-                         "without the control run this records a proof: the mutated run fails "
-                         "for the same reason the control did, which has nothing to do with the "
-                         "mutation")
-        self.assertIn("not reproducible", record["refusal"])
-        self.assertIn("second clean copy", record["refusal"])
+                         "with one clean run this records a proof: the mutated run fails for "
+                         "the same reason the later clean runs did, which has nothing to do "
+                         "with the mutation")
+        self.assertIn("disagreed with itself", record["refusal"])
+        self.assertEqual(record["mutated_exit_codes"], [],
+                         "the mutated runs should be skipped once the clean side disagrees; "
+                         "they cost a full suite run each and could prove nothing")
 
     def test_a_reproducible_command_reports_reproducible(self):
         """The inverse, so a guard that refused everything would not pass the
@@ -335,8 +353,167 @@ class TheRecordStatesWhatWasEstablished(unittest.TestCase):
         self.assertIn("collection", doc,
                       "the docstring must name the case it cannot distinguish")
         reference = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
-        self.assertIn("detection by crash", reference,
+        self.assertIn("detection by crash", reference.lower(),
                       "docs/REFERENCE.md must state the limit for an operator too")
+
+
+#: Round 3 finding 7, the plainest form of "detection by crash": a test that
+#: consumes the mutated symbol's return value in arithmetic and asserts
+#: nothing about it. No special setup, and probably the common case.
+CONSUMED_WITHOUT_ASSERTION = textwrap.dedent("""
+    def get_divisor():
+        return 2
+
+
+    def other_real_feature(value):
+        return value + 1
+""").lstrip()
+
+USES_THE_VALUE_WITHOUT_ASSERTING = textwrap.dedent("""
+    import sys
+    sys.path.insert(0, "bin")
+    import subject
+    result = 10 / subject.get_divisor()     # consumed, never asserted on
+    assert subject.other_real_feature(1) == 2
+    print("ok")
+""").lstrip()
+
+
+class TheDisclosedLimitIsTheCommonCase(unittest.TestCase):
+    """Round 3 finding 7, pinned so the disclosure cannot quietly narrow again.
+
+    The proof establishes that the suite goes RED without the behaviour, not
+    that an assertion about it fails. `return None` keeps the module importable
+    by design, but a None flowing into arithmetic, indexing, iteration or
+    attribute access raises at the point of use, so any code the suite reaches
+    that consumes the value without asserting on it is enough.
+
+    The first disclosure illustrated only a test file's module-level code,
+    which made the limit sound exotic. A review showed `10 / get_divisor()`
+    with nothing asserted, which is ordinary. This test asserts the behaviour
+    IS what it is, rather than pretending otherwise, and the companion test
+    below asserts the limit stays written down where an author reads it.
+    """
+
+    def test_a_value_consumed_without_an_assertion_still_reports_a_proof(self):
+        root = Path(tempfile.mkdtemp(prefix="handsoff-mutation-consumed-"))
+        (root / "bin").mkdir()
+        (root / "bin" / "subject.py").write_text(CONSUMED_WITHOUT_ASSERTION, encoding="utf-8")
+        (root / "check.py").write_text(USES_THE_VALUE_WITHOUT_ASSERTING, encoding="utf-8")
+        record = mutation.prove(root, command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="get_divisor", timeout=60)
+        self.assertTrue(record["ok"],
+                        "the recorded behaviour changed: this is the disclosed limit, and if it "
+                        "now refuses, the documentation claiming otherwise is wrong")
+        self.assertTrue(record["import_intact"],
+                        "the crash is at the point of use, not at import, which is why the "
+                        "import probe cannot see it")
+
+    def test_the_limit_names_the_ordinary_case_and_not_only_the_exotic_one(self):
+        doc = mutation.prove.__doc__ or ""
+        reference = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
+        for text, where in ((doc, "prove.__doc__"), (reference, "docs/REFERENCE.md")):
+            with self.subTest(where=where):
+                self.assertIn("arithmetic", text,
+                              f"{where} must name the ordinary way a None crashes, or an author "
+                              "will under-rate how often the floor is a crash")
+                self.assertIn("setUp", text,
+                              f"{where} must say the consuming code can be outside a test body")
+                self.assertIn("NOT that an assertion", text.replace("does not make", "NOT that an assertion"),
+                              f"{where} must deny the stronger claim explicitly")
+
+    def test_the_confidence_level_is_disclosed_as_one(self):
+        """`ok` is not a guarantee, and two reviews proved it. The number and
+        the measurement both belong in the text, so nobody reads `ok: true` as
+        certainty."""
+        doc = mutation.prove.__doc__ or ""
+        reference = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
+        for text, where in ((doc, "prove.__doc__"), (reference, "docs/REFERENCE.md")):
+            with self.subTest(where=where):
+                self.assertIn("confidence level", text, f"{where} must not imply a guarantee")
+                self.assertIn("flaky", text, f"{where} must name the unsound input")
+        self.assertIn("CONFIRMATIONS", mutation.prove.__doc__ or "")
+        self.assertGreaterEqual(mutation.CONFIRMATIONS, 2,
+                                "one run of each side is the configuration a review forged")
+
+
+class TheWholeProofIsBounded(unittest.TestCase):
+    """Round 3 finding 3, second half, and a gap the tool found in its own fix.
+
+    A per-run timeout bounds one run and says nothing about a proof that makes
+    up to `2 * CONFIRMATIONS + 2` of them: at the 900s default that is hours,
+    and a run that long is a hung run however correct each piece is.
+
+    These tests exist because the engine refused its own suite for `_past`:
+    neutralised to `return None` the deadline never fires, and all 81 tests
+    still passed. The guard was real, verified by hand once, and covered by
+    nothing, which is exactly what this whole feature is for.
+    """
+
+    def slow_subject(self):
+        root = Path(tempfile.mkdtemp(prefix="handsoff-mutation-budget-"))
+        (root / "bin").mkdir()
+        (root / "bin" / "subject.py").write_text(SUBJECT, encoding="utf-8")
+        (root / "check.py").write_text(textwrap.dedent("""
+            import sys, time
+            time.sleep(0.6)
+            sys.path.insert(0, "bin")
+            import subject
+            assert subject.refuse_unknown("nonsense") == "unknown kind nonsense"
+            print("ok")
+        """).lstrip(), encoding="utf-8")
+        return root
+
+    def test_a_proof_that_exceeds_its_budget_stops_and_says_so(self):
+        record = mutation.prove(self.slow_subject(), command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="refuse_unknown",
+                                timeout=60, total_timeout=1)
+        self.assertTrue(record["ran_out_of_budget"], record)
+        self.assertFalse(record["ok"], "a proof that ran out of budget was reported as a proof")
+        self.assertIn("budget", record["refusal"])
+        self.assertLess(len(record["clean_exit_codes"]), mutation.CONFIRMATIONS,
+                        "the budget did not stop the runs; every clean run still happened")
+
+    def test_running_out_of_budget_is_reported_differently_from_a_failed_proof(self):
+        """An author who hit a time limit has a different next step from one
+        whose test does not detect the mutation. Reporting both as 'the proof
+        failed' sends them to rewrite a test that may be fine."""
+        record = mutation.prove(self.slow_subject(), command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="refuse_unknown",
+                                timeout=60, total_timeout=1)
+        self.assertNotIn("asserts nothing", record["refusal"])
+        self.assertNotIn("still passed", record["refusal"])
+        self.assertIn("budget", record["refusal"])
+
+    def test_a_generous_budget_does_not_interfere(self):
+        """The inverse. A guard that fired early would pass the tests above
+        while making every honest proof fail."""
+        record = mutation.prove(self.slow_subject(), command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="refuse_unknown",
+                                timeout=60, total_timeout=600)
+        self.assertFalse(record["ran_out_of_budget"], record)
+        self.assertTrue(record["ok"], record)
+        self.assertEqual(len(record["clean_exit_codes"]), mutation.CONFIRMATIONS)
+        self.assertEqual(len(record["mutated_exit_codes"]), mutation.CONFIRMATIONS)
+
+    def test_no_budget_at_all_means_no_deadline(self):
+        """`total_timeout=None` is the library default, so a caller that passes
+        nothing must behave exactly as it did before the budget existed."""
+        record = mutation.prove(project(ASSERTS_THE_REFUSAL),
+                                command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="refuse_unknown", timeout=60)
+        self.assertFalse(record["ran_out_of_budget"], record)
+        self.assertTrue(record["ok"], record)
+
+    def test_the_cli_bounds_the_proof_by_default(self):
+        """A library caller may opt out; an operator running the command must
+        not have to know to opt in."""
+        parsed = supervisor.build_parser().parse_args(
+            ["--root", ".", "mutation-proof", "REQ-001", "--by", "someone"])
+        self.assertEqual(parsed.total_timeout, mutation.DEFAULT_TOTAL_TIMEOUT)
+        self.assertIsNotNone(parsed.total_timeout, "the CLI leaves the proof unbounded")
+        self.assertLessEqual(mutation.DEFAULT_TOTAL_TIMEOUT, 3600,
+                             "a default budget longer than an hour is not a bound a run can use")
 
 
 class ARefusalIsNeverATraceback(unittest.TestCase):
@@ -673,13 +850,43 @@ class ThePolicyIsPartOfTheClosedSets(unittest.TestCase):
 
     def test_the_phase_five_gap_names_a_command_that_exists(self):
         """`record-evidence --kind mutation` exits 2: its choices are manual and
-        browser. A gap message naming it would hand the reviewer a dead end."""
+        browser. A gap message naming it would hand the reviewer a dead end.
+
+        The first version of this test asserted the command NAME and stopped
+        there. It kept passing when #349 removed `--target`/`--symbol` from the
+        CLI while this message still printed them, so a review ran the printed
+        instruction verbatim and got `unrecognized arguments`. The test below
+        parses every flag out of the message and asks argparse itself whether it
+        exists, which is the only version of this assertion that cannot rot.
+        """
         gaps = lib.reviewer_launch_evidence_gaps(
             [{"id": "REQ-1", "verification": "automated_and_mutation", "evidence": []}], [])
         proof = [g for g in gaps if "mutation" in g]
         self.assertEqual(len(proof), 1, gaps)
-        self.assertIn("mutation-proof REQ-1", proof[0])
         self.assertNotIn("record-evidence", proof[0])
+        self.assertIn("mutation-proof REQ-1", proof[0])
+
+        import re as _re
+        flags_by_command = {}
+        for command in ("criterion-update", "mutation-proof"):
+            self.assertIn(command, proof[0], f"the message must name {command}")
+            # The flags that follow this command in the message, up to the next
+            # command name or the end.
+            tail = proof[0].split(command, 1)[1]
+            for other in ("criterion-update", "mutation-proof"):
+                if other != command and other in tail:
+                    tail = tail.split(other, 1)[0]
+            flags_by_command[command] = set(_re.findall(r"--[a-z][a-z-]+", tail))
+        self.assertTrue(flags_by_command["mutation-proof"],
+                        "the message gives mutation-proof no flags at all")
+        for command, flags in flags_by_command.items():
+            accepted = _accepted_flags(command)
+            self.assertTrue(accepted, f"could not read {command}'s flags from the CLI")
+            for flag in sorted(flags):
+                with self.subTest(command=command, flag=flag):
+                    self.assertIn(flag, accepted,
+                                  f"the gap message tells the reviewer to pass {flag} to "
+                                  f"{command}, which the CLI rejects")
 
 
 class TheCommandRefusesAndRecords(HandsoffTestCase):
@@ -1014,6 +1221,53 @@ class TheTransactionPathEnforcesTheSameRule(HandsoffTestCase):
             "verification": "automated", "tests": ["true"], "mutation_targets": "typo"}})
         self.assertEqual(r.returncode, 1, r.stdout)
 
+    def test_renaming_only_the_symbol_is_accepted(self):
+        """Round 3 finding 5. A criterion that already carries both fields, with
+        only the symbol renamed, was refused with "must be set together", which
+        is misleading because they already were. `cmd_criterion_update`
+        backfills from the stored criterion before validating; this path had no
+        equivalent, so the transaction was strictly less capable than the
+        single-criterion CLI for the same edit."""
+        added = self.apply({"op": "add", "criterion": {
+            "id": "REQ-904", "type": "supporting", "requirement": "The tests detect its loss",
+            "verification": "automated_and_mutation", "tests": ["true"],
+            "mutation_target": "bin/handsoff_schema.py", "mutation_symbol": "validate_status_schema"}})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        renamed = self.apply({"op": "update", "id": "REQ-904",
+                              "fields": {"mutation_symbol": "validate_acceptance_schema"}})
+        self.assertEqual(renamed.returncode, 0, renamed.stdout + renamed.stderr)
+        criterion = self.criterion("REQ-904")
+        self.assertEqual(criterion["mutation_symbol"], "validate_acceptance_schema")
+        self.assertEqual(criterion["mutation_target"], "bin/handsoff_schema.py",
+                         "the untouched half of the pair was lost")
+
+    def test_renaming_only_the_target_is_accepted(self):
+        added = self.apply({"op": "add", "criterion": {
+            "id": "REQ-905", "type": "supporting", "requirement": "The tests detect its loss",
+            "verification": "automated_and_mutation", "tests": ["true"],
+            "mutation_target": "bin/handsoff_schema.py", "mutation_symbol": "validate_status_schema"}})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        moved = self.apply({"op": "update", "id": "REQ-905",
+                            "fields": {"mutation_target": "bin/handsoff_workflow.py"}})
+        self.assertEqual(moved.returncode, 0, moved.stdout + moved.stderr)
+        self.assertEqual(self.criterion("REQ-905")["mutation_target"], "bin/handsoff_workflow.py")
+
+    def test_setting_half_the_pair_on_a_criterion_that_has_neither_is_refused(self):
+        """The rule still holds where there is nothing to backfill from."""
+        r = self.apply({"op": "update", "id": "REQ-001",
+                        "fields": {"mutation_symbol": "validate_status_schema"}})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("must be set together", r.stdout)
+
+    def test_clearing_one_half_of_the_pair_is_refused(self):
+        added = self.apply({"op": "add", "criterion": {
+            "id": "REQ-906", "type": "supporting", "requirement": "The tests detect its loss",
+            "verification": "automated_and_mutation", "tests": ["true"],
+            "mutation_target": "bin/handsoff_schema.py", "mutation_symbol": "validate_status_schema"}})
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        r = self.apply({"op": "update", "id": "REQ-906", "fields": {"mutation_symbol": ""}})
+        self.assertEqual(r.returncode, 1, r.stdout)
+
     def test_setting_the_pair_discards_the_recorded_evidence(self):
         """Changing what a criterion claims cannot leave the old proof counting."""
         # init's placeholder test is not in [checks].commands, so point the
@@ -1078,6 +1332,127 @@ class AnAbsentFieldHashesExactlyAsBefore(unittest.TestCase):
                 self.assertEqual(lib.criterion_spec_hash(stripped),
                                  lib.criterion_spec_hash(criterion),
                                  "adding the fields to the engine changed this criterion's hash")
+
+
+class TheProofDoesNotHoldTheProjectLock(HandsoffTestCase):
+    """Round 3 finding 3, pinned behaviourally.
+
+    The whole proof ran inside one `with project_lock`: three full runs of the
+    criterion's suite, each bounded by `--timeout` (900s by default), holding a
+    blocking `fcntl.flock` with no timeout. `heartbeat` takes the same lock, so
+    a slow suite silently blocked the liveness signal the watchdog reads, which
+    is the exact failure the watchdog exists to catch.
+
+    Asserted by trying to take the lock from inside the proof, rather than by
+    reading the source: the indentation of a `with` block is precisely the kind
+    of thing that looks right and is not.
+    """
+
+    def setUp(self):
+        super().setUp()
+        set_fixture_check_commands(self.tmp / "handsoff.toml", ["true"])
+        self.init("Lock scope fixture")
+        r = run(["criterion-update", "REQ-001", "--verification", "automated_and_mutation",
+                 "--requirement", "The tests detect the loss of the named function",
+                 "--test", "true", "--mutation-target", "bin/handsoff_schema.py",
+                 "--mutation-symbol", "validate_status_schema"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def proof_args(self, criterion="REQ-001", by="test-implementer", timeout=60):
+        """Parsed from real argv.
+
+        A hand-built Namespace drifted the moment the CLI gained
+        `--total-timeout`: three tests errored with AttributeError against code
+        that was correct. Going through `build_parser` means the test exercises
+        the same argument surface an operator does, and a new required flag
+        shows up as a parser error rather than as a mystery attribute.
+        """
+        return supervisor.build_parser().parse_args(
+            ["--root", str(self.tmp), "mutation-proof", criterion, "--by", by,
+             "--timeout", str(timeout)])
+
+    def lock_is_free(self):
+        """True when nothing holds the project lock right now."""
+        import fcntl
+        path = lib.lock_path(self.tmp)
+        path.touch(exist_ok=True)
+        with path.open("r+") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return True
+
+    def test_the_lock_is_free_while_the_proof_runs(self):
+        observed = {}
+
+        def proving(root, **kwargs):
+            # Called where `mutation.prove` would be, so this is exactly the
+            # window during which the suite runs.
+            observed["free_during_proof"] = self.lock_is_free()
+            return {"mutation_version": 1, "command": kwargs["command"],
+                    "target": kwargs["target"], "symbol": kwargs["symbol"],
+                    "baseline_exit_code": 0, "control_exit_code": 0, "mutated_exit_code": 1,
+                    "passed_before": True, "reproducible": True, "failed_after": True,
+                    "import_intact": True, "ok": True,
+                    "source_digest": mutation.source_digest(root, kwargs["target"])}
+
+        with patch_engine("prove", side_effect=proving):
+            exit_code = supervisor.cmd_mutation_proof(self.proof_args())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(observed.get("free_during_proof"),
+                        "the project lock was held while the proof ran, so heartbeat and every "
+                        "other lock-taking command would block for the whole suite")
+
+    def test_the_lock_is_taken_again_to_record(self):
+        """The other half: released for the proof, not abandoned. Without the
+        second acquisition two proofs could interleave their writes."""
+        source = (BIN / "handsoff_supervisor.py").read_text(encoding="utf-8")
+        body = source[source.index("def cmd_mutation_proof"):]
+        body = body[:body.index("\ndef ", 1)]
+        self.assertEqual(body.count("with lib.project_lock(root):"), 2,
+                         "the command must take the lock twice: once to read the claim, once "
+                         "to record the result")
+        self.assertLess(body.index("mutation.prove("),
+                        body.rindex("with lib.project_lock(root):"),
+                        "the proof must run before the recording lock is taken")
+
+    def test_a_claim_that_changed_during_the_proof_is_refused(self):
+        """What the released lock gave up is re-established on reacquisition.
+        A criterion edited mid-proof must not receive the old proof."""
+        def proving(root, **kwargs):
+            edited = run(["criterion-update", "REQ-001", "--mutation-symbol",
+                          "validate_acceptance_schema"], cwd=self.tmp)
+            self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+            return {"mutation_version": 1, "command": kwargs["command"],
+                    "target": kwargs["target"], "symbol": kwargs["symbol"],
+                    "baseline_exit_code": 0, "control_exit_code": 0, "mutated_exit_code": 1,
+                    "passed_before": True, "reproducible": True, "failed_after": True,
+                    "import_intact": True, "ok": True,
+                    "source_digest": mutation.source_digest(root, kwargs["target"])}
+
+        with patch_engine("prove", side_effect=proving):
+            exit_code = supervisor.cmd_mutation_proof(self.proof_args())
+        self.assertEqual(exit_code, 1, "a proof of the previous claim was recorded")
+        criterion = next(c for c in self.read_acceptance()["criteria"] if c["id"] == "REQ-001")
+        self.assertEqual(criterion["evidence"], [])
+
+    def test_a_tree_that_changed_during_the_proof_is_refused(self):
+        def proving(root, **kwargs):
+            digest = mutation.source_digest(root, kwargs["target"])
+            (self.tmp / "bin" / "handsoff_schema.py").write_text(
+                (self.tmp / "bin" / "handsoff_schema.py").read_text() + "\n# edited mid-proof\n",
+                encoding="utf-8")
+            return {"mutation_version": 1, "command": kwargs["command"],
+                    "target": kwargs["target"], "symbol": kwargs["symbol"],
+                    "baseline_exit_code": 0, "control_exit_code": 0, "mutated_exit_code": 1,
+                    "passed_before": True, "reproducible": True, "failed_after": True,
+                    "import_intact": True, "ok": True, "source_digest": digest}
+
+        with patch_engine("prove", side_effect=proving):
+            exit_code = supervisor.cmd_mutation_proof(self.proof_args())
+        self.assertEqual(exit_code, 1, "a proof describing a tree that is gone was recorded")
 
 
 class TheCommandIsRegisteredLikeEveryOther(unittest.TestCase):

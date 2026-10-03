@@ -1049,14 +1049,24 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 "'fields' must be a non-empty object with keys among "
                 + ", ".join(CRITERION_UPDATE_FIELDS),
             )
-        problems = list(validate_criterion_fields(fields))
-        # #349: the policy's requirement is about the criterion's RESULTING
-        # shape. Judged on `fields` alone, switching an existing criterion to
-        # automated_and_mutation with nothing declared was accepted here and
-        # only failed at proof time, which is the same defect cmd_criterion_update
-        # had. `fields` is checked first so a malformed value is reported as
-        # itself rather than as a missing declaration.
+        # #349: both the pair rule and the policy rule are about the criterion's
+        # RESULTING shape, not about the fields being changed.
+        #
+        # Judged on `fields` alone this had two faults, one in each direction.
+        # Switching an existing criterion to automated_and_mutation with nothing
+        # declared was ACCEPTED and only failed at proof time, the same defect
+        # cmd_criterion_update had. And renaming just the symbol on a criterion
+        # that already carries both was REFUSED with "must be set together",
+        # which a review called out as actively misleading since they already
+        # were. cmd_criterion_update backfills from the stored criterion before
+        # validating; the transaction path had no equivalent, so it was strictly
+        # less capable than the single-criterion CLI for the same edit.
         merged = {**{k: v for k, v in criterion.items() if k not in ("state", "evidence")}, **fields}
+        backfilled = dict(fields)
+        if {"mutation_target", "mutation_symbol"} & set(fields):
+            for field in ("mutation_target", "mutation_symbol"):
+                backfilled[field] = merged.get(field) or None
+        problems = list(validate_criterion_fields(backfilled))
         problems += [problem for problem in validate_criterion_fields(merged)
                      if "automated_and_mutation" in problem and problem not in problems]
         if problems:

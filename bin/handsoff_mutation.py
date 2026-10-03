@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from handsoff_core import HandsoffError
@@ -51,9 +52,34 @@ EXCLUDED = ("*.pyc", "__pycache__", ".git", ".coverage-data", ".coverage",
             ".coverage.*", "node_modules", "dist", "build", ".handsoff-archive",
             ".handsoff.lock", ".handsoff-regression.json")
 
-#: How long ONE run may take. Three of the five runs are the criterion's own
+#: How long ONE run may take. Most of the runs are the criterion's own
 #: command, so this is the test suite's budget, not the mutation's.
 DEFAULT_TIMEOUT = 900
+
+#: How many times each side is run. The unmutated command must pass every
+#: time and the mutated command must fail every time.
+#:
+#: Two reviews showed why one of each is not enough, and why no fixed number
+#: is ever a guarantee. A command whose result depends on state OUTSIDE the
+#: copied tree can be built to survive exactly N clean runs and fail on the
+#: next, which aligns a non-mutation failure with the mutated slot; any fixed N
+#: is defeated by an N+1-strike resource. And an ordinarily flaky suite, with
+#: no adversary at all, produces a false proof by chance: one reviewer measured
+#: a 20%-flaky command forging `ok: true` on trial 10 of 11.
+#:
+#: So this is a confidence level, not a proof of determinism, and it is
+#: reported as one. Repetition cannot make an unsound command sound; what it
+#: does is make the chance arbitrarily small for the ordinary flaky case, at a
+#: cost of one suite run each. A real mutation fails every time, so honest
+#: proofs pay the runs and nothing else. At 3, a command failing randomly 20%
+#: of the time has about a 0.5% chance of forging a proof, against 12.8% at 1.
+CONFIRMATIONS = 3
+
+#: The whole proof's budget, across every run. A per-run timeout bounds one run
+#: and says nothing about a proof that makes up to 2 * CONFIRMATIONS + 2 of
+#: them. 20 minutes is generous for a criterion-scoped command and finite,
+#: which a run's liveness expectations need it to be.
+DEFAULT_TOTAL_TIMEOUT = 1_200
 
 
 def _definitions(tree: ast.AST, symbol: str) -> list:
@@ -149,6 +175,20 @@ def where_defined(root: Path, symbol: str) -> list[str]:
     return found
 
 
+def source_digest(root: Path, target: Path | str | None = None) -> str:
+    """The public form, for a caller that must re-check the tree afterwards.
+
+    `cmd_mutation_proof` runs the proof OUTSIDE the project lock, because
+    holding it across three suite runs blocked the heartbeat the watchdog
+    reads. What the lock protected is re-established on reacquisition, and this
+    is half of that: the source must still have the digest the proof ran
+    against, or the proof describes a tree that is no longer here.
+    """
+    root = Path(root).resolve()
+    resolved = (root / target).resolve() if target is not None else None
+    return _source_digest(root, resolved)
+
+
 def _source_digest(root: Path, target: Path | None = None) -> str:
     """A digest of the SOURCE a mutation could escape into.
 
@@ -177,6 +217,10 @@ def _source_digest(root: Path, target: Path | None = None) -> str:
         digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
+
+
+def _past(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
 
 
 def _import_probe(target: str) -> str:
@@ -210,40 +254,68 @@ def _run(command: str, cwd: Path, timeout: int) -> dict:
 
 
 def prove(root: Path, *, command: str, target: str, symbol: str,
-          timeout: int = DEFAULT_TIMEOUT, runner=_run) -> dict:
+          timeout: int = DEFAULT_TIMEOUT, total_timeout: int | None = None,
+          runner=_run) -> dict:
     """Prove `command` fails when `symbol` in `target` stops working.
 
     Returns the record either way; the caller decides the gate. `ok` requires
     four things, each ruling out a different way the result could be hollow:
 
-    - the command PASSED on a clean copy, which rules out a suite that was
-      already red and would "detect" every mutation including this one;
-    - it passed again on a SECOND clean copy, which rules out a command that
-      is not reproducible. A review forged a proof for an arbitrary symbol by
-      making the target raise on a second import: the first run consumed a
-      one-shot resource, every later run failed for that reason, and the
-      failure was read as detection;
-    - the target still IMPORTS with the symbol neutralised, which rules out
-      the mutation having broken loading rather than behaviour. A review forged
-      a proof with a function called at module scope that no test mentions;
-    - and the command FAILED on a clean copy carrying the mutation, which rules
-      out a test that executes the code and asserts nothing.
+    - the command PASSED on every one of CONFIRMATIONS clean copies, which
+      rules out a suite that was already red and would "detect" every mutation
+      including this one;
+    - those runs AGREED with each other, which rules out a command that is not
+      reproducible. A review forged a proof for an arbitrary symbol by making
+      the target raise on a second import: the first run consumed a one-shot
+      resource, every later run failed for that reason, and the failure was
+      read as detection;
+    - the target still IMPORTS with the symbol neutralised, which rules out the
+      mutation having broken loading rather than behaviour. A review forged a
+      proof with a function called at module scope that no test mentions, where
+      neutralising it raised during load and broke collection before any test
+      ran;
+    - and the command FAILED on every one of CONFIRMATIONS clean copies
+      carrying the mutation, which rules out a test that executes the code and
+      asserts nothing, and makes a single lucky failure on a flaky command
+      insufficient.
 
     Every run gets its OWN fresh copy. Sharing one copy was what made the
     second forgery possible, and it also meant a suite that writes into its
     tree changed the conditions of the run that followed it.
 
-    **What this establishes, exactly.** That the criterion's tests FAIL when
-    the named behaviour is removed. That includes failing because the suite
-    could not run at all: a review showed a symbol used in a test file's
-    module-level code, where neutralising it breaks collection rather than an
-    assertion. The tests do detect its removal, which is the property recorded
-    here, but detection by crash is weaker than detection by assertion and this
-    proof does not distinguish them. Telling them apart means parsing an
-    arbitrary runner's output, which would be a guess dressed as a gate. The
-    limit is stated rather than hidden: a criterion is still only as good as
-    the assertions behind it, and this gate raises the floor from "the command
-    exited zero" to "the command goes red without this behaviour".
+    **What this establishes, exactly.** That the criterion's tests go RED when
+    the named behaviour is removed. Not that an assertion about that behaviour
+    fails, which is a stronger and different claim this proof does not make.
+
+    The gap between them is wide, and wider than the first version of this
+    note suggested. `return None` is chosen over deleting the function so the
+    module still imports, but a None flowing into ordinary code raises anyway:
+    arithmetic, indexing, iteration or attribute access on the result all
+    raise TypeError at the point of use. So ANY code reached by the suite that
+    consumes the return value without asserting on it, in a test body, in
+    setUp, in a fixture or at a test file's module level, makes the suite go
+    red. A review demonstrated the plainest form, `10 / subject.get_divisor()`
+    with nothing asserted about the divisor, and it reported a proof. That is
+    probably the common case rather than the exotic one.
+
+    Distinguishing "an assertion failed" from "something raised" means parsing
+    an arbitrary runner's output, which would be a guess dressed as a gate, so
+    the limit is disclosed instead of papered over. What the gate changes is
+    the floor: from "the command exited zero", which says nothing, to "the
+    command goes red without this behaviour", which is a real property and
+    still not the same as a meaningful assertion. A criterion is only as good
+    as the assertions behind it, and no mechanism here can supply them.
+
+    **And `ok` is a confidence level, not a guarantee.** Two reviews showed
+    that no fixed number of repetitions makes an unsound command sound: a
+    command depending on state outside the copied tree can be built to survive
+    exactly CONFIRMATIONS clean runs and fail on the next, and an ordinarily
+    flaky suite forges a proof by chance. Repetition only shrinks the chance.
+    At CONFIRMATIONS=3 a command failing randomly one time in five has roughly
+    a 0.4% chance of producing a false proof, measured at 0 forgeries in 14
+    trials where one reviewer measured 1 in 11 with a single run of each side.
+    A flaky suite is not a sound input to this gate, and that is a fact about
+    the suite rather than something the gate can fix.
     """
     root = Path(root).resolve()
     target_path = (root / target).resolve()
@@ -273,6 +345,12 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
                         "re-export, not the definition." if elsewhere else "")) from exc
 
     before_digest = _source_digest(root, target_path)
+    # #349, round 3: a per-run timeout bounds one run and says nothing about
+    # the proof. Up to 2 * CONFIRMATIONS + 2 runs at `timeout` each is hours,
+    # and a run that long is a hung run however correct each piece is. The
+    # default budget is generous but finite, and a proof that runs out of it is
+    # reported as out of budget rather than as a failed proof.
+    deadline = (time.monotonic() + total_timeout) if total_timeout else None
     with tempfile.TemporaryDirectory(prefix="handsoff-mutation-") as scratch:
         def run_on_fresh_copy(what: str, mutate: bool) -> dict:
             """One run, on a tree nothing else has touched.
@@ -290,14 +368,43 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
             return runner(command if what.startswith("run") else _import_probe(target),
                           copy, timeout)
 
-        baseline = run_on_fresh_copy("run-baseline", mutate=False)
-        control = run_on_fresh_copy("run-control", mutate=False)
+        clean = []
+        for n in range(CONFIRMATIONS):
+            clean.append(run_on_fresh_copy(f"run-clean-{n}", mutate=False))
+            if clean[-1]["exit_code"] != clean[0]["exit_code"] or _past(deadline):
+                # Unanimity is already lost, or the budget is spent. Either way
+                # the remaining clean runs cannot change the verdict and each
+                # one costs a full suite run.
+                break
         import_before = run_on_fresh_copy("import-before", mutate=False)
         import_after = run_on_fresh_copy("import-after", mutate=True)
-        mutated = run_on_fresh_copy("run-mutated", mutate=True)
+        # Only run the mutated side if the clean side was unanimous. A command
+        # that already disagreed with itself cannot support a proof, and the
+        # runs would be wasted.
+        unanimous_clean = all(run["exit_code"] == 0 for run in clean) \
+            or all(run["exit_code"] != 0 for run in clean)
+        mutated_runs = []
+        if unanimous_clean and clean[0]["exit_code"] == 0 and not _past(deadline):
+            for n in range(CONFIRMATIONS):
+                mutated_runs.append(run_on_fresh_copy(f"run-mutated-{n}", mutate=True))
+                if mutated_runs[-1]["exit_code"] in (0, None) or _past(deadline):
+                    # One passing mutated run already refuses the proof, so the
+                    # rest would only cost suite runs. The mixed case is still
+                    # visible in `mutated_exit_codes`.
+                    break
 
+    baseline = clean[0]
+    control = clean[-1]
+    mutated = mutated_runs[0] if mutated_runs else {"exit_code": None, "timed_out": False,
+                                                    "tail": "not run: the clean side was not unanimous"}
     broke_import = (import_before["exit_code"] == 0 and import_after["exit_code"] != 0)
-    reproducible = (baseline["exit_code"] == 0) == (control["exit_code"] == 0)
+    reproducible = unanimous_clean
+    # Every mutated run must fail. One reviewer measured a 20%-flaky command
+    # forging a proof on trial 10 of 11 with a single mutated run; a real
+    # mutation fails every time, so requiring unanimity costs honest proofs
+    # nothing but the runs.
+    failed_every_time = bool(mutated_runs) and all(
+        run["exit_code"] not in (0, None) for run in mutated_runs)
 
     after_digest = _source_digest(root, target_path)
     if before_digest != after_digest:
@@ -306,11 +413,15 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
             "proof. The mutation is applied only inside a throwaway copy, so this means "
             "something wrote to the real checkout; refusing to record the evidence.")
 
-    passed_before = baseline["exit_code"] == 0
-    failed_after = mutated["exit_code"] not in (0, None)
+    passed_before = all(run["exit_code"] == 0 for run in clean)
+    failed_after = failed_every_time
     record = {
         "mutation_version": MUTATION_VERSION,
         "command": command, "target": target, "symbol": symbol,
+        "confirmations": CONFIRMATIONS,
+        "ran_out_of_budget": bool(_past(deadline)),
+        "clean_exit_codes": [run["exit_code"] for run in clean],
+        "mutated_exit_codes": [run["exit_code"] for run in mutated_runs],
         "baseline_exit_code": baseline["exit_code"],
         "control_exit_code": control["exit_code"],
         "mutated_exit_code": mutated["exit_code"],
@@ -321,25 +432,31 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
         "ok": bool(passed_before and reproducible and failed_after and not broke_import),
         "source_digest": before_digest,
     }
-    if not passed_before:
-        # The parentheses matter. Without them `a + b if cond else ""` reads as
-        # `(a + b) if cond else ""`, so a command that printed nothing -- `true
-        # && false`, or any quiet runner -- produced an EMPTY refusal and the
-        # engine blocked with no reason. A gate that refuses without saying why
-        # is the same defect as one that approves without checking.
+    # Order matters, most specific first. `passed_before` is now "every clean
+    # run passed", so a command that disagrees with itself fails BOTH that and
+    # reproducibility; reporting it as "failed against the unmutated tree
+    # (exit 0)" was self-contradictory and told the author nothing.
+    if _past(deadline) and not record["ok"]:
+        record["refusal"] = (
+            f"the proof ran out of its {total_timeout}s budget after "
+            f"{len(clean)} clean and {len(mutated_runs)} mutated runs of a command that takes "
+            "too long to repeat. Point the criterion at a narrower test command, or raise the "
+            "budget deliberately; a proof is only as useful as the number of times its command "
+            "can actually be run.")
+    elif not reproducible:
+        codes = ", ".join(str(run) for run in record["clean_exit_codes"])
+        record["refusal"] = (
+            f"the command disagreed with itself across {CONFIRMATIONS} clean copies with no "
+            f"mutation applied (exit codes {codes}), so a failure after the mutation proves "
+            "nothing. Either it depends on state the previous run left behind, or it is flaky; "
+            "a proof cannot be drawn from a command whose result is not its own.")
+    elif not passed_before:
         detail = baseline["tail"].strip()
         record["refusal"] = (
             f"the command failed against the unmutated tree (exit {baseline['exit_code']}), "
             "so it cannot show anything about the mutation"
             + (f": {detail.splitlines()[-1][:200]}" if detail else
                " (it printed nothing; run it yourself to see why)"))
-    elif not reproducible:
-        record["refusal"] = (
-            f"the command passed on one clean copy and exited {control['exit_code']} on a second "
-            "clean copy with no mutation applied, so it is not reproducible and a failure after "
-            "the mutation proves nothing. A review forged a proof for an arbitrary symbol this "
-            "way, with a target that refuses a second import. Make the command independent of "
-            "state the previous run left behind.")
     elif broke_import:
         record["refusal"] = (
             f"neutralising {symbol} stopped {target} from importing at all, so the command's "
@@ -348,8 +465,16 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
             "exactly this to make an irrelevant symbol look proved. Name a symbol whose "
             "behaviour the test asserts, not one the module calls while loading.")
     elif not failed_after:
-        record["refusal"] = (
-            f"the command still passed with {symbol} neutralised in {target}, so it does "
-            "not notice when that behaviour stops working. The test executes the code "
-            "and asserts nothing that depends on it.")
+        passing = [code for code in record["mutated_exit_codes"] if code == 0]
+        if passing and len(passing) < len(record["mutated_exit_codes"]):
+            record["refusal"] = (
+                f"with {symbol} neutralised in {target} the command failed some runs and "
+                f"passed others (exit codes {record['mutated_exit_codes']}), so it does not "
+                "reliably notice. A proof drawn from one of the failures would be chance, not "
+                "detection; a review measured exactly that on a flaky command.")
+        else:
+            record["refusal"] = (
+                f"the command still passed with {symbol} neutralised in {target}, so it does "
+                "not notice when that behaviour stops working. The test executes the code "
+                "and asserts nothing that depends on it.")
     return record

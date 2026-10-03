@@ -403,6 +403,61 @@ roughly half its wall-clock went into working around these.
    off the source, because the cost of one path writing null is every recorded
    criterion in every project at once.
 
+A third round, a third reviewer, found four more blocking defects. Two were
+regressions this work introduced, and two were limits of the fix itself.
+
+The regressions first, because they are the plainer lesson. Removing
+`--target`/`--symbol` from `mutation-proof` left `reviewer_launch_evidence_gaps`
+printing them, so the Phase 5 pre-check handed a reviewer a command that exits
+2 on first use. The test that was supposed to catch this asserted the command
+NAME and stopped there, so it kept passing; it now parses every flag out of the
+message and asks argparse itself whether each one exists. And the whole proof
+ran inside one `with project_lock`: three full suite runs holding a blocking
+`fcntl.flock` with no timeout, while `heartbeat` takes the same lock. A slow
+suite did not just make its own command slow, it silently blocked the liveness
+signal the watchdog reads, which is the exact failure the watchdog exists to
+catch. The proof now runs outside the lock, which it can because it writes no
+engine state, and the lock is retaken to record; what the lock protected is
+re-established then, by re-checking the criterion's spec hash and the source
+digest, so a claim or a tree that changed during the proof is refused instead
+of receiving the proof. A test takes the lock from inside the proof to prove
+it is free, rather than reading the indentation of a `with` block.
+
+The limits are the more interesting half, and they are now disclosed rather
+than fixed, because they cannot be fixed.
+
+`reproducible` was two unmutated runs. A reviewer showed that any fixed number
+is defeated by a resource with one more strike: a command depending on state
+outside the copied tree can be built to survive exactly N clean runs and fail
+on the next, aligning a non-mutation failure with the mutated slot. Worse and
+far more ordinary, a flaky suite forges a proof by chance with no adversary at
+all; the same reviewer measured a 20%-flaky command producing `ok: true` on
+trial 10 of 11. The command is now run three times clean and three times
+mutated, and must pass every clean run and fail every mutated one, which took
+the measured forgery rate to 0 in 14 trials against the same flaky command.
+That is a confidence level, roughly 0.4% for that command, and it is reported
+as one. Repetition cannot make an unsound command sound.
+
+And the disclosed "detection by crash" limit was real but described too
+narrowly. The first wording illustrated a symbol used in a test file's
+module-level code, which makes it sound exotic. The reviewer showed
+`10 / subject.get_divisor()` with nothing asserted about the divisor, which is
+ordinary: `return None` keeps the module importable by design, but a None
+flowing into arithmetic, indexing, iteration or attribute access raises at the
+point of use, so any code the suite reaches that consumes the value without
+asserting on it is enough. The wording now says that, and a test pins the
+behaviour as it is rather than as one would like it.
+
+Also from that round: `criteria-apply` refused a legitimate rename of just the
+symbol on a criterion that already carried both fields, with "must be set
+together", which was misleading because they already were; the single-criterion
+CLI backfilled from the stored criterion before validating and the transaction
+path did not. A commit failure after a successful proof now says so distinctly,
+naming the ledger record, instead of printing a blocked message that reads as
+"the proof failed" while a valid record for an expensive proof sits unconsumed.
+And `--total-timeout` bounds the whole proof, because a per-run timeout bounds
+one run and says nothing about a proof that makes up to eight of them.
+
 Lessons, for the playbook: a green suite is not a tested suite, so neutralise
 the function a criterion names and watch its test fail; mutation-prove the new
 tests and not only the new code; a test whose evidence lives in gitignored

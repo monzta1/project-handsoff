@@ -2490,6 +2490,22 @@ def cmd_mutation_proof(args) -> int:
         return 1
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
+    # The lock is taken TWICE, with the expensive part outside it.
+    #
+    # A review found the whole proof running inside one `with project_lock`:
+    # three full runs of the criterion's suite, each bounded by --timeout
+    # (900s by default), so up to 45 minutes holding a blocking fcntl lock with
+    # no timeout. `heartbeat` takes the same lock, so a slow suite did not just
+    # make its own command slow, it silently blocked the liveness signal the
+    # watchdog reads, which is the exact failure the watchdog exists to catch.
+    #
+    # `mutation.prove` writes no engine state (it is a layer above core that
+    # reads a tree and runs a command), so nothing requires the lock to be held
+    # while it runs. What the lock protected is re-established on reacquisition
+    # instead: the criterion must still exist with the SAME spec hash, and the
+    # source must still have the digest the proof ran against. Both are checked
+    # below, so a tree or a claim that changed during the proof is refused
+    # rather than recorded against the wrong thing.
     with lib.project_lock(root):
         status, acceptance, records, verification_problems = _load_all(root, cfg)
         audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
@@ -2535,16 +2551,40 @@ def cmd_mutation_proof(args) -> int:
                   f"chosen now: criterion-update {args.criterion} --mutation-target FILE "
                   "--mutation-symbol FUNCTION")
             return 1
-        try:
-            record = mutation.prove(root, command=command, target=target,
-                                    symbol=symbol, timeout=args.timeout)
-        except lib.HandsoffError as exc:
-            print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        spec_before = lib.criterion_spec_hash(criterion)
+
+    # --- the lock is released here, for the duration of the proof only ---
+    try:
+        record = mutation.prove(root, command=command, target=target,
+                                symbol=symbol, timeout=args.timeout,
+                                total_timeout=args.total_timeout)
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
+    if not record["ok"]:
+        print(json.dumps({"ok": False, "recorded": False, **record}, indent=2))
+        print(f"SHIP_FEATURE_BLOCKED: mutation proof failed, nothing recorded. "
+              f"{record.get('refusal', '')}")
+        return 1
+
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        criterion = _criterion(acceptance, args.criterion)
+        if criterion is None:
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} was removed while the "
+                  "proof ran; nothing recorded")
             return 1
-        if not record["ok"]:
-            print(json.dumps({"ok": False, "recorded": False, **record}, indent=2))
-            print(f"SHIP_FEATURE_BLOCKED: mutation proof failed, nothing recorded. "
-                  f"{record.get('refusal', '')}")
+        if lib.criterion_spec_hash(criterion) != spec_before:
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} changed while the proof "
+                  "ran, so the proof is evidence for a claim that no longer exists; nothing "
+                  "recorded. Run it again.")
+            return 1
+        if mutation.source_digest(root, target) != record["source_digest"]:
+            print("SHIP_FEATURE_BLOCKED: the source changed while the proof ran, so the proof "
+                  "describes a tree that is no longer here; nothing recorded. Run it again.")
             return 1
         verification = lib.append_verification(
             root, cfg, kind="mutation", ok=True, by=args.by, criteria=[criterion],
@@ -2563,12 +2603,25 @@ def cmd_mutation_proof(args) -> int:
         _invalidate_decisions(status)
         review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
-        lib.commit(root, cfg, status=status, acceptance=acceptance,
-                   event_kind="mutation_proved",
-                   event_message=f"{symbol} neutralised; the criterion's test failed",
-                   run_id=verification["run_id"], criterion=args.criterion, by=args.by,
-                   target=target, symbol=symbol,
-                   review_attempt_refreshed=review_refresh)
+        try:
+            lib.commit(root, cfg, status=status, acceptance=acceptance,
+                       event_kind="mutation_proved",
+                       event_message=f"{symbol} neutralised; the criterion's test failed",
+                       run_id=verification["run_id"], criterion=args.criterion, by=args.by,
+                       target=target, symbol=symbol,
+                       review_attempt_refreshed=review_refresh)
+        except lib.HandsoffError as exc:
+            # The ledger append above is durable the moment it returns, and the
+            # commit is what attaches it. A review pointed out that a commit
+            # failure then reported SHIP_FEATURE_BLOCKED, which reads as "the
+            # proof failed", while a valid record for an expensive proof sat
+            # unconsumed. Say which actually happened and name the record, so
+            # the next step is obvious instead of a rerun in the dark.
+            print(f"SHIP_FEATURE_BLOCKED: the mutation proof SUCCEEDED and its record "
+                  f"{verification['run_id']} is in the ledger, but attaching it failed: {exc}. "
+                  "The record is valid and bound to this criterion's current spec, so `doctor` "
+                  "or a rerun will pick it up; the proof itself does not need repeating.")
+            return 1
     print(json.dumps({"ok": True, "recorded": True, "run_id": verification["run_id"],
                       "criterion_state": criterion["state"], **record}, indent=2))
     return 0
@@ -5667,7 +5720,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="prove the criterion's configured test fails when a named function is neutralised")
     mutation_proof.add_argument("criterion")
     mutation_proof.add_argument("--timeout", type=int, default=mutation.DEFAULT_TIMEOUT,
-                                help="seconds for each half of the proof")
+                                help="seconds for ONE run of the criterion's command")
+    mutation_proof.add_argument("--total-timeout", type=int, default=mutation.DEFAULT_TOTAL_TIMEOUT,
+                                help="seconds for the whole proof, across every run; a proof "
+                                     "that exceeds it is reported as out of budget, not as a "
+                                     "failed proof")
     mutation_proof.add_argument("--by", required=True)
 
     symptom = sub.add_parser("record-symptom-resolved")

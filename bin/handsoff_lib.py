@@ -3364,8 +3364,15 @@ def reviewer_launch_evidence_gaps(criteria: list[dict], verifications: list[dict
                 # manual and browser, and a mutation record is only ever written
                 # by the engine that performed the mutation. Naming record-evidence
                 # here would hand the reviewer a command that exits 2.
-                gaps.append(f"{cid}: run handsoff_supervisor.py mutation-proof {cid} "
-                            "--target FILE --symbol FUNCTION --by ACTOR")
+                # Two commands, because the claim is declared on the criterion
+                # and the proof reads it from there. A review ran the message's
+                # previous text verbatim and got `unrecognized arguments:
+                # --target --symbol`: #349 removed those flags from the CLI and
+                # this line still named them.
+                gaps.append(
+                    f"{cid}: declare the claim with handsoff_supervisor.py criterion-update {cid} "
+                    f"--mutation-target FILE --mutation-symbol FUNCTION, then run "
+                    f"handsoff_supervisor.py mutation-proof {cid} --by ACTOR")
             else:
                 gaps.append(f"{cid}: run handsoff_supervisor.py record-evidence {cid} --kind {kind} --description ... --by ACTOR")
     return gaps
