@@ -25,7 +25,7 @@ from pathlib import Path
 
 from tests import fixture_state
 from tests.test_handsoff_supervisor import (
-    BIN, HandsoffTestCase, run, set_fixture_check_commands)
+    BIN, ROOT, HandsoffTestCase, run, set_fixture_check_commands)
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -184,6 +184,159 @@ class AnIrrelevantSymbolCannotBeMadeToLookProved(unittest.TestCase):
         # is WHICH refusal: the honest one, not the import one.
         self.assertFalse(record["ok"])
         self.assertIn("asserts nothing", record["refusal"])
+
+
+#: Round 2's forgery (b), kept as a fixture: the target refuses a second
+#: import, standing in for a singleton, a bound port or a lock file.
+ONE_SHOT_SUBJECT = textwrap.dedent("""
+    import pathlib
+
+    _MARKER = pathlib.Path("imported.once")
+    if _MARKER.exists():
+        raise RuntimeError("this module refuses a second import")
+    _MARKER.write_text("x")
+
+
+    def totally_unrelated_symbol():
+        '''Called by no test anywhere.'''
+        return "unused"
+
+
+    def actual_feature(kind):
+        if kind not in ("checks", "manual"):
+            return f"unknown kind {kind}"
+        return None
+""").lstrip()
+
+
+class EveryRunGetsItsOwnTree(unittest.TestCase):
+    """Round 2 finding 1b, reproduced and pinned.
+
+    All five runs used to share one copy. A review forged a proof for an
+    arbitrary symbol with a target that raises on a second import: the first
+    run consumed the one-shot resource, every later run failed for that
+    reason, and the failure was read as the test detecting the mutation.
+
+    A fresh copy per run removes the cause rather than detecting it. It also
+    fixes a quieter version of the same problem, where a suite that writes
+    into its own tree changed the conditions of the run that followed it.
+    """
+
+    def subject(self):
+        root = Path(tempfile.mkdtemp(prefix="handsoff-mutation-oneshot-"))
+        (root / "bin").mkdir()
+        (root / "bin" / "subject.py").write_text(ONE_SHOT_SUBJECT, encoding="utf-8")
+        (root / "check.py").write_text(ASSERTS_THE_FEATURE, encoding="utf-8")
+        return root
+
+    def test_a_one_shot_import_cannot_forge_a_proof_for_an_unrelated_symbol(self):
+        record = mutation.prove(self.subject(), command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="totally_unrelated_symbol",
+                                timeout=60)
+        self.assertFalse(record["ok"], record)
+        self.assertIn("asserts nothing", record["refusal"],
+                      "the refusal must be the honest one; a one-shot resource used to make "
+                      "this look like detection")
+
+    def test_the_runs_do_not_share_a_working_tree(self):
+        """Proven by where each run executed, not by inspection."""
+        seen = []
+        root = self.subject()
+        mutation.prove(root, command="true", target="bin/subject.py", symbol="actual_feature",
+                       runner=lambda c, cwd, t: (seen.append(str(cwd)),
+                                                 {"exit_code": 0, "timed_out": False, "tail": ""})[1])
+        self.assertEqual(len(seen), len(set(seen)),
+                         f"two runs shared a copy: {sorted(seen)}")
+        self.assertGreaterEqual(len(seen), 5, "expected a baseline, a control, two probes and the mutated run")
+
+    def test_the_real_symbol_is_still_proved_in_the_same_module(self):
+        record = mutation.prove(self.subject(), command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="actual_feature", timeout=60)
+        self.assertTrue(record["ok"], record)
+
+
+class ACommandThatIsNotReproducibleProvesNothing(unittest.TestCase):
+    """The control run. A fresh copy per run cures state inside the tree; a
+    command whose result depends on state OUTSIDE it still cannot support a
+    proof, because its failure after the mutation is not attributable."""
+
+    def subject(self, marker):
+        root = Path(tempfile.mkdtemp(prefix="handsoff-mutation-control-"))
+        (root / "bin").mkdir()
+        (root / "bin" / "subject.py").write_text(SUBJECT, encoding="utf-8")
+        (root / "check.py").write_text(textwrap.dedent(f"""
+            import pathlib, sys
+            marker = pathlib.Path({str(marker)!r})
+            if marker.exists():
+                sys.exit(3)
+            marker.write_text("x")
+            sys.path.insert(0, "bin")
+            import subject
+            assert subject.refuse_unknown("nonsense") == "unknown kind nonsense"
+            print("ok")
+        """).lstrip(), encoding="utf-8")
+        return root
+
+    def test_a_command_that_passes_once_and_fails_on_a_clean_copy_is_refused(self):
+        marker = Path(tempfile.mkdtemp(prefix="handsoff-mutation-marker-")) / "once"
+        record = mutation.prove(self.subject(marker), command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="refuse_unknown", timeout=60)
+        self.assertTrue(record["passed_before"], record)
+        self.assertFalse(record["reproducible"], record)
+        self.assertFalse(record["ok"],
+                         "without the control run this records a proof: the mutated run fails "
+                         "for the same reason the control did, which has nothing to do with the "
+                         "mutation")
+        self.assertIn("not reproducible", record["refusal"])
+        self.assertIn("second clean copy", record["refusal"])
+
+    def test_a_reproducible_command_reports_reproducible(self):
+        """The inverse, so a guard that refused everything would not pass the
+        test above while making the tool useless."""
+        root = project(ASSERTS_THE_REFUSAL)
+        record = mutation.prove(root, command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="refuse_unknown", timeout=60)
+        self.assertTrue(record["reproducible"], record)
+        self.assertTrue(record["ok"], record)
+        self.assertEqual(record["control_exit_code"], 0)
+
+
+class TheRecordStatesWhatWasEstablished(unittest.TestCase):
+    """The proof's claim is narrower than "the tests assert this behaviour",
+    and the record has to carry every input to that judgement so a reader can
+    reach it themselves rather than trust `ok`."""
+
+    def test_every_input_to_the_verdict_is_recorded(self):
+        root = project(ASSERTS_THE_REFUSAL)
+        record = mutation.prove(root, command=f"{sys.executable} check.py",
+                                target="bin/subject.py", symbol="refuse_unknown", timeout=60)
+        for field in ("passed_before", "reproducible", "failed_after", "import_intact",
+                      "baseline_exit_code", "control_exit_code", "mutated_exit_code",
+                      "command", "target", "symbol", "mutation_version", "source_digest"):
+            self.assertIn(field, record, f"the record omits {field}, so ok cannot be re-derived")
+
+    def test_ok_is_exactly_the_conjunction_of_the_four_conditions(self):
+        """Read off the source. If `ok` could be true with any one of them
+        false, the recorded fields would no longer explain the verdict."""
+        source = (BIN / "handsoff_mutation.py").read_text(encoding="utf-8")
+        verdict = source[source.index('"ok": bool('):]
+        verdict = verdict[:verdict.index("\n")]
+        for condition in ("passed_before", "reproducible", "failed_after", "not broke_import"):
+            self.assertIn(condition, verdict, f"ok does not depend on {condition}: {verdict}")
+
+    def test_the_documented_limit_is_stated_where_an_author_reads_it(self):
+        """Round 2 finding 1a: a symbol used in a test file's module-level code
+        is detected by crash rather than by assertion, and this proof does not
+        tell the two apart. Telling them apart means parsing an arbitrary
+        runner's output, which would be a guess dressed as a gate. So the limit
+        is disclosed, and this test is what keeps it disclosed."""
+        doc = mutation.prove.__doc__ or ""
+        self.assertIn("establishes, exactly", doc)
+        self.assertIn("collection", doc,
+                      "the docstring must name the case it cannot distinguish")
+        reference = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
+        self.assertIn("detection by crash", reference,
+                      "docs/REFERENCE.md must state the limit for an operator too")
 
 
 class ARefusalIsNeverATraceback(unittest.TestCase):
@@ -782,6 +935,149 @@ class NoOtherPathCanWriteOne(HandsoffTestCase):
         self.assertNotEqual(r.returncode, 0,
                             "a forged mutation record passed validation: " + r.stdout)
         self.assertIn("SHIP_FEATURE", r.stdout + r.stderr)
+
+
+class TheTransactionPathEnforcesTheSameRule(HandsoffTestCase):
+    """`criteria-apply` is a THIRD way into the registry, beside criterion-add
+    and criterion-update, and it had its own copy of the merge.
+
+    Found while checking the review's question about it: `CRITERION_UPDATE_FIELDS`
+    listed the two new fields, so the key check accepted them, and the apply loop
+    then dropped them. Accepted and silently discarded is write-without-read, in
+    the one place that decides what a criterion claims.
+    """
+
+    def setUp(self):
+        super().setUp()
+        set_fixture_check_commands(self.tmp / "handsoff.toml", ["true"])
+        self.init("Transaction fixture")
+
+    def apply(self, *operations):
+        path = self.tmp / "tx.json"
+        path.write_text(json.dumps({"operations": list(operations)}), encoding="utf-8")
+        return run(["criteria-apply", "--file", "tx.json", "--by", "test-architect"], cwd=self.tmp)
+
+    def criterion(self, cid):
+        return next(c for c in self.read_acceptance()["criteria"] if c["id"] == cid)
+
+    def test_an_added_criterion_can_declare_the_pair(self):
+        r = self.apply({"op": "add", "criterion": {
+            "id": "REQ-900", "type": "supporting", "requirement": "The tests detect its loss",
+            "verification": "automated_and_mutation", "tests": ["true"],
+            "mutation_target": "bin/handsoff_schema.py", "mutation_symbol": "validate_status_schema"}})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        added = self.criterion("REQ-900")
+        self.assertEqual(added["mutation_target"], "bin/handsoff_schema.py")
+        self.assertEqual(added["mutation_symbol"], "validate_status_schema")
+
+    def test_adding_the_policy_without_the_pair_is_refused(self):
+        r = self.apply({"op": "add", "criterion": {
+            "id": "REQ-901", "type": "supporting", "requirement": "No declared symbol",
+            "verification": "automated_and_mutation", "tests": ["true"]}})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("must declare", r.stdout)
+
+    def test_an_update_can_set_the_pair_and_it_is_not_dropped(self):
+        r = self.apply({"op": "update", "id": "REQ-001", "fields": {
+            "requirement": "The tests detect the loss of the named function",
+            "verification": "automated_and_mutation", "tests": ["true"],
+            "mutation_target": "bin/handsoff_schema.py", "mutation_symbol": "validate_status_schema"}})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        updated = self.criterion("REQ-001")
+        self.assertEqual(updated["mutation_symbol"], "validate_status_schema",
+                         "the transaction accepted the field and then dropped it")
+
+    def test_switching_an_existing_criterion_to_the_policy_without_the_pair_is_refused(self):
+        """Judged on the RESULTING criterion, not on the fields being changed.
+        On `fields` alone this was accepted and only failed at proof time."""
+        r = self.apply({"op": "update", "id": "REQ-001",
+                        "fields": {"verification": "automated_and_mutation"}})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("must declare", r.stdout)
+
+    def test_an_add_without_the_pair_is_still_accepted(self):
+        """Every transaction file written before these fields existed must
+        still apply, so the pair is optional in the spec."""
+        r = self.apply({"op": "add", "criterion": {
+            "id": "REQ-902", "type": "supporting", "requirement": "An ordinary automated criterion",
+            "verification": "automated", "tests": ["true"]}})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        added = self.criterion("REQ-902")
+        for field in ("mutation_target", "mutation_symbol"):
+            self.assertNotIn(field, added,
+                             "an absent field was written as null, which changes the criterion "
+                             "spec hash and would discard recorded evidence")
+
+    def test_an_unknown_field_is_still_refused(self):
+        r = self.apply({"op": "add", "criterion": {
+            "id": "REQ-903", "type": "supporting", "requirement": "r",
+            "verification": "automated", "tests": ["true"], "mutation_targets": "typo"}})
+        self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_setting_the_pair_discards_the_recorded_evidence(self):
+        """Changing what a criterion claims cannot leave the old proof counting."""
+        # init's placeholder test is not in [checks].commands, so point the
+        # criterion at the one command this fixture configures.
+        pointed = run(["criterion-update", "REQ-001", "--test", "true"], cwd=self.tmp)
+        self.assertEqual(pointed.returncode, 0, pointed.stdout + pointed.stderr)
+        verified = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer"], cwd=self.tmp)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.assertTrue(self.criterion("REQ-001")["evidence"])
+        r = self.apply({"op": "update", "id": "REQ-001", "fields": {
+            "mutation_target": "bin/handsoff_schema.py", "mutation_symbol": "validate_status_schema"}})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.criterion("REQ-001")["evidence"], [],
+                         "a proof of the previous claim still counts for the new one")
+
+
+class AnAbsentFieldHashesExactlyAsBefore(unittest.TestCase):
+    """The compatibility claim with teeth. `criterion_spec_hash` hashes the
+    field SET, so a criterion carrying an explicit null hashes differently from
+    one without the key. Every recorded evidence binding in every project would
+    break if any path wrote null, which is why each path above writes the field
+    only when it has a value."""
+
+    BASE = {"id": "REQ-X", "type": "supporting", "requirement": "r",
+            "verification": "automated", "tests": ["true"],
+            "state": "not_tested", "evidence": []}
+
+    def test_absent_and_null_are_not_the_same_hash(self):
+        self.assertNotEqual(
+            lib.criterion_spec_hash(self.BASE),
+            lib.criterion_spec_hash({**self.BASE, "mutation_target": None, "mutation_symbol": None}),
+            "if these were equal the guard below would be unnecessary; it is not")
+
+    def test_no_engine_path_writes_the_fields_as_null(self):
+        """Read off the source, because the cost of being wrong is every
+        recorded criterion in every project at once."""
+        for module in ("handsoff_supervisor.py", "handsoff_workflow.py"):
+            source = (BIN / module).read_text(encoding="utf-8")
+            for field in ("mutation_target", "mutation_symbol"):
+                self.assertNotIn(f'criterion["{field}"] = None', source,
+                                 f"{module} writes {field} as null onto a criterion")
+
+    def test_every_criterion_without_the_fields_keeps_its_recorded_hash(self):
+        """Against this repository's own acceptance registry, whose criteria
+        the engine really recorded and whose evidence really binds to these
+        hashes. An earlier draft of this test read a status file with no inline
+        criteria and SKIPPED, which proves nothing; that is the shape of
+        defect this suite exists to catch."""
+        registry = ROOT / "handsoff-acceptance.json"
+        if not registry.is_file():
+            # Not a skip dressed as a pass: this file is run state, absent in a
+            # fresh clone, and the claim is then carried by the two tests above.
+            return
+        criteria = json.loads(registry.read_text(encoding="utf-8")).get("criteria") or []
+        self.assertTrue(criteria, "the registry carries no criteria")
+        without = [c for c in criteria if "mutation_target" not in c]
+        self.assertTrue(without, "every criterion declares a mutation target; nothing to prove")
+        for criterion in without:
+            with self.subTest(criterion=criterion["id"]):
+                stripped = {k: v for k, v in criterion.items()
+                            if k not in ("mutation_target", "mutation_symbol")}
+                self.assertEqual(lib.criterion_spec_hash(stripped),
+                                 lib.criterion_spec_hash(criterion),
+                                 "adding the fields to the engine changed this criterion's hash")
 
 
 class TheCommandIsRegisteredLikeEveryOther(unittest.TestCase):

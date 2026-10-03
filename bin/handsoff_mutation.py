@@ -51,8 +51,8 @@ EXCLUDED = ("*.pyc", "__pycache__", ".git", ".coverage-data", ".coverage",
             ".coverage.*", "node_modules", "dist", "build", ".handsoff-archive",
             ".handsoff.lock", ".handsoff-regression.json")
 
-#: How long one half of the proof may take. Both halves run the criterion's own
-#: command, so this is the test's budget, not the mutation's.
+#: How long ONE run may take. Three of the five runs are the criterion's own
+#: command, so this is the test suite's budget, not the mutation's.
 DEFAULT_TIMEOUT = 900
 
 
@@ -213,18 +213,37 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
           timeout: int = DEFAULT_TIMEOUT, runner=_run) -> dict:
     """Prove `command` fails when `symbol` in `target` stops working.
 
-    Returns the record either way; the caller decides the gate. `ok` is true
-    only when the command passed against the real tree AND failed against the
-    mutated one, because each half rules out a different lie:
+    Returns the record either way; the caller decides the gate. `ok` requires
+    four things, each ruling out a different way the result could be hollow:
 
-    - passing before rules out a test that was already broken, which would
-      "detect" every mutation including this one;
-    - failing after rules out a test that executes the code and asserts nothing;
-    - and the module still importing rules out the mutation having broken
-      loading rather than behaviour. A review reproduced that: a function called
-      at import time, which no test mentions, raised a TypeError on load when
-      neutralised, so the command "failed after" and an irrelevant symbol
-      looked proved.
+    - the command PASSED on a clean copy, which rules out a suite that was
+      already red and would "detect" every mutation including this one;
+    - it passed again on a SECOND clean copy, which rules out a command that
+      is not reproducible. A review forged a proof for an arbitrary symbol by
+      making the target raise on a second import: the first run consumed a
+      one-shot resource, every later run failed for that reason, and the
+      failure was read as detection;
+    - the target still IMPORTS with the symbol neutralised, which rules out
+      the mutation having broken loading rather than behaviour. A review forged
+      a proof with a function called at module scope that no test mentions;
+    - and the command FAILED on a clean copy carrying the mutation, which rules
+      out a test that executes the code and asserts nothing.
+
+    Every run gets its OWN fresh copy. Sharing one copy was what made the
+    second forgery possible, and it also meant a suite that writes into its
+    tree changed the conditions of the run that followed it.
+
+    **What this establishes, exactly.** That the criterion's tests FAIL when
+    the named behaviour is removed. That includes failing because the suite
+    could not run at all: a review showed a symbol used in a test file's
+    module-level code, where neutralising it breaks collection rather than an
+    assertion. The tests do detect its removal, which is the property recorded
+    here, but detection by crash is weaker than detection by assertion and this
+    proof does not distinguish them. Telling them apart means parsing an
+    arbitrary runner's output, which would be a guess dressed as a gate. The
+    limit is stated rather than hidden: a criterion is still only as good as
+    the assertions behind it, and this gate raises the floor from "the command
+    exited zero" to "the command goes red without this behaviour".
     """
     root = Path(root).resolve()
     target_path = (root / target).resolve()
@@ -235,36 +254,50 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
     except ValueError:
         raise HandsoffError("mutation proof: the target must be inside the project root")
 
+    try:
+        try:
+            original = target_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError) as exc:
+            # A review reached this with a binary file and got a decode
+            # traceback. Every way into the proof has to come out as a
+            # refusal in words; REQ-012 says so without exceptions.
+            raise HandsoffError(
+                f"mutation proof: {target} could not be read as UTF-8 text "
+                f"({exc.__class__.__name__}); the target must be the Python source file "
+                "defining the symbol") from exc
+        mutated_source = neutralize(original, symbol, where=target)
+    except HandsoffError as exc:
+        elsewhere = [name for name in where_defined(root, symbol) if name != target]
+        raise HandsoffError(
+            f"{exc}" + (f". It is defined in {', '.join(elsewhere)}; the target names a "
+                        "re-export, not the definition." if elsewhere else "")) from exc
+
     before_digest = _source_digest(root, target_path)
     with tempfile.TemporaryDirectory(prefix="handsoff-mutation-") as scratch:
-        copy = Path(scratch) / root.name
-        shutil.copytree(root, copy, symlinks=True,
-                        ignore=shutil.ignore_patterns(*EXCLUDED))
-        baseline = runner(command, copy, timeout)
-        try:
-            try:
-                original = target_path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError) as exc:
-                # A review reached this with a binary file and got a decode
-                # traceback. Every way into the proof has to come out as a
-                # refusal in words; REQ-012 says so without exceptions.
-                raise HandsoffError(
-                    f"mutation proof: {target} could not be read as UTF-8 text "
-                    f"({exc.__class__.__name__}); the target must be the Python source file "
-                    "defining the symbol") from exc
-            mutated_source = neutralize(original, symbol, where=target)
-        except HandsoffError as exc:
-            elsewhere = [name for name in where_defined(root, symbol) if name != target]
-            raise HandsoffError(
-                f"{exc}" + (f". It is defined in {', '.join(elsewhere)}; the target names a "
-                            "re-export, not the definition." if elsewhere else "")) from exc
-        target_in_copy = copy / Path(target)
-        original_source = target_in_copy.read_text(encoding="utf-8")
-        import_before = runner(_import_probe(target), copy, timeout)
-        target_in_copy.write_text(mutated_source, encoding="utf-8")
-        import_after = runner(_import_probe(target), copy, timeout)
-        mutated = runner(command, copy, timeout)
+        def run_on_fresh_copy(what: str, mutate: bool) -> dict:
+            """One run, on a tree nothing else has touched.
+
+            The copies are not shared. A suite that writes into its own tree,
+            binds a port, or refuses a second import changed the conditions of
+            every run after it, which is how a review forged a proof for an
+            arbitrary symbol.
+            """
+            copy = Path(scratch) / f"{root.name}-{what}"
+            shutil.copytree(root, copy, symlinks=True,
+                            ignore=shutil.ignore_patterns(*EXCLUDED))
+            if mutate:
+                (copy / Path(target)).write_text(mutated_source, encoding="utf-8")
+            return runner(command if what.startswith("run") else _import_probe(target),
+                          copy, timeout)
+
+        baseline = run_on_fresh_copy("run-baseline", mutate=False)
+        control = run_on_fresh_copy("run-control", mutate=False)
+        import_before = run_on_fresh_copy("import-before", mutate=False)
+        import_after = run_on_fresh_copy("import-after", mutate=True)
+        mutated = run_on_fresh_copy("run-mutated", mutate=True)
+
     broke_import = (import_before["exit_code"] == 0 and import_after["exit_code"] != 0)
+    reproducible = (baseline["exit_code"] == 0) == (control["exit_code"] == 0)
 
     after_digest = _source_digest(root, target_path)
     if before_digest != after_digest:
@@ -279,11 +312,13 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
         "mutation_version": MUTATION_VERSION,
         "command": command, "target": target, "symbol": symbol,
         "baseline_exit_code": baseline["exit_code"],
+        "control_exit_code": control["exit_code"],
         "mutated_exit_code": mutated["exit_code"],
         "passed_before": passed_before,
+        "reproducible": reproducible,
         "failed_after": failed_after,
         "import_intact": not broke_import,
-        "ok": bool(passed_before and failed_after and not broke_import),
+        "ok": bool(passed_before and reproducible and failed_after and not broke_import),
         "source_digest": before_digest,
     }
     if not passed_before:
@@ -298,6 +333,13 @@ def prove(root: Path, *, command: str, target: str, symbol: str,
             "so it cannot show anything about the mutation"
             + (f": {detail.splitlines()[-1][:200]}" if detail else
                " (it printed nothing; run it yourself to see why)"))
+    elif not reproducible:
+        record["refusal"] = (
+            f"the command passed on one clean copy and exited {control['exit_code']} on a second "
+            "clean copy with no mutation applied, so it is not reproducible and a failure after "
+            "the mutation proves nothing. A review forged a proof for an arbitrary symbol this "
+            "way, with a target that refuses a second import. Make the command independent of "
+            "state the previous run left behind.")
     elif broke_import:
         record["refusal"] = (
             f"neutralising {symbol} stopped {target} from importing at all, so the command's "

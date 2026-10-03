@@ -373,6 +373,36 @@ roughly half its wall-clock went into working around these.
    the re-export hint was blind to methods while the mutation would happily
    change one.
 
+   A second independent round then forged two more proofs, and both are now
+   reproduced as tests. All five runs shared one copy of the tree, so a target
+   that raises on a second import let the first run consume a one-shot resource
+   and every later run fail for that reason, which read as detection: an
+   arbitrary symbol reported `ok: true`. Every run now gets its own fresh copy,
+   which removes the cause rather than detecting it, and also fixes the quieter
+   version where a suite that writes into its own tree changed the conditions
+   of the run after it. A control run was added for the part a fresh copy
+   cannot cure: the command must pass on a SECOND clean copy, because a command
+   whose result depends on state outside the tree cannot support a proof at
+   all. The round's other finding is a real limit rather than a defect, and it
+   is now disclosed in the docstring, in `docs/REFERENCE.md` and in a test that
+   keeps it disclosed: a symbol used in a test file's module-level code is
+   detected by crash rather than by assertion, and this proof does not tell the
+   two apart, because doing so means parsing an arbitrary runner's output.
+
+   Checking the review's question about `criteria-apply` then found a third
+   path into the registry with its own copy of the merge:
+   `CRITERION_UPDATE_FIELDS` listed the two new fields, so the key check
+   accepted them and the apply loop dropped them, and the policy rule was
+   judged on the fields being changed rather than on the resulting criterion,
+   so a transaction could switch a criterion to `automated_and_mutation` with
+   nothing declared. Both are fixed, with the same shape of test the other two
+   paths have. One detail is worth stating because it would have been expensive
+   to get wrong: `criterion_spec_hash` hashes the field SET, so a criterion
+   carrying an explicit null hashes differently from one without the key. Every
+   path writes these fields only when they have a value, and a test reads that
+   off the source, because the cost of one path writing null is every recorded
+   criterion in every project at once.
+
 Lessons, for the playbook: a green suite is not a tested suite, so neutralise
 the function a criterion names and watch its test fail; mutation-prove the new
 tests and not only the new code; a test whose evidence lives in gitignored

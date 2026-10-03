@@ -973,10 +973,16 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 raise CriteriaTransactionError(position, op, None,
                                                "an add operation has exactly 'op' and 'criterion'")
             spec = operation["criterion"]
-            if not isinstance(spec, dict) or set(spec) != set(CRITERION_ADD_FIELDS):
+            # #349: the mutation pair is OPTIONAL here, so every existing
+            # transaction file stays valid, and required by the policy rule in
+            # validate_criterion_fields when the verification demands it.
+            optional_add = {"mutation_target", "mutation_symbol"}
+            if not isinstance(spec, dict) or not set(CRITERION_ADD_FIELDS) <= set(spec) \
+                    or set(spec) - set(CRITERION_ADD_FIELDS) - optional_add:
                 raise CriteriaTransactionError(
                     position, op, spec.get("id") if isinstance(spec, dict) else None,
-                    "an add criterion has exactly id, type, requirement, verification, tests",
+                    "an add criterion has id, type, requirement, verification, tests, and "
+                    "optionally mutation_target and mutation_symbol",
                 )
             criterion_id = spec.get("id")
             problems = validate_criterion_fields(spec, require_all=True)
@@ -993,6 +999,13 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 "verification": spec["verification"], "tests": list(spec["tests"]),
                 "evidence": [], "state": "not_tested",
             }
+            # Only when given, and never as null: `criterion_spec_hash` hashes
+            # the field set, so a criterion carrying an explicit null hashes
+            # differently from one without the key, and writing null here would
+            # change the hash of every criterion this path touches.
+            for field in sorted(optional_add):
+                if spec.get(field):
+                    criterion[field] = spec[field]
             _transaction_test_gate(position, op, criterion, cfg, root)
             criteria.append(criterion)
             if criterion["type"] == "primary_fix":
@@ -1033,9 +1046,19 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
         if not isinstance(fields, dict) or not fields or set(fields) - set(CRITERION_UPDATE_FIELDS):
             raise CriteriaTransactionError(
                 position, op, criterion_id,
-                "'fields' must be a non-empty object with keys among requirement, verification, tests, type, state",
+                "'fields' must be a non-empty object with keys among "
+                + ", ".join(CRITERION_UPDATE_FIELDS),
             )
-        problems = validate_criterion_fields(fields)
+        problems = list(validate_criterion_fields(fields))
+        # #349: the policy's requirement is about the criterion's RESULTING
+        # shape. Judged on `fields` alone, switching an existing criterion to
+        # automated_and_mutation with nothing declared was accepted here and
+        # only failed at proof time, which is the same defect cmd_criterion_update
+        # had. `fields` is checked first so a malformed value is reported as
+        # itself rather than as a missing declaration.
+        merged = {**{k: v for k, v in criterion.items() if k not in ("state", "evidence")}, **fields}
+        problems += [problem for problem in validate_criterion_fields(merged)
+                     if "automated_and_mutation" in problem and problem not in problems]
         if problems:
             raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
         was_primary = criterion.get("type") == "primary_fix"
@@ -1046,6 +1069,17 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 spec_changed = True
         if "tests" in fields:
             criterion["tests"] = list(fields["tests"])
+            spec_changed = True
+        for field in ("mutation_target", "mutation_symbol"):
+            # Listed in CRITERION_UPDATE_FIELDS, so the key check above accepted
+            # them; without this they were accepted and then silently dropped,
+            # which is write-without-read in the one place that must not have it.
+            if field not in fields:
+                continue
+            if fields[field]:
+                criterion[field] = fields[field]
+            else:
+                criterion.pop(field, None)
             spec_changed = True
         if "state" in fields:
             criterion["state"] = fields["state"]

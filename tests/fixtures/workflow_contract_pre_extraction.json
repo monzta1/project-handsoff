@@ -267,7 +267,7 @@
   },
   "plan_criteria_transaction_missing_field": {
     "__raised__": "CriteriaTransactionError",
-    "message": "operation 1 (add REQ-911): an add criterion has exactly id, type, requirement, verification, tests"
+    "message": "operation 1 (add REQ-911): an add criterion has id, type, requirement, verification, tests, and optionally mutation_target and mutation_symbol"
   },
   "plan_criteria_transaction_remove_only_primary": {
     "__raised__": "CriteriaTransactionError",
