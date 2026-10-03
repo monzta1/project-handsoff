@@ -204,14 +204,16 @@ class ReviewerGuardAndBrokerTests(HandsoffTestCase):
         self._reach_phase_5()
         approved = ('HANDSOFF_REVIEW_RESULT: {"kind":"implementation","decision":"approved",'
                     '"summary":"ledger only","findings":[],"structural_blocker":false,'
-                    '"symptom_reproduced":"not_applicable","tests_executed":"no"}\n')
+                    '"symptom_reproduced":"not_applicable","tests_executed":"yes"}\n')
+        # #341: an approval with tests_executed no is refused on this automated
+        # run, so the forwarded value here is yes (the CLI default is unknown).
         factory = mock.Mock(return_value=_FakeReviewerProcess(approved))
         self.assertEqual(runtime.execute_launch(self._reviewer_spec(), popen_factory=factory,
                                                 beacon_interval=0.01), 0)
         status = self.read_status()
-        self.assertEqual(status["review"]["tests_executed"], "no")
+        self.assertEqual(status["review"]["tests_executed"], "yes")
         closed = [item for item in status["review_attempts"] if item.get("disposition") == "approved"]
-        self.assertEqual(closed[-1]["tests_executed"], "no")
+        self.assertEqual(closed[-1]["tests_executed"], "yes")
 
     def test_broker_binds_host_architect_from_proposal(self):
         import handsoff_lib as lib

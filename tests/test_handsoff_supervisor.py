@@ -352,7 +352,7 @@ class HandsoffTestCase(unittest.TestCase):
                 if approval.returncode:
                     return approval
             if n == 6 and reviewed_by:
-                review = run(["record-review", "--by", str(reviewed_by)], cwd=self.tmp)
+                review = run(["record-review", "--by", str(reviewed_by), "--tests-executed", "yes"], cwd=self.tmp)
                 if review.returncode:
                     return review
             # Evidence can legitimately move the progress meter ahead of the
@@ -1885,7 +1885,7 @@ class TestReviewerProfileIndependence(HandsoffTestCase):
         self.init("AG4 reviewer independence")
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(5, implemented_by="implementer-1")
-        review = run(["record-review", "--by", "reviewer-1"], cwd=self.tmp)
+        review = run(["record-review", "--by", "reviewer-1", "--tests-executed", "yes"], cwd=self.tmp)
         self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
         return self.read_status()["review"]
 
@@ -2772,7 +2772,7 @@ class TestSelfApprovalBlocked(HandsoffTestCase):
         self.init()
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(5, implemented_by="agent-x")
-        review = run(["record-review", "--by", "agent-y"], cwd=self.tmp)
+        review = run(["record-review", "--by", "agent-y", "--tests-executed", "yes"], cwd=self.tmp)
         self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
         r = run(["advance", "6", "80", "--implemented-by", "agent-x"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -2871,7 +2871,7 @@ class TestAgentAgnosticSafetyGates(HandsoffTestCase):
                 disguised_review = run(["record-review", "--by", " weak-agent "], cwd=root)
                 self.assertEqual(disguised_review.returncode, 1)
                 self.assertIn("reviewer must differ", disguised_review.stdout)
-                unevidenced = run(["record-review", "--by", "other-weak-reviewer"], cwd=root)
+                unevidenced = run(["record-review", "--by", "other-weak-reviewer", "--tests-executed", "yes"], cwd=root)
                 self.assertEqual(unevidenced.returncode, 1)
                 self.assertIn("verified evidence", unevidenced.stdout)
 
@@ -2960,7 +2960,7 @@ class TestRoundCaps(HandsoffTestCase):
         self.init()
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(5, implemented_by="a")
-        self.assertEqual(run(["record-review", "--by", "b"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "b", "--tests-executed", "yes"], cwd=self.tmp).returncode, 0)
         r = run(["advance", "6", "80", "--implemented-by", "a", "--review-round", "9"], cwd=self.tmp)
         self.assertEqual(r.returncode, 1)
         self.assertIn("round cap", r.stdout)
@@ -3778,7 +3778,7 @@ class TestEvidenceAndLiveGates(HandsoffTestCase):
         self.assertEqual(changed.returncode, 0, changed.stdout + changed.stderr)
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(5, implemented_by="impl")
-        blocked = run(["record-review", "--by", "reviewer"], cwd=self.tmp)
+        blocked = run(["record-review", "--by", "reviewer", "--tests-executed", "yes"], cwd=self.tmp)
         self.assertEqual(blocked.returncode, 1)
         self.assertIn("verified evidence", blocked.stdout)
         criterion = self.read_acceptance()["criteria"][0]
@@ -3787,7 +3787,7 @@ class TestEvidenceAndLiveGates(HandsoffTestCase):
         browser = run(["record-evidence", "REQ-001", "--kind", "browser",
                        "--description", "Observed corrected UI", "--by", "browser-runner"], cwd=self.tmp)
         self.assertEqual(browser.returncode, 0, browser.stdout + browser.stderr)
-        approved = run(["record-review", "--by", "reviewer"], cwd=self.tmp)
+        approved = run(["record-review", "--by", "reviewer", "--tests-executed", "yes"], cwd=self.tmp)
         self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
 
     def test_command_output_is_not_persisted_in_verification_ledger(self):
@@ -4214,7 +4214,7 @@ class TestConfigurationChainOfTrust(HandsoffTestCase):
         self.init()
         self.set_criterion_state("passing", resolved=True)
         self.advance_to(5, implemented_by="impl")
-        review = run(["record-review", "--by", "reviewer"], cwd=self.tmp)
+        review = run(["record-review", "--by", "reviewer", "--tests-executed", "yes"], cwd=self.tmp)
         self.assertEqual(review.returncode, 0, review.stdout + review.stderr)
         ok = run(["advance", "6", "60"], cwd=self.tmp)
         self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
@@ -7332,7 +7332,7 @@ class TestAmendmentLane(HandsoffTestCase):
         self.assertEqual(advanced.returncode, 1, advanced.stdout)
         self.assertIn(f"amendment gate: amendment {amendment['amendment_id']} is open", advanced.stdout)
         self.assertEqual(run(["advance", "3", "40"], cwd=self.tmp).returncode, 1)
-        review = run(["record-review", "--by", "reviewer-1"], cwd=self.tmp)
+        review = run(["record-review", "--by", "reviewer-1", "--tests-executed", "yes"], cwd=self.tmp)
         self.assertEqual(review.returncode, 1, review.stdout)
         self.assertIn("amendment gate", review.stdout)
         gate = run(["deployment-gate", "--approve", "--by", self.PILOT], cwd=self.tmp)
@@ -10102,7 +10102,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertEqual(self_review.returncode, 1)
         self.assertIn("reviewer must differ", self_review.stdout)
 
-        self.assertEqual(run(["record-review", "--by", "rev-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-1", "--tests-executed", "yes"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "6", "60", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
 
         early_deploy = run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp)
@@ -10140,7 +10140,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         run_id = json.loads(verify_r.stdout)["criteria"]["REQ-001"]["run_id"]
         self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-1"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
-        self.assertEqual(run(["record-review", "--by", "rev-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-1", "--tests-executed", "yes"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "6", "60", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "7", "70"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp).returncode, 0)
@@ -10244,7 +10244,7 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertIsNotNone(self.read_status()["design_approved"])
 
         self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
-        self.assertEqual(run(["record-review", "--by", "rev-1"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-1", "--tests-executed", "yes"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "6", "80", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
         design_before_p6_evidence = self.read_status()["design_approved"]
 
@@ -10419,7 +10419,7 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
         self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-ar5"],
                              cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-ar5"], cwd=self.tmp).returncode, 0)
-        self.assertEqual(run(["record-review", "--by", "rev-ar5"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-ar5", "--tests-executed", "yes"], cwd=self.tmp).returncode, 0)
 
         status = self.read_status()
         acceptance = self.read_acceptance()
@@ -10470,7 +10470,7 @@ class TestArchitectHandoffAndAuthorship(HandsoffTestCase):
         self.assertEqual(run(["record-symptom-resolved", "--evidence", run_id, "--by", "impl-h"],
                              cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "5", "50", "--implemented-by", "impl-h"], cwd=self.tmp).returncode, 0)
-        self.assertEqual(run(["record-review", "--by", "rev-h"], cwd=self.tmp).returncode, 0)
+        self.assertEqual(run(["record-review", "--by", "rev-h", "--tests-executed", "yes"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "6", "60", "--implemented-by", "impl-h"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["advance", "7", "70"], cwd=self.tmp).returncode, 0)
         self.assertEqual(run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp).returncode, 0)

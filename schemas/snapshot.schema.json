@@ -843,7 +843,40 @@
     "actors": {},
     "amendment": {},
     "audit": {},
-    "crew": {},
+    "crew": {
+      "description": "#345: each station's session view carries result_adopted, null unless its verdict was adopted; automatic is true when the launcher adopted it",
+      "items": {
+        "properties": {
+          "session": {
+            "properties": {
+              "result_adopted": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": false,
+                "required": [
+                  "session_id",
+                  "automatic",
+                  "at"
+                ],
+                "properties": {
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "automatic": {
+                    "type": "boolean"
+                  },
+                  "at": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "design_evidence": {},
     "design_review_packet": {},
     "escalation": {},

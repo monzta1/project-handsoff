@@ -429,6 +429,40 @@ def _review_errors(status: dict, acceptance: dict, cfg: dict, root: Path | None 
     return errors
 
 
+#: #341: the one statement of the rule; the record-review --tests-executed
+#: help prints it and docs/REFERENCE.md carries the same sentence.
+REVIEW_TESTS_EXECUTED_RULE = (
+    "yes: the reviewer ran the tests; always accepted. no: refused while any criterion "
+    "requires checks, accepted with a tests_executed_waiver when none does (all manual or "
+    "browser). unknown is treated as no when a criterion requires checks."
+)
+
+
+def review_tests_executed_errors(tests_executed: object, acceptance: dict) -> list[str]:
+    """#341: an approval that did not run the tests (`no`, or `unknown`,
+    which counts as `no`) is refused while any criterion's verification
+    policy requires checks. Enforced when a review is recorded, never by
+    compute_errors, so a completed run's recorded review stays valid."""
+    if tests_executed == "yes":
+        return []
+    criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
+    requiring = [str(c.get("id")) for c in criteria if isinstance(c, dict)
+                 and "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+    if not requiring:
+        return []
+    return [f"review gate: tests_executed is {tests_executed}; an approval must run the tests "
+            f"(tests_executed yes) while a criterion requires checks: {', '.join(requiring)}"]
+
+
+def review_tests_executed_waiver(tests_executed: object) -> dict:
+    """#341: the field recorded on status.review when an approval without
+    tests is accepted because no criterion requires checks."""
+    if tests_executed == "yes":
+        return {}
+    return {"tests_executed_waiver": f"tests_executed {tests_executed} accepted: "
+                                     "no criterion requires checks (all manual or browser)"}
+
+
 GATE_PROGRESS_WEIGHTS = (
     ("initialized", 5), ("design_reviewed", 15), ("design_approved", 25), ("evidence", 45),
     ("symptom", 50), ("review", 65), ("deployment", 80), ("live", 95), ("complete", 100),

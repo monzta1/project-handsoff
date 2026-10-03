@@ -1395,11 +1395,13 @@ def validate_status_schema(status: dict) -> list[str]:
             if result is not None:
                 required = {"kind", "payload", "recorded_at", "adopted_at", "adopted_by"}
                 # #167: a packet a rule refused keeps its raw text and the mark
-                optional = {"readoptions", "refused_text", "recovered_from_rule"}
+                # #345: an adopted result says whether the launcher adopted it
+                optional = {"readoptions", "refused_text", "recovered_from_rule", "adopted_automatically"}
                 if not isinstance(result, dict) or set(result) - optional != required or result.get("kind") not in {"review", "design", "supervisor_request"} or not isinstance(result.get("payload"), dict) or ((result.get("adopted_at") is None) != (result.get("adopted_by") is None)) \
                         or ("readoptions" in result and (not isinstance(result["readoptions"], list) or any(not isinstance(r, dict) or set(r) != {"at", "by"} for r in result["readoptions"]))) \
                         or ("refused_text" in result and (not isinstance(result["refused_text"], str) or len(result["refused_text"]) > 65536)) \
-                        or ("recovered_from_rule" in result and not isinstance(result["recovered_from_rule"], bool)):
+                        or ("recovered_from_rule" in result and not isinstance(result["recovered_from_rule"], bool)) \
+                        or ("adopted_automatically" in result and not isinstance(result["adopted_automatically"], bool)):
                     errors.append(f"{label}.result is invalid")
     if pointers is not None:
         if not isinstance(pointers, dict):

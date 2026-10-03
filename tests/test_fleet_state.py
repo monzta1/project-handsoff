@@ -110,7 +110,8 @@ class FailedSessionSupersededTests(HandsoffTestCase):
         beacon = lib.read_live_beacon(self.tmp)
         self.assertEqual((beacon["state"], beacon["session_id"], beacon["exit_code"]), ("adopted", sid, 1))
         source = (BIN / "handsoff_supervisor.py").read_text()
-        self.assertIn("lib.mark_beacon_adopted(root, args.session)", source, "session-result-adopt calls it")
+        self.assertIn("lib.mark_beacon_adopted(root, session_id)", source,
+                      "adopt_session_result calls it, for the CLI and the launcher (#345)")
 
 
 if __name__ == "__main__":
