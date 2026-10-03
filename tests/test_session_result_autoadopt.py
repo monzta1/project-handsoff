@@ -198,6 +198,25 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         self._assert_not_adopted(error)
         self.assertEqual(self._events("session_result_adopted"), [])
 
+    def test_a_rule_refused_stderr_packet_blocks_adoption_on_a_clean_exit(self):
+        # attempt-2 finding: exit 0, approval plus a malformed line on stdout,
+        # a #167 packet on stderr; the packet must block adoption here too
+        self._phase5()
+        code, error, out = self._launch(stdout=APPROVED + MALFORMED, stderr=RULE_REFUSED, returncode=0)
+        self._assert_not_adopted(error)
+        self.assertEqual(self._events("session_result_adopted"), [])
+
+    def test_a_valid_stderr_verdict_is_adopted_on_a_clean_exit(self):
+        # attempt-2 finding: exit 0, only a malformed line on stdout, the one
+        # valid verdict on stderr; that verdict is adopted
+        self._phase5()
+        code, error, out = self._launch(stdout=MALFORMED, stderr=APPROVED, returncode=0)
+        self.assertIsNone(error, out)
+        self.assertEqual(code, 0)
+        status, sid, session, failure = self._session()
+        self.assertTrue(session["result"]["adopted_automatically"])
+        self.assertEqual(status["review"]["adopted_session"], sid)
+
     def test_an_identical_verdict_on_both_streams_is_one_verdict(self):
         # #114: Codex can repeat its final message on stderr; the copy is
         # the same verdict, so the session still has exactly one to adopt

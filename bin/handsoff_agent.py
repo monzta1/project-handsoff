@@ -1608,32 +1608,31 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             end_session("failed", exit_code=1, failure=failure)
             raise AgentLaunchError("Reviewer modified the project tree: " + ", ".join(
                 f"{c['path']} {c['kind']}" for c in failure["changes"][:4]) or "Reviewer modified the project tree", session_id)
+    # #345: the last unterminated stderr line, and a reviewer's stderr
+    # verdicts, are read before EITHER failure path (a non-zero exit, or a
+    # protocol error on a clean exit), so a #167 refused packet on stderr
+    # blocks adoption and a valid stderr verdict can be adopted.
+    if stderr_pending[0]:
+        stderr_protocol_line(stderr_pending[0])
+        stderr_pending[0] = ""
+    if spec.role == "reviewer":
+        for line in stderr_review_lines:
+            # #114: Codex can repeat its final message on stderr; an
+            # identical verdict there is the same verdict, not a second.
+            parsed: list[dict] = []
+            _parse_reviewer_line(line, parsed, protocol_errors, recovered_results, root)
+            reviewer_results.extend(item for item in parsed if item not in reviewer_results)
+            persist_new(reviewer_results, "review")
     if process.returncode:
         # #345: stderr questions were recorded as read; the tail rescan is a
         # fallback, and the launch's de-duplication keeps a question seen
         # on both streams, or twice here, to one record.
-        if stderr_pending[0]:
-            stderr_protocol_line(stderr_pending[0])
-            stderr_pending[0] = ""
         tail_lines = stderr_tail[0].splitlines()
         if len(stderr_tail[0]) >= 8192 and tail_lines:
             tail_lines = tail_lines[1:]  # the first line of a full tail may be cut
         for line in tail_lines:
             if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
                 question_lines[0] += 1
-        # #114: on a budget error Codex can route the final message to
-        # stderr. A complete protocol line there is still the result.
-        # #345: a reviewer's stderr verdicts are parsed even beside a stdout
-        # verdict, so a #167 refused packet on either stream blocks
-        # adoption and two verdicts across streams are not exactly one.
-        if spec.role == "reviewer":
-            for line in stderr_review_lines:
-                # #114: Codex can repeat its final message on stderr; an
-                # identical verdict there is the same verdict, not a second.
-                parsed: list[dict] = []
-                _parse_reviewer_line(line, parsed, protocol_errors, recovered_results, root)
-                reviewer_results.extend(item for item in parsed if item not in reviewer_results)
-                persist_new(reviewer_results, "review")
         if spec.role == "architect" and not architect_results and not architect_declines:
             for line in stderr_tail[0].splitlines():
                 if line.startswith(DESIGN_RESULT_PREFIX):
