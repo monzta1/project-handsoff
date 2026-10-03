@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -134,6 +135,19 @@ def _reviewer_scratch(root: Path, adapter: str, role: str, *, create: bool = Tru
     scratch = Path(tempfile.mkdtemp(prefix="handsoff-reviewer-")).resolve()
     assert not (scratch == root or root in scratch.parents)
     return scratch
+
+
+@contextmanager
+def _scratch_released_on_refusal(scratch: Path | None, *, created: bool):
+    """#348: a launch refused after the reviewer scratch exists (pre-flight,
+    a budget refusal) removes it, so refusing before reservation costs
+    nothing on every refusal path, not only the isolation-contract one."""
+    try:
+        yield
+    except BaseException:
+        if created and scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+        raise
 
 
 class AgentLaunchError(lib.HandsoffError):
@@ -473,7 +487,6 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
                     raise lib.HandsoffError("reviewer launch refused, evidence still missing: " + "; ".join(gaps))
     if lib.agent_profiles(cfg)[role]["adapter"] == lib.HOST_AGENT_ADAPTER:
         raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
-    context = lib.managed_design_context(root, role) or {}
     _refuse_reviewer_launch_over_budget(root, cfg, role)
     selection = _phase2_design_reviewer_selection(root, route_cfg, role, which=which)
     explicit_role_route = False
@@ -619,23 +632,24 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
                 "managed Claude reviewer launch refused before session reservation: "
                 + access["reason"])
     scratch = _reviewer_scratch(root, adapter, role, create=not inspection)
-    if adapter == "codex":
-        argv = _codex_argv(executable, role, model, provider_limit,
-                           reviewer_sandbox=scratch is not None,
-                           reasoning=cfg["model_reasoning"].get(role))
-    else:
-        allowed = _claude_allowed_tools(cfg, root, role, which=which)
-        argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
-    if not skip_preflight and not inspection \
-            and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
-        preflight = lib.launch_preflight(
-            root, adapter=adapter, model=model, executable=executable,
-            argv=argv, cwd=str(scratch or root),
-        )
-        if preflight["state"] != "ready":
-            raise lib.HandsoffError(
-                f"{adapter}/{model} launch preflight blocked ({preflight['category']}): {preflight['reason']}"
+    with _scratch_released_on_refusal(scratch, created=not inspection):
+        if adapter == "codex":
+            argv = _codex_argv(executable, role, model, provider_limit,
+                               reviewer_sandbox=scratch is not None,
+                               reasoning=cfg["model_reasoning"].get(role))
+        else:
+            allowed = _claude_allowed_tools(cfg, root, role, which=which)
+            argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
+        if not skip_preflight and not inspection \
+                and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
+            preflight = lib.launch_preflight(
+                root, adapter=adapter, model=model, executable=executable,
+                argv=argv, cwd=str(scratch or root),
             )
+            if preflight["state"] != "ready":
+                raise lib.HandsoffError(
+                    f"{adapter}/{model} launch preflight blocked ({preflight['category']}): {preflight['reason']}"
+                )
 
     return LaunchSpec(
         role=role,
@@ -689,10 +703,10 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if not executable:
         raise lib.HandsoffError(f"reserved {adapter} executable is no longer available")
     executable = str(Path(executable).resolve())
+    # #352: no follow-up reduction here; plan_role_token_budget below decides,
+    # exactly as on the primary path. The `_effective_token_budget` call that
+    # stood here was overwritten before anything read it.
     configured_budget = cfg["agent_token_budgets"][role]
-    token_budget = _effective_token_budget(
-        configured_budget, role, lib.managed_design_context(root, role),
-    )
     isolation = lib.reviewer_isolation_contract(adapter, cfg) if role == "reviewer" else None
     if isolation is not None and isolation["decision"] != "enforce":
         raise lib.HandsoffError(
@@ -713,53 +727,54 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
                 "managed Claude reviewer launch refused before session reservation: "
                 + access["reason"])
     scratch = _reviewer_scratch(root, adapter, role)
-    # #290: the codex argv is built once, below, after the budget decision
-    # exists, so the meter can be set to the provider limit. Building it
-    # here as well left a second copy metered on the whole ceiling.
-    argv = []
-    if adapter != "codex":
-        allowed = _claude_allowed_tools(cfg, root, role)
-        argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
-    budget_decision = lib.plan_role_token_budget(
-        configured_ceiling=configured_budget, role=role,
-        # The failover path. #347 shipped with one of its two launch builders
-        # threaded and the other not, which left every failed-over role on the
-        # old behaviour; the same mistake here would mean an explicit budget
-        # silently stops applying the moment a role fails over once.
-        configured_explicitly=role in cfg["agent_token_budgets_explicit"],
-        risk_class=status.get("risk_class"), packet_bytes=len(task.encode("utf-8")),
-        followup=True,
-    )
-    token_budget = budget_decision["ceiling"]
-    provider_limit = budget_decision["provider_limit"]
-    # #290: measured against what the provider is actually given.
-    if provider_limit < budget_decision["safe_minimum"]:
-        raise lib.HandsoffError(
-            "managed fallback launch refused before reservation: rendered packet estimates "
-            f"{budget_decision['estimated_input_tokens']} input tokens, reserves "
-            f"{budget_decision['response_reserve_tokens']} response tokens, and requires at least "
-            f"{budget_decision['safe_minimum']} tokens; selected ceiling is {token_budget}"
+    with _scratch_released_on_refusal(scratch, created=True):
+        # #290: the codex argv is built once, below, after the budget decision
+        # exists, so the meter can be set to the provider limit. Building it
+        # here as well left a second copy metered on the whole ceiling.
+        argv = []
+        if adapter != "codex":
+            allowed = _claude_allowed_tools(cfg, root, role)
+            argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
+        budget_decision = lib.plan_role_token_budget(
+            configured_ceiling=configured_budget, role=role,
+            # The failover path. #347 shipped with one of its two launch builders
+            # threaded and the other not, which left every failed-over role on the
+            # old behaviour; the same mistake here would mean an explicit budget
+            # silently stops applying the moment a role fails over once.
+            configured_explicitly=role in cfg["agent_token_budgets_explicit"],
+            risk_class=status.get("risk_class"), packet_bytes=len(task.encode("utf-8")),
+            followup=True,
         )
-    if adapter == "codex":
-        # #290: the meter is set to the PROVIDER LIMIT, as codex_argv's
-        # contract requires. Passing the whole ceiling here left a fallback
-        # session free to spend the entire allowance before stopping, with
-        # nothing held back for its verdict: the very overshoot this lane
-        # exists to bound, on the path taken precisely when a session has
-        # already failed once.
-        argv = _codex_argv(executable, role, model, provider_limit,
-                           reviewer_sandbox=scratch is not None,
-                           reasoning=cfg["model_reasoning"].get(role))
-    if not skip_preflight and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
-        preflight = lib.launch_preflight(
-            root, adapter=adapter, model=model, executable=executable,
-            argv=argv, cwd=str(scratch or root),
-        )
-        if preflight["state"] != "ready":
+        token_budget = budget_decision["ceiling"]
+        provider_limit = budget_decision["provider_limit"]
+        # #290: measured against what the provider is actually given.
+        if provider_limit < budget_decision["safe_minimum"]:
             raise lib.HandsoffError(
-                f"reserved fallback {adapter}/{model} preflight blocked "
-                f"({preflight['category']}): {preflight['reason']}"
+                "managed fallback launch refused before reservation: rendered packet estimates "
+                f"{budget_decision['estimated_input_tokens']} input tokens, reserves "
+                f"{budget_decision['response_reserve_tokens']} response tokens, and requires at least "
+                f"{budget_decision['safe_minimum']} tokens; selected ceiling is {token_budget}"
             )
+        if adapter == "codex":
+            # #290: the meter is set to the PROVIDER LIMIT, as codex_argv's
+            # contract requires. Passing the whole ceiling here left a fallback
+            # session free to spend the entire allowance before stopping, with
+            # nothing held back for its verdict: the very overshoot this lane
+            # exists to bound, on the path taken precisely when a session has
+            # already failed once.
+            argv = _codex_argv(executable, role, model, provider_limit,
+                               reviewer_sandbox=scratch is not None,
+                               reasoning=cfg["model_reasoning"].get(role))
+        if not skip_preflight and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
+            preflight = lib.launch_preflight(
+                root, adapter=adapter, model=model, executable=executable,
+                argv=argv, cwd=str(scratch or root),
+            )
+            if preflight["state"] != "ready":
+                raise lib.HandsoffError(
+                    f"reserved fallback {adapter}/{model} preflight blocked "
+                    f"({preflight['category']}): {preflight['reason']}"
+                )
     return LaunchSpec(
         role, adapter, model, tuple(argv), str(scratch or root.resolve()), task, "fallback",
         token_budget=token_budget,

@@ -465,3 +465,16 @@ local state passes on the author's machine and nowhere else; key membership is
 a fact no value comparison can recover; and when a rule names the strongest
 member of a set, derive it from the set rather than naming it, or the next
 member added above it is silently droppable.
+
+### v0.4.2 field notes: six small defects left over from v0.4.1 (#348 #350 #351 #352 #353 #355, 2026-10-03)
+
+Six defects filed while building v0.4.1 and left out of it because they were outside its criteria. Fixed directly, without a managed run, because each fix is small.
+
+1. **`doctor` probed each adapter with the adapter's own default model (#355).** Cause: `adapter_preflight` passed `DEFAULT_AGENT_MODEL`, so no `--model` flag reached the CLI and `~/.codex/config.toml` chose the model. A project naming a usable model was reported unreachable, and one naming an unusable model was reported reachable. Fix: the probe runs once per distinct model the project assigns to each adapter, reports each one under `models`, and an adapter is reachable only when every one of its models is. An adapter no role uses is still probed on its own default.
+2. **A stall-warning test sat exactly on a rounding boundary (#353).** Cause: an age of 1200 seconds is exactly 20 minutes, and the CLI and the dashboard sample `now` milliseconds apart, so one reading could floor to 19. Fix: the age is 1230 seconds.
+3. **The failover launch path computed a follow-up design budget and discarded it (#352).** Cause: `_effective_token_budget` ran and its result was overwritten before anything read it. The ticket said the primary path still applied the reduction. It does not: that call was removed from the primary path in `d96349b` (2026-09-23), so the reduction and `followup_design_token_budget` have had no effect on either path since. Fix: the dead call is gone and both paths take the ceiling from `plan_role_token_budget` alone. No behaviour changes. Whether to bring the reduction back or delete the setting is still open on #352.
+4. **`work-items-sync --item 349` created `ask-349` beside the derived `issue-349` (#351).** Fix: an explicit item spelled as a bare number, `#N` or `issue-N` resolves to `issue-N`, so naming an item derivation already found does nothing.
+5. **A reviewer pre-flight failure left its scratch directory behind (#348).** Fix: both launch builders remove the scratch directory when anything after its creation refuses: pre-flight, or the failover path's budget refusal. The existing isolation-refusal test globbed a literal `/tmp`, which `mkdtemp` does not use on macOS, so it could not have seen a leak; it now globs `tempfile.gettempdir()`.
+6. **`performance-resume` required `--evidence-hash`, stored it, and never checked it (#350).** Fix: the resume is bound to the paused episode it reopens. The engine computes that episode's hash and records it. The flag is optional, and a supplied value that does not match is refused with the expected hash named. Archived decisions keep the same schema.
+
+Lesson: a test that checks for absence has to look where the thing would actually be, or it passes without testing anything.

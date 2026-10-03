@@ -63,6 +63,18 @@ class WorkItemTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in items], ["issue-31", "ask-improve-docs"])
         self.assertEqual(items[0]["title"], "Review convergence")
 
+    def test_explicit_ticket_spellings_reconcile_with_the_tagged_item(self):
+        """#351: `--item 31` beside a `[#31]` criterion made `ask-31` next to
+        `issue-31`, an empty item that blocked completion."""
+        acceptance = {"feature": "Ship it", "criteria": [criterion("REQ-001", "[#31] Track reviews")]}
+        for spelling in ("31", "#31", "issue-31", " Issue-31 "):
+            items = lib.derive_work_item_registry(acceptance, self.cfg, now=self.now, explicit_items=[spelling])
+            self.assertEqual([item["id"] for item in items], ["issue-31"], spelling)
+            self.assertEqual(items[0]["title"], "Review convergence")
+        new = lib.derive_work_item_registry({"feature": "", "criteria": []}, self.cfg, now=self.now,
+                                            explicit_items=["29", "issue 31 docs"])
+        self.assertEqual([item["id"] for item in new], ["issue-29", "ask-issue-31-docs"])
+
     def test_scope_identity_ignores_display_updates(self):
         acceptance = {"feature": "Ship #31", "criteria": [criterion("REQ-001", "[#31] Track reviews")]}
         items = lib.derive_work_item_registry(acceptance, self.cfg, now=self.now)
