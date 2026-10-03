@@ -501,3 +501,11 @@ Lesson: when a result can arrive on two streams, decide eligibility only after r
 2. **A refused architect proposal was recorded as `orchestration_noop` with the Supervisor's sentence (#361).** Cause: every architect failure path used the one no-op classification, whose reason label names the Supervisor, and the validation error never reached the record. Fix: a new `protocol_refused` category whose reason (and the launcher's stderr) names the refused field, its index and the limit, and an architect that emits nothing gets an architect reason.
 
 Lesson: before filing an engine fix for a cost, read whether the engine already avoids it and the instructions are what spend it.
+
+### v0.4.6 field notes: implementers in parallel, reviews per item, and a pre-flight that hung on stdin (#359 #360 #365, 2026-10-03)
+
+1. **Parallel implementation ran outside the ledger (#359).** Cause: one live session per role, so four disjoint work items on a v0.4.0 run were built by direct `codex exec` sessions the ledger never saw. Fix: `--owns PATH` declares ownership; disjoint owners run at once, each in its own seeded git worktree, and only owned-path changes are applied back; an overlap is refused before anything is written. The first design review rejected end-of-session checking on a shared tree: a session could overwrite another's file, and attribution broke when sessions overlapped. Isolation answered both.
+2. **Per-item review ran outside the ledger (#360).** Fix: `record-review --item` on a full-lane item records an advisory `work_item_review_advisory` event that never touches the Phase 5 gate or the review budget.
+3. **`verify-live` for v0.4.5 failed on a pre-flight that waited on stdin (#365).** Cause: the login-status call inherited the caller's stdin, and a fake adapter that reads stdin blocked until the 15-second timeout, reported as `auth_failure`. Fix: pre-flight calls that send no prompt run with `stdin=DEVNULL`.
+
+Lesson: when a check can only run after the fact, make the unsafe state impossible instead (a separate worktree) rather than detecting it later.

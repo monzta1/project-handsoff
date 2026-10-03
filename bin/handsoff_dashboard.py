@@ -445,11 +445,10 @@ ACTIVE_ROLE_BY_PHASE = {
 
 
 def _live_managed_role(status: dict) -> str | None:
-    """The role whose current managed agent session is launching or running."""
-    current = lib.current_agent_sessions(status)
+    """The role whose managed agent session is launching or running."""
+    live = {session.get("role") for session in lib.live_agent_sessions(status)}  # #359
     for role in ("architect", "implementer", "reviewer", "supervisor"):
-        session = current.get(role)
-        if isinstance(session, dict) and session.get("state") in lib.AGENT_SESSION_LIVE_STATES:
+        if role in live:
             return role
     return None
 
@@ -849,8 +848,7 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
     elif status.get("status") != "complete" and not actions:
         add("pause", "Pause mission", "Records an explicit Pilot pause", reason=True, tone="muted")
     if not isinstance(status.get("run_closed"), dict):
-        live = [item for item in lib.current_agent_sessions(status).values()
-                if isinstance(item, dict) and item.get("state") in lib.AGENT_SESSION_LIVE_STATES]
+        live = lib.live_agent_sessions(status)  # #359: concurrent implementers too
         consequence = "Cancels the owned live session and records closure" if live else "Records closure and releases run-owned resources"
         add("run_close", "Cleanly close run", consequence, reason=True, tone="danger", confirmation=True)
     return actions
@@ -1261,6 +1259,9 @@ def build_snapshot(root: Path) -> dict:
         "crew": crew,
         "runtime": {
             "current_sessions": current_sessions,
+            # #359: every live session by its own id; two implementers may be live
+            "live_sessions": [{**session_view(item), "owned_paths": item.get("owned_paths")}
+                              for item in lib.live_agent_sessions(status)],
             "replacements": replacements,
             "agent_output": agent_output,
             "operation": operation,
@@ -1442,7 +1443,8 @@ class DashboardServer(ThreadingHTTPServer):
         self.request_stop()
         return True
 
-    def _launch_managed_role(self, role: str, task: str, actor: str | None = None) -> int:
+    def _launch_managed_role(self, role: str, task: str, actor: str | None = None,
+                             owned_paths: list[str] | None = None) -> int:
         """Launch a managed role. `actor` names who asked for the launch and
         becomes the session's recorded identity, so only a Pilot-initiated
         /api/launch-role passes "Mission Control Pilot"; watchdog and
@@ -1452,7 +1454,7 @@ class DashboardServer(ThreadingHTTPServer):
         if refusal:
             raise lib.HandsoffError(refusal)
         import handsoff_agent
-        spec = handsoff_agent.build_launch_spec(self.project_root, role, task)
+        spec = handsoff_agent.build_launch_spec(self.project_root, role, task, owned_paths=owned_paths)
         return handsoff_agent.execute_with_recovery(spec, actor=actor)
 
     def _orchestration_loop(self):
@@ -1501,10 +1503,10 @@ class DashboardServer(ThreadingHTTPServer):
         interval = cfg.get("recovery", {}).get("poll_seconds", 30)
         while not self._watchdog_stop.wait(interval):
             try:
-                def launcher(role):
+                def launcher(role, owned_paths=None):
                     task = (f"Resume trusted Handsoff state as {role}; read status, acceptance, and event log "
                             "and continue without repeating evidenced work.")
-                    return self._launch_managed_role(role, task)
+                    return self._launch_managed_role(role, task, owned_paths=owned_paths)  # #359
                 lib.recover_run(self.project_root, actor="Mission Control Watchdog", launcher=launcher)
             except Exception as exc:
                 print(f"HANDSOFF_WATCHDOG_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

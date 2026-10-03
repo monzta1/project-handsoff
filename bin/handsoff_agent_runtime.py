@@ -22,6 +22,8 @@ import math
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -60,6 +62,7 @@ from handsoff_ledger import (
     config_hash,
     feature_enabled,
     VERIFICATION_REQUIREMENTS,
+    _digest_excluded,
     _file_sha256,
     commit,
     event_head_path,
@@ -174,6 +177,7 @@ from handsoff_schema import (  # noqa: E402,F401
     question_status_errors,
     validate_acceptance_schema,
     validate_agent_actor,
+    validate_owned_paths,
     validate_progress_line,
     validate_release_plan,
     validate_reviewer_isolation_contract,
@@ -690,6 +694,239 @@ def open_review_attempt(status: dict, acceptance: dict, cfg: dict, *, by: str,
     return attempt
 
 
+def live_implementer_sessions(status: dict) -> list[dict]:
+    """#359: every live implementer session, by session id. The
+    current_agent_sessions pointer names only the latest launch, so a reader
+    that must see concurrent implementers iterates agent_sessions instead."""
+    return [session for session in (status.get("agent_sessions") or {}).values()
+            if isinstance(session, dict) and session.get("role") == "implementer"
+            and session.get("state") in AGENT_SESSION_LIVE_STATES]
+
+
+def live_agent_sessions(status: dict) -> list[dict]:
+    """#359: every live session a lifecycle reader must stop, close or show:
+    each role's current live session plus every live implementer, once each,
+    by session id."""
+    pointers = status.get("current_agent_sessions") if isinstance(status, dict) else None
+    sessions = status.get("agent_sessions") if isinstance(status, dict) else None
+    found = {}
+    for session_id in (pointers or {}).values():
+        session = (sessions or {}).get(session_id) if isinstance(session_id, str) else None
+        if isinstance(session, dict) and session.get("state") in AGENT_SESSION_LIVE_STATES:
+            found[session_id] = deepcopy(session)
+    for session in live_implementer_sessions(status):
+        found.setdefault(session.get("session_id"), deepcopy(session))
+    return list(found.values())
+
+
+def implementer_admission(root: Path, live: list[dict], owned_paths: list[str] | None,
+                          *, preferred_id: str | None = None) -> str | None:
+    """#359: admit an implementer beside the live ones, or refuse it before
+    anything is written. Returns the launch commit of its worktree when it
+    declared ownership, else None. Every implementer that declares ownership
+    runs in its own worktree, the first one included, so none writes the
+    project tree."""
+    # The single-live-implementer rule (one live session per role) existed
+    # to stop two implementers racing on the same files. Ownership keeps
+    # exactly that guarantee: a second implementer is admitted only when
+    # every live one declared its paths and none overlaps this launch's
+    # (equal, or one a directory prefix of the other).
+    if live and owned_paths is None:
+        first = next((item for item in live if item.get("session_id") == preferred_id), live[0])
+        raise HandsoffError(
+            f"role implementer already has live agent session {first['session_id']} ({first.get('state')})")
+    for item in live:
+        theirs = item.get("owned_paths")
+        if not theirs:
+            raise HandsoffError(
+                f"role implementer already has live agent session {item['session_id']} "
+                f"({item.get('state')}) with no declared ownership")
+        overlapping = sorted({path for mine in owned_paths for other in theirs
+                              if owned_paths_overlap(mine, other) for path in (mine, other)})
+        if overlapping:
+            raise HandsoffError(
+                f"implementer launch refused: owned paths {', '.join(overlapping)} overlap "
+                f"live implementer session {item['session_id']}")
+    if owned_paths is None:
+        return None
+    head = _git(root, "rev-parse", "--verify", "HEAD^{commit}")
+    if head.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head.stdout.strip()):
+        raise HandsoffError("implementer launch with --owns refused: the project has no git HEAD to branch a worktree from")
+    return head.stdout.strip()
+
+
+def owned_paths_overlap(first: str, second: str) -> bool:
+    """Equal, or one a directory prefix of the other."""
+    return first == second or first.startswith(second + "/") or second.startswith(first + "/")
+
+
+def normalize_owned_paths(root: Path, paths) -> list[str]:
+    """#359: each --owns PATH as a normalized project-relative POSIX path
+    inside the root. Refuses the root itself and any path that escapes it."""
+    root = Path(root).resolve()
+    normalized = []
+    for raw in paths:
+        if not isinstance(raw, str) or not raw.strip():
+            raise HandsoffError("--owns needs a non-empty path")
+        candidate = Path(raw) if os.path.isabs(raw) else root / raw
+        # realpath, not normpath: the root is resolved, so an absolute path
+        # through a symlink (/var -> /private/var on macOS) must be too.
+        resolved = Path(os.path.realpath(str(candidate)))
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            raise HandsoffError(f"--owns {raw} is outside the project root") from None
+        text = relative.as_posix()
+        if text in {"", "."}:
+            raise HandsoffError("--owns cannot claim the whole project root")
+        if text not in normalized:
+            normalized.append(text)
+    return validate_owned_paths(normalized)
+
+
+def implementer_workspace_dir(root: Path) -> Path:
+    """#359: the run scratch directory holding concurrent implementers'
+    worktrees, one per session id. Always outside the project root."""
+    root = Path(root).resolve()
+    scratch = Path(tempfile.gettempdir()).resolve() / "handsoff-workspaces" \
+        / hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    if scratch == root or root in scratch.parents:
+        raise HandsoffError("implementer workspace directory would be inside the project root")
+    return scratch
+
+
+def _git(cwd: Path | str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=120)
+
+
+def _git_paths(cwd: Path | str, *args: str) -> list[str]:
+    result = _git(cwd, args[0], "-z", *args[1:])  # -z before any `--` pathspec
+    if result.returncode != 0:
+        raise HandsoffError(f"git {args[0]} failed: {result.stderr.strip()[:160]}")
+    return [item for item in result.stdout.split("\0") if item]
+
+
+def _changed_since(cwd: Path | str, commit_sha: str, pathspecs: list[str] | None = None) -> list[str]:
+    """Tracked paths whose working-tree content differs from commit_sha, plus
+    untracked (not ignored) files, optionally limited to pathspecs."""
+    tail = ["--", *pathspecs] if pathspecs else []
+    changed = _git_paths(cwd, "diff", "--name-only", "--no-renames", commit_sha, *tail)
+    changed += _git_paths(cwd, "ls-files", "--others", "--exclude-standard", *tail)
+    return sorted(set(changed))
+
+
+def _workspace_manifest_path(workspace: dict) -> Path:
+    """The seed record beside the worktree, outside it and the project."""
+    return Path(workspace["path"] + ".seed.json")
+
+
+def _path_digest(path: Path) -> str | None:
+    if path.is_symlink():
+        return hashlib.sha256(("symlink:" + os.readlink(path)).encode("utf-8", "replace")).hexdigest()
+    return _file_sha256(path) if path.is_file() else None
+
+
+def _owned_snapshot(cwd: Path, owned: list[str]) -> dict:
+    """Content digest of every tracked or untracked (not ignored) file under
+    the owned paths of one tree."""
+    if not owned:
+        return {}
+    listed = _git_paths(cwd, "ls-files", "--cached", "--others", "--exclude-standard", "--", *owned)
+    return {path: _path_digest(Path(cwd) / path) for path in sorted(set(listed))}
+
+
+def create_implementer_workspace(root: Path, session: dict) -> Path:
+    """#359: the detached worktree an ownership-declaring implementer runs in.
+
+    The worktree starts at the launch commit and is then seeded with the
+    project's working-tree content for every path that differs from it
+    (dirty tracked files and untracked ones), so the session sees the tree
+    the host sees. The seed record keeps what was seeded and the digest of
+    every owned file as seeded: the apply compares against that content,
+    never against the launch commit."""
+    root = Path(root).resolve()
+    workspace = session["workspace"]
+    path = Path(workspace["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    result = _git(root, "worktree", "add", "--detach", str(path), workspace["launch_commit"])
+    if result.returncode != 0:
+        raise HandsoffError(f"git worktree add failed: {result.stderr.strip()[:160]}")
+    seeded = {}
+    for relative in _changed_since(root, workspace["launch_commit"]):
+        source, target = root / relative, path / relative
+        if source.is_dir() and not source.is_symlink():
+            continue  # a nested repository; git names it, not its files
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        if source.is_symlink() or source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target, follow_symlinks=False)
+        seeded[relative] = _path_digest(target)
+    manifest = {"seeded": seeded, "owned": _owned_snapshot(path, session.get("owned_paths") or [])}
+    _workspace_manifest_path(workspace).write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def remove_implementer_workspace(root: Path, session: dict) -> None:
+    workspace = session.get("workspace") if isinstance(session, dict) else None
+    if not isinstance(workspace, dict):
+        return
+    _git(root, "worktree", "remove", "--force", workspace["path"])
+    shutil.rmtree(workspace["path"], ignore_errors=True)
+    _workspace_manifest_path(workspace).unlink(missing_ok=True)
+    _git(root, "worktree", "prune")
+
+
+def apply_implementer_workspace(root: Path, session_id: str) -> dict:
+    """#359: copy an ownership-declaring implementer's changes back.
+
+    Attribution is the session's OWN worktree diffed against what it was
+    seeded with, never the project tree, so another session finishing first
+    never enters this diff. Handsoff's own state files (the repository
+    digest's structural exclusion: `.handsoff*` components and the ledgers)
+    are neither attributed nor applied, so a session that ran verify in its
+    worktree is not refused for them. All or nothing: a changed path outside
+    owned_paths, or an owned file the host changed in the project since it
+    was seeded, refuses the whole apply and nothing is copied.
+    Returns {state, paths}."""
+    root = Path(root).resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        session = (status.get("agent_sessions") or {}).get(session_id)
+        if not isinstance(session, dict) or not isinstance(session.get("workspace"), dict):
+            raise HandsoffError(f"agent session {session_id} has no implementer workspace")
+        owned = session.get("owned_paths") or []
+        workspace = Path(session["workspace"]["path"])
+        launch_commit = session["workspace"]["launch_commit"]
+        manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
+        seeded = manifest["seeded"]
+        state_files = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
+        changed = sorted(
+            path for path in set(_changed_since(workspace, launch_commit)) | set(seeded)
+            if not _digest_excluded(path, state_files)
+            and (path not in seeded or _path_digest(workspace / path) != seeded[path]))
+        outside = [path for path in changed
+                   if not any(path == mine or path.startswith(mine + "/") for mine in owned)]
+        if outside:
+            return {"state": "refused", "reason": "outside_ownership", "paths": outside[:64]}
+        before, now = manifest["owned"], _owned_snapshot(root, owned)
+        collided = sorted(path for path in set(before) | set(now) if before.get(path) != now.get(path))
+        if collided:
+            return {"state": "refused", "reason": "host_edit", "paths": collided[:64]}
+        for path in changed:
+            source, target = workspace / path, root / path
+            if source.is_symlink() or source.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                shutil.copy2(source, target, follow_symlinks=False)
+            elif target.is_symlink() or target.exists():
+                target.unlink()
+        return {"state": "applied", "paths": changed[:64]}
+
+
 def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          requested_model: str, resolution_source: str,
                          id_factory=None, packet_id: str | None = None,
@@ -699,7 +936,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          adaptive_routing: dict | None = None,
                          budget_decision: dict | None = None,
                          reviewer_isolation: dict | None = None,
-                         reasoning_effort: str | None = None) -> dict:
+                         reasoning_effort: str | None = None,
+                         owned_paths: list[str] | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
@@ -709,10 +947,16 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
     `tier`/`tier_reason` (#37) record which reviewer tier the selection
     chose and why; the session keeps `tier`, and a `design_reviewer_selected`
     event carrying both is committed with the launch.
+    `owned_paths` (#359) is an implementer's declared ownership; with it a
+    second implementer may run beside a live one in its own worktree.
     """
     root = root.resolve()
     if role not in SELECTABLE_AGENT_ROLES:
         raise HandsoffError("agent session role must be architect, supervisor, implementer, or reviewer")
+    if owned_paths is not None:
+        if role != "implementer":
+            raise HandsoffError("--owns applies to implementer sessions only")
+        owned_paths = validate_owned_paths(list(owned_paths))
     actor = validate_agent_actor(actor)
     if adapter not in SELECTABLE_AGENT_ADAPTERS:
         raise HandsoffError("agent session adapter must be codex or claude")
@@ -799,7 +1043,14 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         current = deepcopy(status.get("current_agent_sessions") or {})
         active_id = current.get(role)
         active = sessions.get(active_id) if isinstance(active_id, str) else None
-        if active and active.get("state") in AGENT_SESSION_LIVE_STATES:
+        launch_commit = None
+        if role == "implementer":
+            # #359: the ownership check (implementer_admission) replaces the
+            # one-live-session rule for implementers. Refused there, before
+            # any id, reservation or event exists.
+            beside = live_implementer_sessions(status)
+            launch_commit = implementer_admission(root, beside, owned_paths, preferred_id=active_id)
+        elif active and active.get("state") in AGENT_SESSION_LIVE_STATES:
             raise HandsoffError(
                 f"role {role} already has live agent session {active_id} ({active.get('state')})"
             )
@@ -876,6 +1127,11 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session["reasoning_effort"] = reasoning_effort
         if reviewer_isolation is not None:
             session["reviewer_isolation"] = deepcopy(reviewer_isolation)
+        if owned_paths is not None:
+            session["owned_paths"] = list(owned_paths)
+        if launch_commit is not None:
+            session["workspace"] = {"path": str(implementer_workspace_dir(root) / session_id),
+                                    "launch_commit": launch_commit}
         sessions[session_id] = session
         current[role] = session_id
         accepted_regression = active_regression_request(proposed)
@@ -963,6 +1219,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             # #167: whether the launch rules stood between this launch and
             # the process; "disabled" is the project's own switch.
             launch_rules="evaluated" if feature_enabled(cfg, "launch_rules") else "disabled",
+            **({"owned_paths": list(owned_paths), "concurrent": bool(beside)}
+               if owned_paths is not None else {}),
         )
         return deepcopy(session)
 
@@ -976,8 +1234,10 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
 def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
                              failure: dict | None = None, usage: dict | None = None,
-                             reported_model: str | None = None) -> dict:
-    """Apply a session-ID-matched lifecycle-only update under the lock."""
+                             reported_model: str | None = None,
+                             apply: dict | None = None) -> dict:
+    """Apply a session-ID-matched lifecycle-only update under the lock.
+    `apply` (#359) records a concurrent implementer's apply-back outcome."""
     if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
         raise HandsoffError("agent session id is invalid")
     if state not in AGENT_SESSION_STATES - {"launching"}:
@@ -1015,8 +1275,14 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         if not isinstance(existing, dict):
             raise HandsoffError(f"agent session {session_id} was not found")
         role = existing.get("role")
-        if current.get(role) != session_id:
+        # #359: a concurrent implementer launched earlier is no longer the
+        # role's current pointer but is still live and still its own session.
+        if current.get(role) != session_id and not (
+                role == "implementer"
+                and any(item.get("session_id") == session_id for item in live_implementer_sessions(status))):
             raise HandsoffError(f"stale agent session {session_id} is no longer current for role {role}")
+        if apply is not None and (not terminal or not isinstance(existing.get("workspace"), dict)):
+            raise HandsoffError("apply is recorded on the terminal transition of a workspace session only")
         old_state = existing.get("state")
         allowed = {
             "launching": {"running", "failed_to_start"},
@@ -1052,6 +1318,8 @@ def transition_agent_session(root: Path, session_id: str, state: str,
                 updated["reported_model"] = reported_model
             if usage is not None:
                 updated["usage"] = usage  # #168
+            if apply is not None:
+                updated["apply"] = {"state": apply["state"], "paths": list(apply["paths"])}
             if replacement is not None:
                 replacement_state = "recovered" if state == "completed" else "failed"
                 replacement["state"] = replacement_state

@@ -218,8 +218,10 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     _version_tuple,
     active_regression_request,
     agent_profiles,
+    apply_implementer_workspace,
     claim_precreated_agent_session,
     create_agent_session,
+    create_implementer_workspace,
     current_agent_sessions,
     current_review_attempt,
     default_agent_adapter,
@@ -229,12 +231,19 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     effective_review_cap,
     ensure_no_launched_regression,
     event_log_chain_errors,
+    implementer_admission,
+    implementer_workspace_dir,
     ledger_engine_identity,
+    live_agent_sessions,
+    live_implementer_sessions,
     load_verifications,
     migrate_review_ledger,
+    normalize_owned_paths,
     open_review_attempt,
+    owned_paths_overlap,
     progress_summary,
     read_session_liveness,
+    remove_implementer_workspace,
     runtime_identity,
     session_liveness_path,
     stale_manifest_refusal,
@@ -1285,7 +1294,8 @@ WRITE_CAPABLE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 def claude_argv(executable: str, role: str, allowed_tools: list[str] | None,
                 model: str = DEFAULT_AGENT_MODEL,
-                project_root: Path | str | None = None) -> list[str]:
+                project_root: Path | str | None = None,
+                owned_paths: list[str] | None = None) -> list[str]:
     """The one Claude Code argv shape Handsoff launches (and pre-flights).
 
     `--verbose` sits next to `--output-format stream-json`: the Claude CLI
@@ -1303,8 +1313,18 @@ def claude_argv(executable: str, role: str, allowed_tools: list[str] | None,
     machine -- a per-launch flag is the same access scoped to this launch.
     """
     mode = "default" if role in {"reviewer", "supervisor", "architect"} else "acceptEdits"
+    allowed_tools = list(allowed_tools or [])
+    if role == "implementer" and owned_paths:
+        # #359: an implementer that declared ownership may Edit/Write only its
+        # own paths. acceptEdits would accept any edit under the working
+        # directory regardless of the allowlist, so the mode is default and
+        # the path-scoped rules are the only edit permission it has.
+        mode = "default"
+        scoped = [f"{tool}({pattern})" for tool in ("Edit", "Write")
+                  for path in owned_paths for pattern in (path, f"{path}/**")]
+        allowed_tools = [tool for tool in allowed_tools if tool not in {"Edit", "Write"}] + scoped
     argv = [str(executable), "-p", "--verbose", "--output-format", "stream-json", "--permission-mode", mode]
-    argv.extend(["--allowedTools", ",".join(allowed_tools or [])])
+    argv.extend(["--allowedTools", ",".join(allowed_tools)])
     # Reviewer only. The other roles that share the empty allowlist -- architect
     # and supervisor -- run from the project root itself and need nothing added;
     # widening their launch is a change #343 did not ask for.
@@ -2083,7 +2103,10 @@ def launch_preflight(root: Path, *, adapter: str, model: str, executable: str,
         login_argv = ([executable, "login", "status"] if adapter == "codex"
                       else [executable, "auth", "status"])
         try:
-            login = runner(login_argv, text=True, capture_output=True, timeout=min(timeout, 15), cwd=cwd)
+            # #365: the status call sends no prompt, so it must never read the
+            # launcher's stdin; an inherited open pipe hung it until timeout.
+            login = runner(login_argv, text=True, capture_output=True, timeout=min(timeout, 15), cwd=cwd,
+                           stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             login = None
             category, reason = "auth_failure", "adapter login status timed out"
@@ -3100,7 +3123,12 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
         sessions = deepcopy(status.get("agent_sessions") or {})
         current = deepcopy(status.get("current_agent_sessions") or {})
         source = sessions.get(from_session_id)
-        if not isinstance(source, dict) or current.get(source.get("role")) != from_session_id:
+        # #359: an implementer that declared ownership may have been launched
+        # before the role's current one; it is still replaced by its own id.
+        owned_source = isinstance(source, dict) and source.get("role") == "implementer" \
+            and bool(source.get("owned_paths"))
+        if not isinstance(source, dict) or (current.get(source.get("role")) != from_session_id
+                                            and not owned_source):
             raise HandsoffError("replacement lost the current-session CAS")
         role = source["role"]
         # Repository identity and availability belong to this exact CAS
@@ -3170,6 +3198,14 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
                    trigger=trigger, category=category, reason=decision["reason"],
                    replacement_state="pilot_pause")
             return deepcopy(record)
+        launch_commit = None
+        if role == "implementer":
+            # #359: the replacement is admitted exactly as a launch would be,
+            # beside every other live implementer, and keeps the source's
+            # ownership and worktree mode.
+            beside = [item for item in live_implementer_sessions(status)
+                      if item.get("session_id") != from_session_id]
+            launch_commit = implementer_admission(root, beside, source.get("owned_paths") or None)
         removed_session_ids = _prune_agent_sessions(sessions, current)
         to_session_id = _new_agent_session_id(sessions, id_factory=session_id_factory)
         profile = decision["profile"]
@@ -3183,6 +3219,10 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
             "packet_id": None, "design_hash": None, "tier": None,
             "phase_number": int(status.get("phase_number", 1) or 1),
         }
+        if launch_commit is not None:
+            session["owned_paths"] = list(source["owned_paths"])
+            session["workspace"] = {"path": str(implementer_workspace_dir(root) / to_session_id),
+                                    "launch_commit": launch_commit}
         handoff = _derive_replacement_handoff(
             status, acceptance, repository, role=role, from_session_id=from_session_id,
             to_session_id=to_session_id, trigger=trigger, category=category, reason=reason,
@@ -4068,10 +4108,14 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         commit(root, cfg, status=proposed, event_kind="recovery_attempt_started",
                event_message=f"Recovery attempt {record['attempt']} reserved for {role}",
                by=actor, recovery_id=rid, role=role, attempt=record["attempt"], cap=cap)
+        # #359: the replacement of an implementer that declared ownership
+        # declares the same paths, so it runs in its own worktree as well.
+        lost = (status.get("agent_sessions") or {}).get(assessment.get("lost_session_id") or "")
+        owned = list(lost["owned_paths"]) if isinstance(lost, dict) and lost.get("owned_paths") else None
     ok = False
     launch_error = None
     try:
-        outcome = launcher(role)
+        outcome = launcher(role, owned_paths=owned) if owned else launcher(role)
         ok = outcome in (0, True, None)
     except Exception as exc:  # the terminal state records only type, never untrusted output
         launch_error = type(exc).__name__
@@ -4899,11 +4943,14 @@ def amendment_view(status: dict, acceptance: dict, cfg: dict, verifications: lis
 
 def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
                       pid: int | None, ended_at: str | None = None,
-                      exit_code: int | None = None, now: datetime | None = None) -> bool:
+                      exit_code: int | None = None, now: datetime | None = None,
+                      per_session: bool = False) -> bool:
     """Best-effort atomic write of the seven-key beacon. Returns False
     instead of raising on any OSError: the beacon is a liveness hint, never
     the authority, so a full disk or a bad path must not touch the child's
-    lifecycle or the session record."""
+    lifecycle or the session record. `per_session` (#359) also writes the
+    session's own beacon, which concurrent implementers need because they
+    overwrite each other's project beacon."""
     root = Path(root)
     if not root.is_dir():
         return False
@@ -4918,6 +4965,8 @@ def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
     }
     try:
         _atomic_write_text(live_beacon_path(root), json.dumps(beacon, sort_keys=True) + "\n")
+        if per_session:
+            _atomic_write_text(live_beacon_path(root, session_id), json.dumps(beacon, sort_keys=True) + "\n")
     except OSError:
         return False
     return True
@@ -7607,8 +7656,12 @@ def release_run_dashboard(root: Path, *, timeout: float = 2.0, wait: float = 5.0
 
 def _terminate_owned_session_process(root: Path, session: dict, *, wait: float = 2.0) -> dict:
     """Stop only the process group proven by the current fresh session beacon."""
-    beacon = read_live_beacon(root)
     session_id = session.get("session_id")
+    beacon = read_live_beacon(root)
+    if not beacon or beacon.get("session_id") != session_id:
+        # #359: concurrent implementers share the project beacon; each also
+        # keeps its own, so every one of them can prove its process.
+        beacon = read_live_beacon(root, session_id=session_id)
     if not beacon or beacon.get("session_id") != session_id or beacon.get("state") not in {"started", "running"}:
         raise HandsoffError(f"cannot prove process ownership for live session {session_id}")
     age = _seconds_since(beacon.get("beacon_at"), datetime.now(timezone.utc))
@@ -7702,9 +7755,8 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
                     "dashboard": {"released": False, "reason": "closure was already recorded"}}
         if expected_updated_at is not None and status.get("updated_at") != expected_updated_at:
             raise HandsoffError("run closure is stale; mission state changed")
-        current = current_agent_sessions(status)
-        live = [item for item in current.values()
-                if isinstance(item, dict) and item.get("state") in AGENT_SESSION_LIVE_STATES]
+        # #359: every live session, concurrent implementers included
+        live = live_agent_sessions(status)
         if live and not cancel_active:
             raise HandsoffError("active managed sessions require explicit cancel confirmation")
         stopped = []
@@ -7720,7 +7772,8 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
                 target["state"] = "cancelled"
                 target["ended_at"] = now
                 target["exit_code"] = 130
-                proposed.get("current_agent_sessions", {}).pop(target.get("role"), None)
+                if proposed.get("current_agent_sessions", {}).get(target.get("role")) == sid:
+                    proposed["current_agent_sessions"].pop(target.get("role"))
             for replacement in proposed.get("agent_replacements") or []:
                 if replacement.get("to_session_id") == sid and replacement.get("state") in {"claimed", "running"}:
                     replacement["state"] = "failed"
@@ -7952,10 +8005,14 @@ def open_questions(status: dict, *, blocking_only: bool = False) -> list[dict]:
 
 
 def question_blocks_run(status: dict, session_id: str | None, role: str) -> bool:
-    """Only the current live session of its role may hold the run."""
+    """Only the current live session of its role may hold the run, or (#359)
+    any live implementer session, matched by its own session id."""
     if not isinstance(session_id, str):
         return False
     current = current_agent_sessions(status).get(role)
+    if role == "implementer" and any(item.get("session_id") == session_id
+                                     for item in live_implementer_sessions(status)):
+        return True
     return isinstance(current, dict) and current.get("session_id") == session_id \
         and current.get("state") in AGENT_SESSION_LIVE_STATES
 

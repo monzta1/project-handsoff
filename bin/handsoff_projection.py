@@ -49,6 +49,7 @@ from handsoff_agent_runtime import (
     current_agent_sessions,
     default_agent_adapter,
     design_review_budget,
+    live_implementer_sessions,
 )
 
 
@@ -358,6 +359,8 @@ def _beacon_process_alive(root: Path | None, session_id: str) -> bool:
         return False
     beacon = read_live_beacon(root)
     if not isinstance(beacon, dict) or beacon.get("session_id") != session_id:
+        beacon = read_live_beacon(root, session_id)  # #359: a concurrent implementer's own
+    if not isinstance(beacon, dict) or beacon.get("session_id") != session_id:
         return False
     pid = beacon.get("pid")
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
@@ -461,7 +464,14 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         if isinstance(event, dict) and event.get("kind") == "recovery_acknowledged"
     }
     candidates = []
-    for current_role, candidate_id in current.items():
+    # #359: every live implementer is assessed by its own session id, not
+    # only the one the role's current pointer names.
+    concurrent = [item for item in live_implementer_sessions(status)
+                  if item.get("session_id") not in current.values()]
+    pairs = list(current.items()) + [("implementer", item["session_id"]) for item in concurrent]
+    several_implementers = len(live_implementer_sessions(status)) > 1
+    alive = None
+    for current_role, candidate_id in pairs:
         candidate = sessions.get(candidate_id) if isinstance(candidate_id, str) else None
         if not isinstance(candidate, dict) or candidate_id in acknowledged:
             continue
@@ -477,14 +487,20 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
             # dying (a sleeping laptop, a paused runner). The beacon names
             # the child's pid; while that pid exists, presuming the
             # session lost would kill real work and pay for a replacement.
-            result.update(state="active", reason="process_alive", assigned_role=current_role,
-                          lost_session_id=candidate_id, silent_minutes=silent,
-                          threshold_minutes=threshold)
+            alive = dict(state="active", reason="process_alive", assigned_role=current_role,
+                         lost_session_id=candidate_id, silent_minutes=silent,
+                         threshold_minutes=threshold)
+            if current_role == "implementer" and several_implementers:
+                continue  # #359: one live implementer never hides a lost one
+            result.update(alive)
             return result
         if silent is not None and silent >= threshold:
             stamp = candidate.get("ended_at") or candidate.get("running_at") \
                 or candidate.get("started_at") or ""
             candidates.append((stamp, current_role, candidate_id, state_name, silent, threshold, reason))
+    if not candidates and alive is not None:
+        result.update(alive)
+        return result
     if candidates:
         _, exact_role, exact_id, state_name, silent, threshold, reason = max(candidates)
         result.update(state=state_name, reason=reason, assigned_role=exact_role,
@@ -590,8 +606,13 @@ def activity_note(status: dict, cfg: dict, *, now: datetime | None = None,
     return None
 
 
-def live_beacon_path(root: Path) -> Path:
-    return Path(root) / LIVE_BEACON_FILE
+def live_beacon_path(root: Path, session_id: str | None = None) -> Path:
+    """The project beacon, or (#359) one session's own beacon."""
+    if session_id is None:
+        return Path(root) / LIVE_BEACON_FILE
+    if not re.fullmatch(r"hs-[0-9a-f]{32}", str(session_id)):
+        raise HandsoffError("live beacon session id is invalid")
+    return Path(root) / f".handsoff-live-{session_id}.json"
 
 
 def _seconds_since(timestamp: str | None, now: datetime) -> float | None:
@@ -599,14 +620,15 @@ def _seconds_since(timestamp: str | None, now: datetime) -> float | None:
     return None if minutes is None else minutes * 60
 
 
-def read_live_beacon(root: Path) -> dict | None:
+def read_live_beacon(root: Path, session_id: str | None = None) -> dict | None:
     """The beacon if it exists and is well-formed (exactly the seven keys,
     identifiers, integers, and timestamps only); anything else reads as no
-    signal, never as an error."""
-    path = live_beacon_path(root)
+    signal, never as an error. `session_id` (#359) reads that session's own
+    beacon instead of the project one."""
     try:
+        path = live_beacon_path(root, session_id)
         beacon = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (HandsoffError, OSError, ValueError):
         return None
     if not isinstance(beacon, dict) or set(beacon) != set(LIVE_BEACON_KEYS):
         return None
@@ -619,6 +641,8 @@ def read_live_beacon(root: Path) -> dict | None:
     if beacon["ended_at"] is not None and not isinstance(beacon["ended_at"], str):
         return None
     if _minutes_since(beacon["beacon_at"], datetime.now(timezone.utc)) is None:
+        return None
+    if session_id is not None and beacon["session_id"] != session_id:
         return None
     return beacon
 

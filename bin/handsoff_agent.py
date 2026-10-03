@@ -60,6 +60,8 @@ class LaunchSpec:
     # #347: the effort this launch was given, recorded on the session so a
     # run can be explained afterwards rather than only observed at launch.
     reasoning_effort: str | None = None
+    # #359: the implementer's declared ownership (--owns), normalized.
+    owned_paths: tuple[str, ...] | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -428,11 +430,18 @@ def _phase2_design_reviewer_selection(root: Path, cfg: dict, role: str, *, which
 
 
 def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, skip_preflight: bool = False,
-                      inspection: bool = False, amendment: bool = False, topic: str | None = None) -> LaunchSpec:
+                      inspection: bool = False, amendment: bool = False, topic: str | None = None,
+                      owned_paths: list[str] | None = None) -> LaunchSpec:
     root = root.resolve()
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
         raise lib.HandsoffError("role must be architect, implementer, or reviewer")
+    if owned_paths:
+        if role != "implementer":
+            raise lib.HandsoffError("--owns applies to implementer launches only")
+        owned_paths = lib.normalize_owned_paths(root, owned_paths)
+    else:
+        owned_paths = None
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
     cfg = lib.load_config(root)
@@ -622,7 +631,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
                                reasoning=cfg["model_reasoning"].get(role))
         else:
             allowed = _claude_allowed_tools(cfg, root, role, which=which)
-            argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
+            argv = lib.claude_argv(executable, role, allowed, model, project_root=root,
+                                   owned_paths=owned_paths)
         if not skip_preflight and not inspection \
                 and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
             preflight = lib.launch_preflight(
@@ -655,12 +665,15 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         budget_decision=budget_decision,
         reviewer_isolation=isolation,
         reasoning_effort=cfg["model_reasoning"].get(role),
+        owned_paths=tuple(owned_paths) if owned_paths else None,
     )
 
 
 def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
-                              *, which=shutil.which, skip_preflight: bool = False) -> LaunchSpec:
-    """Build a launch only from the exact fallback profile reserved by the host."""
+                              *, which=shutil.which, skip_preflight: bool = False,
+                              owned_paths: tuple[str, ...] | None = None) -> LaunchSpec:
+    """Build a launch only from the exact fallback profile reserved by the host.
+    `owned_paths` (#359) carries a replaced implementer's ownership over."""
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES or not isinstance(profile, dict) \
             or set(profile) != {"adapter", "model"}:
@@ -716,7 +729,8 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         argv = []
         if adapter != "codex":
             allowed = _claude_allowed_tools(cfg, root, role)
-            argv = lib.claude_argv(executable, role, allowed, model, project_root=root)
+            argv = lib.claude_argv(executable, role, allowed, model, project_root=root,
+                                   owned_paths=list(owned_paths) if owned_paths else None)
         budget_decision = lib.plan_role_token_budget(
             configured_ceiling=configured_budget, role=role,
             # The failover path. #347 shipped with one of its two launch builders
@@ -767,6 +781,7 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         budget_decision=budget_decision,
         reviewer_isolation=isolation,
         reasoning_effort=cfg["model_reasoning"].get(role),
+        owned_paths=tuple(owned_paths) if owned_paths else None,
     )
 
 
@@ -906,10 +921,12 @@ class _LiveBeacon:
     lifecycle, the session record, or the return value of execute_launch.
     The beacon carries identifiers, integers, and timestamps only."""
 
-    def __init__(self, root: Path, session_id: str, role: str, process, interval: float):
+    def __init__(self, root: Path, session_id: str, role: str, process, interval: float,
+                 per_session: bool = False):
         self.root = root
         self.session_id = session_id
         self.role = role
+        self.per_session = per_session  # #359: also beacon the session's own file
         self.process = process
         self.pid = _process_pid(process)
         self.interval = max(float(interval), 0.01)
@@ -920,7 +937,7 @@ class _LiveBeacon:
     def _beat(self) -> None:
         while not self.stop.is_set():
             lib.write_live_beacon(self.root, session_id=self.session_id, role=self.role,
-                                  state="running", pid=self.pid)
+                                  state="running", pid=self.pid, per_session=self.per_session)
             if _check_operation_timeout(self.root, lib.load_config(self.root), self.session_id,
                                         self.process, datetime.now(timezone.utc)) == "terminated":
                 self.operation_terminated = True
@@ -956,6 +973,7 @@ class _LiveBeacon:
             self.root, session_id=self.session_id, role=self.role,
             state="adopted" if adopted else record["state"],
             pid=None if adopted else self.pid, ended_at=record.get("ended_at"), exit_code=record.get("exit_code"),
+            per_session=self.per_session,
         )
 
 
@@ -1154,7 +1172,6 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     only the supervisor role's lines are parsed for broker requests. Each
     stdout/stderr chunk notes output liveness, a counter file that never
     carries content and never reaches a ledger."""
-    capture_supervisor = spec.role == "supervisor"
     root = Path(spec.project_root or spec.cwd).resolve()
     actor = lib.validate_agent_actor(actor or lib.default_agent_actor(spec.adapter, spec.role))
     if precreated_session_id is None:
@@ -1172,6 +1189,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             budget_decision=spec.budget_decision,
             reviewer_isolation=isolation,
             reasoning_effort=spec.reasoning_effort,
+            owned_paths=list(spec.owned_paths) if spec.owned_paths else None,
         )
     else:
         session = lib.claim_precreated_agent_session(
@@ -1179,6 +1197,31 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             requested_model=spec.model,
         )
         actor = session["actor"]
+    session_id = session["session_id"]
+    cwd = spec.cwd
+    if isinstance(session.get("workspace"), dict):
+        # #359: a concurrent implementer works in its own worktree outside
+        # the project root, so it cannot write another session's files.
+        try:
+            cwd = str(lib.create_implementer_workspace(root, session))
+        except (lib.HandsoffError, OSError, subprocess.SubprocessError) as exc:
+            lib.remove_implementer_workspace(root, session)
+            lib.transition_agent_session(root, session_id, "failed_to_start",
+                                         failure=lib.classify_runtime_failure(exit_code=-1))
+            raise AgentLaunchError(f"implementer workspace could not be created: {str(exc)[:160]}",
+                                   session_id) from exc
+    try:
+        return _execute_started_session(spec, root, session, cwd, timeout=timeout,
+                                        popen_factory=popen_factory, beacon_interval=beacon_interval)
+    finally:
+        lib.remove_implementer_workspace(root, session)
+        if isinstance(session.get("workspace"), dict):
+            lib.live_beacon_path(root, session_id).unlink(missing_ok=True)
+
+
+def _execute_started_session(spec: LaunchSpec, root: Path, session: dict, cwd: str, *, timeout: int,
+                             popen_factory, beacon_interval: float) -> int:
+    capture_supervisor = spec.role == "supervisor"
     session_id = session["session_id"]
     child_env = (_reviewer_environment(os.environ.copy(), spec.env_overrides)
                  if spec.role == "reviewer" else os.environ.copy())
@@ -1201,7 +1244,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     try:
         process = popen_factory(
             list(spec.argv),
-            cwd=spec.cwd,
+            cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1217,13 +1260,14 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         raise AgentLaunchError(
             f"{spec.adapter} process failed to start: {type(exc).__name__}", session_id,
         ) from exc
-    beacon = _LiveBeacon(root, session_id, spec.role, process, beacon_interval)
+    beacon = _LiveBeacon(root, session_id, spec.role, process, beacon_interval,
+                         per_session=isinstance(session.get("workspace"), dict))
     beacon.start()
     try:
         result = _run_managed_process(
             spec, root, session_id, process, timeout, capture_supervisor, portable_output,
             repository_digest_before=repository_digest_before,
-            beacon=beacon,
+            beacon=beacon, workspace=isinstance(session.get("workspace"), dict),
         )
         if spec.env_overrides and spec.role == "reviewer":
             shutil.rmtree(spec.cwd, ignore_errors=True)
@@ -1237,7 +1281,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                          timeout: int, capture_supervisor: bool,
                          portable_output: _PortableOutput,
                          repository_digest_before: str | None = None,
-                         beacon: _LiveBeacon | None = None) -> int:
+                         beacon: _LiveBeacon | None = None, workspace: bool = False) -> int:
     """The lifecycle of an already-started child: exactly one terminal
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
@@ -1842,6 +1886,28 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                    "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
         end_session("failed", exit_code=0, failure=failure)
         raise AgentLaunchError(failure["reason"], session_id)
+    if workspace:
+        # #359: only owned-path changes come back, all or nothing.
+        try:
+            applied = lib.apply_implementer_workspace(root, session_id)
+        except (lib.HandsoffError, OSError, subprocess.SubprocessError) as exc:
+            applied = {"state": "refused", "reason": "apply_failed", "paths": [],
+                       "detail": str(exc)[:120]}
+        if applied["state"] != "applied":
+            reason = {"outside_ownership": "workspace changed paths outside its ownership: ",
+                      "host_edit": "host changed owned paths since launch: ",
+                      }.get(applied["reason"], "workspace apply failed: ")
+            reason = (reason + (", ".join(applied["paths"]) or applied.get("detail", "")))[:200]
+            end_session("failed", exit_code=1,
+                        apply={"state": "refused", "paths": applied["paths"]},
+                        failure={"category": "ownership_violation", "reason": reason,
+                                 "changed_paths": applied["paths"],
+                                 "tail_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest()})
+            raise AgentLaunchError(f"implementer apply refused: {reason}", session_id)
+        end_session("completed", exit_code=0, apply=applied)
+        for problem in question_errors:
+            sys.stderr.write(f"HANDSOFF_QUESTION_WARNING: {problem}\n")
+        return 0
     end_session("completed", exit_code=0)
     for problem in question_errors:
         sys.stderr.write(f"HANDSOFF_QUESTION_WARNING: {problem}\n")
@@ -1900,6 +1966,7 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
             prepared_spec = build_profile_launch_spec(
                 root, proposed["role"], fallback_input,
                 proposed["selected_profile"], which=which,
+                owned_paths=current_spec.owned_paths,  # #359
             )
 
         replacement = lib.reserve_agent_replacement(
@@ -2129,7 +2196,9 @@ def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> 
     try:
         status = lib.load_unique_json(lib.status_path(root, lib.load_config(root)))
         current = lib.current_agent_sessions(status).get(role)
-        if not isinstance(current, dict) or current.get("session_id") != session_id:
+        concurrent = role == "implementer" and any(  # #359: an earlier live implementer is not late
+            item.get("session_id") == session_id for item in lib.live_implementer_sessions(status))
+        if not concurrent and (not isinstance(current, dict) or current.get("session_id") != session_id):
             lib.count_operation_warning(root, session_id, role, "late_telemetry")
             return
         lib.record_operation(root, session_id, role, record, datetime.now(timezone.utc))
@@ -2225,6 +2294,10 @@ def main() -> int:
         command.add_argument("--task", required=True)
         command.add_argument("--topic", default=None,
                              help="one briefing topic to add to this launch")
+        command.add_argument("--owns", action="append", default=None, metavar="PATH",
+                             help="implementer only, repeatable: a project path this launch owns; "
+                                  "with it a second implementer may run beside a live one whose "
+                                  "owned paths do not overlap, in its own worktree")
         if name == "launch":
             command.add_argument("--timeout", type=int, default=3600)
             command.add_argument(
@@ -2253,7 +2326,7 @@ def main() -> int:
                 raise lib.HandsoffError(refusal)
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False),
                                  inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)),
-                                 topic=args.topic)
+                                 topic=args.topic, owned_paths=args.owns)
         if getattr(args, "amendment", None):
             spec = dataclasses.replace(spec, amendment_id=args.amendment)
         if args.command == "inspect":
@@ -2268,6 +2341,7 @@ def main() -> int:
                 "stdin_bytes": len(spec.stdin.encode("utf-8")),
                 "stdin_sha256": hashlib.sha256(spec.stdin.encode("utf-8")).hexdigest(),
                 "token_budget": spec.token_budget,
+                "owned_paths": list(spec.owned_paths) if spec.owned_paths else None,
                 "fresh_session": True,
             }, indent=2))
             return 0
