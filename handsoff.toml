@@ -45,9 +45,15 @@ profile = "dogfood"
 # separate managed Codex sessions, and #112 refuses a reviewer that shares the
 # host's session id. (It first reached main unintentionally on 2026-09-23 in a
 # commit that staged the whole tree; the decision above is the deliberate one.)
-architect = "host"
-supervisor = "host"
-implementer = "codex"
+#
+# SUPERSEDED 2026-10-03 by the Pilot: architect, supervisor and implementer run
+# as managed Claude sessions on claude-opus-5-5, and the reviewer on Codex
+# gpt-6-astra. The host-Architect rationale above still holds on its own terms
+# (a cold managed session lacks the forensics that motivated a lane), so if a
+# design proposal suffers for it, "host" is the documented thing to go back to.
+architect = "claude"
+supervisor = "claude"
+implementer = "claude"
 reviewer = "codex"
 
 [models]
@@ -59,10 +65,18 @@ reviewer = "codex"
 # for the codex reviewer. A recommended model applies only with its
 # recommended adapter: override an adapter without naming a model and the
 # role runs with the runner default (source "runner_default").
-architect = "default"
-supervisor = "default"
-implementer = "default"
-reviewer = "default"
+#
+# Named exactly, by the Pilot on 2026-10-03, rather than left as "default":
+# "default" means the ADAPTER's own configured model, which is how
+# ~/.codex/config.toml came to decide what a managed Codex role ran as. That
+# is the inheritance #347 was filed about, and naming the model here is what
+# stops it. It is also why the v0.4.1 live doctor check failed: the adapter
+# probe uses the adapter default, and this machine's global Codex model is one
+# the account cannot use.
+architect = "claude-opus-5-5"
+supervisor = "claude-opus-5-5"
+implementer = "claude-opus-5-5"
+reviewer = "gpt-6-astra"
 
 [features]
 # Workflow switches (README "Workflow features"); Mission Control's CREW
