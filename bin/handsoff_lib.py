@@ -1264,19 +1264,92 @@ CODEX_DISABLED_FEATURES = (
 CODEX_WORKSPACE_NETWORK_FLAG = "sandbox_workspace_write.network_access=true"
 
 
-def claude_argv(executable: str, role: str, allowed_tools: list[str] | None, model: str = DEFAULT_AGENT_MODEL) -> list[str]:
+#: #343: what a managed Claude reviewer is given. `Bash` is here because a
+#: review that cannot run the tests is the packet-only review the field report
+#: complained about, and because the reviewer's boundary is enforced before the
+#: launch, not inside the allowlist: `reviewer_isolation_contract` REFUSES a
+#: Claude reviewer outright unless the project has explicitly approved
+#: compatibility mode. The allowlist's job here is narrower, and it is the job
+#: #343 names: no tool that edits files.
+REVIEWER_READ_ONLY_TOOLS = ("Read", "Grep", "Glob", "Bash")
+
+#: The tools whose absence from the reviewer allowlist is the actual claim.
+#: Named as a set so a test can assert disjointness rather than restating the
+#: allowlist, which would pass whatever the allowlist happened to say.
+WRITE_CAPABLE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+
+def claude_argv(executable: str, role: str, allowed_tools: list[str] | None,
+                model: str = DEFAULT_AGENT_MODEL,
+                project_root: Path | str | None = None) -> list[str]:
     """The one Claude Code argv shape Handsoff launches (and pre-flights).
 
     `--verbose` sits next to `--output-format stream-json`: the Claude CLI
     refuses stream-json under --print without it (field-note defect 1), so
     every managed Claude role used to exit 1 at launch.
+
+    #343: a managed reviewer runs from an external scratch directory, and
+    Claude Code refuses any read outside its working directory. With no
+    `--add-dir` the reviewer could not open a single file of the project it was
+    reviewing: every read came back "Path is outside allowed working
+    directories", the first design review was packet-only, and it still spent
+    one of the two autonomous attempts. The operator's workaround was to add
+    the project to `permissions.additionalDirectories` in their own
+    `~/.claude/settings.json`, which changes every Claude session on their
+    machine -- a per-launch flag is the same access scoped to this launch.
     """
     mode = "default" if role in {"reviewer", "supervisor", "architect"} else "acceptEdits"
     argv = [str(executable), "-p", "--verbose", "--output-format", "stream-json", "--permission-mode", mode]
     argv.extend(["--allowedTools", ",".join(allowed_tools or [])])
+    # Reviewer only. The other roles that share the empty allowlist -- architect
+    # and supervisor -- run from the project root itself and need nothing added;
+    # widening their launch is a change #343 did not ask for.
+    if role == "reviewer" and project_root is not None:
+        argv.extend(["--add-dir", str(Path(project_root).resolve())])
     if model != DEFAULT_AGENT_MODEL:
         argv.extend(["--model", model])
     return argv
+
+
+def reviewer_read_access(root: Path) -> dict:
+    """Can a managed reviewer actually read the project it is about to review.
+
+    Checked against the repository's own files rather than by asking the
+    adapter, so it costs no model call and no session. The verdict names the
+    file it could not read, because "the reviewer cannot read the project" is
+    not something an operator can act on.
+    """
+    root = Path(root).resolve()
+    probed: list[str] = []
+    if not root.is_dir():
+        return {"readable": False, "reason": f"the project root {root} is not a directory",
+                "probed": probed}
+    if not os.access(root, os.R_OK | os.X_OK):
+        return {"readable": False,
+                "reason": f"the project root {root} is not readable by this process",
+                "probed": probed}
+    # A directory that lists but whose files do not open is the case that
+    # matters: an `os.access` check on the directory alone passes there, and
+    # the reviewer then fails on its first real read.
+    for name in ("handsoff.toml", "handsoff-acceptance.json"):
+        candidate = root / name
+        if not candidate.is_file():
+            continue
+        probed.append(name)
+        try:
+            with candidate.open("rb") as handle:
+                handle.read(1)
+        except OSError as exc:
+            return {"readable": False,
+                    "reason": f"the project root {root} lists but {name} cannot be opened: "
+                              f"{exc.__class__.__name__}",
+                    "probed": probed}
+    if not probed:
+        return {"readable": False,
+                "reason": f"the project root {root} contains no handsoff.toml to read, so a "
+                          "reviewer launched against it has nothing to review",
+                "probed": probed}
+    return {"readable": True, "reason": f"read {', '.join(probed)} under {root}", "probed": probed}
 
 
 def reviewer_isolation_contract(adapter: str, cfg: dict | None = None) -> dict:
@@ -1311,8 +1384,15 @@ def reviewer_isolation_contract(adapter: str, cfg: dict | None = None) -> dict:
 
 
 
-def codex_argv(executable: str, role: str, model: str, token_budget: int, *, reviewer_sandbox: bool = False) -> list[str]:
-    """The one Codex argv shape Handsoff launches (and pre-flights)."""
+def codex_argv(executable: str, role: str, model: str, token_budget: int, *,
+               reviewer_sandbox: bool = False, reasoning: str | None = None) -> list[str]:
+    """The one Codex argv shape Handsoff launches (and pre-flights).
+
+    #347: `reasoning` is passed explicitly when the project pins it, so a
+    managed launch cannot be changed by the operator's global
+    ~/.codex/config.toml. Absent, the adapter keeps its own default, which is
+    what every project got before this existed.
+    """
     workspace_write = reviewer_sandbox or role == "implementer"
     sandbox = "workspace-write" if workspace_write else "read-only"
     argv = [str(executable), "exec", "--ephemeral", "--sandbox", sandbox]
@@ -1327,6 +1407,8 @@ def codex_argv(executable: str, role: str, model: str, token_budget: int, *, rev
     # #290: `token_budget` here is the PROVIDER LIMIT, already reduced by the
     # protocol reserve, so the meter stops with room left to emit a verdict.
     # The whole allowance stays on the session record as `ceiling`.
+    if reasoning is not None:
+        argv.extend(["-c", f"model_reasoning_effort={reasoning}"])
     argv.extend([
         "-c",
         ("features.rollout_budget={enabled=true,"
@@ -1519,6 +1601,10 @@ def _agent_assignment(session: dict) -> dict:
         assignment["usage"] = deepcopy(usage)
     if isinstance(session.get("reviewer_isolation"), dict):
         assignment["reviewer_isolation"] = deepcopy(session["reviewer_isolation"])
+    # #347: carried only when the session recorded one, so a leg from before the
+    # field existed keeps its historical shape exactly.
+    if isinstance(session.get("reasoning_effort"), str):
+        assignment["reasoning_effort"] = session["reasoning_effort"]
     return assignment
 
 
@@ -1685,8 +1771,31 @@ def _apply_protocol_reserve(decision: dict, *, role: str, safe_minimum: int) -> 
 def plan_role_token_budget(*, configured_ceiling: int, role: str,
                            risk_class: str | None, packet_bytes: int = 0,
                            criteria_count: int = 0, changed_files: int = 0,
-                           followup: bool = False) -> dict:
-    """Return a deterministic ceiling and its auditable, non-usage basis."""
+                           followup: bool = False,
+                           configured_explicitly: bool = False) -> dict:
+    """Return a deterministic ceiling and its auditable, non-usage basis.
+
+    #342. `ceiling = min(configured, max(floor, calculated))` makes the
+    configured number a CAP and never an authority: every value above
+    `calculated` produces the same ceiling, so `[agent_budget] implementer =
+    500000` and `= 80000` are the same run. A field report spent the larger
+    part of a day on this, watching managed Codex launches exhaust at 74k to
+    80k tokens against a configured 500k, each exhaustion costing a half-
+    written work item, and finally abandoned the managed launcher.
+
+    `configured_explicitly` is the operator's key being PRESENT in
+    `[agent_budget]`, which the caller reads from
+    `cfg["agent_token_budgets_explicit"]`. When it is set, the configured
+    number is the ceiling: a human who names a budget has outranked a
+    heuristic. The calculated figure is still computed and recorded as
+    `calculated_ceiling`, so the divergence is auditable and Mission Control
+    can show it, and the protocol reserve still applies, because the reserve
+    is what lets a session emit its verdict before exhausting and is not a
+    sizing opinion.
+
+    When it is absent, nothing changes. An unset budget means the engine is
+    choosing, and the engine's choice is the adaptive one it always was.
+    """
     if role not in ROLE_BUDGET_FLOORS:
         raise HandsoffError("token budget role is invalid")
     if not isinstance(configured_ceiling, int) or isinstance(configured_ceiling, bool) or configured_ceiling <= 0:
@@ -1714,7 +1823,10 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
              "floor": ROLE_BUDGET_FLOORS[role], "risk_class": None,
              "role": role, "packet_bytes": packet_bytes,
              "criteria_count": criteria_count, "changed_files": changed_files,
-             "followup": bool(followup), "basis": "legacy_configured_ceiling", **sizing},
+             "followup": bool(followup), "basis": "legacy_configured_ceiling",
+             "configured_explicitly": bool(configured_explicitly),
+             "calculated_ceiling": None, "ceiling_source": "configured",
+             "ceiling_divergence": 0, **sizing},
             role=role, safe_minimum=safe_minimum)
     risk_class = classify_adaptive_risk(risk_class)
     floor = ROLE_BUDGET_FLOORS[role]
@@ -1739,9 +1851,25 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
     )
     if broad_review:
         calculated = configured_ceiling
-    ceiling = min(configured_ceiling, max(floor, calculated))
+    calculated_ceiling = max(floor, calculated)
+    adaptive_ceiling = min(configured_ceiling, calculated_ceiling)
+    # An explicit key wins; otherwise the adaptive figure stands, exactly as
+    # before. `ceiling_source` says which, so a session record never leaves a
+    # reader inferring it from the arithmetic.
+    if configured_explicitly:
+        ceiling, ceiling_source = configured_ceiling, "configured"
+    else:
+        ceiling, ceiling_source = adaptive_ceiling, "calculated"
     return _apply_protocol_reserve(
         {"ceiling": ceiling, "configured_ceiling": configured_ceiling,
+         "calculated_ceiling": calculated_ceiling,
+         "configured_explicitly": bool(configured_explicitly),
+         "ceiling_source": ceiling_source,
+         # Signed, and from the ceiling actually applied: positive means the
+         # operator asked for more than the heuristic would have given, which
+         # is the case the field report hit. Zero means they agree, so the
+         # dashboard has nothing to report.
+         "ceiling_divergence": ceiling - adaptive_ceiling,
          "floor": floor, "risk_class": risk_class, "role": role,
          "packet_bytes": packet_bytes, "criteria_count": criteria_count,
          "changed_files": changed_files, "followup": bool(followup),
@@ -1792,7 +1920,14 @@ def adapter_preflight(cfg: dict, root: Path, which=shutil.which, runner=subproce
                 if adapter == "codex":
                     argv = codex_argv(str(executable), "reviewer", DEFAULT_AGENT_MODEL, PREFLIGHT_TOKEN_BUDGET, reviewer_sandbox=True)
                 else:
-                    argv = claude_argv(str(executable), "reviewer", [], DEFAULT_AGENT_MODEL)
+                    # #343: the probe's whole purpose is that "a flag the CLI
+                    # refuses fails HERE". The reviewer launch now carries
+                    # `--add-dir` and a non-empty allowlist, so a probe still
+                    # using the old shape would report reachable and the real
+                    # launch would exit 1 on a flag this never tried.
+                    argv = claude_argv(str(executable), "reviewer",
+                                       list(REVIEWER_READ_ONLY_TOOLS), DEFAULT_AGENT_MODEL,
+                                       project_root=root)
                 try:
                     completed = runner(argv, input="Reply with OK", text=True, capture_output=True, timeout=timeout, cwd=str(scratch))
                     item.update(_preflight_outcome(completed))
@@ -3224,6 +3359,20 @@ def reviewer_launch_evidence_gaps(criteria: list[dict], verifications: list[dict
         for kind in sorted(required - present):
             if kind == "checks":
                 gaps.append(f"{cid}: run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
+            elif kind == "mutation":
+                # record-evidence cannot supply this one: its --kind choices are
+                # manual and browser, and a mutation record is only ever written
+                # by the engine that performed the mutation. Naming record-evidence
+                # here would hand the reviewer a command that exits 2.
+                # Two commands, because the claim is declared on the criterion
+                # and the proof reads it from there. A review ran the message's
+                # previous text verbatim and got `unrecognized arguments:
+                # --target --symbol`: #349 removed those flags from the CLI and
+                # this line still named them.
+                gaps.append(
+                    f"{cid}: declare the claim with handsoff_supervisor.py criterion-update {cid} "
+                    f"--mutation-target FILE --mutation-symbol FUNCTION, then run "
+                    f"handsoff_supervisor.py mutation-proof {cid} --by ACTOR")
             else:
                 gaps.append(f"{cid}: run handsoff_supervisor.py record-evidence {cid} --kind {kind} --description ... --by ACTOR")
     return gaps
@@ -4385,13 +4534,23 @@ def amendment_dependent_ids(criteria: list[dict], changed_ids: list[str], regist
 
 
 def _verification_downgrade(before: dict, after: dict) -> str | None:
-    """Gate weakening, by policy level: `automated_and_browser` to anything
-    else, `automated` to `manual` or `browser`, or an automated criterion
-    losing tests with none added (a proper subset of the earlier list, or
-    an empty list)."""
+    """Gate weakening: a policy that stops requiring an evidence kind it used
+    to require, `automated` to `manual` or `browser`, or an automated
+    criterion losing tests with none added (a proper subset of the earlier
+    list, or an empty list).
+
+    Derived from VERIFICATION_REQUIREMENTS rather than naming the strongest
+    policy. The first version hardcoded `automated_and_browser` as the top,
+    so when #349 added `automated_and_mutation` it would have let a criterion
+    drop from "the test must also fail when the code is gutted" to plain
+    `automated` with nothing recorded, which is the exact weakening this
+    function exists to catch."""
     old_policy, new_policy = before.get("verification"), after.get("verification")
-    if old_policy == "automated_and_browser" and new_policy != old_policy:
-        return f"verification downgrade {old_policy} -> {new_policy}"
+    dropped = (VERIFICATION_REQUIREMENTS.get(old_policy, set())
+               - VERIFICATION_REQUIREMENTS.get(new_policy, set()))
+    if old_policy != new_policy and dropped:
+        return (f"verification downgrade {old_policy} -> {new_policy} "
+                f"(no longer requires {', '.join(sorted(dropped))})")
     if old_policy == "automated" and new_policy in ("manual", "browser"):
         return f"verification downgrade {old_policy} -> {new_policy}"
     old_tests, new_tests = list(before.get("tests") or []), list(after.get("tests") or [])

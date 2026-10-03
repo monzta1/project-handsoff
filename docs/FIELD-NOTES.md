@@ -271,3 +271,197 @@ click, not the last thing before the reviewer.
 
 This entry is the proof: a Markdown-only pull request that ran the `docs`
 job alone and merged without a version bump, a release or a live run.
+
+### v0.4.1 field notes: the operator's budget, the reviewer's eyes, and a gate that mutates its own code (#342 #343 #347 #349, 2026-10-02)
+
+Four defects from one real run of the v0.4.0 engine on another project
+(Team Hub v2, October 1-2). The run finished and raised a green pull request;
+roughly half its wall-clock went into working around these.
+
+1. **An explicit `[agent_budget]` key was accepted and then ignored (#342).**
+   Cause: `ceiling = min(configured, max(floor, calculated))` makes the
+   configured number a cap and never an authority, so every value above the
+   calculated one produces the same ceiling: `implementer = 500000` and
+   `= 80000` were the same run. Managed Codex launches exhausted at 74k to 80k
+   tokens, each exhaustion costing a half-written work item, and the operator
+   abandoned the managed launcher for raw `codex exec`. Fix: `load_config`
+   records WHICH roles the operator set, by key membership rather than by
+   comparing the value against the built-in default, since an operator who
+   writes the default value has still made a choice. An explicit key is the
+   ceiling; the calculated figure is recorded beside it as `calculated_ceiling`
+   with a signed `ceiling_divergence` the schema re-derives from the record's
+   own numbers, and each Mission Control journey leg names which number was
+   applied and by how much the two differ. An unset role behaves exactly as
+   before. Measured on this repository: a managed implementer launch went from
+   `limit_tokens=57952` to `117952` against a configured 120,000.
+
+2. **The managed Claude reviewer could not read the project it was reviewing
+   (#343).** Cause: the reviewer runs from an external scratch directory by
+   design, and Claude Code refuses reads outside its working directory, so with
+   no `--add-dir` every read came back "Path is outside allowed working
+   directories". The first design review was packet-only and still consumed one
+   of the two autonomous attempts. The operator's workaround was to add the
+   project to `permissions.additionalDirectories` in their own
+   `~/.claude/settings.json`, which changes every Claude session on the
+   machine. Fix: `claude_argv` passes `--add-dir <absolute project root>` for
+   the reviewer role only, with a read-only tool allowlist that contains no
+   file-editing tool; both launch builders go through one shared
+   `_claude_allowed_tools`, because the two had their own copy of that
+   expression and #347 had just shipped with one of its two sites threaded and
+   the other not. A read probe runs before the scratch directory, the session
+   and the review attempt exist, gated on `role == "reviewer" and adapter ==
+   "claude"`: `launch_preflight` takes no role, and architect and supervisor
+   share the reviewer's empty allowlist, so a global probe would refuse
+   launches #343 never asked to change. The adapter pre-flight probes with the
+   new argv shape, since its whole purpose is that a flag the CLI refuses fails
+   there rather than at launch.
+
+3. **Reasoning effort was inherited silently from the operator's global
+   `~/.codex/config.toml` (#347).** Every implementer ran at `low` and it was
+   only discovered by reading the Codex session output. Fix: `[models]
+   <role>_reasoning`, validated against the permitted values and refusing a
+   misspelled role by name; the flag reaches both launch builders, the session
+   records what it ran at, and the dashboard prints it beside the model.
+
+4. **Nothing asked whether a passing test would notice the code breaking
+   (#349).** This one was not in the field report. It is why the other three
+   took a day each to find. `verify` records that a `[checks]` command exited
+   zero; no gate anywhere asks whether that command would still exit zero with
+   the implementation gutted. Four measurements of the same hole, in one day
+   against v0.4.0: five design-critique rounds found eleven acceptance criteria
+   a no-op implementation would have satisfied; a hand mutation of freshly
+   written tests found two escapes in nine attempts; 115 of 542 recorded
+   sessions were reviewer approvals carrying `tests_executed: no`, which the
+   review gate accepted; and stubbing one refusal in `validate_status_schema`
+   to `return []` passed the entire 1,727-test suite.
+
+   Fix: `bin/handsoff_mutation.py` and a `mutation-proof` command. The engine
+   replaces a named top-level function's body with `return None` inside a
+   throwaway copy, runs the criterion's own configured tests before and after,
+   and records a `mutation` verification only when they passed before and
+   failed after. Each half rules out a different lie: passing before rules out
+   a suite that was already red and would "detect" everything; failing after
+   rules out a test that executes the code and asserts nothing. A failed proof
+   records NOTHING, because a ledger entry reading "this test does not detect
+   this" is a durable artifact that looks like evidence and means its opposite.
+   The author never performs the mutation and never supplies the verdict, since
+   "I mutation-tested it" is exactly the unverified claim this exists to stop,
+   and the author cannot choose the command either: it is the criterion's own
+   `tests`, joined with `&&` so every test must pass before and any may fail
+   after. The new `automated_and_mutation` policy is opt-in per criterion, so
+   no existing project changes.
+
+   It found real gaps immediately, including in its own suite: `_source_digest`
+   could be neutralised to `return None` and all 34 tests still passed, which
+   meant the guard against a mutation escaping into a real checkout was
+   covered by nothing. Three tests were added for the guard itself.
+
+   An independent review then found four more, two of them blocking, and all
+   four are now reproduced as tests. The proof was forgeable: a function called
+   while the module loads, named by no test, raised when neutralised, so the
+   command "failed after" and an irrelevant symbol reported `ok: true`. A
+   differential import check fixes it, and the symbol is no longer chosen at
+   proof time at all -- the criterion declares `mutation_target` and
+   `mutation_symbol`, the `automated_and_mutation` policy requires them, and
+   they sit inside `criterion_spec_hash`, so the design review sees the claim
+   and changing it discards the proof. The review also found that pointing the
+   target at a non-Python file raised SyntaxError out of the CLI as a traceback
+   rather than a refusal; that the escape guard digested only `bin/` and
+   `dashboard/` while nothing restricted the target, so an escape into a target
+   elsewhere returned normally with the real file mutated on disk; and that
+   `neutralize` and `where_defined` disagreed about what "defined" means, so
+   the re-export hint was blind to methods while the mutation would happily
+   change one.
+
+   A second independent round then forged two more proofs, and both are now
+   reproduced as tests. All five runs shared one copy of the tree, so a target
+   that raises on a second import let the first run consume a one-shot resource
+   and every later run fail for that reason, which read as detection: an
+   arbitrary symbol reported `ok: true`. Every run now gets its own fresh copy,
+   which removes the cause rather than detecting it, and also fixes the quieter
+   version where a suite that writes into its own tree changed the conditions
+   of the run after it. A control run was added for the part a fresh copy
+   cannot cure: the command must pass on a SECOND clean copy, because a command
+   whose result depends on state outside the tree cannot support a proof at
+   all. The round's other finding is a real limit rather than a defect, and it
+   is now disclosed in the docstring, in `docs/REFERENCE.md` and in a test that
+   keeps it disclosed: a symbol used in a test file's module-level code is
+   detected by crash rather than by assertion, and this proof does not tell the
+   two apart, because doing so means parsing an arbitrary runner's output.
+
+   Checking the review's question about `criteria-apply` then found a third
+   path into the registry with its own copy of the merge:
+   `CRITERION_UPDATE_FIELDS` listed the two new fields, so the key check
+   accepted them and the apply loop dropped them, and the policy rule was
+   judged on the fields being changed rather than on the resulting criterion,
+   so a transaction could switch a criterion to `automated_and_mutation` with
+   nothing declared. Both are fixed, with the same shape of test the other two
+   paths have. One detail is worth stating because it would have been expensive
+   to get wrong: `criterion_spec_hash` hashes the field SET, so a criterion
+   carrying an explicit null hashes differently from one without the key. Every
+   path writes these fields only when they have a value, and a test reads that
+   off the source, because the cost of one path writing null is every recorded
+   criterion in every project at once.
+
+A third round, a third reviewer, found four more blocking defects. Two were
+regressions this work introduced, and two were limits of the fix itself.
+
+The regressions first, because they are the plainer lesson. Removing
+`--target`/`--symbol` from `mutation-proof` left `reviewer_launch_evidence_gaps`
+printing them, so the Phase 5 pre-check handed a reviewer a command that exits
+2 on first use. The test that was supposed to catch this asserted the command
+NAME and stopped there, so it kept passing; it now parses every flag out of the
+message and asks argparse itself whether each one exists. And the whole proof
+ran inside one `with project_lock`: three full suite runs holding a blocking
+`fcntl.flock` with no timeout, while `heartbeat` takes the same lock. A slow
+suite did not just make its own command slow, it silently blocked the liveness
+signal the watchdog reads, which is the exact failure the watchdog exists to
+catch. The proof now runs outside the lock, which it can because it writes no
+engine state, and the lock is retaken to record; what the lock protected is
+re-established then, by re-checking the criterion's spec hash and the source
+digest, so a claim or a tree that changed during the proof is refused instead
+of receiving the proof. A test takes the lock from inside the proof to prove
+it is free, rather than reading the indentation of a `with` block.
+
+The limits are the more interesting half, and they are now disclosed rather
+than fixed, because they cannot be fixed.
+
+`reproducible` was two unmutated runs. A reviewer showed that any fixed number
+is defeated by a resource with one more strike: a command depending on state
+outside the copied tree can be built to survive exactly N clean runs and fail
+on the next, aligning a non-mutation failure with the mutated slot. Worse and
+far more ordinary, a flaky suite forges a proof by chance with no adversary at
+all; the same reviewer measured a 20%-flaky command producing `ok: true` on
+trial 10 of 11. The command is now run three times clean and three times
+mutated, and must pass every clean run and fail every mutated one, which took
+the measured forgery rate to 0 in 14 trials against the same flaky command.
+That is a confidence level, roughly 0.4% for that command, and it is reported
+as one. Repetition cannot make an unsound command sound.
+
+And the disclosed "detection by crash" limit was real but described too
+narrowly. The first wording illustrated a symbol used in a test file's
+module-level code, which makes it sound exotic. The reviewer showed
+`10 / subject.get_divisor()` with nothing asserted about the divisor, which is
+ordinary: `return None` keeps the module importable by design, but a None
+flowing into arithmetic, indexing, iteration or attribute access raises at the
+point of use, so any code the suite reaches that consumes the value without
+asserting on it is enough. The wording now says that, and a test pins the
+behaviour as it is rather than as one would like it.
+
+Also from that round: `criteria-apply` refused a legitimate rename of just the
+symbol on a criterion that already carried both fields, with "must be set
+together", which was misleading because they already were; the single-criterion
+CLI backfilled from the stored criterion before validating and the transaction
+path did not. A commit failure after a successful proof now says so distinctly,
+naming the ledger record, instead of printing a blocked message that reads as
+"the proof failed" while a valid record for an expensive proof sits unconsumed.
+And `--total-timeout` bounds the whole proof, because a per-run timeout bounds
+one run and says nothing about a proof that makes up to eight of them.
+
+Lessons, for the playbook: a green suite is not a tested suite, so neutralise
+the function a criterion names and watch its test fail; mutation-prove the new
+tests and not only the new code; a test whose evidence lives in gitignored
+local state passes on the author's machine and nowhere else; key membership is
+a fact no value comparison can recover; and when a rule names the strongest
+member of a set, derive it from the set rather than naming it, or the next
+member added above it is silently droppable.

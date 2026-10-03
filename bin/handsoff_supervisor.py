@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_mutation as mutation  # noqa: E402
 import handsoff_close_transaction as close_transaction  # noqa: E402
 import handsoff_regress as regress  # noqa: E402
 import handsoff_release_runtime as release_runtime  # noqa: E402
@@ -58,6 +59,7 @@ OPERATION_REGISTRY = {
     "plan-tranche": {"class": "diagnostic", "surface": "tranche-panel"},
     "tranche-approve": {"class": "operator-facing", "surface": "tranche-panel"},
     "record-evidence": {"class": "agent-only", "surface": "verification-list"},
+    "mutation-proof": {"class": "agent-only", "surface": "verification-list"},
     "record-symptom-resolved": {"class": "agent-only", "surface": "acceptance-score"},
     "design-approve": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "design-reject": {"class": "operator-facing", "surface": "operator-actions-panel"},
@@ -2461,6 +2463,170 @@ def cmd_record_evidence(args) -> int:
     return 0
 
 
+def cmd_mutation_proof(args) -> int:
+    """#349: prove the criterion's own test FAILS when the behaviour is removed.
+
+    Every other evidence path in this engine asks whether a command exited
+    zero. None of them asks whether that command would still exit zero with
+    the implementation gutted, and the answer is often yes: stubbing one
+    refusal in `validate_status_schema` to `return []` passed all 1,727
+    tests in this repository.
+
+    So the engine applies the mutation itself. An author who reports having
+    mutation-tested their work is making exactly the unverified claim this
+    exists to catch, which is why `--by` names who asked and the surgery is
+    done by this process, in a throwaway copy, against the criterion's own
+    configured command.
+
+    A failed proof records NOTHING. A ledger entry saying "the test does not
+    detect this" would be a durable artifact that looks like evidence while
+    meaning its opposite, and `criterion_fully_evidenced` would have to learn
+    to distinguish them. Refusing at the door keeps the ledger a record of
+    proofs rather than of attempts; the refusal goes to stdout, where the
+    author reads it, and the criterion stays `not_tested`.
+    """
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    # The lock is taken TWICE, with the expensive part outside it.
+    #
+    # A review found the whole proof running inside one `with project_lock`:
+    # three full runs of the criterion's suite, each bounded by --timeout
+    # (900s by default), so up to 45 minutes holding a blocking fcntl lock with
+    # no timeout. `heartbeat` takes the same lock, so a slow suite did not just
+    # make its own command slow, it silently blocked the liveness signal the
+    # watchdog reads, which is the exact failure the watchdog exists to catch.
+    #
+    # `mutation.prove` writes no engine state (it is a layer above core that
+    # reads a tree and runs a command), so nothing requires the lock to be held
+    # while it runs. What the lock protected is re-established on reacquisition
+    # instead: the criterion must still exist with the SAME spec hash, and the
+    # source must still have the digest the proof ran against. Both are checked
+    # below, so a tree or a claim that changed during the proof is refused
+    # rather than recorded against the wrong thing.
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        criterion = _criterion(acceptance, args.criterion)
+        if criterion is None:
+            print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
+            return 1
+        required_kinds = lib.VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        if "mutation" not in required_kinds:
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} has verification "
+                  f"{criterion.get('verification')!r}, which does not require mutation evidence. "
+                  "Set it to a policy that does (automated_and_mutation) before proving it, so "
+                  "the proof is part of what makes the criterion pass rather than a note beside it.")
+            return 1
+        # The criterion's OWN commands, never one passed on the command line.
+        # A proof of some other command says nothing about this criterion, and
+        # letting the author choose the command is letting the author choose a
+        # command that fails for an unrelated reason.
+        #
+        # Joined with `&&`, which gives exactly the semantics the proof needs
+        # over a criterion carrying several tests: the baseline half passes
+        # only if EVERY test passes, and the mutated half fails if ANY test
+        # notices. The claim is that the criterion's tests detect it, not that
+        # one chosen test does.
+        tests = [t for t in (criterion.get("tests") or []) if str(t).strip()]
+        if not tests:
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} names no test command to prove")
+            return 1
+        command = " && ".join(tests)
+        # And the criterion's OWN target and symbol. There is deliberately no
+        # --target/--symbol: a review reproduced an irrelevant symbol looking
+        # proved, and showed that a proof recorded against one stayed valid
+        # evidence for the criterion forever, because nothing bound the two.
+        # Declared on the criterion, they are inside `criterion_spec_hash`, so
+        # the design review sees the claim and changing it invalidates the proof.
+        target = criterion.get("mutation_target")
+        symbol = criterion.get("mutation_symbol")
+        if not target or not symbol:
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} declares no mutation target. "
+                  f"Set it on the criterion, so the claim is reviewed and hash-bound rather than "
+                  f"chosen now: criterion-update {args.criterion} --mutation-target FILE "
+                  "--mutation-symbol FUNCTION")
+            return 1
+        spec_before = lib.criterion_spec_hash(criterion)
+
+    # --- the lock is released here, for the duration of the proof only ---
+    try:
+        record = mutation.prove(root, command=command, target=target,
+                                symbol=symbol, timeout=args.timeout,
+                                total_timeout=args.total_timeout)
+    except lib.HandsoffError as exc:
+        print(f"SHIP_FEATURE_BLOCKED: {exc}")
+        return 1
+    if not record["ok"]:
+        print(json.dumps({"ok": False, "recorded": False, **record}, indent=2))
+        print(f"SHIP_FEATURE_BLOCKED: mutation proof failed, nothing recorded. "
+              f"{record.get('refusal', '')}")
+        return 1
+
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        criterion = _criterion(acceptance, args.criterion)
+        if criterion is None:
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} was removed while the "
+                  "proof ran; nothing recorded")
+            return 1
+        if lib.criterion_spec_hash(criterion) != spec_before:
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} changed while the proof "
+                  "ran, so the proof is evidence for a claim that no longer exists; nothing "
+                  "recorded. Run it again.")
+            return 1
+        if mutation.source_digest(root, target) != record["source_digest"]:
+            print("SHIP_FEATURE_BLOCKED: the source changed while the proof ran, so the proof "
+                  "describes a tree that is no longer here; nothing recorded. Run it again.")
+            return 1
+        verification = lib.append_verification(
+            root, cfg, kind="mutation", ok=True, by=args.by, criteria=[criterion],
+            commands=list(tests),
+            description=(f"neutralising {symbol} in {target} made "
+                         f"{command!r} fail (exit {record['baseline_exit_code']} -> "
+                         f"{record['mutated_exit_code']})"),
+            results=[record])
+        status["verification_head"] = verification["hash"]
+        if verification["run_id"] not in criterion["evidence"]:
+            criterion["evidence"].append(verification["run_id"])
+        criterion["state"] = ("passing"
+                             if lib.criterion_fully_evidenced(criterion, records + [verification])
+                             else "not_tested")
+        lib.sync_coverage(status, acceptance)
+        _invalidate_decisions(status)
+        review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            lib.commit(root, cfg, status=status, acceptance=acceptance,
+                       event_kind="mutation_proved",
+                       event_message=f"{symbol} neutralised; the criterion's test failed",
+                       run_id=verification["run_id"], criterion=args.criterion, by=args.by,
+                       target=target, symbol=symbol,
+                       review_attempt_refreshed=review_refresh)
+        except lib.HandsoffError as exc:
+            # The ledger append above is durable the moment it returns, and the
+            # commit is what attaches it. A review pointed out that a commit
+            # failure then reported SHIP_FEATURE_BLOCKED, which reads as "the
+            # proof failed", while a valid record for an expensive proof sat
+            # unconsumed. Say which actually happened and name the record, so
+            # the next step is obvious instead of a rerun in the dark.
+            print(f"SHIP_FEATURE_BLOCKED: the mutation proof SUCCEEDED and its record "
+                  f"{verification['run_id']} is in the ledger, but attaching it failed: {exc}. "
+                  "The record is valid and bound to this criterion's current spec, so `doctor` "
+                  "or a rerun will pick it up; the proof itself does not need repeating.")
+            return 1
+    print(json.dumps({"ok": True, "recorded": True, "run_id": verification["run_id"],
+                      "criterion_state": criterion["state"], **record}, indent=2))
+    return 0
+
+
 def cmd_record_symptom(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -3772,7 +3938,7 @@ def cmd_criterion_update(args) -> int:
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
-        if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state", "baseline", "repeat", "seed_env")):
+        if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state", "baseline", "repeat", "seed_env", "mutation_target", "mutation_symbol")):
             print("SHIP_FEATURE_BLOCKED: criterion-update requires at least one change")
             return 1
         fields = {field: getattr(args, field) for field in ("requirement", "verification", "type", "state")
@@ -3789,7 +3955,21 @@ def cmd_criterion_update(args) -> int:
         if args.seed_env is not None:
             fields["seed_env"] = args.seed_env or None
             fields.setdefault("repeat", criterion.get("repeat"))
-        problems = lib.validate_criterion_fields(fields)
+        if args.mutation_target is not None or args.mutation_symbol is not None:
+            # Both are read, not only the one given, so the pair is validated as
+            # it will exist on the criterion rather than as the edit alone.
+            fields["mutation_target"] = (args.mutation_target if args.mutation_target is not None
+                                         else criterion.get("mutation_target")) or None
+            fields["mutation_symbol"] = (args.mutation_symbol if args.mutation_symbol is not None
+                                         else criterion.get("mutation_symbol")) or None
+        # The policy's requirement is about the criterion's resulting shape, so
+        # it is checked against the merge, not against the fields being changed:
+        # switching an existing criterion TO automated_and_mutation without a
+        # declared symbol would otherwise be accepted and only fail at proof time.
+        merged = {**{k: v for k, v in criterion.items() if k not in ("state", "evidence")}, **fields}
+        problems = list(lib.validate_criterion_fields(fields))
+        problems += [problem for problem in lib.validate_criterion_fields(merged)
+                     if "automated_and_mutation" in problem and problem not in problems]
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
@@ -3826,6 +4006,20 @@ def cmd_criterion_update(args) -> int:
             else:
                 criterion["baseline"] = args.baseline
                 criterion["baseline_reason"] = args.baseline_reason
+            spec_changed = True
+        if args.mutation_target is not None or args.mutation_symbol is not None:
+            # #349: part of the claim, so the spec hash changes and any proof
+            # recorded against the previous symbol stops counting. That is the
+            # point: a proof is evidence for the symbol it neutralised, and a
+            # criterion that now names a different one has not been proved.
+            for field, value in (("mutation_target", args.mutation_target),
+                                 ("mutation_symbol", args.mutation_symbol)):
+                if value is None:
+                    continue
+                if value:
+                    criterion[field] = value
+                else:
+                    criterion.pop(field, None)
             spec_changed = True
         if args.state is not None:
             criterion["state"] = args.state
@@ -3885,6 +4079,9 @@ def cmd_criterion_add(args) -> int:
             fields["repeat"] = args.repeat
         if args.seed_env:
             fields["seed_env"] = args.seed_env
+        if args.mutation_target or args.mutation_symbol:
+            fields["mutation_target"] = args.mutation_target
+            fields["mutation_symbol"] = args.mutation_symbol
         problems = lib.validate_criterion_fields(fields, require_all=True)
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
@@ -5518,6 +5715,18 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--description", required=True)
     evidence.add_argument("--by", required=True)
 
+    mutation_proof = sub.add_parser(
+        "mutation-proof",
+        help="prove the criterion's configured test fails when a named function is neutralised")
+    mutation_proof.add_argument("criterion")
+    mutation_proof.add_argument("--timeout", type=int, default=mutation.DEFAULT_TIMEOUT,
+                                help="seconds for ONE run of the criterion's command")
+    mutation_proof.add_argument("--total-timeout", type=int, default=mutation.DEFAULT_TOTAL_TIMEOUT,
+                                help="seconds for the whole proof, across every run; a proof "
+                                     "that exceeds it is reported as out of budget, not as a "
+                                     "failed proof")
+    mutation_proof.add_argument("--by", required=True)
+
     symptom = sub.add_parser("record-symptom-resolved")
     symptom.add_argument("--evidence", required=True, help="successful verification run id")
     symptom.add_argument("--by", required=True)
@@ -5713,6 +5922,11 @@ def build_parser() -> argparse.ArgumentParser:
     criterion.add_argument("--baseline-reason")
     criterion.add_argument("--repeat", type=int, help="#169: the command must pass this many times in a row (1 to 50; 1 clears)")
     criterion.add_argument("--seed-env", help="#169: environment variable that receives a distinct seed per attempt")
+    criterion.add_argument("--mutation-target",
+                           help="#349: the project-relative file defining the function this "
+                                "criterion's tests must detect the loss of")
+    criterion.add_argument("--mutation-symbol",
+                           help="#349: that function's name; required with automated_and_mutation")
     criterion.add_argument("--revoke-approval", action="store_true")
 
     criterion_add = sub.add_parser("criterion-add")
@@ -5726,6 +5940,11 @@ def build_parser() -> argparse.ArgumentParser:
     criterion_add.add_argument("--baseline-reason")
     criterion_add.add_argument("--repeat", type=int, help="#169: the command must pass this many times in a row (1 to 50)")
     criterion_add.add_argument("--seed-env", help="#169: environment variable that receives a distinct seed per attempt")
+    criterion_add.add_argument("--mutation-target",
+                               help="#349: the project-relative file defining the function this "
+                                    "criterion's tests must detect the loss of")
+    criterion_add.add_argument("--mutation-symbol",
+                               help="#349: that function's name; required with automated_and_mutation")
     criterion_add.add_argument("--revoke-approval", action="store_true")
 
     criterion_remove = sub.add_parser("criterion-remove")
@@ -5915,6 +6134,7 @@ def main() -> int:
         "tranche-approve": cmd_tranche_approve,
         "dashboard": cmd_dashboard,
         "record-evidence": cmd_record_evidence,
+        "mutation-proof": cmd_mutation_proof,
         "record-symptom-resolved": cmd_record_symptom,
         "design-approve": cmd_design_approve,
         "design-reject": cmd_design_reject,

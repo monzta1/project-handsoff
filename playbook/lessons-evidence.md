@@ -54,15 +54,16 @@ with the number.
 - Follow the value to where a person sees it. Twice this run a criterion was
   verified on a green suite plus an existing mechanism, and twice the value
   stopped before the page.
-- A command that prints SHIP_FEATURE_BLOCKED can still exit 0: read the
-  output, never `cmd >/dev/null && echo OK`.
 - Commit the regenerated manifest WITH the bin/ change that made it stale,
   in the same commit. Regenerating after the commit leaves main carrying a
   digest that matches neither the old file nor the new one.
-- Assert behaviour, not existence: a test that a thread existed passed while it
-  retired at the first pause.
 - Quote the measurement that hurts.
 - Board and CLI disagreeing: suspect the QUERY first. A granted authorization
   read as None because the host polled the wrong key (#308).
-- A derived-set test must not pass vacuously: name what it analyses, refuse a
-  computed name, floor the count.
+- Key membership is a fact no value comparison can recover. `get(role,
+  DEFAULT)` cannot tell an operator who chose the default from one who chose
+  nothing, so record WHICH keys were present where the parsed table is still
+  in hand.
+- When a rule names the strongest member of a set, derive it from the set.
+  `_verification_downgrade` hardcoded `automated_and_browser` as the top, so
+  the next policy added above it would have been silently droppable.

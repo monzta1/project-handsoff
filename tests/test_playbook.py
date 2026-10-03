@@ -53,7 +53,7 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md",
                                  "lessons-agents.md", "lessons-binding.md",
                                  "lessons-evidence.md", "lessons-lane.md",
-                                 "protocol.md", "reviewers.md"])
+                                 "lessons-proof.md", "protocol.md", "reviewers.md"])
         manifest = json.loads((ROOT / "handsoff-runtime.json").read_text())
         for name in files:
             self.assertIn(f"playbook/{name}", manifest["files"], name)
@@ -67,7 +67,8 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         self.assertEqual(index["always_load"], ["INDEX.md", "lanes.md"])
         self.assertEqual(set(index["topics"]), {"lanes", "landing", "reviewers", "protocol",
                                                 "lessons-lane", "lessons-agents",
-                                                "lessons-evidence", "lessons-binding"})
+                                                "lessons-evidence", "lessons-binding",
+                                                "lessons-proof"})
         for item in index["files"]:
             self.assertTrue((PLAYBOOK / item["file"]).is_file(), item["file"])
         for name in files:

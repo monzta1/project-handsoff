@@ -87,6 +87,19 @@ reviewer = []
 [agent_budget]
 # Hard per-session Codex rollout ceilings. Budget exhaustion stops the role
 # and pauses for the Pilot; it never launches a fallback and spends again.
+#
+# #342: a key PRESENT here is authoritative. The engine also calculates a
+# ceiling from risk class, packet size and scope, and until v0.4.1 the smaller
+# of the two always won, so a configured 500000 could never exceed the ~80000
+# the calculation produced and nothing reported the gap. Now the key wins, the
+# calculated figure is recorded beside it as `calculated_ceiling`, and each
+# journey leg in Mission Control names which number was applied and by how
+# much the two differ.
+#
+# Removing a key is therefore a real change, not a tidy-up: the role reverts
+# to the calculated ceiling. The protocol reserve (2048 tokens) still comes off
+# whichever ceiling applies, because that reserve is what lets a session emit
+# its verdict instead of exhausting mid-sentence.
 architect = 40000
 supervisor = 24000
 implementer = 120000
@@ -270,6 +283,12 @@ commands = [
   "python3 -m unittest tests.test_module_layers -v",
   "python3 -m unittest tests.test_transition_validation -v",
   "python3 -m unittest tests.test_extraction_plan -v",
+  "python3 -m unittest tests.test_agent_budget_authority -v",
+  "python3 -m unittest tests.test_mutation_proof -v",
+  "python3 -m unittest tests.test_reviewer_read_access -v",
+  "python3 -m unittest tests.test_role_reasoning -v",
+  "node --test tests/dashboard/budget_divergence.test.js",
+  "node --test tests/dashboard/role_reasoning.test.js",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

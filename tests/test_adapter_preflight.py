@@ -91,7 +91,16 @@ class PreflightUsesLaunchArgvTests(unittest.TestCase):
             codex = root / "codex"; codex.write_text("#!/bin/sh\nexit 0\n"); codex.chmod(0o755)
             lib.adapter_preflight({"adapters": {"codex": str(codex), "claude": str(claude)}}, root, lambda _: None, runner=runner)
         claude_argv = seen["claude"]
-        self.assertEqual(claude_argv[1:], lib.claude_argv(str(claude), "reviewer", [], lib.DEFAULT_AGENT_MODEL)[1:])
+        # #343: the reviewer launch now carries the read-only tool set and
+        # `--add-dir <project root>`, so the probe must carry them too. The
+        # point of this test is that a flag the CLI refuses fails HERE rather
+        # than at launch, which an older probe shape cannot deliver.
+        self.assertEqual(claude_argv[1:],
+                         lib.claude_argv(str(claude), "reviewer",
+                                         list(lib.REVIEWER_READ_ONLY_TOOLS),
+                                         lib.DEFAULT_AGENT_MODEL, project_root=root)[1:])
+        self.assertIn("--add-dir", claude_argv)
+        self.assertIn(str(root.resolve()), claude_argv)
         i = claude_argv.index("--output-format")
         self.assertEqual(claude_argv[i - 1], "--verbose")
         self.assertEqual(claude_argv[i + 1], "stream-json")

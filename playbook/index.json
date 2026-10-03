@@ -1,15 +1,4 @@
 {
-  "version": 1,
-  "topics": {
-    "lanes": "running a lane",
-    "landing": "landing and releasing",
-    "reviewers": "managed reviewers",
-    "protocol": "the managed-role protocol",
-    "lessons-lane": "lessons: running and landing a lane",
-    "lessons-agents": "lessons: managed sessions",
-    "lessons-evidence": "lessons: evidence that holds",
-    "lessons-binding": "what a module split does to name binding: which patch reaches which call, and when to change the shape instead of the rule"
-  },
   "always_load": [
     "INDEX.md",
     "lanes.md"
@@ -56,6 +45,12 @@
       ]
     },
     {
+      "file": "lessons-proof.md",
+      "topics": [
+        "lessons-proof"
+      ]
+    },
+    {
       "file": "protocol.md",
       "topics": [
         "protocol"
@@ -67,5 +62,17 @@
         "reviewers"
       ]
     }
-  ]
+  ],
+  "topics": {
+    "landing": "landing and releasing",
+    "lanes": "running a lane",
+    "lessons-agents": "lessons: managed sessions",
+    "lessons-binding": "what a module split does to name binding: which patch reaches which call, and when to change the shape instead of the rule",
+    "lessons-evidence": "lessons: evidence that holds",
+    "lessons-lane": "lessons: running and landing a lane",
+    "lessons-proof": "lessons: would this test notice if the code broke, and the mutation proof that asks",
+    "protocol": "the managed-role protocol",
+    "reviewers": "managed reviewers"
+  },
+  "version": 1
 }

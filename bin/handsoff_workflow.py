@@ -766,7 +766,15 @@ CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "stat
                            # for it (a test born with the feature), with the reason audited
                            "baseline", "baseline_reason",
                            # #169: N green runs in a row, with a seed per attempt
-                           "repeat", "seed_env")
+                           "repeat", "seed_env",
+                           # #349: WHICH function the criterion claims its tests
+                           # detect the loss of. Part of the criterion spec, so
+                           # `criterion_spec_hash` binds it and changing it
+                           # invalidates the recorded proof. A review found that
+                           # with the symbol chosen at proof time instead, a
+                           # proof against an irrelevant symbol stayed valid
+                           # evidence for that criterion forever.
+                           "mutation_target", "mutation_symbol")
 
 
 MAX_REPEAT = 50
@@ -840,6 +848,26 @@ def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> lis
         errors.append("'seed_env' must be an environment variable name (A-Z, 0-9, _)")
     if fields.get("seed_env") and not fields.get("repeat"):
         errors.append("'seed_env' needs repeat")
+    for field in ("mutation_target", "mutation_symbol"):
+        value = fields.get(field)
+        if field in fields and value is not None and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"'{field}' must be a non-empty string or null")
+    if "mutation_target" in fields and fields.get("mutation_target"):
+        target = fields["mutation_target"]
+        if Path(target).is_absolute() or ".." in Path(target).parts:
+            errors.append("'mutation_target' must be a path inside the project, relative and without '..'")
+    # The pair is meaningless apart: a file with no symbol names nothing to
+    # neutralise, and a symbol with no file cannot be located.
+    declared = [f for f in ("mutation_target", "mutation_symbol") if fields.get(f)]
+    if len(declared) == 1:
+        errors.append("'mutation_target' and 'mutation_symbol' must be set together")
+    # #349: the policy that requires mutation evidence requires the criterion to
+    # SAY what it claims its tests detect. Without it the symbol is chosen at
+    # proof time, which is the author choosing what counts as proved.
+    if fields.get("verification") == "automated_and_mutation" and len(declared) != 2:
+        errors.append("a criterion with verification automated_and_mutation must declare "
+                      "'mutation_target' and 'mutation_symbol': the function whose loss its "
+                      "tests must detect, chosen at design time and bound to the criterion hash")
     return errors
 
 
@@ -945,10 +973,16 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 raise CriteriaTransactionError(position, op, None,
                                                "an add operation has exactly 'op' and 'criterion'")
             spec = operation["criterion"]
-            if not isinstance(spec, dict) or set(spec) != set(CRITERION_ADD_FIELDS):
+            # #349: the mutation pair is OPTIONAL here, so every existing
+            # transaction file stays valid, and required by the policy rule in
+            # validate_criterion_fields when the verification demands it.
+            optional_add = {"mutation_target", "mutation_symbol"}
+            if not isinstance(spec, dict) or not set(CRITERION_ADD_FIELDS) <= set(spec) \
+                    or set(spec) - set(CRITERION_ADD_FIELDS) - optional_add:
                 raise CriteriaTransactionError(
                     position, op, spec.get("id") if isinstance(spec, dict) else None,
-                    "an add criterion has exactly id, type, requirement, verification, tests",
+                    "an add criterion has id, type, requirement, verification, tests, and "
+                    "optionally mutation_target and mutation_symbol",
                 )
             criterion_id = spec.get("id")
             problems = validate_criterion_fields(spec, require_all=True)
@@ -965,6 +999,13 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 "verification": spec["verification"], "tests": list(spec["tests"]),
                 "evidence": [], "state": "not_tested",
             }
+            # Only when given, and never as null: `criterion_spec_hash` hashes
+            # the field set, so a criterion carrying an explicit null hashes
+            # differently from one without the key, and writing null here would
+            # change the hash of every criterion this path touches.
+            for field in sorted(optional_add):
+                if spec.get(field):
+                    criterion[field] = spec[field]
             _transaction_test_gate(position, op, criterion, cfg, root)
             criteria.append(criterion)
             if criterion["type"] == "primary_fix":
@@ -1005,9 +1046,29 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
         if not isinstance(fields, dict) or not fields or set(fields) - set(CRITERION_UPDATE_FIELDS):
             raise CriteriaTransactionError(
                 position, op, criterion_id,
-                "'fields' must be a non-empty object with keys among requirement, verification, tests, type, state",
+                "'fields' must be a non-empty object with keys among "
+                + ", ".join(CRITERION_UPDATE_FIELDS),
             )
-        problems = validate_criterion_fields(fields)
+        # #349: both the pair rule and the policy rule are about the criterion's
+        # RESULTING shape, not about the fields being changed.
+        #
+        # Judged on `fields` alone this had two faults, one in each direction.
+        # Switching an existing criterion to automated_and_mutation with nothing
+        # declared was ACCEPTED and only failed at proof time, the same defect
+        # cmd_criterion_update had. And renaming just the symbol on a criterion
+        # that already carries both was REFUSED with "must be set together",
+        # which a review called out as actively misleading since they already
+        # were. cmd_criterion_update backfills from the stored criterion before
+        # validating; the transaction path had no equivalent, so it was strictly
+        # less capable than the single-criterion CLI for the same edit.
+        merged = {**{k: v for k, v in criterion.items() if k not in ("state", "evidence")}, **fields}
+        backfilled = dict(fields)
+        if {"mutation_target", "mutation_symbol"} & set(fields):
+            for field in ("mutation_target", "mutation_symbol"):
+                backfilled[field] = merged.get(field) or None
+        problems = list(validate_criterion_fields(backfilled))
+        problems += [problem for problem in validate_criterion_fields(merged)
+                     if "automated_and_mutation" in problem and problem not in problems]
         if problems:
             raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
         was_primary = criterion.get("type") == "primary_fix"
@@ -1018,6 +1079,17 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 spec_changed = True
         if "tests" in fields:
             criterion["tests"] = list(fields["tests"])
+            spec_changed = True
+        for field in ("mutation_target", "mutation_symbol"):
+            # Listed in CRITERION_UPDATE_FIELDS, so the key check above accepted
+            # them; without this they were accepted and then silently dropped,
+            # which is write-without-read in the one place that must not have it.
+            if field not in fields:
+                continue
+            if fields[field]:
+                criterion[field] = fields[field]
+            else:
+                criterion.pop(field, None)
             spec_changed = True
         if "state" in fields:
             criterion["state"] = fields["state"]

@@ -43,6 +43,12 @@ DECLARED_DIFFERENCES = {
         "the loader sorts each tier's capabilities, so the value differs from "
         "the constant by list order while holding the same set; compared as "
         "sets below instead of exempted"),
+    "agent_token_budgets_explicit": (
+        "#342: the loader derives this from which role keys are PRESENT in "
+        "[agent_budget], and the shipped template names all four, so the "
+        "template's value is all four roles while DEFAULT_CONFIG's is empty. "
+        "That is the intended derivation, not a pinned stale value: a template "
+        "that set no budgets would derive an empty list here too"),
     "features": (
         "DEFAULT_CONFIG leaves the table empty, meaning every switch takes its "
         "FEATURES default; the template states all six explicitly, so they are "

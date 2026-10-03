@@ -186,8 +186,16 @@ class AdaptiveRoutingLaunchTests(HandsoffTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self._phase_four()
         before = self.read_status()
+        # #342 made an explicit [agent_budget] key the ceiling instead of a cap,
+        # so the fixture's configured implementer budget is now what the launch
+        # gets. A fixed 300,000 bytes was oversized against the old CALCULATED
+        # ceiling and is not against the configured one, so this test passed for
+        # a reason that stopped being true. Derived from the budget, it stays
+        # oversized whatever that number becomes.
+        ceiling = lib.load_config(self.tmp)["agent_token_budgets"]["implementer"]
+        oversized = "x" * (ceiling * 5)
         with mock.patch.object(agent.lib, "validate_runtime_integrity"), \
-                mock.patch.object(agent, "build_role_input", return_value="x" * 300_000), \
+                mock.patch.object(agent, "build_role_input", return_value=oversized), \
                 mock.patch.object(agent, "applicable_design_review_packet", return_value=None):
             with self.assertRaisesRegex(lib.HandsoffError, "refused before session creation"):
                 agent.build_launch_spec(self.tmp, "implementer", "task",
