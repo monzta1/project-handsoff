@@ -15,6 +15,8 @@ everything is worse than none, because it issues the exact assurance the
 author was missing. Several tests below therefore assert the refusal, not
 just the absence of approval.
 """
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -1417,6 +1419,48 @@ class TheProofDoesNotHoldTheProjectLock(HandsoffTestCase):
         self.assertLess(body.index("mutation.prove("),
                         body.rindex("with lib.project_lock(root):"),
                         "the proof must run before the recording lock is taken")
+
+    def test_a_commit_failure_is_reported_as_a_commit_failure(self):
+        """Round 4 advisory 1. The branch existed and nothing covered it.
+
+        `append_verification` is durable the moment it returns; `commit` is
+        what attaches the record. A commit failure used to print
+        SHIP_FEATURE_BLOCKED, which reads as "the proof failed", while a valid
+        record for a proof costing up to eight suite runs sat unconsumed. The
+        distinction is the whole value of the branch, so it needs a test or a
+        refactor can quietly take it away.
+        """
+        def proving(root, **kwargs):
+            return {"mutation_version": 1, "command": kwargs["command"],
+                    "target": kwargs["target"], "symbol": kwargs["symbol"],
+                    "confirmations": 3, "ran_out_of_budget": False,
+                    "clean_exit_codes": [0, 0, 0], "mutated_exit_codes": [1, 1, 1],
+                    "baseline_exit_code": 0, "control_exit_code": 0, "mutated_exit_code": 1,
+                    "passed_before": True, "reproducible": True, "failed_after": True,
+                    "import_intact": True, "ok": True,
+                    "source_digest": mutation.source_digest(root, kwargs["target"])}
+
+        with patch_engine("prove", side_effect=proving), \
+                patch_engine("commit", side_effect=lib.HandsoffError("staged: disk is full")):
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                exit_code = supervisor.cmd_mutation_proof(self.proof_args())
+        output = printed.getvalue()
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("SUCCEEDED", output,
+                      "the message must say the proof succeeded, or an author rewrites a test "
+                      "that is fine")
+        self.assertIn("staged: disk is full", output, "the real cause must be named")
+        self.assertNotIn("mutation proof failed", output)
+        run_ids = [line for line in output.splitlines() if "vr-" in line]
+        self.assertTrue(run_ids, "the message must name the ledger record so it can be found")
+
+        records = [json.loads(line) for line
+                   in (self.tmp / "handsoff-verifications.jsonl").read_text().splitlines()
+                   if line.strip()]
+        orphan = [r for r in records if r["kind"] == "mutation"]
+        self.assertTrue(orphan, "the record the message names is not in the ledger")
+        self.assertIn(orphan[-1]["run_id"], output)
 
     def test_a_claim_that_changed_during_the_proof_is_refused(self):
         """What the released lock gave up is re-established on reacquisition.
