@@ -6734,7 +6734,7 @@ class TestCriteriaTransaction(HandsoffTestCase):
             "unknown op": ({"op": "rename", "id": "REQ-002"}, "'op' must be one of"),
             "add sets state": ({"op": "add", "criterion": {**self._add("REQ-006", tests=["python3 tests/test_a.py"])["criterion"],
                                                          "state": "failing"}},
-                               "exactly id, type, requirement, verification, tests"),
+                               "an add criterion has id, type, requirement, verification, tests"),
             "bad field value": ({"op": "update", "id": "REQ-002", "fields": {"state": "passing"}},
                                 "'state' must be one of"),
         }
@@ -6973,7 +6973,7 @@ class TestCriteriaTransaction(HandsoffTestCase):
             with self.subTest(extra=extra):
                 r = self._apply([{"op": "add", "criterion": {**criterion, **extra}}])
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-                self.assertIn("exactly id, type, requirement, verification, tests", r.stdout)
+                self.assertIn("an add criterion has id, type, requirement, verification, tests", r.stdout)
         for missing in ("type", "tests", "verification"):
             with self.subTest(missing=missing):
                 r = self._apply([{"op": "add", "criterion": {k: v for k, v in criterion.items() if k != missing}}])
