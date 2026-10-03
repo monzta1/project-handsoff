@@ -478,3 +478,7 @@ Six defects filed while building v0.4.1 and left out of it because they were out
 6. **`performance-resume` required `--evidence-hash`, stored it, and never checked it (#350).** Fix: the resume is bound to the paused episode it reopens. The engine computes that episode's hash and records it. The flag is optional, and a supplied value that does not match is refused with the expected hash named. Archived decisions keep the same schema.
 
 Lesson: a test that checks for absence has to look where the thing would actually be, or it passes without testing anything.
+
+### v0.4.3 field note: a budget setting that had done nothing since v0.3.77 (#352, 2026-10-03)
+
+`[agent_budget] followup_design` was parsed, validated and stored, and nothing has read it since `d96349b` (v0.3.77), when the primary launch path moved to `plan_role_token_budget`. Projects kept setting it (fm9-tone sets `100000`), believing it applied. Fix: the setting, `_effective_token_budget` and `FOLLOWUP_DESIGN_TOKEN_BUDGET` are removed, so both launch paths take the ceiling from the planner alone. The key is still accepted so a project that sets it keeps loading on the `0.4.*` line, and `doctor` warns `inert-setting: agent_budget.followup_design has no effect since v0.3.77; delete it from handsoff.toml`. The template no longer suggests it.

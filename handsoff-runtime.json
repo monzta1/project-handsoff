@@ -1,11 +1,11 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "a9718efe7fb6ee368ecf76d94dacf9e332d6f594f48d754a944c5e8584ed820e",
+    "bin/handsoff_agent.py": "5bf4c3a36f087b7bf131db3d6682767d5f4c5fecb64e265ba1ba25718e3ce141",
     "bin/handsoff_agent_runtime.py": "29aa25410cbabb8d2ce8a62a59bbc8f5af4db6f1929ab2c8fbc7a91c7b472dbb",
     "bin/handsoff_broker.py": "3adaa7a23c4e1d08077011088aef16451816dcfa1e66681c2e764b723e6f7463",
-    "bin/handsoff_cli.py": "236468cf8c8c6227b39a31f8fed4d48221648b04f0a2bc5f63e8967d90948322",
+    "bin/handsoff_cli.py": "1a666c092e32fcdca364d03039dafb3ed418e4adaea858576dbcfa4a59d9fd02",
     "bin/handsoff_close_transaction.py": "9ddeabb3b2c273c781300e1a1cff937bbd34bab93cabecfc837db1aaf82fe2b5",
-    "bin/handsoff_config.py": "a4c6a9043903b25bcb23aa2e0df4967eacd0002d0b63220019c0b3c820017668",
+    "bin/handsoff_config.py": "ff000a29acf57308b15824e3e72b3e1996097b93ac9b7375a806f734480ad935",
     "bin/handsoff_core.py": "8ff8e1eebffaeb27f9a51cff2ad079e23eafaef4b9d9cd7d027af744c4ea2504",
     "bin/handsoff_dashboard.py": "4544d4ddd3334d5893e735b6a9e90513f3320edea9cc8fec9bbdf89a38bdff72",
     "bin/handsoff_evidence.py": "f165222647ec17f947547507f4a12c0fab4e199d5140ca08319800895ad1539d",
@@ -66,8 +66,8 @@
     "schemas/acceptance.schema.json": "80b910b8971861820fcec06b28531cdafc5871ef767211c24616803b13b896ec",
     "schemas/snapshot.schema.json": "5070e69d3b3f511a23e9b0515b0294552f9652697f5f1c5fa0738b8d867e4fa1",
     "schemas/status.schema.json": "a393747722ac7021766bee5b64f6eeb17030e5ea815dc4d3f4029c6f7f59fc4e",
-    "templates/handsoff.toml": "1a45dfb6f1bd4f254693aa2f31e40c3e0457f8dcdc410e18c29919a6179ce661"
+    "templates/handsoff.toml": "da9cc7f7289a5bd4a61856acd47fb7ecfbf6423b2af8d5f0d7f9c3c8c9ee8d5f"
   },
   "schema": 1,
-  "version": "v0.4.2"
+  "version": "v0.4.3"
 }

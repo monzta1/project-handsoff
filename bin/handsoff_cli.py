@@ -357,6 +357,8 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
     run_triage = lib.run_triage(root, cfg)
     permissions = lib.implementer_allowed_tools(cfg, root)
     warnings = [f"check command cannot be expressed: {command!r}" for command in cfg["check_commands"] if not command.strip() or "\n" in command or "\r" in command]
+    warnings.extend(f"inert-setting: {key} has no effect since v0.3.77; delete it from handsoff.toml"
+                    for key in cfg.get("inert_settings", []))
     for item in prompt_overrides:
         if item["state"] == "declared_stale_protocol":
             warnings.append(f"override-protocol-stale: {item['path']} missing {item['expected_prefix']}")
