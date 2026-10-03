@@ -131,7 +131,7 @@ class ReviewLaneTests(HandsoffTestCase):
         ref = self.prepared("Commit Author <author@example.com>")
         result = run(["init", "Review adoption", "--lane", "review", "--adopt", ref, "--by", "pilot"], self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        refused = run(["record-review", "--by", "pilot"], self.tmp)
+        refused = run(["record-review", "--by", "pilot", "--tests-executed", "yes"], self.tmp)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("adopting actor", refused.stdout + refused.stderr)
 
@@ -146,7 +146,7 @@ class ReviewLaneTests(HandsoffTestCase):
         before = snapshot()
         for command in (("advance", "4", "40"), ("deployment-gate", "--approve", "--by", "pilot"),
                         ("verify-live", "--by", "pilot"), ("advance", "6", "60"),
-                        ("record-review", "--by", "Adopted Author <author@example.com>")):
+                        ("record-review", "--by", "Adopted Author <author@example.com>", "--tests-executed", "yes")):
             refused = run(list(command), self.tmp)
             self.assertNotEqual(refused.returncode, 0, command)
             self.assertIn("review", (refused.stdout + refused.stderr).lower())

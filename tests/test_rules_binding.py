@@ -78,7 +78,7 @@ class RulesSetTests(HandsoffTestCase):
         # a fresh review re-binds and clears it (evidence re-verified on the changed tree first)
         r = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r = run(["record-review", "--by", "reviewer-2"], cwd=self.tmp)
+        r = run(["record-review", "--by", "reviewer-2", "--tests-executed", "yes"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse([e for e in self._errors() if "rules set" in e])
         self.assertIsNone(cli.doctor(self.tmp, skip_preflight=True)["rules_set"])

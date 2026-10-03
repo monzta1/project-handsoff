@@ -96,7 +96,7 @@ class EvidenceDriftTests(HandsoffTestCase):
         self.assertNotEqual(advanced.returncode, 0)
         self.assertIn("REQ-001", advanced.stdout + advanced.stderr)
 
-        review = run(["record-review", "--by", "other-reviewer"], self.tmp)
+        review = run(["record-review", "--by", "other-reviewer", "--tests-executed", "yes"], self.tmp)
         self.assertNotEqual(review.returncode, 0)
         self.assertIn("evidence drift", (review.stdout + review.stderr).lower())
 

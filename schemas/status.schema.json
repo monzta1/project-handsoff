@@ -1809,6 +1809,17 @@
         },
         "profiles_distinct": {
           "type": "boolean"
+        },
+        "tests_executed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tests_executed_waiver": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "#341: why an approval without tests was accepted (no criterion requires checks)"
         }
       }
     },

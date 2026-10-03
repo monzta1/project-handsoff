@@ -3531,6 +3531,11 @@ def cmd_record_review(args) -> int:
         lib.migrate_review_ledger(status)
         if getattr(args, "reaffirm", False):
             return _record_review_reaffirm(root, cfg, status, acceptance, records, problems, reviewer_id, args)
+        tests_errors = lib.review_tests_executed_errors(args.tests_executed, acceptance)  # #341
+        if tests_errors:
+            print("SHIP_FEATURE_BLOCKED")
+            print("\n".join(f"- {x}" for x in tests_errors))
+            return 1
         attempt = lib.current_review_attempt(status)
         if attempt is None:
             try:
@@ -3565,6 +3570,7 @@ def cmd_record_review(args) -> int:
             "implementer_profile": implementer_profile,
             "reviewer_profile": reviewer_profile,
             "tests_executed": args.tests_executed,
+            **lib.review_tests_executed_waiver(args.tests_executed),  # #341
             "profiles_distinct": profiles_distinct,
             **lib.rules_binding(root, cfg),  # #170
             "checklist": {"symptom_reproduced": args.symptom_reproduced,
@@ -3647,6 +3653,12 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
         print("SHIP_FEATURE_BLOCKED: design hash changed since the approved attempt; a real change needs a fresh review")
         return 1
     previous_hash = latest.get("acceptance_hash")
+    tests_executed = latest.get("tests_executed", args.tests_executed)
+    tests_errors = lib.review_tests_executed_errors(tests_executed, acceptance)  # #341
+    if tests_errors:
+        print("SHIP_FEATURE_BLOCKED")
+        print("\n".join(f"- {x}" for x in tests_errors))
+        return 1
     preflight = dict(status)
     preflight["phase_number"] = 6
     preflight["phase"] = lib.PHASES[6]
@@ -3663,7 +3675,8 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
         "scope_hash": lib.work_item_scope_hash(lib.effective_work_items(acceptance, cfg)[0], acceptance.get("criteria", [])),
         "implementer_profile": implementer_profile,
         "reviewer_profile": reviewer_profile,
-        "tests_executed": latest.get("tests_executed", args.tests_executed),
+        "tests_executed": tests_executed,
+        **lib.review_tests_executed_waiver(tests_executed),  # #341
         "profiles_distinct": profiles_distinct,
         "reaffirmed_attempt": latest.get("attempt"),
         "reaffirmed_from_acceptance_hash": previous_hash,
@@ -5823,7 +5836,8 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--item", default=None,
                         help="record an item-scoped independent review for a confirmed small-fix lane")
     review.add_argument("--symptom-reproduced", choices=("yes", "not_applicable"), default="yes")
-    review.add_argument("--tests-executed", choices=("yes", "no", "unknown"), default="unknown")
+    review.add_argument("--tests-executed", choices=("yes", "no", "unknown"), default="unknown",
+                        help=lib.REVIEW_TESTS_EXECUTED_RULE)
     review.add_argument("--reaffirm", action="store_true",
                         help="re-bind this reviewer's latest approved attempt after an evidence-only refresh; "
                              "opens no attempt and spends no review budget")
