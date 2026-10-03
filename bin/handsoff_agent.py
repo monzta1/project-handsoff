@@ -950,9 +950,12 @@ class _LiveBeacon:
             record = None
         if not isinstance(record, dict) or record.get("state") not in lib.AGENT_SESSION_TERMINAL_STATES:
             return
+        # #345: a verdict the launcher adopted keeps the #172 adopted beacon
+        adopted = isinstance(record.get("result"), dict) and record["result"].get("adopted_at")
         lib.write_live_beacon(
-            self.root, session_id=self.session_id, role=self.role, state=record["state"],
-            pid=self.pid, ended_at=record.get("ended_at"), exit_code=record.get("exit_code"),
+            self.root, session_id=self.session_id, role=self.role,
+            state="adopted" if adopted else record["state"],
+            pid=None if adopted else self.pid, ended_at=record.get("ended_at"), exit_code=record.get("exit_code"),
         )
 
 
@@ -1246,6 +1249,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     protocol_errors: list[str] = []
     question_errors: list[str] = []
     question_lines = [0]
+    raised_questions: set[str] = set()  # #345: one record per question per launch
     stdout_tail = [""]
     stderr_tail = [""]
     # #168: the adapter's own usage, watched per streamed line on both
@@ -1372,7 +1376,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         usage_watcher.feed(line)
                         record_model()
                         enforce_ceiling()
-                        if _raise_question_line(root, spec.role, session_id, line, question_errors):
+                        if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
                             question_lines[0] += 1
                         _parse_operation_line(line, root, session_id, spec.role)
                         _parse_progress_line(line, root, session_id, spec.role)
@@ -1396,7 +1400,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     usage_watcher.feed(pending)
                     record_model()
                     enforce_ceiling()
-                    if _raise_question_line(root, spec.role, session_id, pending, question_errors):
+                    if _raise_question_line(root, spec.role, session_id, pending, question_errors, raised_questions):
                         question_lines[0] += 1
                     _parse_operation_line(pending, root, session_id, spec.role)
                     if capture_supervisor:
@@ -1584,7 +1588,24 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             f"provider model identity mismatch: requested {requested_identity}, reported {reported_identity}",
             session_id,
         )
+    if spec.role == "reviewer":
+        # #345: before any ending can adopt a verdict, so a reviewer that
+        # wrote to the tree never has its verdict recorded.
+        failure = _reviewer_tree_failure(spec, root, session_id, repository_digest_before)
+        if failure is not None:
+            end_session("failed", exit_code=1, failure=failure)
+            raise AgentLaunchError("Reviewer modified the project tree: " + ", ".join(
+                f"{c['path']} {c['kind']}" for c in failure["changes"][:4]) or "Reviewer modified the project tree", session_id)
     if process.returncode:
+        # #345: a question the role asked before a budget error, possibly on
+        # stderr, still reaches the Pilot; the launch's de-duplication keeps
+        # a question seen on both streams to one record.
+        tail_lines = stderr_tail[0].splitlines()
+        if len(stderr_tail[0]) >= 8192 and tail_lines:
+            tail_lines = tail_lines[1:]  # the first line of a full tail may be cut
+        for line in tail_lines:
+            if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
+                question_lines[0] += 1
         # #114: on a budget error Codex can route the final message to
         # stderr. A complete protocol line there is still the result, so
         # scan the tail once before classifying the failure.
@@ -1647,8 +1668,17 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             end_session(
                 "failed", exit_code=process.returncode, failure=failure,
             )
+            if _autoadopt_reviewer_result(root, session_id, spec, reviewer_results, recovered_results):
+                return 0
             raise AgentLaunchError(f"{spec.adapter} exited with status {process.returncode}", session_id)
     if protocol_errors:
+        if spec.role == "reviewer" and len(reviewer_results) == 1 and not recovered_results:
+            # #345: one valid verdict beside a malformed line is the
+            # launcher's failure to finish cleanly, not a no-op.
+            end_session("failed", exit_code=1, failure=lib.classify_runtime_failure(exit_code=1))
+            if _autoadopt_reviewer_result(root, session_id, spec, reviewer_results, recovered_results):
+                return 0
+            raise AgentLaunchError(protocol_errors[0], session_id)
         if recovered_results and not reviewer_results:
             # #167: keep the refused verdict on the session so
             # session-result-adopt can re-record it; the session still fails.
@@ -1727,34 +1757,6 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             raise AgentLaunchError(
                 f"Architect design proposal dispatch failed: {type(exc).__name__}", session_id,
             ) from exc
-    if spec.role == "reviewer":
-        before = repository_digest_before.get("entries", {}) if isinstance(repository_digest_before, dict) else {}
-        after = lib.repository_digest_entries(root, lib.load_config(root))
-        changed_paths = [path for path in sorted(set(before) | set(after))
-                         if before.get(path) != after.get(path)][:64]
-        digest_changed = isinstance(repository_digest_before, dict) \
-            and repository_digest_before.get("digest") != lib.repository_digest_from_entries(after)
-        sandboxed = Path(spec.cwd).resolve() != Path(root).resolve()
-        if (changed_paths or digest_changed) and not sandboxed:
-            # The reviewer ran inside the tree, so a change is its own doing.
-            # #203: say what was seen, so a sighting on a loaded runner can be
-            # read: for each path, whether it appeared, vanished or changed,
-            # and when the file on disk was last written relative to the
-            # session's start.
-            failure = {"category": "reviewer_modified_project",
-                       "reason": "managed Reviewer modified the project tree",
-                       "tail_sha256": hashlib.sha256(b"").hexdigest(), "changed_paths": changed_paths or ["<repository-digest-changed>"],
-                       "changes": _describe_tree_changes(root, before, after, changed_paths, _session_started_at(root, session_id))}
-            end_session("failed", exit_code=1, failure=failure)
-            raise AgentLaunchError("Reviewer modified the project tree: " + ", ".join(
-                f"{c['path']} {c['kind']}" for c in failure["changes"][:4]) or "Reviewer modified the project tree", session_id)
-        if changed_paths or digest_changed:
-            # #92: a sandboxed reviewer cannot write outside its scratch cwd,
-            # so a changed tree is the host's doing; attribute it and keep
-            # the review rather than blaming the reviewer.
-            lib.append_event(root, lib.load_config(root), "host_edited_during_review",
-                             "Host edited project during scratch review", session_id=session_id,
-                             paths=changed_paths or ["<repository-digest-changed>"])
     if len(reviewer_results) > 1:
         end_session(
             "failed", exit_code=1,
@@ -1880,14 +1882,97 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
             quality_finding_id = None
 
 
-def _raise_question_line(root: Path, role: str, session_id: str, line: str, errors: list[str]) -> bool:
+def _reviewer_tree_failure(spec: LaunchSpec, root: Path, session_id: str,
+                           repository_digest_before: dict | None) -> dict | None:
+    """The reviewer's tree check: the failure record when an in-tree
+    reviewer changed the project, else None. A sandboxed reviewer cannot
+    write outside its scratch cwd, so a change there is attributed to the
+    host (#92) and the review is kept."""
+    before = repository_digest_before.get("entries", {}) if isinstance(repository_digest_before, dict) else {}
+    after = lib.repository_digest_entries(root, lib.load_config(root))
+    changed_paths = [path for path in sorted(set(before) | set(after))
+                     if before.get(path) != after.get(path)][:64]
+    digest_changed = isinstance(repository_digest_before, dict) \
+        and repository_digest_before.get("digest") != lib.repository_digest_from_entries(after)
+    if not (changed_paths or digest_changed):
+        return None
+    if Path(spec.cwd).resolve() != Path(root).resolve():
+        lib.append_event(root, lib.load_config(root), "host_edited_during_review",
+                         "Host edited project during scratch review", session_id=session_id,
+                         paths=changed_paths or ["<repository-digest-changed>"])
+        return None
+    # The reviewer ran inside the tree, so a change is its own doing.
+    # #203: say what was seen, so a sighting on a loaded runner can be
+    # read: for each path, whether it appeared, vanished or changed, and
+    # when the file on disk was last written relative to the session's start.
+    return {"category": "reviewer_modified_project",
+            "reason": "managed Reviewer modified the project tree",
+            "tail_sha256": hashlib.sha256(b"").hexdigest(), "changed_paths": changed_paths or ["<repository-digest-changed>"],
+            "changes": _describe_tree_changes(root, before, after, changed_paths, _session_started_at(root, session_id))}
+
+
+AUTOADOPT_ACTOR = "handsoff-launcher"
+
+
+def _autoadopt_reviewer_result(root: Path, session_id: str, spec: LaunchSpec,
+                               reviewer_results: list[dict], recovered_results: list[dict]) -> bool:
+    """#345: a failed reviewer session's one schema-valid verdict is
+    replayed through the same path session-result-adopt uses, so every gate
+    that refuses a recorded review refuses it here too. The session has
+    already ended failed; True means the verdict is recorded and marked
+    adopted, False leaves that failed session exactly as it is."""
+    if spec.role != "reviewer" or len(reviewer_results) != 1 or recovered_results:
+        return False
+    supervisor = __import__("handsoff_supervisor")
+    try:
+        adopted, message = supervisor.adopt_session_result(root, session_id, AUTOADOPT_ACTOR, automatic=True)
+    except lib.HandsoffError as exc:
+        adopted, message = False, f"SESSION_RESULT_ADOPT_REFUSED: {exc}"
+    if not adopted:
+        reason = message.split(":", 1)[-1].strip()[:200] or "refused"
+        sys.stdout.write(f"SESSION_RESULT_AUTOADOPT_REFUSED: {reason}\n")
+        sys.stdout.flush()
+        try:
+            lib.append_event(root, lib.load_config(root), "session_result_autoadopt_refused",
+                             "Failed reviewer verdict was not adopted", session_id=session_id, reason=reason)
+        except (lib.HandsoffError, OSError):
+            pass
+        return False
+    sys.stdout.write(
+        f"HANDSOFF_AGENT_WARNING: reviewer session {session_id} failed after one valid verdict; "
+        "the verdict was adopted automatically\n"
+    )
+    sys.stdout.flush()
+    return True
+
+
+def _raise_question_line(root: Path, role: str, session_id: str, line: str, errors: list[str],
+                         seen: set[str] | None = None) -> bool:
     """#46: `HANDSOFF_QUESTION: <text>` from any role is recorded the moment
     it is read, so the board alerts while the child is still running. A
     failure to record is remembered for the report and never reaches the
-    child, the reader, or the session record."""
+    child, the reader, or the session record. #345: a question inside a
+    complete stream-json assistant event is unwrapped the same way, and
+    `seen` keeps a question read twice in one launch to one record."""
     stripped = line.strip()
     if not stripped.startswith(lib.QUESTION_PREFIX):
-        return False
+        if not stripped.startswith("{"):
+            return False
+        try:
+            event = json.loads(stripped)
+        except ValueError:
+            return False
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            return False
+        raised = False
+        for logical in _claude_logical_lines(stripped):
+            if logical.strip().startswith(lib.QUESTION_PREFIX):
+                raised = _raise_question_line(root, role, session_id, logical, errors, seen) or raised
+        return raised
+    if seen is not None:
+        if stripped in seen:
+            return False
+        seen.add(stripped)
     try:
         lib.raise_question(root, role=role, session_id=session_id,
                            text=stripped[len(lib.QUESTION_PREFIX):])

@@ -1131,8 +1131,15 @@ def build_snapshot(root: Path) -> dict:
         view = {field: session.get(field) for field in fields}
         view["reviewer_isolation"] = deepcopy(session.get("reviewer_isolation")) \
             if isinstance(session.get("reviewer_isolation"), dict) else None
-        if isinstance(session.get("result"), dict) and session["result"].get("adopted_at"):
+        result = session.get("result")
+        view["result_adopted"] = None
+        if isinstance(result, dict) and result.get("adopted_at"):
             view["state"] = "adopted"
+            # #345: an adopted verdict says so, and whether the launcher
+            # adopted it, so a gate it satisfies is never read as a clean run.
+            view["result_adopted"] = {"session_id": session.get("session_id"),
+                                      "automatic": bool(result.get("adopted_automatically")),
+                                      "at": result.get("adopted_at")}
         return view
 
     def session_for_actor(actor):

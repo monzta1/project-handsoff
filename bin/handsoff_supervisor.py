@@ -3714,23 +3714,31 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
 
 
 def cmd_session_result_adopt(args) -> int:
+    root = lib.resolve_root(args.root)
+    actor = lib.validate_agent_actor(args.by)
+    adopted, message = adopt_session_result(root, args.session, actor)
+    print(message)
+    return 0 if adopted else 1
+
+
+def adopt_session_result(root, session_id: str, actor: str, *,
+                         automatic: bool = False) -> tuple[bool, str]:
     """Replay a persisted protocol result through the canonical record
     command (#92). Three rules keep it honest: the request is not bound to
     the dead session (the broker would refuse a non-live session), the
     replay runs outside the project lock (it is a supervisor subprocess
     that takes the lock itself), and the adoption mark is written on a
     status re-read after the replay, so the replayed decision is not
-    overwritten by a stale copy."""
-    root = lib.resolve_root(args.root)
+    overwritten by a stale copy. #345: the launcher calls this with
+    automatic=True for a failed reviewer's one valid verdict, so the CLI
+    and the launcher share every refusal by sharing this path."""
     cfg = lib.load_config(root)
-    actor = lib.validate_agent_actor(args.by)
     with lib.project_lock(root):
         status, acceptance, records, problems = _load_all(root, cfg)
-        session = (status.get("agent_sessions") or {}).get(args.session)
+        session = (status.get("agent_sessions") or {}).get(session_id)
         result = session.get("result") if isinstance(session, dict) else None
         if not isinstance(result, dict):
-            print("SESSION_RESULT_ADOPT_REFUSED: no persisted result")
-            return 1
+            return False, "SESSION_RESULT_ADOPT_REFUSED: no persisted result"
         kind, payload = result["kind"], deepcopy(result["payload"])
         if isinstance(result.get("refused_text"), str):
             # #167: adopt from the packet as the reviewer wrote it, repairing
@@ -3741,12 +3749,10 @@ def cmd_session_result_adopt(args) -> int:
                 payload = broker.parse_reviewer_result(result["refused_text"], root=root)
             except lib.PacketRuleViolation as exc:
                 if not isinstance(exc.recovered, dict):
-                    print(f"SESSION_RESULT_ADOPT_REFUSED: the preserved packet cannot be repaired: {exc}")
-                    return 1
+                    return False, f"SESSION_RESULT_ADOPT_REFUSED: the preserved packet cannot be repaired: {exc}"
                 payload = exc.recovered
             except lib.HandsoffError as exc:
-                print(f"SESSION_RESULT_ADOPT_REFUSED: the preserved packet is invalid: {exc}")
-                return 1
+                return False, f"SESSION_RESULT_ADOPT_REFUSED: the preserved packet is invalid: {exc}"
         readopt = False
         if result.get("adopted_at") is not None:
             # Field-note defect 3: an evidence-only refresh revoked the review
@@ -3754,15 +3760,14 @@ def cmd_session_result_adopt(args) -> int:
             if kind == "review" and payload.get("decision") == "approved" and status.get("review") is None:
                 readopt = True
             else:
-                print("SESSION_RESULT_ADOPT_REFUSED: result is already adopted")
-                return 1
+                return False, "SESSION_RESULT_ADOPT_REFUSED: result is already adopted"
         architect = (status.get("design_proposal") or {}).get("architect")
         session_actor = str(session.get("actor") or "").strip()
     import handsoff_broker as broker
     # #115: the verdict belongs to the reviewer session that produced it;
     # the adopter is recorded alongside, never in its place.
     base = {"actor": "supervisor", "project_root": str(root), "action": "workflow",
-            "by": session_actor or actor, "adopted_session": args.session, "adopted_by": actor}
+            "by": session_actor or actor, "adopted_session": session_id, "adopted_by": actor}
     if isinstance(session, dict) and session.get("amendment_id"):
         # #146: a verdict persisted by a reviewer launched for an amendment
         # adopts as an amendment review, findings included, whatever kind
@@ -3783,8 +3788,7 @@ def cmd_session_result_adopt(args) -> int:
         # The runner persists every reviewer result as kind "review"; the
         # packet's own kind says whether it judged a design (#167).
         if not architect:
-            print("SESSION_RESULT_ADOPT_REFUSED: no architect recorded on the design proposal")
-            return 1
+            return False, "SESSION_RESULT_ADOPT_REFUSED: no architect recorded on the design proposal"
         request = {**base, "command": "record-design-review", "architect": architect,
                    "decision": "approve" if payload.get("decision") == "approved" else "request-changes",
                    "summary": payload.get("summary") or "adopted"}
@@ -3798,26 +3802,26 @@ def cmd_session_result_adopt(args) -> int:
     try:
         broker.execute_request(root, request, capability=broker._SUPERVISOR_HOST_CAPABILITY)
     except lib.HandsoffError as exc:
-        print(f"SESSION_RESULT_ADOPT_REFUSED: {exc}")
-        return 1
+        return False, f"SESSION_RESULT_ADOPT_REFUSED: {exc}"
     with lib.project_lock(root):
         status = lib.load_unique_json(lib.status_path(root, cfg))
-        adopted = status["agent_sessions"][args.session]["result"]
+        adopted = status["agent_sessions"][session_id]["result"]
         if readopt:
             adopted.setdefault("readoptions", []).append({"at": datetime.now(timezone.utc).isoformat(), "by": actor})
         else:
             adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
             adopted["adopted_by"] = actor
-        failure = (status.get("agent_failures") or {}).get(args.session)
+            adopted["adopted_automatically"] = automatic
+        failure = (status.get("agent_failures") or {}).get(session_id)
         if isinstance(failure, dict):
             # The replacement pause is derived from this record's category;
             # marking it adopted is what lifts the pause (recovery skips it).
             failure["adopted"] = True
         lib.commit(root, cfg, status=status, event_kind="session_result_adopted",
-                   event_message="Persisted session result adopted", session_id=args.session, by=actor)
-        lib.mark_beacon_adopted(root, args.session)  # #172
-    print("SESSION_RESULT_ADOPTED")
-    return 0
+                   event_message="Persisted session result adopted", session_id=session_id, by=actor,
+                   automatic=automatic)
+        lib.mark_beacon_adopted(root, session_id)  # #172
+    return True, "SESSION_RESULT_ADOPTED"
 
 
 def cmd_verify_live(args) -> int:
