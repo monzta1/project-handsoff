@@ -191,6 +191,25 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
             self._assert_adopted(ending)
             self._fresh()
 
+    def test_a_rule_refused_packet_on_stderr_blocks_a_stdout_approval(self):
+        # a valid stdout verdict must not hide a #167 packet on the other stream
+        self._phase5()
+        code, error, out = self._launch(stdout=APPROVED, stderr=RULE_REFUSED + CRASH, returncode=1)
+        self._assert_not_adopted(error)
+        self.assertEqual(self._events("session_result_adopted"), [])
+
+    def test_an_identical_verdict_on_both_streams_is_one_verdict(self):
+        # #114: Codex can repeat its final message on stderr; the copy is
+        # the same verdict, so the session still has exactly one to adopt
+        self._phase5()
+        code, error, out = self._launch(stdout=APPROVED, stderr=APPROVED + CRASH, returncode=1)
+        self.assertIsNone(error, out)
+        self.assertEqual(code, 0)
+        status, sid, session, failure = self._session()
+        self.assertTrue(session["result"]["adopted_automatically"])
+        self.assertEqual(status["review"]["adopted_session"], sid)
+        self.assertEqual(len(self._events("session_result_adopted")), 1)
+
     def test_a_verdict_the_record_command_refuses_leaves_the_failed_session(self):
         # #341: tests_executed no is refused while a criterion requires checks
         for ending in ENDINGS:
@@ -241,6 +260,17 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         status, questions = self._open_questions()
         sid = status["current_agent_sessions"]["architect"]
         self.assertEqual([(q["text"], q["session_id"]) for q in questions], [("Which path, raw?", sid)])
+
+    def test_a_question_before_long_stderr_diagnostics_is_recorded_once(self):
+        # 700+ diagnostic lines push the question far out of the 8192-char tail
+        self.init("Question before diagnostics")
+        question = self._question("Which path, early?")
+        diagnostics = "".join(f"diagnostic line {n}: retrying adapter call\n" for n in range(750))
+        self._launch(self._spec("architect"), stdout="", stderr=question + "\n" + diagnostics + BUDGET,
+                     returncode=1)
+        status, questions = self._open_questions()
+        sid = status["current_agent_sessions"]["architect"]
+        self.assertEqual([(q["text"], q["session_id"]) for q in questions], [("Which path, early?", sid)])
 
     # REQ-007
     def test_the_snapshot_and_reference_mark_an_auto_adopted_verdict(self):

@@ -1433,6 +1433,17 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 f"{stream_label} failed to start: {type(exc).__name__}", session_id,
             ) from exc
     stderr_pending = [""]
+    stderr_review_lines: list[str] = []
+
+    def stderr_protocol_line(line: str) -> None:
+        # #345: a question on stderr is recorded the moment it is read, so
+        # long diagnostics after it cannot push it out of the tail; a
+        # reviewer verdict there is kept whole for the failure path.
+        if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
+            question_lines[0] += 1
+        if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX):
+            stderr_review_lines.append(line)
+
     if getattr(process, "stderr", None) is not None:
         def stream_stderr() -> None:
             try:
@@ -1452,6 +1463,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         usage_watcher.feed(line)
                         record_model()
                         enforce_ceiling()
+                        stderr_protocol_line(line)
             except BaseException as exc:
                 reader_errors.append(exc)
             finally:
@@ -1597,9 +1609,12 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             raise AgentLaunchError("Reviewer modified the project tree: " + ", ".join(
                 f"{c['path']} {c['kind']}" for c in failure["changes"][:4]) or "Reviewer modified the project tree", session_id)
     if process.returncode:
-        # #345: a question the role asked before a budget error, possibly on
-        # stderr, still reaches the Pilot; the launch's de-duplication keeps
-        # a question seen on both streams to one record.
+        # #345: stderr questions were recorded as read; the tail rescan is a
+        # fallback, and the launch's de-duplication keeps a question seen
+        # on both streams, or twice here, to one record.
+        if stderr_pending[0]:
+            stderr_protocol_line(stderr_pending[0])
+            stderr_pending[0] = ""
         tail_lines = stderr_tail[0].splitlines()
         if len(stderr_tail[0]) >= 8192 and tail_lines:
             tail_lines = tail_lines[1:]  # the first line of a full tail may be cut
@@ -1607,14 +1622,21 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
                 question_lines[0] += 1
         # #114: on a budget error Codex can route the final message to
-        # stderr. A complete protocol line there is still the result, so
-        # scan the tail once before classifying the failure.
-        if spec.role in {"reviewer", "architect"} and not reviewer_results and not architect_results and not architect_declines:
+        # stderr. A complete protocol line there is still the result.
+        # #345: a reviewer's stderr verdicts are parsed even beside a stdout
+        # verdict, so a #167 refused packet on either stream blocks
+        # adoption and two verdicts across streams are not exactly one.
+        if spec.role == "reviewer":
+            for line in stderr_review_lines:
+                # #114: Codex can repeat its final message on stderr; an
+                # identical verdict there is the same verdict, not a second.
+                parsed: list[dict] = []
+                _parse_reviewer_line(line, parsed, protocol_errors, recovered_results, root)
+                reviewer_results.extend(item for item in parsed if item not in reviewer_results)
+                persist_new(reviewer_results, "review")
+        if spec.role == "architect" and not architect_results and not architect_declines:
             for line in stderr_tail[0].splitlines():
-                if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX):
-                    _parse_reviewer_line(line, reviewer_results, protocol_errors, recovered_results, root)
-                    persist_new(reviewer_results, "review")
-                elif spec.role == "architect" and line.startswith(DESIGN_RESULT_PREFIX):
+                if line.startswith(DESIGN_RESULT_PREFIX):
                     _parse_architect_line(line, architect_results, protocol_errors)
                     persist_new(architect_results, "design")
                 elif spec.role == "architect" and line.startswith(DECLINE_RESULT_PREFIX):
@@ -1946,6 +1968,9 @@ def _autoadopt_reviewer_result(root: Path, session_id: str, spec: LaunchSpec,
     return True
 
 
+_QUESTION_SEEN_LOCK = threading.Lock()
+
+
 def _raise_question_line(root: Path, role: str, session_id: str, line: str, errors: list[str],
                          seen: set[str] | None = None) -> bool:
     """#46: `HANDSOFF_QUESTION: <text>` from any role is recorded the moment
@@ -1970,9 +1995,11 @@ def _raise_question_line(root: Path, role: str, session_id: str, line: str, erro
                 raised = _raise_question_line(root, role, session_id, logical, errors, seen) or raised
         return raised
     if seen is not None:
-        if stripped in seen:
-            return False
-        seen.add(stripped)
+        # Both stream readers share `seen`; check and add as one step.
+        with _QUESTION_SEEN_LOCK:
+            if stripped in seen:
+                return False
+            seen.add(stripped)
     try:
         lib.raise_question(root, role=role, session_id=session_id,
                            text=stripped[len(lib.QUESTION_PREFIX):])
