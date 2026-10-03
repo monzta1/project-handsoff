@@ -120,11 +120,29 @@ class TheProviderIsToldTheReducedLimit(unittest.TestCase):
         lib.validate_session_budget_decision(plan())
 
     def test_a_session_recorded_before_the_reserve_existed_still_validates(self):
-        """Archives predate the reserve; they must stay readable."""
+        """Archives predate the reserve; they must stay readable.
+
+        #342 added a fourth field group (`ceiling_source` and the figures
+        behind it), and the schema validates these against EXACT field sets.
+        A record written before the reserve existed also predates that group,
+        so both come off: the shape being asserted is the one the engine
+        really wrote then, not today's record minus two keys. Keeping only the
+        reserve pop asked the schema to accept a shape no version ever wrote.
+        """
         legacy = plan()
-        legacy.pop("reserved_protocol_tokens")
-        legacy.pop("provider_limit")
+        for field in ("reserved_protocol_tokens", "provider_limit",
+                      "calculated_ceiling", "configured_explicitly",
+                      "ceiling_source", "ceiling_divergence"):
+            legacy.pop(field)
         lib.validate_session_budget_decision(legacy)
+
+    def test_a_session_recorded_after_the_reserve_but_before_the_source_validates(self):
+        """The shape in between, which real archives on disk carry."""
+        between = plan()
+        for field in ("calculated_ceiling", "configured_explicitly",
+                      "ceiling_source", "ceiling_divergence"):
+            between.pop(field)
+        lib.validate_session_budget_decision(between)
 
 
 class BreadthWidensTheBudgetNotRisk(unittest.TestCase):

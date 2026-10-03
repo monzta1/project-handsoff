@@ -60,6 +60,7 @@ RUNTIME_FILES = (
     "playbook/lessons-binding.md",
     "playbook/lessons-evidence.md",
     "playbook/lessons-lane.md",
+    "playbook/lessons-proof.md",
     "playbook/protocol.md",
     "playbook/reviewers.md",
     "prompts/architect.md",
