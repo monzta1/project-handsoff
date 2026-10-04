@@ -45,6 +45,7 @@ from handsoff_routing import (
     classify_adaptive_risk,
     route_adaptive_profile,
     validate_session_adaptive_routing,
+    validate_session_routing_contract,
 )
 from handsoff_config import (
     DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
@@ -1045,6 +1046,7 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          budget_decision: dict | None = None,
                          reviewer_isolation: dict | None = None,
                          reasoning_effort: str | None = None,
+                         routing_contract: dict | None = None,
                          owned_paths: list[str] | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
@@ -1073,6 +1075,9 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         raise HandsoffError("agent session resolution source is invalid")
     adaptive_routing = (validate_session_adaptive_routing(adaptive_routing)
                         if adaptive_routing is not None else None)
+    routing_contract = (validate_session_routing_contract(
+        routing_contract, {"adapter": adapter, "model": requested_model})
+        if routing_contract is not None else None)
     budget_decision = (validate_session_budget_decision(budget_decision)
                        if budget_decision is not None else None)
     reviewer_isolation = (validate_reviewer_isolation_contract(reviewer_isolation)
@@ -1233,6 +1238,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session["budget_decision"] = deepcopy(budget_decision)
         if reasoning_effort is not None:
             session["reasoning_effort"] = reasoning_effort
+        if routing_contract is not None:
+            session["routing_contract"] = deepcopy(routing_contract)
         if reviewer_isolation is not None:
             session["reviewer_isolation"] = deepcopy(reviewer_isolation)
         if owned_paths is not None:

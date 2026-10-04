@@ -513,7 +513,9 @@ SESSION_ROUTING_CONTRACT_FIELDS = ("provider", "model", "locality", "usage_sourc
 
 
 def validate_session_routing_contract(value: object, profile: dict) -> dict:
-    """Validate the contract block of a session's adaptive_routing record."""
+    """Validate a session's routing_contract (#304 REQ-006) against the
+    adapter and model the session actually launched with: set by both the
+    routed and the failover launch builders, so every decision carries it."""
     if not isinstance(value, dict) or set(value) != set(SESSION_ROUTING_CONTRACT_FIELDS):
         raise HandsoffError("session adaptive_routing contract has invalid fields")
     if value["provider"] != profile["adapter"] or value["model"] != profile["model"]:
@@ -523,10 +525,15 @@ def validate_session_routing_contract(value: object, profile: dict) -> dict:
     if not isinstance(value["usage_source"], str) or not value["usage_source"].strip():
         raise HandsoffError("session adaptive_routing contract usage_source must be non-empty")
     cost = value["cost_policy"]
+    pricing = cost.get("pricing") if isinstance(cost, dict) else None
     if not isinstance(cost, dict) or set(cost) != {"policy", "pricing"} \
             or not isinstance(cost["policy"], str) or not cost["policy"].strip() \
-            or cost["pricing"] != (profile.get("pricing") or {}):
-        raise HandsoffError("session adaptive_routing contract cost_policy is invalid")
+            or not isinstance(pricing, dict) \
+            or set(pricing) - {"input_per_mtok", "output_per_mtok"} \
+            or any(isinstance(rate, bool) or not isinstance(rate, (int, float))
+                   or rate - rate != 0 or rate < 0 for rate in pricing.values()) \
+            or ("pricing" in profile and pricing != (profile.get("pricing") or {})):
+        raise HandsoffError("session routing_contract cost_policy is invalid")
     enforcement = value["ceiling_enforcement"]
     if enforcement not in CEILING_ENFORCEMENT_DECLARATIONS:
         raise HandsoffError("session adaptive_routing contract ceiling_enforcement must be enforced or unenforced")
@@ -542,8 +549,7 @@ def validate_session_routing_contract(value: object, profile: dict) -> dict:
 def validate_session_adaptive_routing(value: object) -> dict:
     required = {"risk_class", "tier", "adapter", "model", "profile", "reason",
                 "reviewer_required", "human_gate_required"}
-    # #304: the contract block is optional so sessions recorded before it stay valid.
-    if not isinstance(value, dict) or set(value) - {"contract"} != required:
+    if not isinstance(value, dict) or set(value) != required:
         raise HandsoffError("session adaptive_routing has invalid fields")
     risk_class = classify_adaptive_risk(value.get("risk_class"))
     tier = value.get("tier")
@@ -557,10 +563,7 @@ def validate_session_adaptive_routing(value: object) -> dict:
         raise HandsoffError("session adaptive_routing reason must be non-empty")
     if any(not isinstance(value.get(field), bool) for field in ("reviewer_required", "human_gate_required")):
         raise HandsoffError("session adaptive_routing obligations must be booleans")
-    result = {**deepcopy(value), "risk_class": risk_class, "profile": profile}
-    if "contract" in value:
-        result["contract"] = validate_session_routing_contract(value["contract"], profile)
-    return result
+    return {**deepcopy(value), "risk_class": risk_class, "profile": profile}
 
 
 def adaptive_deployment_approval_required(status: dict, cfg: dict) -> bool:

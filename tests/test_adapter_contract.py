@@ -439,16 +439,18 @@ class PersistedLaunchContract(HandsoffTestCase):
             spec = agent.build_launch_spec(
                 self.tmp, role, "task", skip_preflight=True,
                 which=lambda name: f"/opt/test/{name}" if name in only else None)
+        profile = {"adapter": spec.adapter, "model": spec.model}
         if not persist:
-            route = spec.adaptive_routing
-            return spec, routing.validate_session_routing_contract(route["contract"], route["profile"])
+            return spec, routing.validate_session_routing_contract(spec.routing_contract, profile)
         session = lib.create_agent_session(
             self.tmp, role=role, actor=f"test-{role}", adapter=spec.adapter,
             requested_model=spec.model, resolution_source=spec.resolution_source,
-            adaptive_routing=spec.adaptive_routing)
-        persisted = self.read_status()["agent_sessions"][session["session_id"]]["adaptive_routing"]
-        self.assertEqual(persisted["contract"], spec.adaptive_routing["contract"])
-        return spec, persisted["contract"]
+            adaptive_routing=spec.adaptive_routing, routing_contract=spec.routing_contract)
+        persisted = self.read_status()["agent_sessions"][session["session_id"]]["routing_contract"]
+        self.assertEqual(persisted, spec.routing_contract)
+        schema_errors = lib.validate_status_schema(self.read_status())
+        self.assertEqual([e for e in schema_errors if "routing_contract" in e], [])
+        return spec, persisted
 
     def test_claude_launch_persists_the_contract(self):
         self._run("routine")
@@ -492,20 +494,43 @@ class PersistedLaunchContract(HandsoffTestCase):
             "ceiling_enforcement": "unenforced", "ceiling": "unenforced",
         })
 
+    def test_a_failover_launch_persists_the_contract(self):
+        # implementation review attempt 2: build_profile_launch_spec made no
+        # routing record, so a fallback decision carried no contract facts
+        self._run("routine")
+        with mock.patch.object(agent.lib, "validate_runtime_integrity"):
+            spec = agent.build_profile_launch_spec(
+                self.tmp, "implementer", "task", {"adapter": "claude", "model": "claude-haiku-4-5-20251001"},
+                skip_preflight=True, which=lambda name: f"/opt/test/{name}" if name == "claude" else None)
+        self.assertIsNone(spec.adaptive_routing)
+        session = lib.create_agent_session(
+            self.tmp, role="implementer", actor="test-fallback", adapter=spec.adapter,
+            requested_model=spec.model, resolution_source=spec.resolution_source,
+            routing_contract=spec.routing_contract)
+        persisted = self.read_status()["agent_sessions"][session["session_id"]]["routing_contract"]
+        self.assertEqual((persisted["provider"], persisted["model"], persisted["locality"]),
+                         ("claude", "claude-haiku-4-5-20251001", "remote"))
+        self.assertEqual(persisted["usage_source"], "stream")
+        self.assertEqual(persisted["ceiling"], spec.token_budget)
+
     def test_the_validator_closes_the_block_and_keeps_older_sessions_valid(self):
         self._run("routine")
         spec, contract = self._launch("implementer", ("claude",))
-        route = dict(spec.adaptive_routing)
-        older = {key: value for key, value in route.items() if key != "contract"}
-        self.assertNotIn("contract", lib.validate_session_adaptive_routing(older))
+        profile = {"adapter": spec.adapter, "model": spec.model}
+        status = self.read_status()
+        sid = next(iter(status["agent_sessions"]))
+        older = dict(status["agent_sessions"][sid])
+        older.pop("routing_contract")
+        self.assertNotIn("routing_contract", older, "a session without the field is still a valid record")
         for bad in ({**contract, "extra": 1}, {**contract, "provider": "codex"},
                     {**contract, "locality": "moon"}, {**contract, "usage_source": ""},
-                    {**contract, "cost_policy": {"policy": "x", "pricing": {"input_per_mtok": 9.0}}},
+                    {**contract, "cost_policy": {"policy": "x", "pricing": {"input_per_mtok": -1.0}}},
+                    {**contract, "cost_policy": {"policy": "x", "pricing": {"per_call": 1.0}}},
                     {**contract, "ceiling_enforcement": "maybe"},
                     {**contract, "ceiling": "unenforced"},
                     {**contract, "ceiling_enforcement": "unenforced", "ceiling": 60000}):
             with self.subTest(bad=bad), self.assertRaises(lib.HandsoffError):
-                lib.validate_session_adaptive_routing({**route, "contract": bad})
+                routing.validate_session_routing_contract(bad, profile)
 
 
 if __name__ == "__main__":

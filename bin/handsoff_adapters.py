@@ -190,6 +190,20 @@ def route(cfg: dict | None = None, *, ceiling: int | None = None, **kwargs) -> d
     return {**routed, "decision": decision}
 
 
+def catalog_profile(cfg: dict | None, adapter: str, model: str) -> dict:
+    """The configured routing profile for this exact pair, so a failover or
+    explicitly routed launch records the same catalog pricing a routed one
+    does; a pair the catalog does not list gets no pricing."""
+    for profile in lib.adaptive_routing_profiles(cfg).values():
+        if profile.get("adapter") == adapter and profile.get("model") == model:
+            return profile
+    for profiles in (lib.ADAPTIVE_DEFAULT_PROFILES, lib.ADAPTIVE_OPENAI_PROFILES):
+        for profile in profiles.values():
+            if profile.get("adapter") == adapter and profile.get("model") == model:
+                return profile
+    return {"adapter": adapter, "model": model}
+
+
 def session_contract(profile: dict, ceiling: int) -> dict:
     """The contract block a routed managed session persists (REQ-006): the
     decision facts plus the adapter's declared ceiling enforcement."""

@@ -61,6 +61,7 @@ class LaunchSpec:
     # #347: the effort this launch was given, recorded on the session so a
     # run can be explained afterwards rather than only observed at launch.
     reasoning_effort: str | None = None
+    routing_contract: dict | None = None
     # #359: the implementer's declared ownership (--owns), normalized.
     owned_paths: tuple[str, ...] | None = None
 
@@ -577,10 +578,12 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         followup=implementation_delta is not None,
     )
     token_budget = budget_decision["ceiling"]
-    if adaptive_routing is not None:
-        # #304 REQ-006: the persisted route records the adapter contract facts,
-        # including an `unenforced` ceiling the adapter declares.
-        adaptive_routing["contract"] = adapters.session_contract(adaptive_routing["profile"], token_budget)
+    # #304 REQ-006: every launch records the adapter contract facts,
+    # including an `unenforced` ceiling the adapter declares; the failover
+    # builder below records the same block for its reserved profile.
+    routing_contract = adapters.session_contract(
+        adaptive_routing["profile"] if adaptive_routing is not None
+        else adapters.catalog_profile(route_cfg, adapter, model), token_budget)
     # #290: the provider is told the ceiling minus the protocol reserve, so a
     # session that spends everything still has room to emit its verdict. The
     # planner already refused a reserve that cannot fit.
@@ -670,6 +673,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         budget_decision=budget_decision,
         reviewer_isolation=isolation,
         reasoning_effort=cfg["model_reasoning"].get(role),
+        routing_contract=routing_contract,
         owned_paths=tuple(owned_paths) if owned_paths else None,
     )
 
@@ -786,6 +790,7 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         budget_decision=budget_decision,
         reviewer_isolation=isolation,
         reasoning_effort=cfg["model_reasoning"].get(role),
+        routing_contract=adapters.session_contract(adapters.catalog_profile(cfg, adapter, model), token_budget),
         owned_paths=tuple(owned_paths) if owned_paths else None,
     )
 
@@ -1194,6 +1199,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             budget_decision=spec.budget_decision,
             reviewer_isolation=isolation,
             reasoning_effort=spec.reasoning_effort,
+            routing_contract=spec.routing_contract,
             owned_paths=list(spec.owned_paths) if spec.owned_paths else None,
         )
     else:
