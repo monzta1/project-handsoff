@@ -53,6 +53,7 @@ POSITIVE = {
         "ConstantReads.test_glob_of_bin",
         "ConstantReads.test_os_path_join",
         "ConstantReads.test_inspect_getsource",
+        "ConstantReads.test_inspect_getsource_through_an_alias",
         "ConstantReads.test_engine_module_file",
         "ConstantReads.test_literal_bin_path",
     )

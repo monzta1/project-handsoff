@@ -125,6 +125,11 @@ class ConstantReads(unittest.TestCase):
     def test_inspect_getsource(self):
         self.assertIn("def", inspect.getsource(lib.load_config))
 
+    def test_inspect_getsource_through_an_alias(self):
+        # implementation review attempt 2: provenance survives an assignment
+        target = lib.load_config
+        self.assertIn("def", inspect.getsource(target))
+
     def test_engine_module_file(self):
         self.assertTrue(Path(lib.__file__).read_text())
 

@@ -68,6 +68,10 @@ def is_guard(test: unittest.TestCase) -> bool:
 
 TESTS_FILE, TESTS_DIR, ROOT, BIN_DIR, BIN_FILE, SOURCE = (
     "tests_file", "tests_dir", "root", "bin_dir", "bin_file", "source")
+#: Implementation review attempt 2: an engine object (a handsoff module or a
+#: name taken from one) keeps its provenance through assignments, so
+#: `target = lib.load_config; inspect.getsource(target)` is still a read.
+ENGINE_OBJECT = "engine_object"
 _PARENT = {TESTS_FILE: TESTS_DIR, TESTS_DIR: ROOT, BIN_FILE: BIN_DIR, BIN_DIR: ROOT}
 _PATHY = {BIN_DIR, BIN_FILE}
 _PASS_THROUGH = {"resolve", "absolute", "expanduser", "as_posix", "strip", "rstrip",
@@ -304,7 +308,10 @@ class Scanner:
         if isinstance(node, ast.Name):
             if node.id == "__file__":
                 return TESTS_FILE
+            if node.id in module.engine_names:
+                return ENGINE_OBJECT
             return env.get(node.id)
+
         if isinstance(node, ast.Constant):
             if isinstance(node.value, str) and node.value.startswith("bin/"):
                 return BIN_FILE
@@ -323,6 +330,16 @@ class Scanner:
                 source, attr = module.imports[node.value.id]
                 if attr is None:
                     return self.modules[source].env.get(node.attr)
+            # implementation review attempt 2: an attribute of an engine
+            # object (lib.load_config) is one too, after every path rule
+            # above; a CALL's result (lib.load_config(root)) is data, not source
+            base = node.value
+            while isinstance(base, ast.Attribute):
+                base = base.value
+            if isinstance(base, ast.Name) and (base.id in module.engine_names
+                                               or base.id in module.engine_modules
+                                               or env.get(base.id) == ENGINE_OBJECT):
+                return ENGINE_OBJECT
             return None
         if isinstance(node, ast.Subscript):
             value = node.value
@@ -448,7 +465,7 @@ class Scanner:
         while isinstance(node, (ast.Attribute, ast.Call, ast.Subscript)):
             node = node.func if isinstance(node, ast.Call) else node.value
         if isinstance(node, ast.Name):
-            return node.id in module.engine_names or env.get(node.id) in (BIN_DIR, BIN_FILE, SOURCE)
+            return node.id in module.engine_names or env.get(node.id) in (BIN_DIR, BIN_FILE, SOURCE, ENGINE_OBJECT)
         return False
 
     def _is_read(self, node, env, module, cls) -> bool:
