@@ -621,6 +621,9 @@ ARCHIVE_CLASSIFICATION_READERS = {
     "handsoff_cohorts.observations_from_archive": "classify_archive_record",
     "handsoff_cohorts.is_fixture": "classify_archive_record",
     "handsoff_cohorts.aggregate": "classify_archive_record",
+    # #303: the rollback monitor reads completed runs and skips fixtures by
+    # the same rule.
+    "handsoff_evidence_routing.completed_decisions": "classify_archive_record",
 }
 
 #: #317: the functions that touch run_kind without classifying, each with the

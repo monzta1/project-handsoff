@@ -1080,6 +1080,10 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         raise HandsoffError("agent session resolution source is invalid")
     adaptive_routing = (validate_session_adaptive_routing(adaptive_routing)
                         if adaptive_routing is not None else None)
+    if adaptive_routing is not None and "evidence" in adaptive_routing:
+        import handsoff_evidence_routing  # #303: imports routing's own layers
+        adaptive_routing["evidence"] = handsoff_evidence_routing.validate_evidence_record(
+            adaptive_routing["evidence"])
     routing_contract = (validate_session_routing_contract(
         routing_contract, {"adapter": adapter, "model": requested_model})
         if routing_contract is not None else None)

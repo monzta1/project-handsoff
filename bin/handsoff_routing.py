@@ -404,11 +404,15 @@ def classify_adaptive_risk(risk_class: str) -> str:
 def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(), minimum_tier=None,
                            available_tiers=None, available_adapters=None, risk_class="routine",
                            mission_usage=None, fleet_usage=None,
-                           deterministic_checks_complete=False) -> dict:
+                           deterministic_checks_complete=False, evidence_selector=None) -> dict:
     """Select the lowest qualified tier, or return an auditable pause.
 
     Review and human approvals are obligations on their native workflow
     phases, not prerequisites for launching the worker that performs the job.
+
+    #303: `evidence_selector`, when given, may reorder only the candidates
+    admitted here (floor, model policy, capabilities, adapters) and only after
+    the budget allowed the launch; None runs the static choice unchanged.
     """
     from handsoff_config import DEFAULT_AGENT_MODEL, DEFAULT_MODEL_POLICY, SELECTABLE_AGENT_ADAPTERS, model_policy_allows, validate_model_policy  # #284 deferred: see module docstring
     profiles = adaptive_routing_profiles(cfg)
@@ -452,8 +456,14 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
                 "budget": budget, **routing_metadata}
     if candidates:
         _, _, tier, profile = min(candidates)
-        return {"state": "selected", "tier": tier, "profile": deepcopy(profile),
-                "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
+        selected = {"state": "selected", "tier": tier, "profile": deepcopy(profile),
+                    "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
+        if evidence_selector is not None:
+            chosen, record = evidence_selector(
+                [{"tier": item[2], "profile": deepcopy(item[3])} for item in sorted(candidates, key=lambda c: c[:2])],
+                {"tier": tier, "profile": deepcopy(profile)}, minimum_tier)
+            selected.update(tier=chosen["tier"], profile=deepcopy(chosen["profile"]), evidence=record)
+        return selected
     available = [tier for tier in ADAPTIVE_ROUTING_TIERS if tier in allowed and any(
         profile["adapter"] in adapters and model_policy_allows(model_policy, profile["adapter"], profile["model"])
         for profile in _tier_candidate_profiles(profiles[tier], tier, local)
@@ -599,7 +609,10 @@ def validate_session_routing_contract(value: object, profile: dict) -> dict:
 def validate_session_adaptive_routing(value: object) -> dict:
     required = {"risk_class", "tier", "adapter", "model", "profile", "reason",
                 "reviewer_required", "human_gate_required"}
-    if not isinstance(value, dict) or set(value) != required:
+    # #303: `evidence` is present only once evidence-assisted routing was
+    # activated; handsoff_evidence_routing validates its shape.
+    if not isinstance(value, dict) or set(value) - {"evidence"} != required \
+            or not isinstance(value.get("evidence", {}), dict):
         raise HandsoffError("session adaptive_routing has invalid fields")
     risk_class = classify_adaptive_risk(value.get("risk_class"))
     tier = value.get("tier")

@@ -878,6 +878,27 @@ The dry-run plan lists every operation with its `previous_hash` (spec hash befor
 
 The `ollama` adapter registers through the #304 contract with locality `local` and cost policy `local_compute`. It is never presented as Codex or Claude. It runs the architect, supervisor and reviewer roles, never the implementer, through Ollama's HTTP API at `OLLAMA_API_URL` (default `http://127.0.0.1:11434`) with a read-only tool loop (read a file, list files, search text, all confined to the project root) using Ollama's native tool calling. Preflight distinguishes service unavailable, model not pulled, model not loadable and ready. Local calls draw no cloud API budget but still count toward mission concurrency and any configured token budget. Capability, risk and policy floors apply on every launch path (adaptive, fallback and an explicit role profile), so a high-risk task never reaches a local model its floor does not permit. A local failure falls back to a configured cloud provider through the bounded replacement path, and a provider-reported model mismatch is refused as `model_identity_mismatch`.
 
+### Evidence-assisted routing, measured before activated (#299)
+
+The evidence line routes a managed role by what has actually worked, but only after measuring it. Each step stands on the one before:
+
+1. **Projection (#300).** `bin/handsoff_evidence.py` projects completed-run archives into one record per managed session, hash-bound to its source, with an outcome taxonomy.
+2. **Cohorts (#301).** `bin/handsoff_cohorts.py` groups those records with minimum samples, version splits and widening rules, and refuses to overclaim.
+3. **Shadow evaluation (#302).** `bin/handsoff_shadow.py` replays cohorts against a fixed temporal holdout and records shadow choices without changing any route.
+4. **Adapter contract and local provider (#304, #305).** Every provider, Codex, Claude and the local `ollama` one, implements one contract, so evidence and routing treat them alike.
+5. **Opt-in selection (#303).** `bin/handsoff_evidence_routing.py` selects by evidence only when switched on.
+
+Opt-in selection is **off by default**. With `[adaptive_routing] evidence_assisted` off, routing and the persisted `adaptive_routing` record are exactly what they were before this line existed. Turning it on needs an activation that names a #302 finding with its Mission Control approval, and is bound to the scoring policy version, so an engine upgrade that changes scoring leaves assistance off until it is activated again.
+
+When on, the order is fixed:
+
+- **Hard floors first.** A candidate below the risk-class floor is never chosen.
+- **Unusable evidence is excluded.** Candidates with insufficient, stale or conflicting evidence drop out, and each exclusion is recorded with its reason.
+- **Survivors are scored on cost per verified completion,** using separate input and output prices and the Wilson lower bound of success.
+- **The cheapest candidate meeting the threshold wins.** If none qualifies, the static choice is kept and labelled `static_fallback`.
+
+A rollback monitor runs at Phase 8. It compares verified outcomes of assisted decisions with static ones from the same window, and switches assistance off when retries, review rejections or incomplete runs get worse beyond a margin. Assistance then stays off until a fresh approved activation. Higher cost alone never triggers a rollback.
+
 ### Amendment lane
 
 Once a design is approved and the run is past Phase 2, a small correction to an already-approved criterion (a requirement sharpened after the Implementer's finding, a test command renamed) does not have to throw the design away. `amendment-open` reads the same `{"operations": [...]}` file as `criteria-apply`, plans it with the same planner, and classifies the delta itself. The caller never chooses: an `add`, a change to which criterion is the `primary_fix`, a verification downgrade, a change spanning two work items, a change to the work-item scope, or `--request-full-redesign` is `full_redesign` and refuses to open; everything else is `scoped`.

@@ -562,6 +562,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         # permit this role and risk, so routing never ranks a refused choice.
         available_adapters += [candidate for candidate in lib.contract_adapter_availability(cfg)
                                if adapters.local_floor_refusal(cfg, candidate, role, effective_risk_class) is None]
+        import handsoff_evidence_routing as evidence_routing
         routed = lib.route_adaptive_profile(
             route_cfg, required_capabilities=("text", "tool_use"),
             available_adapters=available_adapters, risk_class=effective_risk_class,
@@ -570,6 +571,9 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             # Deterministic-check draining gates repair/escalation
             # continuation, not an initial managed launch.
             deterministic_checks_complete=True,
+            # #303: None unless evidence-assisted routing was ever activated,
+            # so a never-activated launch takes the static path unchanged.
+            evidence_selector=evidence_routing.launch_selector(root, role=role, status=run_status),
         )
         if routed.get("state") != "selected":
             raise lib.HandsoffError(f"adaptive routing paused: {routed.get('reason')}")
@@ -582,6 +586,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             "reviewer_required": routed["reviewer_required"],
             "human_gate_required": routed["human_gate_required"],
         }
+        if "evidence" in routed:
+            adaptive_routing["evidence"] = routed["evidence"]
     # #305: every path above (Phase-2 selection, explicit role profile,
     # adaptive route) meets the same floors before anything is reserved.
     adapters.enforce_local_floors(cfg, role, (run_status or {}).get("risk_class"),
