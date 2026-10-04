@@ -10,18 +10,24 @@ REQ-007: plan_agent_fallback's mapping is unchanged and drives the fake
 provider; contract pre-flight names five states; local earns no risk floor.
 """
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
-from tests.test_handsoff_supervisor import BIN
+from tests.engine_patch import patch_engine
+from tests.fixture_state import write_version_pin
+from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
 sys.path.insert(0, str(BIN))
 import handsoff_adapters as adapters  # noqa: E402
+import handsoff_agent as agent  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+import handsoff_routing as routing  # noqa: E402
 
 NOW = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 
@@ -398,6 +404,108 @@ class NoLocalRiskFloor(_Registered):
         routine = adapters.route({"model_policy": {"allowed_adapters": ["fakelocal"]}}, risk_class="routine",
                                  available_adapters=["fakelocal"], deterministic_checks_complete=True)
         self.assertEqual((routine["tier"], routine["decision"]["locality"]), ("FAST", "local"))
+
+
+class PersistedLaunchContract(HandsoffTestCase):
+    """REQ-006 through the real launch path: build_launch_spec puts the
+    contract facts on adaptive_routing, and the session persists them."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
+        write_version_pin(self.tmp)
+        self.registered = []
+
+    def tearDown(self):
+        for name in self.registered:
+            adapters.unregister_adapter(name)
+        super().tearDown()
+
+    def _run(self, risk_class, model_policy=None):
+        result = run(["init", "Contract", "--risk-class", risk_class], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        status = self.read_status()
+        status.update(phase_number=4, phase=lib.PHASES[4], progress=40)
+        if model_policy is not None:
+            status["model_policy"] = model_policy
+        with lib.project_lock(self.tmp):
+            lib.commit(self.tmp, lib.load_config(self.tmp), status=status,
+                       event_kind="test_setup", event_message="phase four")
+
+    def _launch(self, role, only, *, persist=True):
+        with mock.patch.object(agent.lib, "validate_runtime_integrity"), \
+                mock.patch.object(agent, "build_role_input", return_value="task"), \
+                mock.patch.object(agent, "applicable_design_review_packet", return_value=None):
+            spec = agent.build_launch_spec(
+                self.tmp, role, "task", skip_preflight=True,
+                which=lambda name: f"/opt/test/{name}" if name in only else None)
+        if not persist:
+            route = spec.adaptive_routing
+            return spec, routing.validate_session_routing_contract(route["contract"], route["profile"])
+        session = lib.create_agent_session(
+            self.tmp, role=role, actor=f"test-{role}", adapter=spec.adapter,
+            requested_model=spec.model, resolution_source=spec.resolution_source,
+            adaptive_routing=spec.adaptive_routing)
+        persisted = self.read_status()["agent_sessions"][session["session_id"]]["adaptive_routing"]
+        self.assertEqual(persisted["contract"], spec.adaptive_routing["contract"])
+        return spec, persisted["contract"]
+
+    def test_claude_launch_persists_the_contract(self):
+        self._run("routine")
+        spec, contract = self._launch("implementer", ("claude",))
+        self.assertEqual(contract, {
+            "provider": "claude", "model": "claude-haiku-4-5-20251001", "locality": "remote",
+            "usage_source": "stream",
+            "cost_policy": {"policy": "catalog_pricing",
+                            "pricing": {"input_per_mtok": 1.0, "output_per_mtok": 5.0}},
+            "ceiling_enforcement": "enforced", "ceiling": spec.token_budget,
+        })
+
+    def test_codex_launch_persists_the_contract(self):
+        self._run("irreversible")
+        spec, contract = self._launch("architect", ("codex",))
+        self.assertEqual(contract, {
+            "provider": "codex", "model": "gpt-6-astra", "locality": "remote",
+            "usage_source": "exit_report",
+            "cost_policy": {"policy": "subscription_unpriced", "pricing": {}},
+            "ceiling_enforcement": "enforced", "ceiling": spec.token_budget,
+        })
+
+    def test_a_registered_unenforced_provider_persists_unenforced(self):
+        adapters.register_adapter(_fake(locality="local"))
+        self.registered.append("fake")
+        self._run("routine", {"allowed_adapters": ["fake"], "denied_models": [], "quota_substitution": True})
+        # Today's launch tables name only codex and claude; the fake joins
+        # them for this launch so the real builder can select it.
+        with patch_engine("SELECTABLE_AGENT_ADAPTERS", (*lib.SELECTABLE_AGENT_ADAPTERS, "fake")), \
+                mock.patch.dict(lib.CEILING_ENFORCEMENT, {"fake": "wrapper_enforced"}), \
+                mock.patch.dict(lib.ADAPTER_INTERMEDIATE_USAGE, {"fake": True}):
+            # claude is installed too so the crew resolves; the policy permits
+            # only fake. create_agent_session and the session profile check
+            # still accept only codex and claude, so this checks the contract
+            # block build_launch_spec puts on the record, validated.
+            spec, contract = self._launch("architect", ("fake", "claude"), persist=False)
+        self.assertEqual(spec.adapter, "fake")
+        self.assertEqual(contract, {
+            "provider": "fake", "model": "fake-fast", "locality": "local",
+            "usage_source": "exit_report", "cost_policy": {"policy": "local_free", "pricing": {}},
+            "ceiling_enforcement": "unenforced", "ceiling": "unenforced",
+        })
+
+    def test_the_validator_closes_the_block_and_keeps_older_sessions_valid(self):
+        self._run("routine")
+        spec, contract = self._launch("implementer", ("claude",))
+        route = dict(spec.adaptive_routing)
+        older = {key: value for key, value in route.items() if key != "contract"}
+        self.assertNotIn("contract", lib.validate_session_adaptive_routing(older))
+        for bad in ({**contract, "extra": 1}, {**contract, "provider": "codex"},
+                    {**contract, "locality": "moon"}, {**contract, "usage_source": ""},
+                    {**contract, "cost_policy": {"policy": "x", "pricing": {"input_per_mtok": 9.0}}},
+                    {**contract, "ceiling_enforcement": "maybe"},
+                    {**contract, "ceiling": "unenforced"},
+                    {**contract, "ceiling_enforcement": "unenforced", "ceiling": 60000}):
+            with self.subTest(bad=bad), self.assertRaises(lib.HandsoffError):
+                lib.validate_session_adaptive_routing({**route, "contract": bad})
 
 
 if __name__ == "__main__":

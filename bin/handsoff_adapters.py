@@ -29,9 +29,11 @@ from typing import Callable
 
 import handsoff_lib as lib
 from handsoff_core import HandsoffError
-from handsoff_routing import (
+from handsoff_routing import (  # noqa: F401
+    ADAPTER_LOCALITIES,
     ADAPTIVE_BUILTIN_PROVIDERS,
     ADAPTIVE_PROVIDER_REGISTRY,
+    CEILING_ENFORCEMENT_DECLARATIONS,
     register_adaptive_provider,
     route_adaptive_profile,
     unregister_adaptive_provider,
@@ -41,11 +43,6 @@ from handsoff_routing import (
 #: What a contract pre-flight can say, in the order a launch meets them.
 CONTRACT_PREFLIGHT_STATES = ("executable_missing", "auth_failure", "model_unavailable",
                              "runtime_not_ready", "ready")
-
-#: The two declarations an adapter may make about a budget ceiling.
-CEILING_ENFORCEMENT_DECLARATIONS = ("enforced", "unenforced")
-
-ADAPTER_LOCALITIES = ("remote", "local")
 
 
 @dataclass(frozen=True)
@@ -173,21 +170,31 @@ def ceiling_record(name: str, ceiling: int | None) -> int | str | None:
     return ceiling
 
 
+def _decision(profile: dict, ceiling: int | None) -> dict:
+    adapter = get_adapter(profile["adapter"])
+    return {
+        "provider": adapter.name, "model": profile["model"], "locality": adapter.locality,
+        "usage_source": adapter.usage_source,
+        "cost_policy": {"policy": adapter.cost_policy, "pricing": deepcopy(profile.get("pricing") or {})},
+        "ceiling": ceiling_record(adapter.name, ceiling),
+    }
+
+
 def route(cfg: dict | None = None, *, ceiling: int | None = None, **kwargs) -> dict:
     """`route_adaptive_profile`, plus the facts every decision records."""
     routed = route_adaptive_profile(cfg, **kwargs)
     decision = {"provider": None, "model": None, "locality": None, "usage_source": None,
                 "cost_policy": None, "ceiling": None}
     if routed.get("state") == "selected":
-        profile = routed["profile"]
-        adapter = get_adapter(profile["adapter"])
-        decision = {
-            "provider": adapter.name, "model": profile["model"], "locality": adapter.locality,
-            "usage_source": adapter.usage_source,
-            "cost_policy": {"policy": adapter.cost_policy, "pricing": deepcopy(profile.get("pricing") or {})},
-            "ceiling": ceiling_record(adapter.name, ceiling),
-        }
+        decision = _decision(routed["profile"], ceiling)
     return {**routed, "decision": decision}
+
+
+def session_contract(profile: dict, ceiling: int) -> dict:
+    """The contract block a routed managed session persists (REQ-006): the
+    decision facts plus the adapter's declared ceiling enforcement."""
+    return {**_decision(profile, ceiling),
+            "ceiling_enforcement": get_adapter(profile["adapter"]).ceiling_enforcement}
 
 
 #: Fallback is today's planner, unchanged: rate_limit with quota_substitution

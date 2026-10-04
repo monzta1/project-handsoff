@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
+import handsoff_adapters as adapters  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -576,6 +577,10 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         followup=implementation_delta is not None,
     )
     token_budget = budget_decision["ceiling"]
+    if adaptive_routing is not None:
+        # #304 REQ-006: the persisted route records the adapter contract facts,
+        # including an `unenforced` ceiling the adapter declares.
+        adaptive_routing["contract"] = adapters.session_contract(adaptive_routing["profile"], token_budget)
     # #290: the provider is told the ceiling minus the protocol reserve, so a
     # session that spends everything still has room to emit its verdict. The
     # planner already refused a reserve that cannot fit.

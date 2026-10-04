@@ -553,6 +553,7 @@ CREW_AVAILABILITY_SCOPE = "executable discovery only"
 # surface to exactly the moved set, so a symbol cannot be dropped from it
 # or added to it without the test saying so.
 from handsoff_routing import (  # noqa: E402,F401
+    ADAPTER_LOCALITIES,
     ADAPTIVE_BUDGET_FIELDS,
     ADAPTIVE_BUILTIN_PROVIDERS,
     ADAPTIVE_DEFAULT_BUDGETS,
@@ -594,6 +595,9 @@ from handsoff_routing import (  # noqa: E402,F401
     validate_adaptive_routing_budgets,
     validate_adaptive_routing_profiles,
     validate_session_adaptive_routing,
+    CEILING_ENFORCEMENT_DECLARATIONS,
+    SESSION_ROUTING_CONTRACT_FIELDS,
+    validate_session_routing_contract,
 )
 
 
@@ -606,6 +610,11 @@ ARCHIVE_CLASSIFICATION_READERS = {
     "miner.analyzer.classify_archive": "classify_archive_record",
     "handsoff_analyzer.scan": "classify_archive_record",
     "handsoff_evidence.project_archive_dir": "classify_archive_record",
+    # #301: cohorts classify each archive once and exclude fixtures through
+    # the same rule; aggregate reaches it through is_fixture.
+    "handsoff_cohorts.observations_from_archive": "classify_archive_record",
+    "handsoff_cohorts.is_fixture": "classify_archive_record",
+    "handsoff_cohorts.aggregate": "classify_archive_record",
 }
 
 #: #317: the functions that touch run_kind without classifying, each with the
