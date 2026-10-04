@@ -749,6 +749,10 @@ def cmd_status(args) -> int:
         "stall_warning": warning, "activity_note": activity, "activity": liveness, "live": live,
         "process_signal": liveness["process_signal"],
         "questions": lib.questions_view(status),
+        # #359: every live session by its own id; two implementers may be live
+        "live_sessions": [{field: session.get(field) for field in
+                           ("session_id", "role", "actor", "state", "started_at", "owned_paths")}
+                          for session in lib.live_agent_sessions(status)],
         "unattributed_criteria": lib.derive_work_items(status, acceptance, cfg)["unattributed_criteria"],
         "crew": lib.crew_view(cfg),
         "event_log_intact": not log_problems, "event_log_problems": log_problems,
@@ -3465,6 +3469,26 @@ def cmd_review_cap_override(args) -> int:
     return 0
 
 
+def _record_item_review_advisory(root, cfg, status, acceptance, record, item_id, reviewer_id) -> int:
+    """#360: a per-item review of a full-lane item before Phase 5 is advice
+    only. It appends one event and changes nothing else: no review_round, no
+    review_attempts, no item approval, no lane confirmation, so compute_errors
+    still requires the Phase 5 independent review."""
+    if not lib.item_criteria(acceptance, item_id):
+        print(f"SHIP_FEATURE_BLOCKED: {item_id} has no criteria to review")
+        return 1
+    implementer = (record.get("implemented_by") or status.get("implemented_by") or "").strip()
+    if implementer and reviewer_id.casefold() == implementer.casefold():
+        print(f"SHIP_FEATURE_BLOCKED: reviewer {reviewer_id} must differ from implementer {implementer}")
+        return 1
+    item_hash = lib.item_acceptance_hash(acceptance, item_id)
+    lib.commit(root, cfg, event_kind="work_item_review_advisory",
+               event_message=f"Advisory review of {item_id} before Phase 5",
+               by=reviewer_id, reviewer=reviewer_id, item_id=item_id, acceptance_hash=item_hash)
+    print(f"ADVISORY_ITEM_REVIEW_RECORDED: {item_id}")
+    return 0
+
+
 def cmd_record_review(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -3486,6 +3510,10 @@ def cmd_record_review(args) -> int:
         if getattr(args, "item", None):
             delivery = status.get("work_item_delivery") or {}
             record = delivery.get(args.item)
+            if isinstance(record, dict) and record.get("lane") in ("full", "escalated") \
+                    and status.get("phase_number", 0) < 5:
+                return _record_item_review_advisory(root, cfg, status, acceptance, record,
+                                                    args.item, reviewer_id)
             if not isinstance(record, dict) or record.get("lane") != "small-fix" \
                     or not record.get("confirmed_by"):
                 print(f"SHIP_FEATURE_BLOCKED: {args.item} is not a confirmed small-fix lane")
@@ -4671,11 +4699,11 @@ def cmd_recover(args) -> int:
         print(__import__("json").dumps(assessment, indent=2))
         return 0
 
-    def launcher(role):
+    def launcher(role, owned_paths=None):
         import handsoff_agent
         task = (f"Resume Phase from trusted Handsoff state as {role}: read handsoff-status.json, "
                 "handsoff-acceptance.json and the event log; do not repeat evidenced work.")
-        spec = handsoff_agent.build_launch_spec(root, role, task)
+        spec = handsoff_agent.build_launch_spec(root, role, task, owned_paths=owned_paths)  # #359
         return handsoff_agent.execute_with_recovery(spec, timeout=args.timeout)
 
     if getattr(args, "auto", False):

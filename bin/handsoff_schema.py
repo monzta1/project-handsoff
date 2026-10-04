@@ -160,7 +160,47 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  "budget_decision", "reviewer_isolation", "amendment_id", "progress",
                                  # #347: the effort this session actually ran at. OPTIONAL, so
                                  # every session recorded before the field existed stays valid.
-                                 "reasoning_effort"}
+                                 "reasoning_effort",
+                                 # #359: a concurrent implementer's declared paths, its isolated
+                                 # worktree and the outcome of applying it back. Absent on a sole
+                                 # implementer, so its session is exactly what it always was.
+                                 "owned_paths", "workspace", "apply"}
+
+
+#: #359: bounds on an implementer's declared ownership.
+MAX_OWNED_PATHS = 64
+MAX_OWNED_PATH_LENGTH = 512
+
+
+def validate_owned_paths(value: object) -> list[str]:
+    """#359: 1..64 normalized project-relative POSIX paths, each 1..512
+    characters, no leading /, no . or .. segment, no duplicates."""
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_OWNED_PATHS:
+        raise HandsoffError(f"owned_paths must be a list of 1 to {MAX_OWNED_PATHS} paths")
+    for path in value:
+        if not isinstance(path, str) or not 1 <= len(path) <= MAX_OWNED_PATH_LENGTH \
+                or path.startswith("/") or "\\" in path or "\x00" in path \
+                or any(part in {"", ".", ".."} for part in path.split("/")):
+            raise HandsoffError(f"owned path {path!r} is not a normalized project-relative path")
+    if len(set(value)) != len(value):
+        raise HandsoffError("owned_paths must not repeat a path")
+    return list(value)
+
+
+def _validate_session_workspace(value: object) -> None:
+    if not isinstance(value, dict) or set(value) != {"path", "launch_commit"} \
+            or not isinstance(value["path"], str) or not 1 <= len(value["path"]) <= 1024 \
+            or not isinstance(value["launch_commit"], str) \
+            or not re.fullmatch(r"[0-9a-f]{40}", value["launch_commit"]):
+        raise HandsoffError("workspace must be {path, launch_commit}")
+
+
+def _validate_session_apply(value: object) -> None:
+    if not isinstance(value, dict) or set(value) != {"state", "paths"} \
+            or value["state"] not in {"applied", "refused"} \
+            or not isinstance(value["paths"], list) or len(value["paths"]) > MAX_OWNED_PATHS \
+            or not all(isinstance(item, str) and 0 < len(item) <= 1024 for item in value["paths"]):
+        raise HandsoffError("apply must be {state: applied|refused, paths: at most 64 strings}")
 
 
 #: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
@@ -401,9 +441,10 @@ def _validate_failure_classification(value: object) -> dict:
     # measured silence and the configured limit ("no protocol output in 30
     # minutes (limit 15)"), which is the whole value of the record.
     # protocol_refused (#361) carries the validation error that refused the
-    # result, and orchestration_noop one of its role-named reasons. Every other
-    # category must match its label exactly so a category cannot be relabelled.
-    FREE_REASON = {"dispatch_failed", "protocol_silence", "protocol_refused"}
+    # result, and orchestration_noop one of its role-named reasons.
+    # ownership_violation (#359) names the paths that refused the apply. Every
+    # other category must match its label exactly so a category cannot be relabelled.
+    FREE_REASON = {"dispatch_failed", "protocol_silence", "protocol_refused", "ownership_violation"}
     if category not in FAILURE_CATEGORIES:
         raise HandsoffError("agent failure classification is not from the closed set")
     if category == "orchestration_noop":
@@ -411,9 +452,10 @@ def _validate_failure_classification(value: object) -> dict:
             raise HandsoffError("agent failure classification is not from the closed set")
     elif category not in FREE_REASON and value.get("reason") != _FAILURE_REASON_LABELS.get(category):
         raise HandsoffError("agent failure classification is not from the closed set")
-    if category in {"dispatch_failed", "protocol_refused"} and (not isinstance(value.get("reason"), str) or not value["reason"].strip() or len(value["reason"]) > 200):
+    if category in {"dispatch_failed", "protocol_refused", "ownership_violation"} and (not isinstance(value.get("reason"), str) or not value["reason"].strip() or len(value["reason"]) > 200):
         raise HandsoffError("dispatch failure reason must be 1 to 200 characters" if category == "dispatch_failed"
-                            else "protocol refusal reason must be 1 to 200 characters")
+                            else "protocol refusal reason must be 1 to 200 characters" if category == "protocol_refused"
+                            else "ownership violation reason must be 1 to 200 characters")
     digest = value.get("tail_sha256")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise HandsoffError("agent failure classification digest is invalid")
@@ -1338,6 +1380,17 @@ def validate_status_schema(status: dict) -> list[str]:
                                               or value not in PHASES):
                         errors.append(f"{label}.phase_number must be null or an integer from 1 through 8")
                     continue
+                if optional_field in {"owned_paths", "workspace", "apply"}:
+                    # #359: present only on an implementer launched with --owns
+                    if value is not None:
+                        try:
+                            {"owned_paths": validate_owned_paths, "workspace": _validate_session_workspace,
+                             "apply": _validate_session_apply}[optional_field](value)
+                        except HandsoffError as exc:
+                            errors.append(f"{label}.{optional_field}: {exc}")
+                        if session.get("role") != "implementer":
+                            errors.append(f"{label}.{optional_field} applies only to implementer sessions")
+                    continue
                 if optional_field == "progress":
                     # #215: the Implementer's per-criterion claims, validated one by one
                     if value is not None and (not isinstance(value, list) or len(value) > MAX_PROGRESS_RECORDS or not all(
@@ -1824,6 +1877,7 @@ FAILURE_CATEGORIES = (
     "reviewer_modified_project",
     "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
     "protocol_silence", "model_identity_mismatch", "protocol_refused",
+    "ownership_violation",
 )
 
 
@@ -1850,6 +1904,7 @@ _FAILURE_REASON_LABELS = {
     "target_service": "target service reported a failure",
     "model_identity_mismatch": "provider reported a different model than requested",
     "protocol_refused": "managed role structured result was refused by validation",
+    "ownership_violation": "concurrent implementer workspace could not be applied within its ownership",
 }
 
 

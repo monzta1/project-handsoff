@@ -11054,7 +11054,7 @@ class TestFailureClassification(unittest.TestCase):
         # and a digest -- nothing else.
         self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
         self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
-        self.assertEqual(len(lib.FAILURE_CATEGORIES), 22)
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 23)
         closed_set_reasons = {
             "cancelled": "run was cancelled",
             "timeout": "runner exceeded its timeout",
@@ -11078,6 +11078,7 @@ class TestFailureClassification(unittest.TestCase):
             "protocol_silence": "session produced no protocol output within the configured limit",
             "model_identity_mismatch": "provider reported a different model than requested",
             "protocol_refused": "managed role structured result was refused by validation",
+            "ownership_violation": lib._FAILURE_REASON_LABELS["ownership_violation"],
         }
         self.assertEqual(set(lib.FAILURE_CATEGORIES), set(closed_set_reasons))
         self.assertEqual(set(lib._FAILURE_REASON_LABELS), set(lib.FAILURE_CATEGORIES))
