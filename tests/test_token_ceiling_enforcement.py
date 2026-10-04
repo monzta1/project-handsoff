@@ -28,6 +28,7 @@ sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 from tests.fixture_state import write_version_pin
+from tests.guards import guard
 
 #: The session that reproduced the defect inside its own fix.
 OBSERVED_CEILING = 48_500
@@ -216,6 +217,7 @@ class TheLaunchCarriesTheBound(HandsoffTestCase):
         self.assertEqual(spec.token_budget, spec.provider_limit + lib.PROTOCOL_RESERVE_TOKENS)
         self.assertEqual(spec.ceiling_enforcement, "native_rollout_meter")
 
+    @guard
     def test_every_codex_launch_path_meters_the_provider_limit(self):
         """The fallback path is taken precisely when a session has already
         failed once, so an unreduced meter there is the worst place for it.

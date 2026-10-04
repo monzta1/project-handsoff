@@ -23,6 +23,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -86,6 +87,7 @@ def _defined_symbols(tree):
     return out
 
 
+@guard
 class TheReExportSurfaceIsExactlyTheMovedSet(unittest.TestCase):
     """REQ-001. A symbol cannot leave the surface or join it unnoticed."""
 
@@ -123,6 +125,7 @@ class TheReExportSurfaceIsExactlyTheMovedSet(unittest.TestCase):
                                 f"only {len(self.defined)} symbols; this is not the measured module")
 
 
+@guard
 class NothingUnrelatedEntersTheBoundary(unittest.TestCase):
     """REQ-003. The architectural rule, derived from the source."""
 
@@ -315,6 +318,7 @@ class BehaviourIsUnchangedAcrossTheExtraction(unittest.TestCase):
 class TheModuleIsRegisteredWhereItMustBe(unittest.TestCase):
     """#325's lesson: the file set lives in more than one registry."""
 
+    @guard
     def test_the_runtime_manifest_covers_it(self):
         source = (BIN / "handsoff_manifest.py").read_text(encoding="utf-8")
         self.assertIn("bin/handsoff_routing.py", source,

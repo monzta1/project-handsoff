@@ -25,6 +25,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
@@ -124,6 +125,7 @@ class ThePauseContractIsPreserved(HandsoffTestCase):
             self.assertFalse(probe.orphaned())
         self.assertEqual(probe.stop_requests, 0)
 
+    @guard
     def test_the_check_reads_no_run_state_at_all(self):
         """Derived from the source: if it consulted status, a closed or
         paused run could be mistaken for a departed one."""
@@ -161,10 +163,12 @@ class TheClockLoopStillGuardsItsOriginalContract(unittest.TestCase):
                         and node.name == "_performance_clock_loop")
         return ast.get_source_segment(source, function) or ""
 
+    @guard
     def test_the_loop_still_ticks_the_performance_clock(self):
         self.assertIn("performance_tick", self._loop_source(),
                       "the orphan check must not have displaced the clock")
 
+    @guard
     def test_the_loop_documents_why_this_early_exit_is_allowed(self):
         body = self._loop_source()
         self.assertIn("#318", body)

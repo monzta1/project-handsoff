@@ -439,6 +439,21 @@ Node suite. The required check `tests` gathers both, so `main` cannot take a
 change that reddens any module (#179). Refresh the shared inventory weights
 from a run's log when a shard drifts past the others.
 
+#### The guard run before every push (#371)
+
+A guard is a test case that reads engine source as text: a count, a
+registry entry, a call that must or must not appear. `python3 -m
+tests.guards` runs exactly the cases marked `@guard` across `tests/`.
+Run `python3 -m tests.guards` after the last edit and before every push,
+in the same step as the bump and docs before the first verify. It takes
+the repository digest before importing anything and again after the run,
+and writes `.handsoff/guards-record.json` only when every guard passed
+and the tree did not move; a failure, a skipped guard, an empty run or an
+edit during the run writes nothing and removes any old record.
+`ci-watch --pr N` refuses to start unless that record's digest equals the
+current repository digest, naming the command, so any later edit (docs
+included) asks for another guard run.
+
 #### Landing a lane in this repository, in order
 
 `main` is protected (required check `tests`, strict), so a lane lands

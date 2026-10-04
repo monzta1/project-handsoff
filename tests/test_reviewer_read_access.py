@@ -25,6 +25,7 @@ import unittest
 
 from tests.fixture_state import write_version_pin
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
@@ -82,6 +83,7 @@ class TheReviewerArgvCarriesReadAccess(unittest.TestCase):
                 self.assertNotIn("--add-dir", with_root)
 
 
+@guard
 class BothLaunchBuildersGiveItTheSameAccess(unittest.TestCase):
     """REQ-003 names both builders because they had their own copy of the
     allowlist expression, and #347 had just shipped with one of its two sites
@@ -242,6 +244,7 @@ class TheProbeAppliesOnlyToAClaudeReviewer(HandsoffTestCase):
                 which=lambda name: "/usr/local/bin/codex" if name == "codex" else None)
         self.assertEqual(spec.adapter, "codex")
 
+    @guard
     def test_the_gate_is_written_as_that_exact_pair(self):
         source = (BIN / "handsoff_agent.py").read_text(encoding="utf-8")
         self.assertEqual(source.count('if role == "reviewer" and adapter == "claude":'), 2,

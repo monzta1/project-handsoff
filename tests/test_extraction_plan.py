@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 
@@ -96,6 +97,7 @@ class ThePlanNumbersMatchTheCode(unittest.TestCase):
                     return tuple(int(n) for n in numbers[:3])
         self.fail(f"no table row with three counts for {label}")
 
+    @guard
     def test_the_routing_row_matches_the_extracted_module(self):
         symbols, _outbound, _inbound = self._claimed("model routing")
         tree = ast.parse(ROUTING.read_text(encoding="utf-8"))
@@ -109,6 +111,7 @@ class ThePlanNumbersMatchTheCode(unittest.TestCase):
         self.assertEqual(symbols, len(defined),
                          f"the plan claims {symbols} routing symbols; the module defines {len(defined)}")
 
+    @guard
     def test_the_monolith_line_count_claim_is_current(self):
         """The plan states the size at extraction and the size after. The
         second number must still describe the file."""
@@ -121,6 +124,7 @@ class ThePlanNumbersMatchTheCode(unittest.TestCase):
         self.assertIn(actual, claimed,
                       f"handsoff_lib.py is {actual} lines; the plan names {sorted(set(claimed))}")
 
+    @guard
     def test_the_deferred_primitives_list_matches_the_module(self):
         """The plan names what must move before the deferred imports can be
         lifted. If the module imports something absent from that list, the

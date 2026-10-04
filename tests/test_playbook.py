@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.engine_patch import patch_engine
+from tests.guards import guard
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
@@ -48,6 +49,7 @@ class PlaybookShipsWithTheEngineTests(unittest.TestCase):
         self.assertEqual(bad.returncode, 1)
         self.assertIn("playbook topic is not declared: nope", bad.stdout + bad.stderr)
 
+    @guard
     def test_every_playbook_file_is_in_the_manifest_and_the_wheel(self):
         files = sorted(p.name for p in PLAYBOOK.iterdir() if p.is_file())
         self.assertEqual(files, ["INDEX.md", "index.json", "landing.md", "lanes.md",

@@ -28,6 +28,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -239,11 +240,13 @@ class TheTemplateIsReachableAsShipped(unittest.TestCase):
         self.assertIn("templates/handsoff.toml", pyproject,
                       "the template must ship, or comparing it proves nothing")
 
+    @guard
     def test_the_template_is_covered_by_the_runtime_manifest(self):
         manifest_source = (BIN / "handsoff_manifest.py").read_text(encoding="utf-8")
         self.assertIn("templates/handsoff.toml", manifest_source,
                       "an unmanifested template can change without invalidating evidence")
 
+    @guard
     def test_the_cli_reads_it_on_init(self):
         cli = (BIN / "handsoff_cli.py").read_text(encoding="utf-8")
         self.assertIn("templates/handsoff.toml", cli,

@@ -12,6 +12,7 @@ from unittest import mock
 from tests.engine_patch import patch_engine
 
 from tests.test_handsoff_supervisor import ROOT, BIN, normalize_fixture_config, run
+from tests.guards import guard
 
 CURRENT_VERSION = json.loads((ROOT / "handsoff-runtime.json").read_text())["version"]
 
@@ -511,6 +512,7 @@ class DashboardOpenTests(unittest.TestCase):
                                             opener=lambda url: calls.append(url))
         self.assertEqual((result, calls), ("fallback", ["http://127.0.0.1:8767/"]))
 
+    @guard
     def test_other_platforms_and_no_chrome_use_the_plain_opener_once(self):
         calls = []
         lib.open_dashboard_url("http://x/", platform="linux", opener=lambda url: calls.append(url))

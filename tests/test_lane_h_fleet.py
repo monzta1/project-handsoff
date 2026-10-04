@@ -13,6 +13,7 @@ from unittest import mock
 
 from tests.test_fleet import _FleetFixture
 from tests.test_handsoff_supervisor import BIN, ROOT
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as agent  # noqa: E402
@@ -179,6 +180,7 @@ class ReviewerTreeBlameTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    @guard
     def test_the_runtime_judges_a_reviewer_by_one_scan(self):
         source = Path(agent.__file__).read_text()
         self.assertNotIn('repository_digest_before.get("digest") != lib.repository_digest(root', source)

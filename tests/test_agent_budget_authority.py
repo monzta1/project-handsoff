@@ -24,6 +24,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, ROOT
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_config as config  # noqa: E402
@@ -188,6 +189,7 @@ class AnExplicitCeilingIsApplied(unittest.TestCase):
             "calculated")
 
 
+@guard
 class BothLaunchBuildersThreadIt(unittest.TestCase):
     """REQ-006. #347 shipped with one of the two builders threaded and the
     other not, which left every failed-over role on the old behaviour. The

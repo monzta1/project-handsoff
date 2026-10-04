@@ -32,6 +32,7 @@ dist/
 .handsoff-regression.json
 .handsoff-regression-inventory.json
 .handsoff-test-progress.json
+.handsoff/guards-record.json
 .handsoff-*.json.bak
 handsoff-*.json.bak
 web/dist/

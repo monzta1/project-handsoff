@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from tests.guards import guard
 
 BIN = Path(__file__).resolve().parent.parent / "bin"
 ROOT = BIN.parent
@@ -105,6 +106,7 @@ class TheScopeIsMaterialized(unittest.TestCase):
         text = (self.scratch / manifest["entries"][0]["slice"]).read_text()
         self.assertTrue(text.startswith("# bin/handsoff_lib.py lines 1653-1666"))
 
+    @guard
     def test_the_slice_content_matches_the_source_range(self):
         source = (ROOT / "bin" / "handsoff_lib.py").read_text().splitlines()
         manifest = self._materialize([{"path": "bin/handsoff_lib.py", "start": 10, "end": 14}])

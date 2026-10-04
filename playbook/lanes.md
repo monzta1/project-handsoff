@@ -70,16 +70,19 @@ then `record-review --by <reviewer> --reaffirm --tests-executed yes
 --symptom-reproduced not_applicable`. This includes a rebase onto a moved
 `main` and a documented line count.
 
-**Before pushing.** Run the whole node suite and every python module your
-files cite; a red job on the PR is a wasted CI round. Regenerate the
+**Before pushing.** Run `python3 -m tests.guards` after the last edit and
+before every push, in the same step as the bump and docs before the first
+verify; `ci-watch` refuses without its record. Run the whole
+node suite and every python module your files cite; a red job on the PR is
+a wasted CI round. Regenerate the
 runtime manifest after the last edit to bin/, prompts/, schemas/ or
 dashboard/ (the engine refuses until you do, and names the command).
 
 **Parallel lanes are for separate RELEASES.** Anything landing in one release
 is ONE run with N items. Concurrency is free inside it: one design, then build
-the items side by side in one worktree. Three tickets shipped together on
-2026-09-25 as three runs cost 3 design reviews, 3 implementation reviews, 4 CI
-passes and 3 rebase cycles against one of each; the rebases came only from three branches racing to land.
+the items side by side in one worktree. Three tickets shipped as three runs on
+2026-09-25 cost 3 design reviews, 3 implementation reviews, 4 CI passes and 3
+rebases, not one each.
 
 Separate releases only: one worktree per lane off `main`, two at once only if
 they touch different files. The second to land rebases (keep both sides, then
@@ -90,8 +93,6 @@ one live verification at a time.
 **One criterion per Implementer launch (#215).** When the registry has
 more than three automated criteria, brief the managed Implementer one
 criterion (or one small group) per launch. A 120,000-token budget ran
-out twice on 2026-09-19, at seven and at three criteria, and each time the
-tree held a mostly usable diff with no account of what was done. Since
-v0.3.70 the Implementer prints `HANDSOFF_PROGRESS` per criterion and a
-relaunch receives the done list, but a launch that fits its budget never
-needs the account.
+out twice on 2026-09-19 (seven and three criteria), leaving diffs with no
+account of the work. `HANDSOFF_PROGRESS` now gives a relaunch the done list;
+a launch that fits its budget never needs it.

@@ -12,6 +12,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
+from tests.guards import guard
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bin"))
@@ -107,6 +108,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(record["episodes"][0]["holds"][0]["ended_at"],
                          (self.now + timedelta(minutes=20)).isoformat())
 
+    @guard
     def test_cli_and_dashboard_expose_runtime_controls_and_telemetry(self):
         parser = supervisor.build_parser()
         self.assertEqual(parser.parse_args(["monitor-poll", "--owner", "host-a"]).command, "monitor-poll")

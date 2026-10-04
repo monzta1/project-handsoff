@@ -1324,11 +1324,56 @@ def cmd_design_decline(args) -> int:
     return 0
 
 
+GUARDS_RECORD = Path(".handsoff") / "guards-record.json"
+GUARDS_COMMAND = "python3 -m tests.guards"
+_GUARDS_RECORD_KEYS = {"schema", "repository_digest", "executed", "guard_ids_sha256", "duration_ms", "passed_at"}
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_UTC_SECOND = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def _guards_record_digest(root: Path) -> str | None:
+    """#371: the digest a passing guard run bound itself to, or None when the
+    record is absent or not exactly the shape `python3 -m tests.guards` writes."""
+    path = root / GUARDS_RECORD
+    try:
+        if path.stat().st_size > 4096:
+            return None
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or set(record) != _GUARDS_RECORD_KEYS:
+        return None
+    ints = {key: record[key] for key in ("schema", "executed", "duration_ms")}
+    if any(type(value) is not int for value in ints.values()):
+        return None
+    if ints["schema"] != 1 or not 1 <= ints["executed"] <= 10000 or not 0 <= ints["duration_ms"] <= 600000:
+        return None
+    strings = [record[key] for key in ("repository_digest", "guard_ids_sha256", "passed_at")]
+    if not all(isinstance(value, str) for value in strings):
+        return None
+    if not (_HEX64.fullmatch(strings[0]) and _HEX64.fullmatch(strings[1]) and _UTC_SECOND.fullmatch(strings[2])):
+        return None
+    return strings[0]
+
+
+def _require_guards_record(root: Path, cfg: dict) -> None:
+    """#371: a watch starts only on a tree the guard run passed on, so a
+    stale count turns red locally instead of on a CI round."""
+    recorded = _guards_record_digest(root)
+    if recorded is None:
+        raise lib.HandsoffError(f"no passing guard run is recorded for this tree; run `{GUARDS_COMMAND}` "
+                                "after the last edit, then push and start the watch")
+    if recorded != lib.repository_digest(root, cfg):
+        raise lib.HandsoffError(f"the tree changed since the last passing guard run; run `{GUARDS_COMMAND}` "
+                                "after the last edit, then push and start the watch")
+
+
 def cmd_ci_watch(args) -> int:
     """#181: record that the run is waiting on a pull request's checks
     (--pr), or refresh and print the CI view (--poll). The host runs
     `ci-watch --pr N` right after `gh pr create`; Mission Control then
-    shows the CI row until every check has completed."""
+    shows the CI row until every check has completed. #371: starting a
+    watch needs a guard record bound to the current tree."""
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     if args.pr is None and not args.poll:
@@ -1336,6 +1381,7 @@ def cmd_ci_watch(args) -> int:
         return 1
     try:
         if args.pr is not None:
+            _require_guards_record(root, cfg)
             _enforce_refs_only_pr(root, args.pr)
             watch = lib.ci_watch_start(root, cfg, pr=args.pr, by=args.by)
             expected = f"{watch['expected_seconds']:.0f} s expected" if watch.get("expected_seconds") else lib.CI_NO_HISTORY_NOTE

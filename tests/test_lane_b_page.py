@@ -20,6 +20,7 @@ import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 from tests.fixture_state import write_version_pin
+from tests.guards import guard
 
 
 class HostIdentityTests(HandsoffTestCase):
@@ -175,6 +176,7 @@ class CiRowTruthTests(HandsoffTestCase):
         lib.ci_view(self.read_status(), self.tmp, self.cfg, now=T0 + timedelta(seconds=900), runner=gh, which=self.which, force=True)
         self.assertEqual(len(gh.calls), calls)
 
+    @guard
     def test_poll_prints_the_state_the_ledger_holds_after_the_poll(self):
         # the command uses the real runner; the PATH shim answers, so this checks the CLI's own shape
         source = (BIN / "handsoff_supervisor.py").read_text()

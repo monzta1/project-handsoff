@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, ROOT
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as agent  # noqa: E402
@@ -51,6 +52,7 @@ class ProtocolContractTests(unittest.TestCase):
         for prefix in prefixes:
             self.assertIn(f"## {prefix.rstrip(':')}", self.text, prefix)
 
+    @guard
     def test_the_broker_table_equals_the_code(self):
         """[#217] acceptance: every command's field set, both ways."""
         block = section(self.text, "HANDSOFF_BROKER_REQUEST")
@@ -69,6 +71,7 @@ class ProtocolContractTests(unittest.TestCase):
         self.assertNotIn("_exact_fields(request, {", source)
         self.assertGreaterEqual(source.count("BROKER_REQUEST_FIELDS[command]"), len(broker.BROKER_REQUEST_FIELDS) - 8)
 
+    @guard
     def test_the_review_result_table_equals_the_parser(self):
         block = section(self.text, "HANDSOFF_REVIEW_RESULT")
         rows = {cells[0].strip("`"): cells for cells in table_rows(block)}
@@ -84,6 +87,7 @@ class ProtocolContractTests(unittest.TestCase):
         for value in ("`approved`", "`changes_requested`", "`yes`", "`not_applicable`", "`unknown`"):
             self.assertIn(value, block)
 
+    @guard
     def test_the_proposal_decline_operation_and_progress_tables_equal_the_validators(self):
         proposal = section(self.text, "HANDSOFF_DESIGN_PROPOSAL")
         self.assertEqual([cells[0].strip("`") for cells in table_rows(proposal)], list(lib.DESIGN_PROPOSAL_FIELDS))

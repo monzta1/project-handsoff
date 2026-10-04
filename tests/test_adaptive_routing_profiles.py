@@ -2,6 +2,7 @@
 import sys
 import unittest
 from pathlib import Path
+from tests.guards import guard
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
 import handsoff_lib as lib
@@ -68,6 +69,7 @@ class AdaptiveRoutingProfileTests(unittest.TestCase):
         self.assertEqual(result["reason"], "required_tier_unavailable")
         self.assertIsNone(result["tier"])
 
+    @guard
     def test_defaults_are_deep_copied_for_every_caller(self):
         first = lib.adaptive_routing_profiles()
         first["FAST"]["capabilities"].append("invented")

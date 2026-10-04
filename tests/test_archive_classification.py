@@ -24,6 +24,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -114,6 +115,7 @@ class ReadersAreRegisteredNotRemembered(unittest.TestCase):
             self.assertEqual(callable_name, "classify_archive_record", reader)
             self.assertTrue(hasattr(lib, callable_name))
 
+    @guard
     def test_tokens_per_ticket_uses_the_shared_rule_rather_than_its_own(self):
         """Derived from the source: the old filter compared run_kind to the
         literal "test", which is what counted 81 fixture runs as product."""
@@ -127,6 +129,7 @@ class ReadersAreRegisteredNotRemembered(unittest.TestCase):
         self.assertNotIn('run_kind") == "test"', body,
                          "tokens_per_ticket still carries its own lenient filter")
 
+    @guard
     def test_the_analyzer_uses_the_shared_rule_rather_than_its_own(self):
         """The analyzer carried the identical lenient filter: an exact
         run_kind of "test". Its findings feed the Miner, so 81 fixture
@@ -141,6 +144,7 @@ class ReadersAreRegisteredNotRemembered(unittest.TestCase):
         self.assertNotIn('run_kind") == "test"', body,
                          "handsoff_analyzer.scan still carries its own lenient filter")
 
+    @guard
     def test_every_function_touching_run_kind_is_declared(self):
         """Closed set, both directions.
 

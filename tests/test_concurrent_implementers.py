@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from tests.engine_patch import patch_engine
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 from tests.fixture_state import write_version_pin
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
@@ -217,6 +218,7 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         with self.assertRaisesRegex(lib.HandsoffError, f"{unowned['session_id']}.*no declared ownership"):
             self._hold("b.txt")
 
+    @guard
     def test_the_ownership_check_is_what_closes_the_race(self):
         source = " ".join(inspect.getsource(agent_runtime.implementer_admission).split())
         self.assertIn("# The single-live-implementer rule (one live session per role) existed # "

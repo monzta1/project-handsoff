@@ -16,6 +16,7 @@ import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 from tests.fixture_state import force_status, write_version_pin
+from tests.guards import guard
 
 
 class FailedSessionSupersededTests(HandsoffTestCase):
@@ -101,6 +102,7 @@ class FailedSessionSupersededTests(HandsoffTestCase):
         self.assertNotEqual(card["state"], "failed")
         self.assertEqual(self.read_status()["agent_sessions"][sid]["state"], "failed", "the ledger keeps the failure")
 
+    @guard
     def test_adoption_rewrites_the_beacon_as_adopted_and_leaves_another_session_alone(self):
         sid = self._failed_reviewer(phase=5)
         self.assertEqual(lib.read_live_beacon(self.tmp)["state"], "failed")
