@@ -285,7 +285,12 @@ class Queue:
                 except (UnicodeDecodeError, ValueError):
                     seq = prior + 1
                 where = f"journal segment {name} line {len(raw_lines) + 1} seq {seq}"
-                if not last_segment or seq <= store_last_seq:
+                # Decide from the VERIFIED prefix, never the tail's own seq:
+                # the tail is unverified, so a forged seq must not license
+                # truncation. Only when every committed record (up to the
+                # store's last seq) is already in the verified prefix is the
+                # tail provably uncommitted (implementation review attempt 1).
+                if not last_segment or prior < store_last_seq or seq <= store_last_seq:
                     raise QueueCorrupt(f"{where} has no terminating newline but was committed")
                 if repair:
                     self._discard_torn_tail(path, data, cut, seq)

@@ -276,6 +276,21 @@ class RetryCancelJournalTest(QueueCase):
         self.assertIn("hash", str(caught.exception))
         self.assertEqual(self.segment().read_bytes(), tampered)
 
+    def test_a_forged_tail_seq_cannot_truncate_an_acknowledged_record(self):
+        # implementation review attempt 1: the tail's own (unverified) seq
+        # licensed truncation; raising it past the store's last seq and
+        # removing the newline must still be refused, not truncated
+        self.queue.submit("a", {"n": 1})
+        self.queue.submit("b", {"n": 1})
+        data = self.segment().read_bytes()
+        cut = data.rstrip(b"\n").rfind(b"\n") + 1
+        forged = data[:cut] + data[cut:].rstrip(b"\n").replace(b'"seq":2', b'"seq":3')
+        self.assertNotEqual(forged, data)
+        self.segment().write_bytes(forged)
+        with self.assertRaises(hq.QueueCorrupt):
+            self.fresh().load()
+        self.assertEqual(self.segment().read_bytes(), forged, "nothing truncated")
+
     def test_committed_record_without_its_newline_is_refused_not_truncated(self):
         self.queue.submit("a", {})
         self.queue.submit("b", {})
