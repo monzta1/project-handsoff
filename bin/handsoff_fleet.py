@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import fcntl
 import json
 import os
@@ -24,6 +25,21 @@ import handsoff_lib as lib  # noqa: E402
 
 FLEET_ASSET_ROOT = lib.engine_root() / "fleet"
 MAX_BODY = 8192
+FLEET_TOKEN_ENV = "HANDSOFF_FLEET_TOKEN"
+
+
+def fleet_token(token_file: str | Path | None = None) -> str | None:
+    """#285: the Fleet access token, from --token-file or HANDSOFF_FLEET_TOKEN;
+    None when neither holds a non-blank value."""
+    if token_file:
+        try:
+            value = Path(token_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise lib.HandsoffError(f"Fleet token file is unreadable: {exc}") from exc
+        if not value:
+            raise lib.HandsoffError("Fleet token file is empty")
+        return value
+    return (os.environ.get(FLEET_TOKEN_ENV) or "").strip() or None
 
 
 def fleet_engine_identity() -> dict:
@@ -661,8 +677,9 @@ class FleetServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, registry: Path | None = None, *, signals=None, signals_interval=None,
-                 issues=None, issues_interval=None):
+                 issues=None, issues_interval=None, token: str | None = None):
         self.registry = registry
+        self.token = token  # #285: when set, every /api request needs this Bearer value
         self.stopping = False
         self.started_at = datetime.now(timezone.utc).isoformat()
         # #152: one signal cache for the server's lifetime, filled by a daemon
@@ -705,6 +722,28 @@ class FleetHandler(BaseHTTPRequestHandler):
         self._headers(code, "application/json; charset=utf-8", len(body))
         self.wfile.write(body)
 
+    def _require_token(self, path) -> bool:
+        """#285: with a token configured, an /api request without the matching
+        Bearer value is answered 401 here, before any Origin check, body read
+        or mutation. True when the request may proceed."""
+        token = self.server.token
+        if not token or not (path == "/api" or path.startswith("/api/")):
+            return True
+        scheme, _, presented = (self.headers.get("Authorization") or "").strip().partition(" ")
+        if scheme.lower() == "bearer" and hmac.compare_digest(presented.strip().encode(), token.encode()):
+            return True
+        self.close_connection = True
+        body = json.dumps({"error": "Fleet access token required"}, separators=(",", ":")).encode()
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("WWW-Authenticate", 'Bearer realm="handsoff-fleet"')
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def _same_origin(self):
         # #124: loopback always; otherwise one HANDSOFF_PUBLIC_ORIGINS entry, exactly.
         try:
@@ -733,6 +772,8 @@ class FleetHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path = urlsplit(self.path).path
+        if not self._require_token(path):
+            return
         if path == "/api/fleet":
             self._json(HTTPStatus.OK, build_fleet(self.server.registry, public_base=self._public_base(),
                                                   signals=self.server.signals))
@@ -819,6 +860,8 @@ class FleetHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = urlsplit(self.path).path
+        if not self._require_token(path):
+            return
         if path not in {"/api/release-port", "/api/close-run", "/api/reopen-run", "/api/forget"}:
             self._json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
@@ -858,10 +901,13 @@ class FleetHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
 
 
-def serve(host="127.0.0.1", port=8765, *, open_browser=True, registry=None):
-    if host not in lib.DASHBOARD_LOOPBACK_HOSTS:
-        raise lib.HandsoffError("Fleet Mission Control binds to localhost only")
-    server = FleetServer((host, port), registry)
+def serve(host="127.0.0.1", port=8765, *, open_browser=True, registry=None, token_file=None):
+    token = fleet_token(token_file)
+    # #285: a non-loopback bind is refused unless an access token is configured.
+    if host not in lib.DASHBOARD_LOOPBACK_HOSTS and not token:
+        raise lib.HandsoffError(f"Fleet Mission Control binds to localhost only unless an access token is "
+                                f"configured ({FLEET_TOKEN_ENV} or --token-file)")
+    server = FleetServer((host, port), registry, token=token)
     url = f"http://127.0.0.1:{server.server_port}/"
     print(f"HANDSOFF_FLEET: {url}")
     if open_browser:
@@ -889,6 +935,7 @@ def main():
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8765)
     server.add_argument("--no-open", action="store_true")
+    server.add_argument("--token-file", help=f"file holding the Fleet access token (else {FLEET_TOKEN_ENV})")
     args = parser.parse_args()
     try:
         if args.command == "register":
@@ -897,7 +944,7 @@ def main():
         if args.command == "unregister":
             print("UNREGISTERED" if unregister_project(Path(args.root)) else "NOT_REGISTERED")
             return 0
-        return serve(args.host, args.port, open_browser=not args.no_open)
+        return serve(args.host, args.port, open_browser=not args.no_open, token_file=args.token_file)
     except lib.HandsoffError as exc:
         print(f"HANDSOFF_FLEET_BLOCKED: {exc}", file=sys.stderr)
         return 1
