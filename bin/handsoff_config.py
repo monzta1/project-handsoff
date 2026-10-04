@@ -37,6 +37,7 @@ from handsoff_routing import (
     ADAPTIVE_DEFAULT_RISK_POLICY,
     validate_adaptive_risk_policy,
     validate_adaptive_routing_budgets,
+    adaptive_provider_names,
     validate_adaptive_routing_profiles,
 )
 
@@ -841,10 +842,14 @@ def validate_model_policy(value: object) -> dict:
     if extra:
         raise HandsoffError("model_policy has unknown fields: " + ", ".join(sorted(extra)))
     adapters = value.get("allowed_adapters", ["codex", "claude"])
-    if not isinstance(adapters, list) or not adapters or len(adapters) > 2 \
-            or any(adapter not in {"codex", "claude"} for adapter in adapters) \
+    # #304: a provider registered through the adapter contract is a policy
+    # subject like codex and claude; the default still names only those two.
+    known = adaptive_provider_names()
+    if not isinstance(adapters, list) or not adapters or len(adapters) > len(known) \
+            or any(adapter not in known for adapter in adapters) \
             or len(set(adapters)) != len(adapters):
-        raise HandsoffError("model_policy.allowed_adapters must be a unique non-empty subset of codex and claude")
+        raise HandsoffError("model_policy.allowed_adapters must be a unique non-empty subset of codex and claude"
+                            " or a registered provider")
     denied = value.get("denied_models", [])
     if not isinstance(denied, list) or len(denied) > 32:
         raise HandsoffError("model_policy.denied_models must be an array of at most 32 model ids")
@@ -876,7 +881,8 @@ def validate_fallback_entries(value: object, *, field: str = "fallbacks") -> lis
         if not isinstance(profile, dict) or set(profile) != {"adapter", "model"}:
             raise HandsoffError(f"{field}[{index}] must contain exactly adapter and model")
         adapter = profile.get("adapter")
-        if adapter not in SELECTABLE_AGENT_ADAPTERS:
+        # #304: a registered contract provider is a valid fallback target.
+        if adapter not in adaptive_provider_names():
             raise HandsoffError(f"{field}[{index}].adapter must be exactly 'codex' or 'claude'")
         result.append({"adapter": adapter, "model": validate_agent_model(profile.get("model"))})
     return result

@@ -1,19 +1,21 @@
 {
   "files": {
-    "bin/handsoff_agent.py": "a3dfe9080298052171058e39317cb430e6cbd8cf3e64830c5f5f7eb6e13c5b7a",
-    "bin/handsoff_agent_runtime.py": "aad0fd18b5addb25b611b5075a5ee12576ae4c167ede63ced85259c0f9c95285",
+    "bin/handsoff_adapters.py": "d5d54c795d599555bc86188ad6da86a0f9d1310900ec67cdbcdb20c5341b70e8",
+    "bin/handsoff_agent.py": "8a6dad4972efcc71fe0545da82423d6460dc8cb67bba50bf90c3da099d1ac4f7",
+    "bin/handsoff_agent_runtime.py": "f6912a9f5527b0465fbe80f07c9e3496e8c2630261fcbb01590f9de31b0fee99",
     "bin/handsoff_broker.py": "3adaa7a23c4e1d08077011088aef16451816dcfa1e66681c2e764b723e6f7463",
     "bin/handsoff_cli.py": "1a666c092e32fcdca364d03039dafb3ed418e4adaea858576dbcfa4a59d9fd02",
     "bin/handsoff_close_transaction.py": "9ddeabb3b2c273c781300e1a1cff937bbd34bab93cabecfc837db1aaf82fe2b5",
-    "bin/handsoff_config.py": "ff000a29acf57308b15824e3e72b3e1996097b93ac9b7375a806f734480ad935",
+    "bin/handsoff_cohorts.py": "d7b253993955ab7dce8f65aa2d3b8a33420ba5f3a84c8a84c03fcd51d4b50e35",
+    "bin/handsoff_config.py": "d7b8a5cee2d411511a6349095a02721a57cbd1f43a414749f3b5de0895b85635",
     "bin/handsoff_core.py": "8ff8e1eebffaeb27f9a51cff2ad079e23eafaef4b9d9cd7d027af744c4ea2504",
     "bin/handsoff_dashboard.py": "050c44403922e8d81f8b4bd0ac65567ae2174f434105d6fecf2584ece90f3cf7",
     "bin/handsoff_evidence.py": "f165222647ec17f947547507f4a12c0fab4e199d5140ca08319800895ad1539d",
     "bin/handsoff_fleet.py": "5bcf4dd30df282818fc0ef5377e39e589747e358bf7fe26f21f99874aea3ba4b",
     "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
     "bin/handsoff_ledger.py": "bf79ba4b5cb2579a377974b5495b6c53589ad0d83fdd9de0f410c383417f77e5",
-    "bin/handsoff_lib.py": "bd0e0fe11cbcc04a94d04aec3cd2c9b1400c2538a1112307da730d0b7f4edf9f",
-    "bin/handsoff_manifest.py": "ae54f8fb3154891c1913bfe11d73eb1fa994e990af7e0ad40f6d3728c85121d4",
+    "bin/handsoff_lib.py": "b35d13e4f9b437ab85026b2d546a2a735beeb24b24bbf983dc4db67a0ea23cea",
+    "bin/handsoff_manifest.py": "001dbe805953c5d338999af1bb1748115d782e58654d0951d501ca0405f678d6",
     "bin/handsoff_mutation.py": "e34053e5f474239bf8e267e26f9a081fa985b3d4bf1ef74b7233b9ea97e22d96",
     "bin/handsoff_observability.py": "81acabac58691dac7fe17c8dbbdc9290a3ac3671ee9bdd0b1a8a7f1faefbfd61",
     "bin/handsoff_preflight.py": "31483bc4c2e853967c127fee6dc0fc7ed00f7012187394554d24c3280790acb5",
@@ -23,9 +25,9 @@
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",
     "bin/handsoff_release_transaction.py": "31318f55dc7f7e0d6d19903488164b81e3e458fdc54acc609c5de1b992fb6889",
     "bin/handsoff_resources.py": "b6eb4b32bcf781b38ea0aa1c8398a047add8dc00f59e9b2ad3093af6df0a949f",
-    "bin/handsoff_routing.py": "c0a676987fae6728d8903a950719debfafc543e451afece63872ebbeebb8d5f0",
+    "bin/handsoff_routing.py": "569662adc75ed8931b3b2385157aff5d95ab3d0d459520c077c138d312e079d1",
     "bin/handsoff_runtime_control.py": "9e0e6c5b8bc849982f99f53287ff9925c5972883a4b37460a3d6bc3dadeedb1e",
-    "bin/handsoff_schema.py": "35b135691421d0242b3f15c4dc2bccc38d14fc829eeaf6e6bb11d252d8631124",
+    "bin/handsoff_schema.py": "b6bdd78159ff068ccd70bf2a36993526132b648209503d9c1137461f2f38281a",
     "bin/handsoff_supervisor.py": "e11c349929e1781ea9d4089f66f8306f3e8e143df66bed9784e513fa4f918bb2",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/handsoff_update.py": "e2ceb0ac37c35495344be13f27674129ad7a27250bd7cf30c2b8b81021455b48",
@@ -69,5 +71,5 @@
     "templates/handsoff.toml": "da9cc7f7289a5bd4a61856acd47fb7ecfbf6423b2af8d5f0d7f9c3c8c9ee8d5f"
   },
   "schema": 1,
-  "version": "v0.4.6"
+  "version": "v0.4.7"
 }

@@ -553,7 +553,9 @@ CREW_AVAILABILITY_SCOPE = "executable discovery only"
 # surface to exactly the moved set, so a symbol cannot be dropped from it
 # or added to it without the test saying so.
 from handsoff_routing import (  # noqa: E402,F401
+    ADAPTER_LOCALITIES,
     ADAPTIVE_BUDGET_FIELDS,
+    ADAPTIVE_BUILTIN_PROVIDERS,
     ADAPTIVE_DEFAULT_BUDGETS,
     ADAPTIVE_DEFAULT_PROFILES,
     ADAPTIVE_DEFAULT_RISK_POLICY,
@@ -564,6 +566,7 @@ from handsoff_routing import (  # noqa: E402,F401
     ADAPTIVE_MODEL_CATALOG_SOURCE,
     ADAPTIVE_OPENAI_PROFILES,
     ADAPTIVE_PROFILE_FIELDS,
+    ADAPTIVE_PROVIDER_REGISTRY,
     ADAPTIVE_RISK_CLASSES,
     ADAPTIVE_ROUTING_TIERS,
     OPENAI_MODEL_CATALOG_SOURCE,
@@ -574,6 +577,7 @@ from handsoff_routing import (  # noqa: E402,F401
     adaptive_deployment_approval_required,
     adaptive_escalation_records,
     adaptive_fleet_usage,
+    adaptive_provider_names,
     adaptive_risk_policy,
     adaptive_routing_budgets,
     adaptive_routing_profiles,
@@ -583,12 +587,17 @@ from handsoff_routing import (  # noqa: E402,F401
     classify_adaptive_risk,
     evaluate_adaptive_budget,
     record_adaptive_check,
+    register_adaptive_provider,
     route_adaptive_profile,
+    unregister_adaptive_provider,
     validate_adaptive_check_plan,
     validate_adaptive_risk_policy,
     validate_adaptive_routing_budgets,
     validate_adaptive_routing_profiles,
     validate_session_adaptive_routing,
+    CEILING_ENFORCEMENT_DECLARATIONS,
+    SESSION_ROUTING_CONTRACT_FIELDS,
+    validate_session_routing_contract,
 )
 
 
@@ -601,6 +610,11 @@ ARCHIVE_CLASSIFICATION_READERS = {
     "miner.analyzer.classify_archive": "classify_archive_record",
     "handsoff_analyzer.scan": "classify_archive_record",
     "handsoff_evidence.project_archive_dir": "classify_archive_record",
+    # #301: cohorts classify each archive once and exclude fixtures through
+    # the same rule; aggregate reaches it through is_fixture.
+    "handsoff_cohorts.observations_from_archive": "classify_archive_record",
+    "handsoff_cohorts.is_fixture": "classify_archive_record",
+    "handsoff_cohorts.aggregate": "classify_archive_record",
 }
 
 #: #317: the functions that touch run_kind without classifying, each with the
@@ -6557,7 +6571,11 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
         raise HandsoffError("fallback planner role is invalid")
     if not isinstance(fallback_entries, list) or len(fallback_entries) > MAX_FALLBACK_PROFILES:
         raise HandsoffError(f"fallback planner entries must be an array of at most {MAX_FALLBACK_PROFILES}")
-    if not isinstance(adapter_availability, dict) or set(adapter_availability) != set(SELECTABLE_AGENT_ADAPTERS) \
+    # #304: a provider registered through the adapter contract may appear
+    # beside codex and claude; one left out of the map is unavailable.
+    known_adapters = set(adaptive_provider_names())
+    if not isinstance(adapter_availability, dict) \
+            or not set(SELECTABLE_AGENT_ADAPTERS) <= set(adapter_availability) <= known_adapters \
             or not all(isinstance(value, bool) for value in adapter_availability.values()):
         raise HandsoffError("fallback planner availability must map codex and claude to booleans")
     if not isinstance(attempted_identities, (list, tuple)):
@@ -6566,7 +6584,7 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
     previous_adapter = None
     for identity in attempted_identities:
         if not isinstance(identity, (list, tuple)) or len(identity) != 2 \
-                or identity[0] not in SELECTABLE_AGENT_ADAPTERS:
+                or identity[0] not in known_adapters:
             raise HandsoffError("fallback planner attempted identity is invalid")
         try:
             model = validate_agent_model(identity[1])
@@ -6612,7 +6630,7 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
         elif required_tier is not None and (catalog is None or
                 ADAPTIVE_ROUTING_TIERS.index(catalog[0]) < ADAPTIVE_ROUTING_TIERS.index(required_tier)):
             skipped.append({"index": index, "reason": "insufficient_capability"})
-        elif not adapter_availability[profile["adapter"]]:
+        elif not adapter_availability.get(profile["adapter"], False):
             skipped.append({"index": index, "reason": "adapter_unavailable"})
         elif identity in attempted:
             skipped.append({"index": index, "reason": "already_attempted"})

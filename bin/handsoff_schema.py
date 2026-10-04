@@ -29,7 +29,7 @@ from handsoff_config import (
     MAX_WORK_ITEMS, SELECTABLE_AGENT_ADAPTERS, SELECTABLE_AGENT_ROLES,
     VERIFICATION_REQUIREMENTS, validate_agent_model, validate_model_policy,
 )
-from handsoff_routing import classify_adaptive_risk, validate_session_adaptive_routing
+from handsoff_routing import classify_adaptive_risk, validate_session_adaptive_routing, validate_session_routing_contract
 
 
 
@@ -161,6 +161,9 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  # #347: the effort this session actually ran at. OPTIONAL, so
                                  # every session recorded before the field existed stays valid.
                                  "reasoning_effort",
+                                 # #304: the adapter contract facts of this launch's
+                                 # decision, routed or failover. OPTIONAL for older sessions.
+                                 "routing_contract",
                                  # #359: a concurrent implementer's declared paths, its isolated
                                  # worktree and the outcome of applying it back. Absent on a sole
                                  # implementer, so its session is exactly what it always was.
@@ -1355,6 +1358,14 @@ def validate_status_schema(status: dict) -> list[str]:
                             validate_session_adaptive_routing(value)
                         except HandsoffError as exc:
                             errors.append(f"{label}.adaptive_routing: {exc}")
+                    continue
+                if optional_field == "routing_contract":
+                    if value is not None:
+                        try:
+                            validate_session_routing_contract(
+                                value, {"adapter": session.get("adapter"), "model": session.get("requested_model")})
+                        except HandsoffError as exc:
+                            errors.append(f"{label}.routing_contract: {exc}")
                     continue
                 if optional_field == "budget_decision":
                     if value is not None:

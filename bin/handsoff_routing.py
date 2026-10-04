@@ -137,14 +137,77 @@ ADAPTIVE_OPENAI_PROFILES = {
 }
 
 
+#: #304: the provider registry route_adaptive_profile reads. Each entry names
+#: a provider and the documented profiles it offers per tier BESIDES the
+#: configured tier profile; claude offers none because the configured catalog
+#: is already its own. Registration order is the tie-break preference after
+#: the configured profile, so codex keeps the place it always had. A third
+#: provider joins through `handsoff_adapters.register_adapter`, which calls
+#: `register_adaptive_provider`; routing itself is not edited for it.
+ADAPTIVE_PROVIDER_REGISTRY = {"claude": {}, "codex": ADAPTIVE_OPENAI_PROFILES}
+
+
+#: The providers registration can never replace or remove.
+ADAPTIVE_BUILTIN_PROVIDERS = ("claude", "codex")
+
+
+def adaptive_provider_names() -> tuple[str, ...]:
+    """Every adapter name routing, model policy and fallback accept."""
+    return tuple(ADAPTIVE_PROVIDER_REGISTRY)
+
+
+def register_adaptive_provider(name: str, profiles: dict) -> None:
+    """Add one provider's per-tier routing profiles to the registry."""
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", name):
+        raise HandsoffError("provider name must be a lowercase identifier of at most 32 characters")
+    if name in ADAPTIVE_BUILTIN_PROVIDERS:
+        raise HandsoffError(f"provider {name} is built in and cannot be re-registered")
+    if not isinstance(profiles, dict) or set(profiles) - set(ADAPTIVE_ROUTING_TIERS):
+        raise HandsoffError("provider profiles must map routing tiers to profiles")
+    checked = {}
+    for tier, profile in profiles.items():
+        if not isinstance(profile, dict) or set(profile) != set(ADAPTIVE_PROFILE_FIELDS):
+            raise HandsoffError(f"provider {name} {tier} profile must carry exactly {', '.join(ADAPTIVE_PROFILE_FIELDS)}")
+        if profile["adapter"] != name:
+            raise HandsoffError(f"provider {name} {tier} profile names another adapter")
+        if not isinstance(profile["model"], str) or not profile["model"].strip():
+            raise HandsoffError(f"provider {name} {tier} model must be a non-empty string")
+        capabilities = profile["capabilities"]
+        if not isinstance(capabilities, list) or not capabilities \
+                or not all(isinstance(item, str) and item.strip() for item in capabilities):
+            raise HandsoffError(f"provider {name} {tier} capabilities must be a non-empty array of strings")
+        checked[tier] = deepcopy(profile)
+    ADAPTIVE_PROVIDER_REGISTRY[name] = checked
+
+
+def unregister_adaptive_provider(name: str) -> None:
+    """Remove a registered provider; built-in providers stay."""
+    if name in ADAPTIVE_BUILTIN_PROVIDERS:
+        raise HandsoffError(f"provider {name} is built in and cannot be removed")
+    ADAPTIVE_PROVIDER_REGISTRY.pop(name, None)
+
+
 def adaptive_catalog_profile(adapter: str, model: str) -> tuple[str, dict] | None:
     for tier, profile in ADAPTIVE_DEFAULT_PROFILES.items():
         if profile["adapter"] == adapter and profile["model"] == model:
             return tier, deepcopy(profile)
-    for tier, profile in ADAPTIVE_OPENAI_PROFILES.items():
-        if profile["adapter"] == adapter and profile["model"] == model:
-            return tier, deepcopy(profile)
+    for profiles in ADAPTIVE_PROVIDER_REGISTRY.values():
+        for tier, profile in profiles.items():
+            if profile["adapter"] == adapter and profile["model"] == model:
+                return tier, deepcopy(profile)
     return None
+
+
+def _tier_candidate_profiles(configured: dict, tier: str) -> list[dict]:
+    """The configured profile, then each registered provider's alternate for
+    the tier in registration order, without repeating an adapter/model pair."""
+    result = [configured]
+    for profiles in ADAPTIVE_PROVIDER_REGISTRY.values():
+        alternate = profiles.get(tier)
+        if alternate and (alternate["adapter"], alternate["model"]) not in \
+                {(item["adapter"], item["model"]) for item in result}:
+            result.append(alternate)
+    return result
 
 
 def validate_adaptive_routing_profiles(value: object) -> dict:
@@ -327,16 +390,12 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     if minimum_tier is not None and minimum_tier not in ADAPTIVE_ROUTING_TIERS:
         raise HandsoffError(f"minimum_tier must be one of {', '.join(ADAPTIVE_ROUTING_TIERS)}")
     allowed = set(ADAPTIVE_ROUTING_TIERS if available_tiers is None else available_tiers)
-    adapters = set(SELECTABLE_AGENT_ADAPTERS if available_adapters is None else available_adapters)
+    adapters = set((*SELECTABLE_AGENT_ADAPTERS, *adaptive_provider_names())
+                   if available_adapters is None else available_adapters)
     start = ADAPTIVE_ROUTING_TIERS.index(minimum_tier) if minimum_tier else 0
     candidates = []
     for tier in ADAPTIVE_ROUTING_TIERS[start:]:
-        tier_profiles = [profiles[tier]]
-        alternate = ADAPTIVE_OPENAI_PROFILES.get(tier)
-        if alternate and (alternate["adapter"], alternate["model"]) != \
-                (profiles[tier]["adapter"], profiles[tier]["model"]):
-            tier_profiles.append(alternate)
-        for preference, profile in enumerate(tier_profiles):
+        for preference, profile in enumerate(_tier_candidate_profiles(profiles[tier], tier)):
             missing = sorted(set(required) - set(profile["capabilities"]))
             if tier in allowed and profile["adapter"] in adapters and profile["model"] != DEFAULT_AGENT_MODEL \
                     and model_policy_allows(model_policy, profile["adapter"], profile["model"]) and not missing:
@@ -357,8 +416,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
                 "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
     available = [tier for tier in ADAPTIVE_ROUTING_TIERS if tier in allowed and any(
         profile["adapter"] in adapters and model_policy_allows(model_policy, profile["adapter"], profile["model"])
-        for profile in ([profiles[tier]] + ([ADAPTIVE_OPENAI_PROFILES[tier]]
-                                            if tier in ADAPTIVE_OPENAI_PROFILES else []))
+        for profile in _tier_candidate_profiles(profiles[tier], tier)
     )]
     reason_kind = "required_capability_unavailable" if not any(
         not (set(required) - set(profiles[tier]["capabilities"])) for tier in available
@@ -442,6 +500,50 @@ def adaptive_fleet_usage(root: Path, *, current_status: dict | None = None,
         for field in ADAPTIVE_BUDGET_FIELDS:
             total[field] += usage[field]
     return total
+
+
+#: #304: where an adapter runs, and the two declarations it may make about a
+#: budget ceiling. handsoff_adapters validates adapters against these.
+ADAPTER_LOCALITIES = ("remote", "local")
+CEILING_ENFORCEMENT_DECLARATIONS = ("enforced", "unenforced")
+
+#: #304 REQ-006: the adapter contract facts a routed session records.
+SESSION_ROUTING_CONTRACT_FIELDS = ("provider", "model", "locality", "usage_source",
+                                   "cost_policy", "ceiling_enforcement", "ceiling")
+
+
+def validate_session_routing_contract(value: object, profile: dict) -> dict:
+    """Validate a session's routing_contract (#304 REQ-006) against the
+    adapter and model the session actually launched with: set by both the
+    routed and the failover launch builders, so every decision carries it."""
+    if not isinstance(value, dict) or set(value) != set(SESSION_ROUTING_CONTRACT_FIELDS):
+        raise HandsoffError("session adaptive_routing contract has invalid fields")
+    if value["provider"] != profile["adapter"] or value["model"] != profile["model"]:
+        raise HandsoffError("session adaptive_routing contract does not match its profile")
+    if value["locality"] not in ADAPTER_LOCALITIES:
+        raise HandsoffError("session adaptive_routing contract locality must be remote or local")
+    if not isinstance(value["usage_source"], str) or not value["usage_source"].strip():
+        raise HandsoffError("session adaptive_routing contract usage_source must be non-empty")
+    cost = value["cost_policy"]
+    pricing = cost.get("pricing") if isinstance(cost, dict) else None
+    if not isinstance(cost, dict) or set(cost) != {"policy", "pricing"} \
+            or not isinstance(cost["policy"], str) or not cost["policy"].strip() \
+            or not isinstance(pricing, dict) \
+            or set(pricing) - {"input_per_mtok", "output_per_mtok"} \
+            or any(isinstance(rate, bool) or not isinstance(rate, (int, float))
+                   or rate - rate != 0 or rate < 0 for rate in pricing.values()) \
+            or ("pricing" in profile and pricing != (profile.get("pricing") or {})):
+        raise HandsoffError("session routing_contract cost_policy is invalid")
+    enforcement = value["ceiling_enforcement"]
+    if enforcement not in CEILING_ENFORCEMENT_DECLARATIONS:
+        raise HandsoffError("session adaptive_routing contract ceiling_enforcement must be enforced or unenforced")
+    ceiling = value["ceiling"]
+    if enforcement == "unenforced":
+        if ceiling != "unenforced":
+            raise HandsoffError("session adaptive_routing contract records a number for an unenforced ceiling")
+    elif isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling <= 0:
+        raise HandsoffError("session adaptive_routing contract ceiling must be a positive integer")
+    return deepcopy(value)
 
 
 def validate_session_adaptive_routing(value: object) -> dict:

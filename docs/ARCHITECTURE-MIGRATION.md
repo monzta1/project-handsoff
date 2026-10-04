@@ -41,7 +41,7 @@ anything below.**
 | **Engine resources and briefing** | **14** | core, ledger | 16 | **extracted, stage 4** |
 | **Agent runtime** | **154** | core, routing, config, ledger, resources | 57 | **extracted, stage 5** |
 | Fleet registry | n/a | n/a | n/a | **already its own module** |
-| **Model routing** | **36** | **2** | **11** | **extracted, v0.3.87** |
+| **Model routing** | **46** | **2** | **11** | **extracted, v0.3.87** |
 | **Dashboard projection** | **44** | core, routing, config, ledger, resources, agent_runtime | 20 | **extracted, stage 6** |
 | **Workflow state machine** | **47** | core, config, routing, ledger, resources, agent_runtime | 12 | **extracted, stage 7** |
 | **Schema validation** | **108** | core, config, routing | many | **extracted, stage 8** |
@@ -53,7 +53,7 @@ and its transactional write in `handsoff_ledger` (`commit`, `write_ahead`),
 which is where the journal has to live.
 
 At the first extraction the monolith was 15,013 lines across 466 top-level
-definitions. It is now 8,592 across 351, having taken the #342, #343, #349 and v0.4.2 to v0.4.6 work.
+definitions. It is now 8,610 across 351, having taken the #342, #343, #349 and v0.4.2 to v0.4.7 work.
 
 ## Stage 1: the core primitives
 
@@ -166,7 +166,7 @@ that existed nowhere, overstating the coupling by one. That is why the test
 compares in both directions: a rule that only asks "is every import declared"
 cannot see an entry that names nothing.
 
-**What is left in the monolith, measured.** `handsoff_lib` is 8,592 lines and
+**What is left in the monolith, measured.** `handsoff_lib` is 8,610 lines and
 351 top-level symbols. Seven clusters in it close cleanly under the reference
 graph and are the obvious next extractions:
 
@@ -286,7 +286,7 @@ cannot produce, which those tests had been asserting against. None of this was
 reachable while the validators lived above the ledger.
 
 **Re-export keeps the monolith naming every moved symbol**, so extracting a
-subsystem barely reduces the line count (15,013 to 8,592 after eight extractions and three features since,
+subsystem barely reduces the line count (15,013 to 8,610 after eight extractions and three features since,
 which is 44 percent out and still leaves the largest file in the tree).
 Line count is the wrong measure. What changes is that the boundary is
 enforced: `tests/test_routing_boundary.py` holds the import allowlist,

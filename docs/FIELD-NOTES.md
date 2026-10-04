@@ -509,3 +509,10 @@ Lesson: before filing an engine fix for a cost, read whether the engine already 
 3. **`verify-live` for v0.4.5 failed on a pre-flight that waited on stdin (#365).** Cause: the login-status call inherited the caller's stdin, and a fake adapter that reads stdin blocked until the 15-second timeout, reported as `auth_failure`. Fix: pre-flight calls that send no prompt run with `stdin=DEVNULL`.
 
 Lesson: when a check can only run after the fact, make the unsafe state impossible instead (a separate worktree) rather than detecting it later.
+
+### v0.4.7 field notes: cohorts that refuse to overclaim, and a contract for a third provider (#301 #304, 2026-10-03)
+
+1. **Routing evidence had no rules for when it counts (#301).** Fix: `bin/handsoff_cohorts.py` answers cohort queries with per-metric known counts, missing rates and a minimum sample, splits by model version after every widening, keeps `UNKNOWN` task class in its own bucket, and is a pure function of its inputs. Measured input from #300 shaped it: 98 percent of records lack full usage, so `mean_total_tokens` is usually null with its shortfall named, which is the honest answer.
+2. **Adding a provider meant editing the router (#304).** Fix: `bin/handsoff_adapters.py` is a declared contract that Codex and Claude implement with byte-identical behaviour (a parity matrix holds it), and a third provider registers without touching `route_adaptive_profile`.
+
+The two work items were built by two managed implementers at once, each in its own `--owns` worktree (#359, shipped in v0.4.6): the first lane to use it on itself.
