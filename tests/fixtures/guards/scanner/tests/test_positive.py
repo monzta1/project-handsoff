@@ -78,6 +78,15 @@ class HelperReads(unittest.TestCase):
     def test_method_helper(self):
         self.assertTrue(self._read())
 
+    def test_keyword_bound_helper(self):
+        self.assertTrue(read_path(path=ENGINE))
+
+    def test_instance_method_bound_helper(self):
+        self.assertTrue(self._read_from(ENGINE))
+
+    def _read_from(self, path):
+        return path.read_text()
+
     def _read(self):
         return self._path().read_bytes()
 

@@ -69,3 +69,6 @@ class ParsingFixtureText(unittest.TestCase):
 
     def test_getsource_of_a_tests_helper(self):
         self.assertIn("helper", inspect.getsource(_local_helper))
+
+    def test_getsource_of_a_standard_library_function(self):
+        self.assertIn("def dumps", inspect.getsource(json.dumps))

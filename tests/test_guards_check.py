@@ -42,6 +42,8 @@ POSITIVE = {
         "HelperReads.test_helper_through_a_module_attribute",
         "HelperReads.test_parameter_bound_helper",
         "HelperReads.test_method_helper",
+        "HelperReads.test_keyword_bound_helper",
+        "HelperReads.test_instance_method_bound_helper",
         "ConstantReads.test_constant_naming_a_bin_file",
         "ConstantReads.test_path_alias",
         "ConstantReads.test_module_level_source_constant",
@@ -147,6 +149,11 @@ class TheRunnerFailsClosed(FixtureRun):
 
     def test_a_discovery_error_fails_even_when_every_guard_passes(self):
         self.assert_failed_without_record("discovery_error", "gtests.test_load: discovery failed")
+
+    def test_a_guard_load_tests_leaves_out_still_counts_as_marked(self):
+        self.assert_failed_without_record(
+            "omitted_guard", "executed ids differ from the marker set",
+            "gtests.test_omit.Guards.test_omitted_guard")
 
     def test_zero_executed_guards_fails(self):
         self.assert_failed_without_record("no_guards", "no guard executed")

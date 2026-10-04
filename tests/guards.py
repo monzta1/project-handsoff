@@ -61,7 +61,9 @@ def is_guard(test: unittest.TestCase) -> bool:
 # file, or the text of a bin/ file. Names take their kind from assignments in
 # the function, the class, the module, or a tests module they import from.
 # A read is read_text(), read_bytes(), open() on a bin/ file, or
-# inspect.getsource() of anything not defined in the tests themselves.
+# inspect.getsource() of an engine object (a handsoff_* module or anything
+# under bin/). A call into a tests helper binds its receiver, positional and
+# keyword arguments to the helper's parameters by name.
 # ---------------------------------------------------------------------------
 
 TESTS_FILE, TESTS_DIR, ROOT, BIN_DIR, BIN_FILE, SOURCE = (
@@ -114,6 +116,12 @@ class _Module:
         self.engine_modules = {alias.asname or alias.name for node in ast.walk(tree)
                                if isinstance(node, ast.Import) for alias in node.names
                                if alias.name.startswith("handsoff")}
+        # ... and names taken from one: `from handsoff_lib import load_config`
+        self.engine_names = self.engine_modules | {
+            alias.asname or alias.name for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and not node.level and node.module
+            and (node.module.startswith("handsoff") or node.module.split(".")[0] == "bin")
+            for alias in node.names}
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.functions[node.name] = node
@@ -209,8 +217,9 @@ class Scanner:
         args = func.args
         params = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
         params += [a.arg for a in (args.vararg, args.kwarg) if a is not None]
-        for index, name in enumerate(params):
-            env[name] = bound[index] if index < len(bound) else None
+        given = dict(bound)
+        for name in params:
+            env[name] = given.get(name)
         for _ in range(2):
             for node in ast.walk(func):
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -389,8 +398,31 @@ class Scanner:
             return kind
         target = self._callee(func, module, cls)
         if target is not None:
-            return self._return_kind(*target, [self.kind(a, env, module, cls) for a in node.args])
+            *where, receiver = target
+            return self._return_kind(*where, self._bind_call(where[2], receiver, node, env, module, cls))
         return None
+
+    def _bind_call(self, func, receiver, node, env, module, cls) -> tuple:
+        """The kinds a call passes, keyed by the callee's parameter names.
+
+        A call through an instance or class (self.helper(x), Class(x),
+        Class.classmethod(x)) binds the receiver to the first parameter, so
+        the first argument lands on the second; keywords bind by name."""
+        args = func.args
+        positional = [a.arg for a in args.posonlyargs + args.args]
+        if receiver and positional and not any(
+                isinstance(d, ast.Name) and d.id == "staticmethod" for d in func.decorator_list):
+            positional = positional[1:]
+        bound = {}
+        for name, arg in zip(positional, node.args):
+            if isinstance(arg, ast.Starred):
+                break
+            bound[name] = self.kind(arg, env, module, cls)
+        named = set(positional) | {a.arg for a in args.kwonlyargs}
+        for keyword in node.keywords:
+            if keyword.arg in named:
+                bound[keyword.arg] = self.kind(keyword.value, env, module, cls)
+        return tuple(sorted(bound.items(), key=lambda item: item[0]))
 
     def _return_kind(self, module, cls, func, bound):
         key = ("ret", module.name, getattr(cls, "name", None), func.name, tuple(bound))
@@ -407,19 +439,23 @@ class Scanner:
 
     # -- reads and calls -----------------------------------------------------
 
-    def _defined_in_tests(self, node, module) -> bool:
-        while isinstance(node, (ast.Attribute, ast.Call)):
-            node = node.value if isinstance(node, ast.Attribute) else node.func
+    def _is_engine_object(self, node, env, module, cls) -> bool:
+        """Whether an inspect target is engine code: a handsoff_* module or anything under bin/."""
+        for part in ast.walk(node):
+            if isinstance(part, ast.Constant) and isinstance(part.value, str) \
+                    and (part.value.startswith("handsoff") or part.value.startswith("bin/")):
+                return True  # importlib.import_module("handsoff_lib"), a module loaded from bin/
+        while isinstance(node, (ast.Attribute, ast.Call, ast.Subscript)):
+            node = node.func if isinstance(node, ast.Call) else node.value
         if isinstance(node, ast.Name):
-            return (node.id in module.functions or node.id in module.classes
-                    or node.id in ("self", "cls") or node.id in module.imports)
+            return node.id in module.engine_names or env.get(node.id) in (BIN_DIR, BIN_FILE, SOURCE)
         return False
 
     def _is_read(self, node, env, module, cls) -> bool:
         func = node.func
         name = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
         if name in _SOURCE_READERS:
-            return bool(node.args) and not self._defined_in_tests(node.args[0], module)
+            return bool(node.args) and self._is_engine_object(node.args[0], env, module, cls)
         if isinstance(func, ast.Attribute) and name in ("read_text", "read_bytes", "open"):
             if self.kind(func.value, env, module, cls) == BIN_FILE:
                 return True
@@ -427,41 +463,51 @@ class Scanner:
             return self.kind(node.args[0], env, module, cls) == BIN_FILE
         return False
 
+    @staticmethod
+    def _with_receiver(found, receiver):
+        return None if found is None else (*found, receiver)
+
     def _callee(self, func, module, cls):
-        """(module, class, function) for a call that resolves inside the tests."""
+        """(module, class, function, receiver) for a call that resolves inside the tests.
+
+        `receiver` is True when the call binds the callee's first parameter
+        itself: an instance or class call, or a constructor."""
         if isinstance(func, ast.Name):
             if func.id in module.functions:
-                return module, None, module.functions[func.id]
+                return module, None, module.functions[func.id], False
             if func.id in module.classes:
-                found = self.find_method(module, module.classes[func.id], "__init__")
-                return found
+                return self._with_receiver(self.find_method(module, module.classes[func.id], "__init__"), True)
             ref = module.imports.get(func.id)
             if ref and ref[1] is not None:
                 target = self.modules[ref[0]]
                 if ref[1] in target.functions:
-                    return target, None, target.functions[ref[1]]
+                    return target, None, target.functions[ref[1]], False
                 if ref[1] in target.classes:
-                    return self.find_method(target, target.classes[ref[1]], "__init__")
+                    return self._with_receiver(self.find_method(target, target.classes[ref[1]], "__init__"), True)
             return None
         if not isinstance(func, ast.Attribute):
             return None
         owner = func.value
         if isinstance(owner, ast.Name) and owner.id in ("self", "cls") and cls is not None:
-            return self.find_method(module, cls, func.attr)
+            return self._with_receiver(self.find_method(module, cls, func.attr), True)
         if isinstance(owner, ast.Call) and isinstance(owner.func, ast.Name) and owner.func.id == "super" \
                 and cls is not None:
             for base_module, base in self.mro(module, cls)[1:]:
                 method = self._method(base, func.attr)
                 if method is not None:
-                    return base_module, base, method
+                    return base_module, base, method, True
             return None
         ref = self._class_ref(module, owner)
         if ref:
-            return self.find_method(*ref, func.attr)
+            found = self.find_method(*ref, func.attr)
+            # Class.method(x) passes the instance explicitly unless the method is a classmethod
+            classmethod_ = found is not None and any(
+                isinstance(d, ast.Name) and d.id == "classmethod" for d in found[2].decorator_list)
+            return self._with_receiver(found, classmethod_)
         if isinstance(owner, ast.Name) and owner.id in module.imports:
             source, attr = module.imports[owner.id]
             if attr is None and func.attr in self.modules[source].functions:
-                return self.modules[source], None, self.modules[source].functions[func.attr]
+                return self.modules[source], None, self.modules[source].functions[func.attr], False
         return None
 
     def reads(self, module, cls, func, bound=()) -> str | None:
@@ -486,7 +532,8 @@ class Scanner:
             elif isinstance(node, ast.Call):
                 target = self._callee(node.func, module, cls)
                 if target is not None:
-                    hop = self.reads(*target, [self.kind(a, env, module, cls) for a in node.args])
+                    *where, receiver = target
+                    hop = self.reads(*where, self._bind_call(where[2], receiver, node, env, module, cls))
                     if hop:
                         found = f"{where} -> {hop}"
             if found:
@@ -587,13 +634,33 @@ def _flatten(suite):
             yield item
 
 
-def collect(root: Path, package: str) -> tuple[list[unittest.TestCase], list[str]]:
-    """Import every <package>/test_*.py under root; return (guards, errors)."""
+def marked_in(module) -> set[str]:
+    """The guard ids a module defines, read from its objects, not from discovery.
+
+    A load_tests hook decides what discovery returns, so the marker set comes
+    from the module's own TestCase classes and functions instead; a guard the
+    hook leaves out is then missing from the run rather than from the set."""
+    prefix = unittest.TestLoader.testMethodPrefix
+    found = set()
+    for value in list(vars(module).values()):
+        if isinstance(value, type) and issubclass(value, unittest.TestCase):
+            for name in dir(value):
+                if name.startswith(prefix) and getattr(getattr(value, name, None), MARKER, False):
+                    found.add(f"{value.__module__}.{value.__qualname__}.{name}")
+        elif callable(value) and getattr(value, MARKER, False) \
+                and getattr(value, "__module__", None) == module.__name__:
+            found.add(f"{module.__name__}.{getattr(value, '__qualname__', value.__name__)}")
+    return found
+
+
+def collect(root: Path, package: str) -> tuple[list[unittest.TestCase], set[str], list[str]]:
+    """Import every <package>/test_*.py under root; return (guards, marked ids, errors)."""
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     loader = unittest.TestLoader()
     errors: list[str] = []
     guards: dict[str, unittest.TestCase] = {}
+    marked: set[str] = set()
     for path in sorted((root / package).glob("test_*.py")):
         name = f"{package}.{path.stem}"
         try:
@@ -603,6 +670,7 @@ def collect(root: Path, package: str) -> tuple[list[unittest.TestCase], list[str
                 raise
             errors.append(f"{name}: import failed: {type(exc).__name__}: {exc}")
             continue
+        marked |= marked_in(module)
         before = len(loader.errors)
         suite = loader.loadTestsFromModule(module)
         errors += [f"{name}: discovery failed: {e.strip().splitlines()[-1]}" for e in loader.errors[before:]]
@@ -611,7 +679,7 @@ def collect(root: Path, package: str) -> tuple[list[unittest.TestCase], list[str
                 errors.append(f"{name}: discovery failed: {test.id()}")
             elif is_guard(test):
                 guards.setdefault(test.id(), test)
-    return list(guards.values()), errors
+    return list(guards.values()), marked, errors
 
 
 def write_record(root: Path, digest_before: str, executed: list[str], duration_ms: int) -> Path:
@@ -666,10 +734,10 @@ def run(root: Path, package: str = "tests", ids_out: Path | None = None, stream=
             print(f"guards FAILED: {line}", file=stream)
         return 1
 
-    guards, errors = collect(root, package)
+    guards, marked, errors = collect(root, package)
     if errors:
         return fail(errors)
-    marked = sorted(test.id() for test in guards)
+    marked = sorted(marked)
     runner = unittest.TextTestRunner(stream=stream, verbosity=1, resultclass=GuardResult)
     result = runner.run(unittest.TestSuite(guards))
     executed = sorted(set(result.executed))
