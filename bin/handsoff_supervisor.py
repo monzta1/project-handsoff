@@ -110,6 +110,8 @@ OPERATION_REGISTRY = {
     # the run-owned dashboard runs it, and it only reads and transitions.
     "performance-watch": {"class": "automatic", "surface": "metrics-panel"},
     "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
+    # #302: applies one shadow recommendation, only with a Mission Control approval.
+    "shadow-apply": {"class": "operator-facing", "surface": "metrics-panel"},
 }
 
 RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"

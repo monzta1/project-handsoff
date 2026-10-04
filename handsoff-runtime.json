@@ -31,7 +31,7 @@
     "bin/handsoff_runtime_control.py": "9e0e6c5b8bc849982f99f53287ff9925c5972883a4b37460a3d6bc3dadeedb1e",
     "bin/handsoff_schema.py": "72df613cbcf9549795bd1423f6f19eadbe4bbf51c34b403ec707b75b26b00c14",
     "bin/handsoff_shadow.py": "a135dc042f817d40fcb673d8c8455924482c5f59018642fd5c1612d7f817d71d",
-    "bin/handsoff_supervisor.py": "97ffd616605f8e50be110985755e80064fcfc2edddc33f1db909712f3eee8e4f",
+    "bin/handsoff_supervisor.py": "fcdf2c2c7d532bb62f8c50ed81f69a4c153e0d2bf9439814250552fc4c9c3606",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/handsoff_update.py": "e2ceb0ac37c35495344be13f27674129ad7a27250bd7cf30c2b8b81021455b48",
     "bin/handsoff_workflow.py": "79ab325d026fd2721835accebe7926c87300c5d768dcbeee2307653eb0dbe777",
