@@ -947,6 +947,11 @@ def create_implementer_workspace(root: Path, session: dict) -> Path:
     workspace = session["workspace"]
     path = Path(workspace["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Review attempt 3: the host baseline is taken BEFORE seeding and checked
+    # again after, so a host edit that lands while the worktree is being
+    # seeded can never become the baseline and be overwritten at apply.
+    owned = session.get("owned_paths") or []
+    baseline = _owned_snapshot(root, owned)
     result = _git(root, "worktree", "add", "--detach", str(path), workspace["launch_commit"])
     if result.returncode != 0:
         raise HandsoffError(f"git worktree add failed: {result.stderr.strip()[:160]}")
@@ -964,7 +969,12 @@ def create_implementer_workspace(root: Path, session: dict) -> Path:
     # The host-edit baseline is the PROJECT's owned files at launch, not the
     # worktree's: git checks files out 0644/0755, so a host file at 0600
     # would otherwise read as a host edit at apply time.
-    manifest = {"seeded": seeded, "owned": _owned_snapshot(root, session.get("owned_paths") or [])}
+    if _owned_snapshot(root, owned) != baseline:
+        _git(root, "worktree", "remove", "--force", str(path))
+        shutil.rmtree(path, ignore_errors=True)
+        raise HandsoffError("an owned path changed in the project while the implementer workspace was "
+                            "being seeded; nothing was launched, retry the launch")
+    manifest = {"seeded": seeded, "owned": baseline}
     _workspace_manifest_path(workspace).write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     return path
 

@@ -424,6 +424,28 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertEqual((self.tmp / "a.txt").stat().st_mode & 0o7777, 0o600)
         self.assertNotEqual(self._read("a.txt"), "a by agent\n")
 
+    def test_a_host_edit_during_seeding_refuses_the_launch_and_is_kept(self):
+        # implementation review attempt 3: an edit between seeding and the
+        # baseline snapshot became the baseline and was overwritten at apply
+        real = agent_runtime._changed_since
+        edited = []
+
+        def changed_since(cwd, commit_sha, pathspecs=None):
+            if not edited and Path(cwd).resolve() == self.tmp.resolve():
+                (self.tmp / "a.txt").write_text("host edit during seeding\n")
+                edited.append(True)
+            return real(cwd, commit_sha, pathspecs)
+
+        def work(cwd):
+            (cwd / "a.txt").write_text("a by agent\n")
+        with mock.patch("sys.stdout", io.StringIO()), \
+                mock.patch.object(agent_runtime, "_changed_since", changed_since):
+            code, error = self._launch(self._spec("a.txt"), work=work)
+        self.assertTrue(edited, "the edit was injected while seeding")
+        self.assertIsNotNone(error)
+        self.assertIn("changed in the project while the implementer workspace was being seeded", str(error))
+        self.assertEqual(self._read("a.txt"), "host edit during seeding\n", "the host edit survives")
+
     def test_an_untouched_0600_file_is_applied_and_keeps_its_mode(self):
         # the baseline is the project at launch, not git's 0644 checkout
         (self.tmp / "a.txt").chmod(0o600)
