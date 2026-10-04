@@ -1366,6 +1366,9 @@ class DashboardServer(ThreadingHTTPServer):
         # answer /api/ownership or to authorize /api/shutdown.
         self.run_token = run_token
         self.root_sha256 = root_sha256
+        # #302: minted per server, held in memory only, served to the page.
+        # Only a request carrying it may record a shadow routing approval.
+        self.pilot_token = lib.new_dashboard_run_token()
         self.stopping = False
         # #318: consecutive ticks on which the served root was absent. A
         # single stat is not evidence a directory is gone for good, so the
@@ -1705,6 +1708,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             asset_path = ASSET_ROOT / asset[0]
             try:
                 payload = asset_path.read_bytes()
+                if asset[0] == "index.html":
+                    # #302 implementation review: the Pilot token rides in the
+                    # page itself, never on an API a cross-origin page or a
+                    # bare client can call; another origin cannot read this
+                    # HTML, and /api/shadow-approval also requires a
+                    # same-origin Origin. A same-user process that fetches
+                    # this page is the documented boundary.
+                    payload = payload.replace(
+                        b'<meta charset="utf-8">',
+                        b'<meta charset="utf-8">\n  <meta name="handsoff-pilot-token" content="'
+                        + self.server.pilot_token.encode("ascii") + b'">', 1)
             except OSError:
                 payload = b"Dashboard assets are missing. Copy the dashboard/ directory beside bin/."
                 self._headers(HTTPStatus.INTERNAL_SERVER_ERROR, "text/plain; charset=utf-8", len(payload))
@@ -1726,7 +1740,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "/api/init", "/api/operator-action", "/api/launch-role", "/api/verify", "/api/verify-live",
                         "/api/lane-confirm", "/api/tranche-approval",
                         "/api/regression-decision", "/api/question-answer", "/api/question-answers",
-                        "/api/design-review-authorize", "/api/pilot-note", "/api/amendment-approval"}:
+                        "/api/design-review-authorize", "/api/pilot-note", "/api/amendment-approval",
+                        "/api/shadow-approval"}:
             self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
             return
         if not self._same_origin_allowed():
@@ -1993,6 +2008,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 record = lib.answer_question(self.server.project_root, question_id=requested["question_id"],
                                              by="Mission Control Pilot", text=requested["text"])
                 self._json_response(HTTPStatus.OK, {"ok": True, "question_id": record["question_id"]})
+                return
+            if path == "/api/shadow-approval":
+                # #302: the only writer of a shadow routing approval. Bound to
+                # the finding id and the sha256 of its exact proposed change.
+                if set(requested) != {"pilot_token", "finding"} \
+                        or not isinstance(requested.get("pilot_token"), str) \
+                        or not isinstance(requested.get("finding"), dict):
+                    raise lib.HandsoffError("shadow approval requires pilot_token and finding")
+                if not hmac.compare_digest(requested["pilot_token"].encode("utf-8"),
+                                           self.server.pilot_token.encode("utf-8")):
+                    self._json_response(HTTPStatus.FORBIDDEN, {"ok": False, "error": "Pilot token mismatch"})
+                    return
+                import handsoff_shadow
+                record = handsoff_shadow.record_approval(self.server.project_root, requested["finding"])
+                self._json_response(HTTPStatus.OK, {"ok": True, "approval": record})
                 return
             if path == "/api/pilot-note":
                 # #49: the header note box; same audited path as the CLI,

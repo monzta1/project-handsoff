@@ -51,8 +51,10 @@ from handsoff_config import (
     DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
     DEFAULT_MODEL_POLICY,
     HOST_AGENT_ADAPTER,
+    LAUNCHABLE_AGENT_ADAPTERS,
     SELECTABLE_AGENT_ADAPTERS,
     SELECTABLE_AGENT_ROLES,
+    adapter_serves_role,
     load_config,
     model_policy_allows,
     validate_agent_model,
@@ -1068,8 +1070,11 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             raise HandsoffError("--owns applies to implementer sessions only")
         owned_paths = validate_owned_paths(list(owned_paths))
     actor = validate_agent_actor(actor)
-    if adapter not in SELECTABLE_AGENT_ADAPTERS:
-        raise HandsoffError("agent session adapter must be codex or claude")
+    if adapter not in LAUNCHABLE_AGENT_ADAPTERS:
+        raise HandsoffError("agent session adapter must be codex, claude or a registered contract adapter")
+    if not adapter_serves_role(adapter, role):
+        # #305: refused before any id, reservation or event exists.
+        raise HandsoffError(f"agent session refused: {adapter} does not serve the {role} role")
     requested_model = validate_agent_model(requested_model)
     if resolution_source not in AGENT_SESSION_RESOLUTION_SOURCES:
         raise HandsoffError("agent session resolution source is invalid")

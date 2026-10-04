@@ -198,11 +198,50 @@ def adaptive_catalog_profile(adapter: str, model: str) -> tuple[str, dict] | Non
     return None
 
 
-def _tier_candidate_profiles(configured: dict, tier: str) -> list[dict]:
+#: #305: the source a local routing profile cites. A local model has no
+#: provider catalog; its profile comes from the project's own declaration.
+LOCAL_PROFILE_SOURCE_PREFIX = "local:"
+
+
+def validate_local_routing_profile(profile: object, tier: str) -> dict:
+    """#305: a profile a project declared for a registered local provider.
+    It cannot be checked against a catalog, so it is checked for shape and
+    for what it may not claim: a price, or a provider that is built in."""
+    if not isinstance(profile, dict) or set(profile) != set(ADAPTIVE_PROFILE_FIELDS):
+        raise HandsoffError(f"local routing profile {tier} has invalid fields")
+    adapter, model = profile["adapter"], profile["model"]
+    if adapter in ADAPTIVE_BUILTIN_PROVIDERS or adapter not in ADAPTIVE_PROVIDER_REGISTRY:
+        raise HandsoffError(f"local routing profile {tier} must name a registered local provider")
+    if not isinstance(model, str) or not model.strip() or model != model.strip():
+        raise HandsoffError(f"local routing profile {tier} model must be a non-empty string")
+    capabilities = profile["capabilities"]
+    if not isinstance(capabilities, list) or not capabilities \
+            or not all(isinstance(item, str) and item.strip() for item in capabilities):
+        raise HandsoffError(f"local routing profile {tier} capabilities must be non-empty strings")
+    limits = profile["limits"]
+    if not isinstance(limits, dict) or any(not isinstance(k, str) or not isinstance(v, int)
+                                           or isinstance(v, bool) or v < 0 for k, v in limits.items()):
+        raise HandsoffError(f"local routing profile {tier} limits must map names to non-negative integers")
+    if profile["pricing"] != {}:
+        raise HandsoffError(f"local routing profile {tier} cannot claim a catalog price")
+    if profile["source"] != LOCAL_PROFILE_SOURCE_PREFIX + adapter:
+        raise HandsoffError(f"local routing profile {tier} must cite {LOCAL_PROFILE_SOURCE_PREFIX}{adapter}")
+    return deepcopy(profile)
+
+
+def _local_profiles(cfg: dict | None) -> dict:
+    raw = (cfg or {}).get("local_routing_profiles") or {}
+    if not isinstance(raw, dict) or set(raw) - set(ADAPTIVE_ROUTING_TIERS):
+        raise HandsoffError("local_routing_profiles must map routing tiers to profiles")
+    return {tier: validate_local_routing_profile(profile, tier) for tier, profile in raw.items()}
+
+
+def _tier_candidate_profiles(configured: dict, tier: str, local: dict | None = None) -> list[dict]:
     """The configured profile, then each registered provider's alternate for
-    the tier in registration order, without repeating an adapter/model pair."""
+    the tier in registration order, then a declared local profile (#305),
+    without repeating an adapter/model pair."""
     result = [configured]
-    for profiles in ADAPTIVE_PROVIDER_REGISTRY.values():
+    for profiles in (*ADAPTIVE_PROVIDER_REGISTRY.values(), local or {}):
         alternate = profiles.get(tier)
         if alternate and (alternate["adapter"], alternate["model"]) not in \
                 {(item["adapter"], item["model"]) for item in result}:
@@ -373,6 +412,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     """
     from handsoff_config import DEFAULT_AGENT_MODEL, DEFAULT_MODEL_POLICY, SELECTABLE_AGENT_ADAPTERS, model_policy_allows, validate_model_policy  # #284 deferred: see module docstring
     profiles = adaptive_routing_profiles(cfg)
+    local = _local_profiles(cfg)
     model_policy = validate_model_policy((cfg or {}).get("model_policy", DEFAULT_MODEL_POLICY))
     risk_class = classify_adaptive_risk(risk_class)
     policy = adaptive_risk_policy(cfg)
@@ -395,7 +435,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     start = ADAPTIVE_ROUTING_TIERS.index(minimum_tier) if minimum_tier else 0
     candidates = []
     for tier in ADAPTIVE_ROUTING_TIERS[start:]:
-        for preference, profile in enumerate(_tier_candidate_profiles(profiles[tier], tier)):
+        for preference, profile in enumerate(_tier_candidate_profiles(profiles[tier], tier, local)):
             missing = sorted(set(required) - set(profile["capabilities"]))
             if tier in allowed and profile["adapter"] in adapters and profile["model"] != DEFAULT_AGENT_MODEL \
                     and model_policy_allows(model_policy, profile["adapter"], profile["model"]) and not missing:
@@ -416,7 +456,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
                 "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
     available = [tier for tier in ADAPTIVE_ROUTING_TIERS if tier in allowed and any(
         profile["adapter"] in adapters and model_policy_allows(model_policy, profile["adapter"], profile["model"])
-        for profile in _tier_candidate_profiles(profiles[tier], tier)
+        for profile in _tier_candidate_profiles(profiles[tier], tier, local)
     )]
     reason_kind = "required_capability_unavailable" if not any(
         not (set(required) - set(profiles[tier]["capabilities"])) for tier in available
@@ -459,16 +499,26 @@ def adaptive_usage(status: dict) -> dict:
               if isinstance(session, dict) and isinstance(session.get("adaptive_routing"), dict)]
     repairs = sum(1 for attempt in ((status or {}).get("review_attempts") or [])
                   if isinstance(attempt, dict) and attempt.get("disposition") == "changes_requested")
+    # #305: premium calls and premium agents meter paid cloud capacity, so a
+    # session on a local adapter draws none of it; it is still a call, so it
+    # counts toward total_calls like any other.
+    cloud = [session for session in routed if not _local_session(session)]
     return {
         "premium_calls": sum(_adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM"
-                             for session in routed),
+                             for session in cloud),
         "repair_rounds": repairs,
         "total_calls": len(routed),
         "concurrent_premium_agents": sum(
             session.get("state") in AGENT_SESSION_LIVE_STATES
-            and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in routed
+            and _adaptive_model_reconciliation(session)["effective_tier"] == "PREMIUM" for session in cloud
         ),
     }
+
+
+def _local_session(session: dict) -> bool:
+    """#305: whether a session ran on a local adapter, by its recorded contract."""
+    contract = session.get("routing_contract")
+    return isinstance(contract, dict) and contract.get("locality") == "local"
 
 
 def adaptive_fleet_usage(root: Path, *, current_status: dict | None = None,
@@ -555,8 +605,12 @@ def validate_session_adaptive_routing(value: object) -> dict:
     tier = value.get("tier")
     if tier not in ADAPTIVE_ROUTING_TIERS:
         raise HandsoffError("session adaptive_routing tier is invalid")
-    profiles = validate_adaptive_routing_profiles({tier: value.get("profile")})
-    profile = profiles[tier]
+    raw_profile = value.get("profile")
+    if isinstance(raw_profile, dict) and isinstance(raw_profile.get("source"), str) \
+            and raw_profile["source"].startswith(LOCAL_PROFILE_SOURCE_PREFIX):
+        profile = validate_local_routing_profile(raw_profile, tier)  # #305
+    else:
+        profile = validate_adaptive_routing_profiles({tier: raw_profile})[tier]
     if value.get("adapter") != profile["adapter"] or value.get("model") != profile["model"]:
         raise HandsoffError("session adaptive_routing pair does not match its profile")
     if not isinstance(value.get("reason"), str) or not value["reason"].strip():

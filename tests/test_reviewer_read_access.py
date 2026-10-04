@@ -17,6 +17,7 @@ project file would refuse launches #343 never asked to change, so the tests
 below assert those two roles still pass, not merely that the reviewer does.
 """
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -90,8 +91,11 @@ class BothLaunchBuildersGiveItTheSameAccess(unittest.TestCase):
     def setUp(self):
         self.source = (BIN / "handsoff_agent.py").read_text(encoding="utf-8")
 
+    def _claude_calls_with_root(self):
+        return re.findall(r"lib\.claude_argv\([^)]*?project_root=root", self.source, flags=re.S)
+
     def test_both_builders_pass_the_project_root(self):
-        self.assertEqual(self.source.count("project_root=root"), 2,
+        self.assertEqual(len(self._claude_calls_with_root()), 2,
                          "both lib.claude_argv call sites must pass the project root; "
                          "build_profile_launch_spec is the failover path")
 
@@ -101,8 +105,10 @@ class BothLaunchBuildersGiveItTheSameAccess(unittest.TestCase):
                          "an inline allowlist expression is how the two builders drifted")
 
     def test_every_claude_argv_call_in_the_launcher_passes_the_root(self):
+        # #305: the ollama argv builders pass project_root too, so count it
+        # only inside each claude_argv call.
         calls = self.source.count("lib.claude_argv(")
-        self.assertEqual(calls, self.source.count("project_root=root"),
+        self.assertEqual(calls, len(self._claude_calls_with_root()),
                          f"{calls} claude_argv calls but not all pass project_root, so a third "
                          "launch builder added later would silently lose read access")
 

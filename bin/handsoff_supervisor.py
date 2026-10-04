@@ -110,6 +110,8 @@ OPERATION_REGISTRY = {
     # the run-owned dashboard runs it, and it only reads and transitions.
     "performance-watch": {"class": "automatic", "surface": "metrics-panel"},
     "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
+    # #302: applies one shadow recommendation, only with a Mission Control approval.
+    "shadow-apply": {"class": "operator-facing", "surface": "metrics-panel"},
 }
 
 RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
@@ -1251,6 +1253,19 @@ def cmd_pilot_note(args) -> int:
     root = lib.resolve_root(args.root)
     record = lib.record_pilot_note(root, by=args.by, text=args.text)
     print(f"PILOT_NOTE_RECORDED: {len(record['text'])} characters by {record['by']}")
+    return 0
+
+
+def cmd_shadow_apply(args) -> int:
+    """#302: apply one shadow routing recommendation. There is no actor
+    flag: the only authority is a Pilot approval Mission Control's endpoint
+    recorded for exactly this finding and change, used once."""
+    import handsoff_shadow as shadow
+    root = lib.resolve_root(args.root)
+    report = lib.load_unique_json(Path(args.report).expanduser().resolve())
+    result = shadow.apply_finding(root, report, finding=args.finding, approval=args.approval)
+    print(f"SHADOW_APPLIED: {result['finding_id']} with {result['approval_id']}: "
+          f"{result['change']['role']} -> {result['change']['to']['adapter']}/{result['change']['to']['model']}")
     return 0
 
 
@@ -6094,6 +6109,12 @@ def build_parser() -> argparse.ArgumentParser:
     pilot_note.add_argument("--by", required=True)
     pilot_note.add_argument("--text", required=True, help="1 to 512 characters")
 
+    shadow_apply = sub.add_parser("shadow-apply", help="#302: apply one shadow routing recommendation; "
+                                  "refused without a Mission Control approval for that finding and change")
+    shadow_apply.add_argument("--report", required=True, help="the handsoff_shadow report JSON")
+    shadow_apply.add_argument("--finding", required=True, help="the finding id (shf-...)")
+    shadow_apply.add_argument("--approval", required=True, help="the approval id Mission Control recorded (apr-...)")
+
     decline = sub.add_parser("design-decline", help="#177: the Architect declines the change at Phase 1 or 2; "
                              "recorded hash-bound to the criteria, the run closes as not_planned")
     decline.add_argument("--by", required=True, help="the Architect actor")
@@ -6246,6 +6267,7 @@ def main() -> int:
         "question-answer": cmd_question_answer,
         "analyze-archives": cmd_analyze_archives,
         "pilot-note": cmd_pilot_note,
+        "shadow-apply": cmd_shadow_apply,
         "ci-watch": cmd_ci_watch,
         "design-decline": cmd_design_decline,
         "run-close": cmd_run_close,

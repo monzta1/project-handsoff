@@ -63,7 +63,10 @@ class EveryAdapterIsBounded(unittest.TestCase):
 
     def test_an_adapter_that_can_do_neither_refuses_to_launch(self):
         with self.assertRaisesRegex(lib.HandsoffError, "cannot impose a token ceiling"):
-            lib.adapter_ceiling_enforcement("ollama")
+            # #305 made ollama wrapper_enforced (its tool loop meters
+            # prompt_eval_count and eval_count); the guard still needs a
+            # provider that declares neither.
+            lib.adapter_ceiling_enforcement("unbounded-provider")
 
     def test_the_refusal_names_the_repair(self):
         with self.assertRaisesRegex(lib.HandsoffError, "CEILING_ENFORCEMENT"):

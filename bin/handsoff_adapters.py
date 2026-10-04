@@ -250,3 +250,54 @@ def _builtin(name: str, build, cost_policy: str) -> ProviderAdapter:
 _ADAPTERS["claude"] = _builtin("claude", _claude_argv, "catalog_pricing")
 # An empty catalog price means unknown, never free (ADAPTIVE_OPENAI_PROFILES).
 _ADAPTERS["codex"] = _builtin("codex", _codex_argv, "subscription_unpriced")
+
+
+def local_floor_refusal(cfg: dict, adapter: str, role: str, risk_class: str | None) -> str | None:
+    """#305: why a local adapter may not take this launch, or None.
+
+    Three floors, each from the project's declaration of the adapter: the
+    roles it serves; its declared capability tier against the minimum tier
+    the run's risk class requires (`risk_policy`); and the risk classes the
+    project allows it at all. Only a contract adapter the project can
+    declare (`CONTRACT_AGENT_ADAPTERS`) is governed here: #304 gives local
+    no risk floor in routing, so the floor is the declaration.
+    """
+    if adapter not in lib.CONTRACT_AGENT_ADAPTERS or get_adapter(adapter).locality != "local":
+        return None
+    if not lib.adapter_serves_role(adapter, role):
+        return f"{adapter} does not serve the {role} role"
+    risk_class = risk_class or "routine"
+    settings = (cfg or {}).get(adapter) or {}
+    required = lib.adaptive_risk_policy(cfg)[lib.classify_adaptive_risk(risk_class)]["min_tier"]
+    declared = settings.get("capability_tier", "FAST")
+    if lib.ADAPTIVE_ROUTING_TIERS.index(declared) < lib.ADAPTIVE_ROUTING_TIERS.index(required):
+        return (f"{risk_class} work needs {required} capability and {adapter} is declared "
+                f"{declared} ([{adapter}].capability_tier)")
+    if risk_class not in settings.get("allowed_risk_classes", ["routine"]):
+        return f"{risk_class} work is outside [{adapter}].allowed_risk_classes"
+    return None
+
+
+def enforce_local_floors(cfg: dict, role: str, risk_class: str | None, profile: dict) -> None:
+    """#305: refuse, before any session exists, a local launch its floors do
+    not permit. Both launch builders call this for every profile they would
+    launch, whether routed, configured explicitly or reserved as a fallback."""
+    reason = local_floor_refusal(cfg, profile["adapter"], role, risk_class)
+    if reason:
+        raise HandsoffError(f"managed launch refused before session creation: {reason}")
+
+
+def _register_ollama() -> None:
+    """#305: ollama joins through the contract like any third provider."""
+    import handsoff_ollama as ollama
+    register_adapter(ProviderAdapter(
+        name=ollama.NAME, locality="local", usage_source="stream", cost_policy="local_compute",
+        ceiling_enforcement="enforced", ceiling_mechanism=lib.adapter_ceiling_enforcement(ollama.NAME),
+        build_argv=ollama.build_argv, preflight=ollama.preflight,
+        # Its per-tier profiles are the project's declaration
+        # (cfg["local_routing_profiles"]), not a provider catalog.
+        routing_profiles={},
+    ))
+
+
+_register_ollama()

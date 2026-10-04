@@ -35,9 +35,13 @@ from handsoff_routing import (
     ADAPTIVE_DEFAULT_BUDGETS,
     ADAPTIVE_DEFAULT_PROFILES,
     ADAPTIVE_DEFAULT_RISK_POLICY,
+    ADAPTIVE_RISK_CLASSES,
+    ADAPTIVE_ROUTING_TIERS,
+    LOCAL_PROFILE_SOURCE_PREFIX,
     validate_adaptive_risk_policy,
     validate_adaptive_routing_budgets,
     adaptive_provider_names,
+    register_adaptive_provider,
     validate_adaptive_routing_profiles,
 )
 
@@ -251,6 +255,98 @@ LEGACY_UNCONFIGURED_AGENT_ADAPTER = "configure-me"
 
 AGENT_SETTING_ADAPTERS = (AUTO_AGENT_ADAPTER, *SELECTABLE_AGENT_ADAPTERS)
 
+#: #305: providers registered through the #304 adapter contract that a
+#: project may name per role beside codex and claude, and the roles each
+#: serves. Declared here, below every reader, because configuration is
+#: validated before `handsoff_adapters` (which holds the contract records)
+#: can be imported. Ollama's tool loop is read-only, so it never implements.
+CONTRACT_AGENT_ADAPTERS = {"ollama": ("architect", "supervisor", "reviewer")}
+
+#: Contract adapters that run on this machine (contract locality `local`).
+LOCAL_AGENT_ADAPTERS = ("ollama",)
+
+#: Every adapter a managed session may record.
+LAUNCHABLE_AGENT_ADAPTERS = (*SELECTABLE_AGENT_ADAPTERS, *CONTRACT_AGENT_ADAPTERS)
+
+for _name in CONTRACT_AGENT_ADAPTERS:
+    # A policy subject and fallback target from the first config load on;
+    # its per-tier routing profiles come from the project's [ollama] table.
+    register_adaptive_provider(_name, {})
+
+
+def adapter_serves_role(adapter: object, role: object) -> bool:
+    """Whether a managed session of this role may run on this adapter."""
+    if adapter in SELECTABLE_AGENT_ADAPTERS:
+        return role in AGENT_ROLES
+    return role in CONTRACT_AGENT_ADAPTERS.get(adapter, ())
+
+
+OLLAMA_DEFAULT_HOST = "http://127.0.0.1:11434"
+OLLAMA_CONFIG_KEYS = ("host", "model", "capability_tier", "allowed_risk_classes",
+                      "context_tokens", "request_timeout_seconds")
+#: An undeclared [ollama] table: nothing routes to it and nothing discovers it.
+#: The floors are conservative: a local model is trusted at FAST capability,
+#: and only for routine work, until the project says otherwise.
+DEFAULT_OLLAMA_CONFIG = {"declared": False, "host": OLLAMA_DEFAULT_HOST, "model": None,
+                         "capability_tier": "FAST", "allowed_risk_classes": ["routine"],
+                         "context_tokens": 32768, "request_timeout_seconds": 300}
+
+
+def _validate_ollama_config(table: object, named: bool) -> dict:
+    """#305: the [ollama] table. `named` is whether a role or fallback names
+    ollama, which declares it as much as the table does."""
+    if not isinstance(table, dict):
+        raise HandsoffError("handsoff.toml: ollama must be a table")
+    unknown = set(table) - set(OLLAMA_CONFIG_KEYS)
+    if unknown:
+        raise HandsoffError("handsoff.toml: ollama has unknown keys: " + ", ".join(sorted(unknown)))
+    result = deepcopy(DEFAULT_OLLAMA_CONFIG)
+    result["declared"] = bool(table) or named
+    from urllib.parse import urlsplit
+    host = table.get("host", OLLAMA_DEFAULT_HOST)
+    parts = urlsplit(host.strip()) if isinstance(host, str) else None
+    if parts is None or parts.scheme not in {"http", "https"} or not parts.hostname \
+            or parts.path not in {"", "/"} or parts.query or parts.fragment or parts.username or parts.password:
+        raise HandsoffError("handsoff.toml: ollama.host must be scheme://host[:port] with no path")
+    result["host"] = f"{parts.scheme}://{parts.netloc}"
+    if "model" in table:
+        try:
+            result["model"] = validate_agent_model(table["model"])
+        except HandsoffError as exc:
+            raise HandsoffError(f"handsoff.toml: ollama.model: {exc}") from exc
+    tier = table.get("capability_tier", result["capability_tier"])
+    if tier not in ADAPTIVE_ROUTING_TIERS:
+        raise HandsoffError("handsoff.toml: ollama.capability_tier must be one of " + ", ".join(ADAPTIVE_ROUTING_TIERS))
+    result["capability_tier"] = tier
+    risks = table.get("allowed_risk_classes", result["allowed_risk_classes"])
+    if not isinstance(risks, list) or not risks or len(set(risks)) != len(risks) \
+            or any(risk not in ADAPTIVE_RISK_CLASSES for risk in risks):
+        raise HandsoffError("handsoff.toml: ollama.allowed_risk_classes must be a unique non-empty "
+                            "list of " + ", ".join(ADAPTIVE_RISK_CLASSES))
+    result["allowed_risk_classes"] = list(risks)
+    for key, (minimum, maximum) in (("context_tokens", (1024, 10_000_000)),
+                                    ("request_timeout_seconds", (1, 3600))):
+        value = table.get(key, result[key])
+        if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+            raise HandsoffError(f"handsoff.toml: ollama.{key} must be an integer from {minimum} to {maximum}")
+        result[key] = value
+    return result
+
+
+def local_routing_profiles(ollama: dict) -> dict:
+    """#305: the per-tier profiles adaptive routing may choose for a declared
+    ollama model: every tier up to its declared capability, never above it,
+    so the capability floor holds before any candidate is ranked. Local
+    compute has no catalog price, so pricing is empty, which the routing
+    catalog reads as unknown, never as free."""
+    if not ollama.get("declared") or not ollama.get("model"):
+        return {}
+    ceiling = ADAPTIVE_ROUTING_TIERS.index(ollama["capability_tier"])
+    return {tier: {"adapter": "ollama", "model": ollama["model"], "capabilities": ["text", "tool_use"],
+                   "limits": {"context_tokens": ollama["context_tokens"]}, "pricing": {},
+                   "source": LOCAL_PROFILE_SOURCE_PREFIX + "ollama"}
+            for tier in ADAPTIVE_ROUTING_TIERS[:ceiling + 1]}
+
 #: #347: reasoning effort was inherited silently from the operator's global
 #: ~/.codex/config.toml, so two runs of the same lane on the same engine with
 #: the same handsoff.toml could do different work for a reason the ledger did
@@ -314,6 +410,8 @@ def load_config(root: Path) -> dict:
     cfg["regression_gate"] = dict(DEFAULT_CONFIG["regression_gate"])
     cfg["analysis"] = dict(DEFAULT_CONFIG["analysis"])
     cfg["documentation"] = {key: list(value) for key, value in DEFAULT_CONFIG["documentation"].items()}
+    cfg["ollama"] = deepcopy(DEFAULT_OLLAMA_CONFIG)
+    cfg["local_routing_profiles"] = {}
     path = root / "handsoff.toml"
     if not path.is_file():
         return cfg
@@ -455,7 +553,12 @@ def load_config(root: Path) -> dict:
         value = value.strip()
         if value == LEGACY_UNCONFIGURED_AGENT_ADAPTER:
             continue
-        if value not in AGENT_SETTING_ADAPTERS and value != HOST_AGENT_ADAPTER:
+        if value in CONTRACT_AGENT_ADAPTERS and not adapter_serves_role(value, role):
+            raise HandsoffError(
+                f"handsoff.toml: agents.{role} cannot be {value}: it serves only "
+                + ", ".join(CONTRACT_AGENT_ADAPTERS[value]))
+        if value not in AGENT_SETTING_ADAPTERS and value != HOST_AGENT_ADAPTER \
+                and value not in CONTRACT_AGENT_ADAPTERS:
             raise HandsoffError(f"handsoff.toml: agents.{role} must be exactly 'auto', 'codex', 'claude', or 'host'")
         cfg["agents"][role] = value
         if value == HOST_AGENT_ADAPTER and role not in HOST_CAPABLE_ROLES:
@@ -528,6 +631,17 @@ def load_config(root: Path) -> dict:
         cfg["fallbacks"][role] = validate_fallback_entries(
             fallback_policy.get(role, []), field=f"fallback_policy.{role}",
         )
+        for index, entry in enumerate(cfg["fallbacks"][role]):
+            if not adapter_serves_role(entry["adapter"], role):
+                raise HandsoffError(
+                    f"handsoff.toml: fallback_policy.{role}[{index}] cannot be {entry['adapter']}: "
+                    "it serves only " + ", ".join(CONTRACT_AGENT_ADAPTERS[entry["adapter"]]))
+    # #305: naming ollama for a role or a fallback declares it, like the table.
+    ollama_named = any(cfg["agents"][role] in CONTRACT_AGENT_ADAPTERS for role in AGENT_ROLES) \
+        or any(entry["adapter"] in CONTRACT_AGENT_ADAPTERS
+               for entries in cfg["fallbacks"].values() for entry in entries)
+    cfg["ollama"] = _validate_ollama_config(raw.get("ollama", {}), ollama_named)
+    cfg["local_routing_profiles"] = local_routing_profiles(cfg["ollama"])
     cfg["max_failovers_per_role"] = validate_max_failovers(
         fallback_policy.get("max_failovers_per_role", DEFAULT_MAX_FAILOVERS_PER_ROLE)
     )
