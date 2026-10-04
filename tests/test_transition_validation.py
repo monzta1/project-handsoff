@@ -156,6 +156,12 @@ class CommitIsTheOnlyWayAStatusReachesTheDisk(unittest.TestCase):
         ("handsoff_cli.migrate_project", "root / lib.OVERRIDES_FILE"),
         ("handsoff_fleet.save_registry", "path"),
         ("handsoff_fleet_signals._persist", "self.path"),
+        # #285: the Fleet job queue's own store and checkpoints, never a run's
+        # status or acceptance file.
+        ("handsoff_queue._commit", "self.store_path"),
+        ("handsoff_queue._load", "self.store_path"),
+        ("handsoff_queue._rotate", 'self.journal_dir / f"checkpoint-{number:06d}.json"'),
+        ("handsoff_queue._rotate", "self.store_path"),
         ("handsoff_ledger.append_event", "event_head_path(root)"),
         ("handsoff_ledger.commit", "acceptance_path(root, cfg)"),
         ("handsoff_ledger.commit", "status_path(root, cfg)"),

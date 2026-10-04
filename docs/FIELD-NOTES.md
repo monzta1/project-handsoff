@@ -516,3 +516,8 @@ Lesson: when a check can only run after the fact, make the unsafe state impossib
 2. **Adding a provider meant editing the router (#304).** Fix: `bin/handsoff_adapters.py` is a declared contract that Codex and Claude implement with byte-identical behaviour (a parity matrix holds it), and a third provider registers without touching `route_adaptive_profile`.
 
 The two work items were built by two managed implementers at once, each in its own `--owns` worktree (#359, shipped in v0.4.6): the first lane to use it on itself.
+### v0.4.8 field notes: a durable queue before Fleet leaves this machine (#285, 2026-10-03)
+
+Fleet was useful local tooling with no durable queue, no leases and only loopback same-origin authorization, so extending it to a second host would have created ownership and recovery ambiguity. Fix: `bin/handsoff_queue.py` is a durable job queue (a locked JSON store and an append-only, hashed, seq-numbered journal written first) with leases fenced by epoch, expiry checked under the mutation lock, renewal, retries with attempt accounting, cancellation, and exact replay; only a torn tail (no newline and a seq beyond the store's last) is discarded, and any other corruption is refused by name. A job naming another host is refused, because no remote transport exists yet. Fleet serve refuses a non-loopback bind without a token, and with a token every API route answers 401 before any Origin check or mutation. The design took three reviews: the second introduced a tail rule that could truncate committed history, which the third closed.
+
+Lesson: a recovery rule is part of the durability contract; review it as hard as the write path.
