@@ -513,6 +513,41 @@ class PersistedLaunchContract(HandsoffTestCase):
         self.assertEqual(persisted["usage_source"], "stream")
         self.assertEqual(persisted["ceiling"], spec.token_budget)
 
+    def test_a_recovery_replacement_persists_the_contract(self):
+        # implementation review attempt 3: recovery claims a session the
+        # reservation created, bypassing create_agent_session, and the
+        # contract was dropped; drive the real execute_launch on that path
+        from tests.test_session_result_autoadopt import _FakeProcess
+        self._run("routine")
+        cfg = lib.load_config(self.tmp)
+        source = lib.create_agent_session(
+            self.tmp, role="implementer", actor="test-impl", adapter="claude",
+            requested_model="claude-haiku-4-5-20251001", resolution_source="configured")
+        lib.transition_agent_session(self.tmp, source["session_id"], "running")
+        lib.transition_agent_session(self.tmp, source["session_id"], "failed", exit_code=1,
+                                     failure=lib.classify_runtime_failure(
+                                         exit_code=1, stderr_tail="rate limit exceeded"))
+        fallbacks = lib.fallback_profiles(cfg)
+        fallbacks["implementer"] = [{"adapter": "claude", "model": "sonnet"}]
+        lib.update_agent_settings(self.tmp, {"profiles": lib.agent_profiles(cfg), "fallbacks": fallbacks,
+                                             "max_failovers_per_role": 2})
+        record = lib.reserve_agent_replacement(
+            self.tmp, from_session_id=source["session_id"], which=lambda name: f"/opt/test/{name}",
+            snapshotter=lambda root: {"head": "a" * 40, "branch": "main", "dirty": False,
+                                      "status_sha256": "b" * 64})
+        self.assertEqual(record["action"], "launch", record)
+        with mock.patch.object(agent.lib, "validate_runtime_integrity"):
+            spec = agent.build_profile_launch_spec(
+                self.tmp, "implementer", "task", record["selected_profile"], skip_preflight=True,
+                which=lambda name: f"/opt/test/{name}")
+            agent.execute_launch(spec, popen_factory=lambda argv, **kwargs: _FakeProcess(stdout="done\n"),
+                                 precreated_session_id=record["to_session_id"], beacon_interval=0.01)
+        session = self.read_status()["agent_sessions"][record["to_session_id"]]
+        self.assertEqual(session["routing_contract"], spec.routing_contract)
+        self.assertEqual((session["routing_contract"]["provider"], session["routing_contract"]["model"]),
+                         ("claude", "sonnet"))
+        self.assertEqual([e for e in lib.validate_status_schema(self.read_status()) if "routing_contract" in e], [])
+
     def test_the_validator_closes_the_block_and_keeps_older_sessions_valid(self):
         self._run("routine")
         spec, contract = self._launch("implementer", ("claude",))

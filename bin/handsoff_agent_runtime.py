@@ -1490,8 +1490,13 @@ def _new_bounded_id(prefix: str, pattern: re.Pattern, existing: set[str], id_fac
 
 
 def claim_precreated_agent_session(root: Path, session_id: str, *, role: str,
-                                   adapter: str, requested_model: str) -> dict:
-    """One-way pre-spawn claim of the exact reserved session/profile."""
+                                   adapter: str, requested_model: str,
+                                   routing_contract: dict | None = None) -> dict:
+    """One-way pre-spawn claim of the exact reserved session/profile.
+
+    #304: a recovery replacement is created by the reservation, not by
+    create_agent_session, so the claim is where its routing contract is
+    persisted, validated against the reserved adapter and model."""
     with project_lock(root.resolve()):
         root = root.resolve()
         cfg = load_config(root)
@@ -1518,7 +1523,12 @@ def claim_precreated_agent_session(root: Path, session_id: str, *, role: str,
                 or (session.get("role"), session.get("adapter"), session.get("requested_model")) \
                 != (role, adapter, requested_model):
             raise HandsoffError("precreated replacement session does not match the exact reservation")
+        if routing_contract is not None:
+            routing_contract = validate_session_routing_contract(
+                routing_contract, {"adapter": adapter, "model": requested_model})
         proposed = deepcopy(status)
+        if routing_contract is not None:
+            proposed["agent_sessions"][session_id]["routing_contract"] = deepcopy(routing_contract)
         claimed = proposed["agent_replacements"][reservation_index]
         now = datetime.now(timezone.utc).isoformat()
         claimed["state"] = "claimed"
@@ -1542,7 +1552,7 @@ def claim_precreated_agent_session(root: Path, session_id: str, *, role: str,
             replacement_id=claimed["replacement_id"], from_session_id=claimed["from_session_id"],
             to_session_id=session_id, role=role, state="claimed",
         )
-        return deepcopy(session)
+        return deepcopy(proposed["agent_sessions"][session_id])
 
 
 def current_agent_sessions(status: dict) -> dict:

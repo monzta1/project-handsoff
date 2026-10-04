@@ -1205,7 +1205,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
     else:
         session = lib.claim_precreated_agent_session(
             root, precreated_session_id, role=spec.role, adapter=spec.adapter,
-            requested_model=spec.model,
+            requested_model=spec.model, routing_contract=spec.routing_contract,
         )
         actor = session["actor"]
     session_id = session["session_id"]
