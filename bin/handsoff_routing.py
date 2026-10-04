@@ -137,14 +137,77 @@ ADAPTIVE_OPENAI_PROFILES = {
 }
 
 
+#: #304: the provider registry route_adaptive_profile reads. Each entry names
+#: a provider and the documented profiles it offers per tier BESIDES the
+#: configured tier profile; claude offers none because the configured catalog
+#: is already its own. Registration order is the tie-break preference after
+#: the configured profile, so codex keeps the place it always had. A third
+#: provider joins through `handsoff_adapters.register_adapter`, which calls
+#: `register_adaptive_provider`; routing itself is not edited for it.
+ADAPTIVE_PROVIDER_REGISTRY = {"claude": {}, "codex": ADAPTIVE_OPENAI_PROFILES}
+
+
+#: The providers registration can never replace or remove.
+ADAPTIVE_BUILTIN_PROVIDERS = ("claude", "codex")
+
+
+def adaptive_provider_names() -> tuple[str, ...]:
+    """Every adapter name routing, model policy and fallback accept."""
+    return tuple(ADAPTIVE_PROVIDER_REGISTRY)
+
+
+def register_adaptive_provider(name: str, profiles: dict) -> None:
+    """Add one provider's per-tier routing profiles to the registry."""
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", name):
+        raise HandsoffError("provider name must be a lowercase identifier of at most 32 characters")
+    if name in ADAPTIVE_BUILTIN_PROVIDERS:
+        raise HandsoffError(f"provider {name} is built in and cannot be re-registered")
+    if not isinstance(profiles, dict) or set(profiles) - set(ADAPTIVE_ROUTING_TIERS):
+        raise HandsoffError("provider profiles must map routing tiers to profiles")
+    checked = {}
+    for tier, profile in profiles.items():
+        if not isinstance(profile, dict) or set(profile) != set(ADAPTIVE_PROFILE_FIELDS):
+            raise HandsoffError(f"provider {name} {tier} profile must carry exactly {', '.join(ADAPTIVE_PROFILE_FIELDS)}")
+        if profile["adapter"] != name:
+            raise HandsoffError(f"provider {name} {tier} profile names another adapter")
+        if not isinstance(profile["model"], str) or not profile["model"].strip():
+            raise HandsoffError(f"provider {name} {tier} model must be a non-empty string")
+        capabilities = profile["capabilities"]
+        if not isinstance(capabilities, list) or not capabilities \
+                or not all(isinstance(item, str) and item.strip() for item in capabilities):
+            raise HandsoffError(f"provider {name} {tier} capabilities must be a non-empty array of strings")
+        checked[tier] = deepcopy(profile)
+    ADAPTIVE_PROVIDER_REGISTRY[name] = checked
+
+
+def unregister_adaptive_provider(name: str) -> None:
+    """Remove a registered provider; built-in providers stay."""
+    if name in ADAPTIVE_BUILTIN_PROVIDERS:
+        raise HandsoffError(f"provider {name} is built in and cannot be removed")
+    ADAPTIVE_PROVIDER_REGISTRY.pop(name, None)
+
+
 def adaptive_catalog_profile(adapter: str, model: str) -> tuple[str, dict] | None:
     for tier, profile in ADAPTIVE_DEFAULT_PROFILES.items():
         if profile["adapter"] == adapter and profile["model"] == model:
             return tier, deepcopy(profile)
-    for tier, profile in ADAPTIVE_OPENAI_PROFILES.items():
-        if profile["adapter"] == adapter and profile["model"] == model:
-            return tier, deepcopy(profile)
+    for profiles in ADAPTIVE_PROVIDER_REGISTRY.values():
+        for tier, profile in profiles.items():
+            if profile["adapter"] == adapter and profile["model"] == model:
+                return tier, deepcopy(profile)
     return None
+
+
+def _tier_candidate_profiles(configured: dict, tier: str) -> list[dict]:
+    """The configured profile, then each registered provider's alternate for
+    the tier in registration order, without repeating an adapter/model pair."""
+    result = [configured]
+    for profiles in ADAPTIVE_PROVIDER_REGISTRY.values():
+        alternate = profiles.get(tier)
+        if alternate and (alternate["adapter"], alternate["model"]) not in \
+                {(item["adapter"], item["model"]) for item in result}:
+            result.append(alternate)
+    return result
 
 
 def validate_adaptive_routing_profiles(value: object) -> dict:
@@ -327,16 +390,12 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
     if minimum_tier is not None and minimum_tier not in ADAPTIVE_ROUTING_TIERS:
         raise HandsoffError(f"minimum_tier must be one of {', '.join(ADAPTIVE_ROUTING_TIERS)}")
     allowed = set(ADAPTIVE_ROUTING_TIERS if available_tiers is None else available_tiers)
-    adapters = set(SELECTABLE_AGENT_ADAPTERS if available_adapters is None else available_adapters)
+    adapters = set((*SELECTABLE_AGENT_ADAPTERS, *adaptive_provider_names())
+                   if available_adapters is None else available_adapters)
     start = ADAPTIVE_ROUTING_TIERS.index(minimum_tier) if minimum_tier else 0
     candidates = []
     for tier in ADAPTIVE_ROUTING_TIERS[start:]:
-        tier_profiles = [profiles[tier]]
-        alternate = ADAPTIVE_OPENAI_PROFILES.get(tier)
-        if alternate and (alternate["adapter"], alternate["model"]) != \
-                (profiles[tier]["adapter"], profiles[tier]["model"]):
-            tier_profiles.append(alternate)
-        for preference, profile in enumerate(tier_profiles):
+        for preference, profile in enumerate(_tier_candidate_profiles(profiles[tier], tier)):
             missing = sorted(set(required) - set(profile["capabilities"]))
             if tier in allowed and profile["adapter"] in adapters and profile["model"] != DEFAULT_AGENT_MODEL \
                     and model_policy_allows(model_policy, profile["adapter"], profile["model"]) and not missing:
@@ -357,8 +416,7 @@ def route_adaptive_profile(cfg: dict | None = None, *, required_capabilities=(),
                 "required_capabilities": required, "reason": "qualified_profile", **routing_metadata}
     available = [tier for tier in ADAPTIVE_ROUTING_TIERS if tier in allowed and any(
         profile["adapter"] in adapters and model_policy_allows(model_policy, profile["adapter"], profile["model"])
-        for profile in ([profiles[tier]] + ([ADAPTIVE_OPENAI_PROFILES[tier]]
-                                            if tier in ADAPTIVE_OPENAI_PROFILES else []))
+        for profile in _tier_candidate_profiles(profiles[tier], tier)
     )]
     reason_kind = "required_capability_unavailable" if not any(
         not (set(required) - set(profiles[tier]["capabilities"])) for tier in available
