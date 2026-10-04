@@ -112,6 +112,35 @@ def _codex_argv(executable: str, role: str, model: str, token_budget: int,
                           reviewer_sandbox=reviewer_sandbox, reasoning=reasoning)
 
 
+def _contract_model(cfg: dict, adapter: str, model: str) -> str:
+    """#305: a contract adapter has no runner default to defer to, so a role
+    left at the default model takes the adapter's declared model."""
+    if adapter not in lib.CONTRACT_AGENT_ADAPTERS or model != lib.DEFAULT_AGENT_MODEL:
+        return model
+    declared = (cfg.get(adapter) or {}).get("model")
+    if not declared:
+        raise lib.HandsoffError(f"{adapter} needs a model: set [models].<role> or [{adapter}].model")
+    return declared
+
+
+def _contract_executable(cfg: dict, adapter: str) -> str | None:
+    """#305: a contract adapter's loop is Handsoff's own (handsoff_ollama.py),
+    run by this interpreter. It is discovered by declaration, not on PATH."""
+    return sys.executable if lib.contract_adapter_availability(cfg).get(adapter) else None
+
+
+def _contract_preflight(root: Path, cfg: dict, adapter: str, model: str, executable: str,
+                        argv: list[str], cwd: str, label: str) -> None:
+    """#305: the contract pre-flight, refusing with the adapter's own state."""
+    result = adapters.preflight(adapter, root, model=model, executable=executable, argv=argv,
+                                cwd=cwd, host=(cfg.get(adapter) or {}).get("host"))
+    if result["state"] != "ready":
+        detail = result["preflight"] or {}
+        raise lib.HandsoffError(
+            f"{adapter}/{model} {label} ({detail.get('ollama_state') or result['state']}): "
+            f"{detail.get('reason') or 'executable missing'}")
+
+
 def _reviewer_scratch(root: Path, adapter: str, role: str, *, create: bool = True) -> Path | None:
     """Create the provider-neutral external scratch root for a Reviewer."""
     if role != "reviewer":
@@ -486,7 +515,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     explicit_role_route = False
     if selection is not None:
         adapter = selection["adapter"]
-        model = lib.validate_agent_model(selection["model"])
+        model = lib.validate_agent_model(_contract_model(cfg, adapter, selection["model"]))
         resolution_source = selection["resolution_source"]
         tier, tier_reason = selection["tier"], selection["reason"]
     else:
@@ -494,9 +523,9 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         configured_adapter = lib.agent_profiles(cfg)[role]["adapter"]
         profile = lib.resolved_agent_profiles(cfg, which=which, require_available=True)[role]
         adapter = profile["adapter"]
-        if adapter not in lib.SELECTABLE_AGENT_ADAPTERS:
+        if adapter not in lib.SELECTABLE_AGENT_ADAPTERS and adapter not in lib.CONTRACT_AGENT_ADAPTERS:
             raise lib.HandsoffError(f"role {role} uses unsupported adapter: {adapter}")
-        model = lib.validate_agent_model(profile["model"])
+        model = lib.validate_agent_model(_contract_model(cfg, adapter, profile["model"]))
         # #39: "recommended" only when the adapter itself came from
         # RECOMMENDED_CREW; an explicit "auto" keeps the older auto-detect
         # label, and any other explicit value is "configured" (load_config
@@ -529,6 +558,10 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         effective_risk_class = run_status.get("risk_class") or "routine"
         available_adapters = [candidate for candidate in lib.SELECTABLE_AGENT_ADAPTERS
                               if cfg.get("adapters", {}).get(candidate) or which(candidate)]
+        # #305: a declared local adapter is a candidate only where its floors
+        # permit this role and risk, so routing never ranks a refused choice.
+        available_adapters += [candidate for candidate in lib.contract_adapter_availability(cfg)
+                               if adapters.local_floor_refusal(cfg, candidate, role, effective_risk_class) is None]
         routed = lib.route_adaptive_profile(
             route_cfg, required_capabilities=("text", "tool_use"),
             available_adapters=available_adapters, risk_class=effective_risk_class,
@@ -549,6 +582,10 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             "reviewer_required": routed["reviewer_required"],
             "human_gate_required": routed["human_gate_required"],
         }
+    # #305: every path above (Phase-2 selection, explicit role profile,
+    # adaptive route) meets the same floors before anything is reserved.
+    adapters.enforce_local_floors(cfg, role, (run_status or {}).get("risk_class"),
+                                  {"adapter": adapter, "model": model})
     if not lib.model_policy_allows(effective_model_policy, adapter, model):
         raise lib.HandsoffError(
             f"managed launch refused: {adapter}/{model} is denied by the mission model policy"
@@ -612,7 +649,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             f"leaving {provider_limit} after the {budget_decision['reserved_protocol_tokens']}-token "
             "protocol reserve"
         )
-    executable = cfg.get("adapters", {}).get(adapter) or which(adapter)
+    executable = _contract_executable(cfg, adapter) if adapter in lib.CONTRACT_AGENT_ADAPTERS \
+        else cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
         # An auto-detected adapter is by construction installed, so only a
         # recommended default or an explicit selection can land here.
@@ -637,20 +675,27 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             argv = _codex_argv(executable, role, model, provider_limit,
                                reviewer_sandbox=scratch is not None,
                                reasoning=cfg["model_reasoning"].get(role))
+        elif adapter in lib.CONTRACT_AGENT_ADAPTERS:
+            argv = adapters.build_argv(adapter, executable, role, model,
+                                       provider_limit=provider_limit, project_root=root)
         else:
             allowed = _claude_allowed_tools(cfg, root, role, which=which)
             argv = lib.claude_argv(executable, role, allowed, model, project_root=root,
                                    owned_paths=owned_paths)
         if not skip_preflight and not inspection \
                 and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
-            preflight = lib.launch_preflight(
-                root, adapter=adapter, model=model, executable=executable,
-                argv=argv, cwd=str(scratch or root),
-            )
-            if preflight["state"] != "ready":
-                raise lib.HandsoffError(
-                    f"{adapter}/{model} launch preflight blocked ({preflight['category']}): {preflight['reason']}"
+            if adapter in lib.CONTRACT_AGENT_ADAPTERS:
+                _contract_preflight(root, cfg, adapter, model, executable, argv, str(scratch or root),
+                                    "launch preflight blocked")
+            else:
+                preflight = lib.launch_preflight(
+                    root, adapter=adapter, model=model, executable=executable,
+                    argv=argv, cwd=str(scratch or root),
                 )
+                if preflight["state"] != "ready":
+                    raise lib.HandsoffError(
+                        f"{adapter}/{model} launch preflight blocked ({preflight['category']}): {preflight['reason']}"
+                    )
 
     return LaunchSpec(
         role=role,
@@ -696,15 +741,18 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     if adapter == lib.HOST_AGENT_ADAPTER:
         raise lib.HandsoffError(f"{role} is host-driven; run the Supervisor CLI directly instead of launching a managed session")
     model = lib.validate_agent_model(profile.get("model"))
-    if adapter not in lib.SELECTABLE_AGENT_ADAPTERS:
+    if adapter not in lib.SELECTABLE_AGENT_ADAPTERS and adapter not in lib.CONTRACT_AGENT_ADAPTERS:
         raise lib.HandsoffError("reserved fallback adapter is invalid")
     cfg = lib.load_config(root)
     status_file = lib.status_path(root, cfg)
     status = lib.load_unique_json(status_file) if status_file.is_file() else {}
+    # #305: a reserved fallback onto a local adapter meets the same floors.
+    adapters.enforce_local_floors(cfg, role, status.get("risk_class"), {"adapter": adapter, "model": model})
     policy = status.get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))
     if not lib.model_policy_allows(policy, adapter, model):
         raise lib.HandsoffError(f"reserved fallback {adapter}/{model} is denied by the mission model policy")
-    executable = which(adapter)
+    executable = _contract_executable(cfg, adapter) if adapter in lib.CONTRACT_AGENT_ADAPTERS \
+        else which(adapter)
     if not executable:
         raise lib.HandsoffError(f"reserved {adapter} executable is no longer available")
     executable = str(Path(executable).resolve())
@@ -736,7 +784,7 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         # exists, so the meter can be set to the provider limit. Building it
         # here as well left a second copy metered on the whole ceiling.
         argv = []
-        if adapter != "codex":
+        if adapter != "codex" and adapter not in lib.CONTRACT_AGENT_ADAPTERS:
             allowed = _claude_allowed_tools(cfg, root, role)
             argv = lib.claude_argv(executable, role, allowed, model, project_root=root,
                                    owned_paths=list(owned_paths) if owned_paths else None)
@@ -770,16 +818,23 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
             argv = _codex_argv(executable, role, model, provider_limit,
                                reviewer_sandbox=scratch is not None,
                                reasoning=cfg["model_reasoning"].get(role))
+        elif adapter in lib.CONTRACT_AGENT_ADAPTERS:
+            argv = adapters.build_argv(adapter, executable, role, model,
+                                       provider_limit=provider_limit, project_root=root)
         if not skip_preflight and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
-            preflight = lib.launch_preflight(
-                root, adapter=adapter, model=model, executable=executable,
-                argv=argv, cwd=str(scratch or root),
-            )
-            if preflight["state"] != "ready":
-                raise lib.HandsoffError(
-                    f"reserved fallback {adapter}/{model} preflight blocked "
-                    f"({preflight['category']}): {preflight['reason']}"
+            if adapter in lib.CONTRACT_AGENT_ADAPTERS:
+                _contract_preflight(root, cfg, adapter, model, executable, argv, str(scratch or root),
+                                    "reserved fallback preflight blocked")
+            else:
+                preflight = lib.launch_preflight(
+                    root, adapter=adapter, model=model, executable=executable,
+                    argv=argv, cwd=str(scratch or root),
                 )
+                if preflight["state"] != "ready":
+                    raise lib.HandsoffError(
+                        f"reserved fallback {adapter}/{model} preflight blocked "
+                        f"({preflight['category']}): {preflight['reason']}"
+                    )
     return LaunchSpec(
         role, adapter, model, tuple(argv), str(scratch or root.resolve()), task, "fallback",
         token_budget=token_budget,

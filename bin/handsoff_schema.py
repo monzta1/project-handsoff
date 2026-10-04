@@ -26,8 +26,8 @@ from datetime import datetime
 
 from handsoff_core import HandsoffError, _canonical
 from handsoff_config import (
-    MAX_WORK_ITEMS, SELECTABLE_AGENT_ADAPTERS, SELECTABLE_AGENT_ROLES,
-    VERIFICATION_REQUIREMENTS, validate_agent_model, validate_model_policy,
+    LAUNCHABLE_AGENT_ADAPTERS, MAX_WORK_ITEMS, SELECTABLE_AGENT_ADAPTERS, SELECTABLE_AGENT_ROLES,
+    VERIFICATION_REQUIREMENTS, adapter_serves_role, validate_agent_model, validate_model_policy,
 )
 from handsoff_routing import classify_adaptive_risk, validate_session_adaptive_routing, validate_session_routing_contract
 
@@ -333,8 +333,10 @@ def validate_reviewer_isolation_contract(value: object) -> dict:
               "credentials", "network_policy", "decision", "reason", "contract_digest"}
     if not isinstance(value, dict) or set(value) != fields:
         raise HandsoffError("reviewer_isolation has invalid fields")
-    if value.get("adapter") not in SELECTABLE_AGENT_ADAPTERS \
-            or value.get("enforcement") not in {"native", "os_wrapper", "unavailable", "approved_compatibility"} \
+    # #305: tool_confined is a local adapter whose only tools are read-only.
+    if value.get("adapter") not in LAUNCHABLE_AGENT_ADAPTERS \
+            or value.get("enforcement") not in {"native", "os_wrapper", "unavailable", "approved_compatibility",
+                                                "tool_confined"} \
             or value.get("project_access") != "read_only" or value.get("scratch_root") != "external" \
             or value.get("subprocess_policy") != "bounded" or value.get("credentials") != "sanitized" \
             or value.get("network_policy") not in {"denied", "loopback", "declared"} \
@@ -1422,7 +1424,8 @@ def validate_status_schema(status: dict) -> list[str]:
                 validate_agent_actor(session.get("actor"))
             except HandsoffError as exc:
                 errors.append(f"{label}: {exc}")
-            if session.get("adapter") not in SELECTABLE_AGENT_ADAPTERS:
+            if session.get("adapter") not in LAUNCHABLE_AGENT_ADAPTERS \
+                    or not adapter_serves_role(session.get("adapter"), session.get("role")):
                 errors.append(f"{label} has an invalid adapter")
             try:
                 validate_agent_model(session.get("requested_model"))

@@ -521,3 +521,12 @@ The two work items were built by two managed implementers at once, each in its o
 Fleet was useful local tooling with no durable queue, no leases and only loopback same-origin authorization, so extending it to a second host would have created ownership and recovery ambiguity. Fix: `bin/handsoff_queue.py` is a durable job queue (a locked JSON store and an append-only, hashed, seq-numbered journal written first) with leases fenced by epoch, expiry checked under the mutation lock, renewal, retries with attempt accounting, cancellation, and exact replay; only a torn tail (no newline and a seq beyond the store's last) is discarded, and any other corruption is refused by name. A job naming another host is refused, because no remote transport exists yet. Fleet serve refuses a non-loopback bind without a token, and with a token every API route answers 401 before any Origin check or mutation. The design took three reviews: the second introduced a tail rule that could truncate committed history, which the third closed.
 
 Lesson: a recovery rule is part of the durability contract; review it as hard as the write path.
+
+### v0.4.9 field notes: measure before activating, and a local model with read-only hands (#302 #305, 2026-10-04)
+
+1. **Evidence-driven routing had no way to be judged before it ran (#302).** Fix: `bin/handsoff_shadow.py` replays cohorts against a fixed temporal holdout and records shadow choices without changing any route; applying a recommendation needs a Mission Control approval bound to the finding and the exact change. The first design review caught two leakage paths (a session ending before the boundary whose verified outcome arrived after it, and a boundary chosen after seeing results) and a forgeable CLI approval; all three are now tests.
+2. **Local models could not run a managed role (#305).** Fix: an `ollama` adapter through the #304 contract, with a read-only tool loop over Ollama's native tool calling, for architect, supervisor and reviewer only, and every launch path held to the same capability and risk floors.
+
+Both items were built by two managed implementers at once, each in its own `--owns` worktree.
+
+Lesson: a temporal holdout is only as good as the timestamp it splits on; split on when the outcome became knowable, not when the work ended.

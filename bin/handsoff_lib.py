@@ -335,6 +335,7 @@ from handsoff_config import (  # noqa: E402,F401
     ANALYSIS_FILING_MODES,
     AUTO_AGENT_ADAPTER,
     BRIEFING_CONFIG_KEYS,
+    CONTRACT_AGENT_ADAPTERS,
     DEFAULT_AGENT_MODEL,
     DEFAULT_AGENT_TOKEN_BUDGETS,
     DEFAULT_CONFIG,
@@ -350,7 +351,9 @@ from handsoff_config import (  # noqa: E402,F401
     FOLLOWUP_REVIEWER_KEY,
     HOST_AGENT_ADAPTER,
     HOST_CAPABLE_ROLES,
+    LAUNCHABLE_AGENT_ADAPTERS,
     LEGACY_UNCONFIGURED_AGENT_ADAPTER,
+    LOCAL_AGENT_ADAPTERS,
     MAX_AGENT_MODEL_LENGTH,
     MAX_AGENT_TOKEN_BUDGET,
     MAX_DESIGN_EVIDENCE_ENTRIES,
@@ -365,6 +368,7 @@ from handsoff_config import (  # noqa: E402,F401
     TICKET_STATES,
     _validate_analysis_config,
     _validate_design_evidence_config,
+    adapter_serves_role,
     assert_plain_command,
     ensure_regression_config_is_disjoint,
     load_config,
@@ -569,6 +573,7 @@ from handsoff_routing import (  # noqa: E402,F401
     ADAPTIVE_PROVIDER_REGISTRY,
     ADAPTIVE_RISK_CLASSES,
     ADAPTIVE_ROUTING_TIERS,
+    LOCAL_PROFILE_SOURCE_PREFIX,
     OPENAI_MODEL_CATALOG_SOURCE,
     _adaptive_mission_binding,
     _adaptive_model_reconciliation,
@@ -594,6 +599,7 @@ from handsoff_routing import (  # noqa: E402,F401
     validate_adaptive_risk_policy,
     validate_adaptive_routing_budgets,
     validate_adaptive_routing_profiles,
+    validate_local_routing_profile,
     validate_session_adaptive_routing,
     CEILING_ENFORCEMENT_DECLARATIONS,
     SESSION_ROUTING_CONTRACT_FIELDS,
@@ -661,6 +667,15 @@ CEILING_BOUND_GRANULARITY = {"native_rollout_meter": "per_turn",
 #: inferring it needs the very observation the adapter does not provide.
 ADAPTER_INTERMEDIATE_USAGE = {"codex": False, "claude": True}
 
+#: #305: the same two facts for adapters registered through the #304
+#: contract, kept apart so the codex/claude tables above stay exactly what
+#: they were. The ollama loop prints its cumulative usage after every model
+#: turn and stops itself past the provider limit, and the wrapper stops it at
+#: the first printed total past the limit, so its ceiling is held by
+#: observation like claude's.
+CONTRACT_CEILING_ENFORCEMENT = {"ollama": "wrapper_enforced"}
+CONTRACT_INTERMEDIATE_USAGE = {"ollama": True}
+
 #: #307: roles whose turns can be arbitrarily large because they run tools.
 #: A read-only turn is small and the existing reserve covers its measured
 #: overshoot (764 tokens); a turn that runs a suite is not bounded by
@@ -680,6 +695,8 @@ MEASURED_WORST_TURN_OVERSHOOT = {"codex": 10_535}
 
 def adapter_reports_usage_before_exit(adapter: str) -> bool:
     """Whether this adapter's usage can be observed while it still runs."""
+    if adapter in CONTRACT_INTERMEDIATE_USAGE:
+        return CONTRACT_INTERMEDIATE_USAGE[adapter]
     if adapter not in ADAPTER_INTERMEDIATE_USAGE:
         raise HandsoffError(
             f"adapter {adapter!r} has not declared whether it reports usage before exit; "
@@ -880,7 +897,7 @@ def materialize_compact_scope(root: Path, scope: list[dict], destination: Path) 
 
 def adapter_ceiling_enforcement(adapter: str) -> str:
     """Name how this adapter's ceiling is imposed, or refuse the launch."""
-    enforcement = CEILING_ENFORCEMENT.get(adapter)
+    enforcement = CEILING_ENFORCEMENT.get(adapter) or CONTRACT_CEILING_ENFORCEMENT.get(adapter)
     if enforcement is None:
         raise HandsoffError(
             f"adapter {adapter!r} cannot impose a token ceiling on the wire and Handsoff "
@@ -1398,6 +1415,15 @@ def reviewer_isolation_contract(adapter: str, cfg: dict | None = None) -> dict:
     if adapter == "codex":
         enforcement, decision, reason = "native", "enforce", "native scratch sandbox"
         network = "denied"
+    elif adapter in LOCAL_AGENT_ADAPTERS:
+        # #305: the loop offers only read-only tools confined to the project
+        # root and runs no subprocess, so the boundary is the tool set itself.
+        enforcement, decision = "tool_confined", "enforce"
+        reason = "read-only tool loop confined to the project root"
+        host = ((cfg or {}).get(adapter) or {}).get("host") or ""
+        from urllib.parse import urlsplit
+        network = "loopback" if (urlsplit(host).hostname or "") in {"127.0.0.1", "localhost", "::1"} \
+            else "declared"
     elif compatibility and approved:
         enforcement, decision = "approved_compatibility", "enforce"
         reason = "explicitly approved adapter compatibility mode"
@@ -1683,6 +1709,15 @@ def unavailable_adapter_message(role: str, adapter: str, model: str, resolution_
     )
 
 
+
+
+def contract_adapter_availability(cfg: dict) -> dict:
+    """#305: adapter discovery for contract adapters. A local adapter is not
+    an executable on PATH; it is available when the project declares it (an
+    [ollama] table, or a role or fallback naming it). Whether the service
+    is actually up is the pre-flight's question, not discovery's."""
+    return {adapter: True for adapter in CONTRACT_AGENT_ADAPTERS
+            if ((cfg or {}).get(adapter) or {}).get("declared")}
 
 
 def fallback_profiles(cfg: dict) -> dict:
@@ -2718,7 +2753,8 @@ def read_write_ahead(root: Path) -> dict | None:
 
 def default_agent_actor(adapter: str, role: str) -> str:
     """Stable documented identity used when ``handsoff_agent launch`` omits --by."""
-    if adapter not in SELECTABLE_AGENT_ADAPTERS or role not in SELECTABLE_AGENT_ROLES:
+    if adapter not in LAUNCHABLE_AGENT_ADAPTERS or role not in SELECTABLE_AGENT_ROLES \
+            or not adapter_serves_role(adapter, role):
         raise HandsoffError("cannot derive an actor for an unsupported agent adapter or role")
     return f"{adapter}-{role}"
 
@@ -2898,6 +2934,15 @@ def _find_reported_model(event: object, adapter: str | None) -> str | None:
     # model in a plain-text banner, handled in UsageWatcher.feed. An adapter
     # with no known shape reports nothing here, and the absence is recorded
     # as unreported rather than mistaken for a match.
+    if adapter == "ollama" and isinstance(event, dict):
+        # #305: the ollama loop's own turn line carries the model Ollama
+        # answered with; nothing else in its output is read as a model.
+        if event.get("type") != "handsoff_ollama_turn":
+            return None
+        try:
+            return validate_agent_model(event.get("model"))
+        except HandsoffError:
+            return None
     if adapter != "claude" or not isinstance(event, dict):
         return None
     usage = event.get("modelUsage")
@@ -3149,6 +3194,7 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
         # moment, so derive both while the same lock protects the source.
         repository = snapshotter(root)
         availability = {adapter: bool(which(adapter)) for adapter in SELECTABLE_AGENT_ADAPTERS}
+        availability.update(contract_adapter_availability(cfg))  # #305
         forced_pause_reason = None
         if source.get("state") in AGENT_SESSION_LIVE_STATES:
             category, reason = "still_running", _FAILURE_REASON_LABELS["still_running"]
@@ -3587,7 +3633,10 @@ def select_design_reviewer_profile(cfg: dict, status: dict, acceptance: dict, *,
                     f"an independent design review needs a different adapter or model for the "
                     f"{tier} reviewer tier"
                 )
-    if adapter not in SELECTABLE_AGENT_ADAPTERS or not lookup(adapter):
+    # #305: a declared contract adapter is discovered by declaration, not PATH.
+    discovered = contract_adapter_availability(cfg).get(adapter, False) \
+        if adapter in CONTRACT_AGENT_ADAPTERS else adapter in SELECTABLE_AGENT_ADAPTERS and lookup(adapter)
+    if not discovered:
         if tiering:
             raise HandsoffError(
                 f"{tier} reviewer profile unavailable: {adapter} is not on PATH; install it, "
@@ -6620,11 +6669,16 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
         # Authentication and local runtime failures are not evidence that a
         # different provider is required. Keep the skipped sequence for the
         # incident UI, but never select or launch one of these profiles.
+        # #305: a local model failing is the case a configured cloud fallback
+        # exists for, so leaving a local adapter is not a vendor substitution.
+        local_exit = previous_adapter in LOCAL_AGENT_ADAPTERS and profile["adapter"] != previous_adapter
         if failure_category in {"auth_failure", "runtime_environment"}:
             skipped.append({"index": index, "reason": "environment_failure"})
         elif not model_policy_allows(policy, *identity):
             skipped.append({"index": index, "reason": "model_policy_denied"})
-        elif previous_adapter and profile["adapter"] != previous_adapter \
+        elif profile["adapter"] in CONTRACT_AGENT_ADAPTERS and not adapter_serves_role(profile["adapter"], role):
+            skipped.append({"index": index, "reason": "insufficient_capability"})
+        elif previous_adapter and profile["adapter"] != previous_adapter and not local_exit \
                 and (failure_category != "rate_limit" or not policy["quota_substitution"]):
             skipped.append({"index": index, "reason": "cross_vendor_not_allowed"})
         elif required_tier is not None and (catalog is None or
@@ -6637,7 +6691,8 @@ def plan_agent_fallback(role: str, failure_category: str, fallback_entries: obje
         elif role == "reviewer" and identity == implementer_identity:
             skipped.append({"index": index, "reason": "reviewer_not_independent"})
         else:
-            reason = "quota_substitution" if previous_adapter and profile["adapter"] != previous_adapter else "eligible_fallback"
+            reason = "local_failure_substitution" if local_exit else \
+                "quota_substitution" if previous_adapter and profile["adapter"] != previous_adapter else "eligible_fallback"
             return _fallback_decision("select", reason, profile=profile, skipped=skipped)
     reason = "environment_failure" if failure_category in {"auth_failure", "runtime_environment"} else "fallback_exhausted"
     return _fallback_decision("pilot_pause", reason, skipped=skipped)
