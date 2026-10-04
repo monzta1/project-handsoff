@@ -2844,6 +2844,9 @@ class UsageWatcher:
         self.adapter = adapter
         self.usage: dict | None = None
         self.reported_model: str | None = None
+        #: #305 implementation review: once an ollama turn reports no usage,
+        #: no later total is complete, so the session's usage is unreported.
+        self._usage_incomplete = False
         self._awaiting_number = False
         #: How many banner rules have gone by. The model field is only
         #: trusted between the first and the second.
@@ -2880,6 +2883,9 @@ class UsageWatcher:
                 event = json.loads(text)
             except ValueError:
                 return
+            if self.adapter == "ollama" and isinstance(event, dict) \
+                    and event.get("type") == "handsoff_ollama_turn" and event.get("usage_available") is False:
+                self._usage_incomplete = True
             usage = _find_usage(event)
             if usage:
                 self._set(tokens_in=usage.get("input_tokens"), tokens_out=usage.get("output_tokens"))
@@ -2897,6 +2903,8 @@ class UsageWatcher:
     def result(self, enabled: bool = True) -> dict:
         if not enabled:
             return {"tokens_in": None, "tokens_out": None, "tokens_total": None, "source": "disabled"}
+        if self._usage_incomplete:
+            return {"tokens_in": None, "tokens_out": None, "tokens_total": None, "source": "not reported"}
         return dict(self.usage) if self.usage else {"tokens_in": None, "tokens_out": None, "tokens_total": None, "source": "not reported"}
 
 

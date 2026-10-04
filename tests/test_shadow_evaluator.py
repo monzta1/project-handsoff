@@ -9,6 +9,7 @@ zero would pull the input-token mean from 100 to 66.7 if it were averaged.
 import copy
 import http.client
 import json
+import re
 import random
 import shutil
 import sys
@@ -323,10 +324,48 @@ class RoutingUntouchedAndApprovalTests(HandsoffTestCase):
         connection.close()
         return response.status, payload
 
+    def page_token(self, server):
+        """The Pilot token as Mission Control gets it: from its own page."""
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/")
+        html = connection.getresponse().read().decode("utf-8")
+        connection.close()
+        found = re.search(r'<meta name="handsoff-pilot-token" content="([0-9a-f]+)">', html)
+        self.assertIsNotNone(found, "the page carries the Pilot token")
+        return found.group(1)
+
     def approve(self, server, finding, token=None):
         if token is None:
-            token = self.request(server, "GET", "/api/pilot-token")[1]["pilot_token"]
+            token = self.page_token(server)
         return self.request(server, "POST", "/api/shadow-approval", {"pilot_token": token, "finding": finding})
+
+    def test_no_api_hands_out_the_pilot_token(self):
+        # implementation review attempt 1: GET /api/pilot-token returned the
+        # token to any caller, who could then mint approvals
+        server = self.serve()
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/api/pilot-token", headers={"Origin": "http://evil.example"})
+        response = connection.getresponse()
+        body = response.read().decode("utf-8", "replace")
+        connection.close()
+        self.assertNotEqual(response.status, 200)
+        self.assertNotIn(server.pilot_token, body)
+
+    def test_a_cross_origin_approval_is_refused_even_with_the_token(self):
+        server = self.serve()
+        finding = self.finding(self.report())
+        host, port = server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("POST", "/api/shadow-approval",
+                           body=json.dumps({"pilot_token": self.page_token(server), "finding": finding}),
+                           headers={"Content-Type": "application/json", "Origin": "http://evil.example"})
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        self.assertEqual(response.status, 403)
+        self.assertFalse(list(shadow.approvals_dir(self.tmp).glob("apr-*.json")))
 
     def test_evaluation_and_shadow_mode_leave_routing_config_and_the_routed_choice_unchanged(self):
         before = (self.toml(), shadow.routing_config_sha256(self.tmp), shadow.routed_choice(self.tmp))

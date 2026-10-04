@@ -371,8 +371,14 @@ def run_session(*, host: str, model: str, role: str, project_root: str, prompt: 
                 {"role": "user", "content": prompt}]
     tokens_in = tokens_out = 0
     metered = True
+    # Implementation review attempt 1: one unmetered turn used to switch the
+    # ceiling off. `charged` is what the ceiling is enforced against: the
+    # reported counts when Ollama gives them, otherwise a deliberately high
+    # estimate (one token per three characters of what was sent and
+    # received), so a session without usage still stops at its limit.
+    charged = 0
     for _turn in range(max_turns):
-        remaining = provider_limit - (tokens_in + tokens_out)
+        remaining = provider_limit - charged
         options = {"num_predict": max(1, min(MAX_TURN_OUTPUT_TOKENS, remaining))}
         try:
             response = _call(host, "/api/chat", {"model": model, "messages": messages, "tools": TOOLS,
@@ -391,6 +397,12 @@ def run_session(*, host: str, model: str, role: str, project_root: str, prompt: 
             reported = model
         prompt_count, eval_count = _count(response.get("prompt_eval_count")), _count(response.get("eval_count"))
         event = {"type": TURN_EVENT, "model": reported if isinstance(reported, str) else None}
+        if prompt_count is not None and eval_count is not None:
+            charged += prompt_count + eval_count
+        else:
+            sent = len(json.dumps(messages, ensure_ascii=False))
+            received = len(json.dumps(response.get("message") or {}, ensure_ascii=False))
+            charged += sent // 3 + received // 3 + 2
         if metered and prompt_count is not None and eval_count is not None:
             tokens_in += prompt_count
             tokens_out += eval_count
@@ -405,7 +417,7 @@ def run_session(*, host: str, model: str, role: str, project_root: str, prompt: 
         if not same_model(model, reported):
             err.write("HANDSOFF_OLLAMA_ERROR: ollama answered with a different model than requested\n")
             return 1
-        if metered and tokens_in + tokens_out > provider_limit:
+        if charged > provider_limit:
             err.write("HANDSOFF_OLLAMA_ERROR: token budget exhausted for this local session\n")
             return 3
         message = response.get("message") if isinstance(response.get("message"), dict) else {}

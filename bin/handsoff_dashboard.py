@@ -1682,9 +1682,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/ownership":
             self._json_response(HTTPStatus.OK, self.server.ownership_view())
             return
-        if path == "/api/pilot-token":
-            self._json_response(HTTPStatus.OK, {"pilot_token": self.server.pilot_token})
-            return
         if path == "/healthz":
             payload = b'{"ok":true}'
             self._headers(HTTPStatus.OK, "application/json; charset=utf-8", len(payload))
@@ -1711,6 +1708,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             asset_path = ASSET_ROOT / asset[0]
             try:
                 payload = asset_path.read_bytes()
+                if asset[0] == "index.html":
+                    # #302 implementation review: the Pilot token rides in the
+                    # page itself, never on an API a cross-origin page or a
+                    # bare client can call; another origin cannot read this
+                    # HTML, and /api/shadow-approval also requires a
+                    # same-origin Origin. A same-user process that fetches
+                    # this page is the documented boundary.
+                    payload = payload.replace(
+                        b'<meta charset="utf-8">',
+                        b'<meta charset="utf-8">\n  <meta name="handsoff-pilot-token" content="'
+                        + self.server.pilot_token.encode("ascii") + b'">', 1)
             except OSError:
                 payload = b"Dashboard assets are missing. Copy the dashboard/ directory beside bin/."
                 self._headers(HTTPStatus.INTERNAL_SERVER_ERROR, "text/plain; charset=utf-8", len(payload))

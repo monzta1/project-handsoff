@@ -559,6 +559,29 @@ class Budgets(_Project):
         self.assertIsNone(status["review"])
 
 
+class MixedMetering(_Project):
+    """Implementation review attempt 1: one turn without usage switched the
+    ceiling off, so a later 1,020,000-token turn ran under a small limit."""
+
+    def test_an_unmetered_turn_does_not_switch_the_ceiling_off(self):
+        server = self.serve(chat=[
+            _chat(tool_calls=[_tool("read_file", path="handsoff.toml")], usage=(100, 20)),
+            _chat(tool_calls=[_tool("read_file", path="handsoff.toml")], usage=None),
+            _chat(tool_calls=[_tool("read_file", path="handsoff.toml")], usage=(1_000_000, 20_000)),
+            _chat(_verdict(), usage=(10, 10)),
+        ])
+        self.declare(server.host)
+        self.assign("reviewer", "ollama", MODEL)
+        self.phase5()
+        code, error, out = self.launch(self.spec("reviewer"))
+        self.assertIsInstance(error, agent.AgentLaunchError)
+        status, session, failure = self.session("reviewer")
+        self.assertEqual(failure["category"], "token_budget_exhaustion")
+        self.assertIsNone(status["review"], "the session stopped at its ceiling, before any verdict")
+        # usage stays honest: after an unmetered turn no complete total is claimed
+        self.assertNotEqual((session.get("usage") or {}).get("tokens_total"), 120)
+
+
 class Floors(_Project):
     """REQ-006: role, capability and risk floors on every launch path."""
 
