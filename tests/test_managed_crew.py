@@ -22,6 +22,7 @@ import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 from test_handsoff_supervisor import HandsoffTestCase, approve_design_review, run  # noqa: E402
 from tests.fixture_state import write_version_pin
+from tests.guards import guard
 
 
 def _commit(root, status):
@@ -93,6 +94,7 @@ class ManagedCrewTests(HandsoffTestCase):
         finally:
             server.server_close()
 
+    @guard
     def test_init_endpoint_requests_the_first_launch_only_when_owned(self):
         source = (BIN / "handsoff_dashboard.py").read_text(encoding="utf-8")
         self.assertIn("if self.server.owned_by_run:\n                    self.server.request_first_launch(requested[\"feature\"])", source)
@@ -138,6 +140,7 @@ class ManagedCrewTests(HandsoffTestCase):
             with self.assertRaises(lib.HandsoffError):
                 broker.parse_architect_request(bad)
 
+    @guard
     def test_runner_applies_the_criteria_request_before_the_proposal(self):
         source = (BIN / "handsoff_agent.py").read_text(encoding="utf-8")
         self.assertIn("_parse_architect_request_line(line, architect_requests, protocol_errors)", source)

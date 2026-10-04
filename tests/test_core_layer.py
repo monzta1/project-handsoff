@@ -25,6 +25,7 @@ import tempfile
 import unittest
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_core as core  # noqa: E402
@@ -33,6 +34,7 @@ import handsoff_lib as lib  # noqa: E402
 CORE_SOURCE = BIN / "handsoff_core.py"
 
 
+@guard
 class TheCoreDependsOnNothingInTheEngine(unittest.TestCase):
     """That property is what lets everything above import it at module level."""
 
@@ -74,6 +76,7 @@ class TheCoreDependsOnNothingInTheEngine(unittest.TestCase):
 class TheGuardedImportSurvivedTheMove(unittest.TestCase):
     """The contract a bare import would have dropped."""
 
+    @guard
     def test_fcntl_is_imported_under_a_guard(self):
         guarded = [
             alias.name
@@ -124,6 +127,7 @@ class TheGuardedImportSurvivedTheMove(unittest.TestCase):
 class TheCoreIsRegisteredWhereItMustBe(unittest.TestCase):
     """#325: the file set lives in more than one registry."""
 
+    @guard
     def test_the_runtime_manifest_covers_it(self):
         self.assertIn("bin/handsoff_core.py",
                       (BIN / "handsoff_manifest.py").read_text(encoding="utf-8"))

@@ -13,6 +13,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tests import guards
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
 sys.path.insert(0, str(BIN))
@@ -296,6 +297,8 @@ class CiWatchTests(HandsoffTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("CI_WATCH_BLOCKED: give --pr N", r.stdout)
         # the PATH shim is the only gh: the real command refuses with the shim's failure, never a traceback
+        # (#371: past the guard gate, which a record bound to this tree satisfies)
+        guards.write_record(self.tmp, lib.repository_digest(self.tmp, self.cfg), ["a guard"], 1)
         r = run(["ci-watch", "--pr", "7", "--by", "claude-host"], cwd=self.tmp)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("CI_WATCH_BLOCKED: gh pr view failed", r.stdout)

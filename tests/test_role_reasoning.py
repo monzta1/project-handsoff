@@ -26,6 +26,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, ROOT
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as agent  # noqa: E402
@@ -115,6 +116,7 @@ class TheArgvCarriesIt(unittest.TestCase):
                 self.assertEqual(settings, [f"model_reasoning_effort={effort}"],
                                  "exactly one effort reaches the adapter")
 
+    @guard
     def test_both_launch_builders_read_the_same_config_key(self):
         """The failover path is the one that regresses silently. Asserted on
         the source because building a real failover spec needs a live adapter,
@@ -164,6 +166,7 @@ class TheSessionRecordsWhatItRanAt(unittest.TestCase):
         self.assertNotIn("reasoning_effort", leg,
                          "the key appeared on a session that never recorded one")
 
+    @guard
     def test_the_snapshot_session_view_exposes_it(self):
         """The closed field tuple in handsoff_dashboard decides what reaches
         the page at all, however faithfully the record carries it."""

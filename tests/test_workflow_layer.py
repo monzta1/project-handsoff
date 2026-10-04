@@ -27,6 +27,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -222,6 +223,7 @@ def contract_cases(mod, root):
     }
 
 
+@guard
 class TheReExportSurfaceIsExactlyTheMovedSet(unittest.TestCase):
     """REQ-002: 121 call sites still say `lib.compute_errors`; they must resolve."""
 
@@ -251,6 +253,7 @@ class TheReExportSurfaceIsExactlyTheMovedSet(unittest.TestCase):
 class NothingUnrelatedEntersTheBoundary(unittest.TestCase):
     """REQ-006: the architectural rule, not a convention in a docstring."""
 
+    @guard
     def test_module_level_imports_are_on_the_allowlist(self):
         unexpected = []
         for node in _tree().body:
@@ -265,6 +268,7 @@ class NothingUnrelatedEntersTheBoundary(unittest.TestCase):
                          "a new dependency entered the workflow boundary; either it belongs in a "
                          "layer below or it does not belong here")
 
+    @guard
     def test_the_monolith_is_never_imported(self):
         """Not at module level and not deferred inside a function either.
 
@@ -279,6 +283,7 @@ class NothingUnrelatedEntersTheBoundary(unittest.TestCase):
                     self.assertNotEqual(alias.name, "handsoff_lib",
                                         f"line {node.lineno} imports the monolith")
 
+    @guard
     def test_no_definition_is_unreachable_from_the_concern(self):
         """A symbol no other symbol here reaches, and the monolith does not
         re-export, arrived by accident."""
@@ -307,6 +312,7 @@ class TheProposedStateIsValidatedBeforeItIsPersisted(unittest.TestCase):
         self.assertNotEqual(plan["registry_hash_before"], plan["registry_hash_after"],
                             "an add that changes nothing is not a validated add")
 
+    @guard
     def test_the_module_never_writes_engine_state_itself(self):
         """Persistence belongs to the ledger. If this module wrote status or
         acceptance directly, a caller could bypass the validation above."""
@@ -337,6 +343,7 @@ class BehaviourIsUnchangedAcrossTheExtraction(unittest.TestCase):
         """A value a broken function would return by accident."""
         return value in ([], {}, None, "", False) or value == [False]
 
+    @guard
     def test_every_covered_function_has_a_case_that_would_notice_a_change(self):
         """The count of recorded cases is not coverage.
 
@@ -361,6 +368,7 @@ class BehaviourIsUnchangedAcrossTheExtraction(unittest.TestCase):
                          "every recorded case for these functions is empty or None, so the "
                          "fixture would match a function that returned nothing at all")
 
+    @guard
     def test_the_covered_set_is_a_real_share_of_the_boundary(self):
         """A single well-chosen function would satisfy the test above."""
         functions = sorted(_defined(), key=len, reverse=True)
@@ -425,6 +433,7 @@ class TheModuleIsRegisteredWhereItMustBe(unittest.TestCase):
         manifest = json.loads((ROOT / "handsoff-runtime.json").read_text())
         self.assertIn("bin/handsoff_workflow.py", manifest["files"])
 
+    @guard
     def test_the_manifest_generator_names_it(self):
         source = (BIN / "handsoff_manifest.py").read_text(encoding="utf-8")
         self.assertIn('"bin/handsoff_workflow.py"', source,

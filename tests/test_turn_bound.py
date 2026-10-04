@@ -25,6 +25,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -52,6 +53,7 @@ class TheAdapterFactIsDeclaredNotInferred(unittest.TestCase):
             lib.adapter_reports_usage_before_exit("some-new-provider")
         self.assertIn("ADAPTER_INTERMEDIATE_USAGE", str(caught.exception))
 
+    @guard
     def test_the_reserve_is_unchanged_and_says_why(self):
         self.assertEqual(lib.PROTOCOL_RESERVE_TOKENS, 2_048)
         source = (BIN / "handsoff_lib.py").read_text(encoding="utf-8")
@@ -295,6 +297,7 @@ class TheDeclaredFloorCarriesItsProvenance(unittest.TestCase):
     def test_codex_has_a_declared_worst_turn(self):
         self.assertEqual(lib.MEASURED_WORST_TURN_OVERSHOOT["codex"], 10_535)
 
+    @guard
     def test_the_declaration_names_the_session_that_produced_it(self):
         source = (BIN / "handsoff_lib.py").read_text(encoding="utf-8")
         head = source[:source.index("MEASURED_WORST_TURN_OVERSHOOT = ")]

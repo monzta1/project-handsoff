@@ -33,6 +33,7 @@ import sys
 import unittest
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -46,6 +47,7 @@ def _function(module, name):
     return src, fn
 
 
+@guard
 class TheLedgerValidatesBeforeItPersists(unittest.TestCase):
     """The property, at the one place every transition goes through."""
 
@@ -201,6 +203,7 @@ class CommitIsTheOnlyWayAStatusReachesTheDisk(unittest.TestCase):
                     found.add((f"{path.stem}.{fn.name}", target))
         return found
 
+    @guard
     def test_the_inventory_of_json_writes_is_unchanged(self):
         found = self._measure()
         self.assertEqual(
@@ -217,6 +220,7 @@ class CommitIsTheOnlyWayAStatusReachesTheDisk(unittest.TestCase):
         self.assertEqual(writers, {"handsoff_ledger.commit"},
                          "something other than commit writes the run's own documents")
 
+    @guard
     def test_the_measurement_is_not_vacuous(self):
         """A matcher that found nothing would pass both tests above."""
         self.assertGreaterEqual(len(self._measure()), 20,

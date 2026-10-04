@@ -32,7 +32,7 @@
     "bin/handsoff_runtime_control.py": "9e0e6c5b8bc849982f99f53287ff9925c5972883a4b37460a3d6bc3dadeedb1e",
     "bin/handsoff_schema.py": "701454f5852471233438459189ead8de04e99f01fc00c7b2dd9e1068a016393a",
     "bin/handsoff_shadow.py": "a135dc042f817d40fcb673d8c8455924482c5f59018642fd5c1612d7f817d71d",
-    "bin/handsoff_supervisor.py": "a688b7402032946aff210e5c0ed28df7c5276f6eb8facbd9940d056043ccab61",
+    "bin/handsoff_supervisor.py": "63b723c024757125edc8a20ed5f9e4d366e929875ef0862c91573a12573e66c6",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/handsoff_update.py": "e2ceb0ac37c35495344be13f27674129ad7a27250bd7cf30c2b8b81021455b48",
     "bin/handsoff_workflow.py": "79ab325d026fd2721835accebe7926c87300c5d768dcbeee2307653eb0dbe777",
@@ -53,7 +53,7 @@
     "playbook/INDEX.md": "779c32bd31e976a097c955a49206988505763051a699187628e2bc8a29a84deb",
     "playbook/index.json": "9f5025de10f7ef7c215cc50c167a30a0cf59a83ec7f74a91286f19f3b3b11fb1",
     "playbook/landing.md": "0dd3377efa183046980801b8a1b54dfc194de75d72186aa3cfd28e4e5ac96634",
-    "playbook/lanes.md": "e62f54b511aab7a12cc50273c3e257d9f4db995e97bb78fed61ace54d8d45f22",
+    "playbook/lanes.md": "816f3973a54ba45a2e82830943303345aaa674e60f98be7182a0b17f56a78c5e",
     "playbook/lessons-agents.md": "44406794b3218c6c49dc50adebabfdcd89edba15c86385d87bed8d4293d90e8e",
     "playbook/lessons-binding.md": "01e7360a49ede0e7917e468060385129916763cf63e20ebdfa902655eae36bdf",
     "playbook/lessons-evidence.md": "ff2b6b81cf2c7a2d13fd4b1a51ea3d4fd30b511caa3ac5cd19eb58719ac2a1ce",
@@ -75,5 +75,5 @@
     "templates/handsoff.toml": "da9cc7f7289a5bd4a61856acd47fb7ecfbf6423b2af8d5f0d7f9c3c8c9ee8d5f"
   },
   "schema": 1,
-  "version": "v0.4.10"
+  "version": "v0.5.0"
 }

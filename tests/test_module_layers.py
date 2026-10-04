@@ -19,6 +19,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 
@@ -201,6 +202,7 @@ def _unresolved(tree):
 class EveryExtractedModuleResolves(unittest.TestCase):
     """The check stage 4 needed and did not have."""
 
+    @guard
     def test_no_module_references_an_unbound_name(self):
         """Scope by scope, because a shared pool cannot answer this.
 
@@ -309,6 +311,7 @@ class EveryExtractedModuleResolves(unittest.TestCase):
 class TheLayersOnlyPointDownward(unittest.TestCase):
     """No module may import a layer above it; that is what keeps it acyclic."""
 
+    @guard
     def test_each_module_imports_only_lower_layers(self):
         """Module level only. Routing still reaches the monolith inside
         function bodies: that is declared migration coupling from the first
@@ -328,6 +331,7 @@ class TheLayersOnlyPointDownward(unittest.TestCase):
                                   f"{module} imports {name}, which is not below it "
                                   f"(allowed: {sorted(allowed) or 'nothing'})")
 
+    @guard
     def test_no_module_imports_the_monolith_at_module_level(self):
         """A module-level monolith import closes the re-export cycle and
         makes the package unimportable. Deferred ones inside functions are
@@ -341,6 +345,7 @@ class TheLayersOnlyPointDownward(unittest.TestCase):
                     for alias in node.names:
                         self.assertNotEqual(alias.name, "handsoff_lib", module)
 
+    @guard
     def test_deferred_monolith_imports_are_only_where_declared(self):
         """The workaround must stay confined and shrinking.
 
@@ -363,6 +368,7 @@ class TheLayersOnlyPointDownward(unittest.TestCase):
                              f"{module} defers {deferred} monolith import(s); only "
                              f"{sorted(allowed)} is permitted to, and that is temporary")
 
+    @guard
     def test_module_level_third_party_imports_are_stdlib_only(self):
         for module in LAYERS:
             for node in _tree(module).body:
@@ -404,6 +410,7 @@ class NoTestPatchesAMovedSymbolOnTheMonolith(unittest.TestCase):
                 moved.setdefault(name, module)
         return moved
 
+    @guard
     def test_the_moved_set_is_derived_not_guessed(self):
         """Pins the three symbols whose bindings caused real silent failures,
         so a later extraction cannot quietly drop them out of the guard."""
@@ -413,6 +420,7 @@ class NoTestPatchesAMovedSymbolOnTheMonolith(unittest.TestCase):
         self.assertEqual(moved.get("create_agent_session"), "handsoff_agent_runtime")
         self.assertNotIn("playbook_section", moved, "still defined in the monolith")
 
+    @guard
     def test_every_patch_of_a_moved_symbol_goes_through_patch_engine(self):
         """mock.patch.object(lib, "X") replaces one binding of X.
 
@@ -455,6 +463,7 @@ class NoTestPatchesAMovedSymbolOnTheMonolith(unittest.TestCase):
 class EveryModuleIsRegisteredWhereItMustBe(unittest.TestCase):
     """#325: the file set lives in more than one registry."""
 
+    @guard
     def test_the_runtime_manifest_covers_every_module(self):
         manifest = (BIN / "handsoff_manifest.py").read_text(encoding="utf-8")
         for module in LAYERS:
@@ -466,6 +475,7 @@ class EveryModuleIsRegisteredWhereItMustBe(unittest.TestCase):
         for module in LAYERS:
             self.assertIn(module, pyproject, f"the wheel would install without {module}")
 
+    @guard
     def test_the_monolith_reexports_every_module(self):
         tree = ast.parse((BIN / "handsoff_lib.py").read_text(encoding="utf-8"))
         reexported = {node.module for node in ast.walk(tree)

@@ -24,6 +24,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -162,6 +163,7 @@ class TheManifestCoversTheSameFiles(unittest.TestCase):
                 found.add(node.value)
         return found
 
+    @guard
     def test_the_manifest_covers_every_playbook_file_on_disk(self):
         on_disk = {f"playbook/{p.name}" for p in PLAYBOOK.iterdir() if p.is_file()}
         missing = sorted(on_disk - self._manifest_playbook_paths())
@@ -190,6 +192,7 @@ class TheManifestCoversTheSameFiles(unittest.TestCase):
         self.assertEqual(stale, [],
                          "pyproject names playbook files that do not exist; the build fails")
 
+    @guard
     def test_all_three_registries_name_the_same_files(self):
         """Index, runtime manifest and wheel packaging, compared directly.
 
@@ -224,6 +227,7 @@ class TheManifestCoversTheSameFiles(unittest.TestCase):
         text = (BIN.parent / "pyproject.toml").read_text(encoding="utf-8")
         return set(re.findall(r'"(playbook/[^"]+)"', text))
 
+    @guard
     def test_the_manifest_names_no_playbook_file_that_is_gone(self):
         stale = sorted(p for p in self._manifest_playbook_paths()
                        if not (BIN.parent / p).is_file())

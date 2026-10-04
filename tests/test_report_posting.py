@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -321,6 +322,7 @@ class ReportPostingTests(HandsoffTestCase):
         self.assertEqual(outcome["posted"], [])
         self.assertEqual([c for c in self._calls() if c[:2] == ["issue", "comment"]], [])
 
+    @guard
     def test_the_switch_posts_on_completion_and_off_stays_quiet(self):
         js = (BIN.parent / "bin" / "handsoff_supervisor.py").read_text()
         self.assertIn('lib.feature_enabled(cfg, "report_posting")', js)

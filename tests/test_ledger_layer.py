@@ -25,6 +25,7 @@ import tempfile
 import unittest
 
 from tests.test_handsoff_supervisor import BIN
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_ledger as ledger  # noqa: E402
@@ -120,6 +121,7 @@ class ThePersistedShapeIsUnchanged(unittest.TestCase):
                             self.baseline["design_hash_two"])
 
 
+@guard
 class TheLedgerSitsOnTheLayersBelowIt(unittest.TestCase):
     """The layering, derived from the source."""
 
@@ -172,6 +174,7 @@ class TheLedgerSitsOnTheLayersBelowIt(unittest.TestCase):
 
 
 class TheModuleIsRegisteredWhereItMustBe(unittest.TestCase):
+    @guard
     def test_the_runtime_manifest_covers_it(self):
         self.assertIn("bin/handsoff_ledger.py",
                       (BIN / "handsoff_manifest.py").read_text(encoding="utf-8"))

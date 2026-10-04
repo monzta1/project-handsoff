@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tests.engine_patch import patch_engine
 from tests.fixture_state import force_acceptance, write_version_pin
+from tests.guards import guard
 
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "bin"
@@ -510,6 +511,7 @@ class TestEveMissionControl(HandsoffTestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    @guard
     def test_canonical_operation_registry_and_dashboard_actions_are_closed(self):
         dashboard = self._dashboard()
         import handsoff_supervisor as supervisor

@@ -540,3 +540,11 @@ The design took three reviews and every finding was about the contract, not the 
 Epic #299 closes with this release: projection, cohorts, shadow evaluation, the provider contract, a local provider and opt-in selection, in that order.
 
 Lesson: when the feature can change live behaviour, spend the review budget on the contract; each ambiguity there becomes either a silent regression or an argument later.
+
+### v0.5.0 field notes: a new minor line, and guards that run before the push (#371, 2026-10-04)
+
+v0.5.0 opens the second minor line, the Pilot's call after v0.4.4 to v0.4.10 added concurrent implementers, a durable Fleet queue, a provider contract, a local Ollama provider, shadow evaluation and opt-in evidence routing. Projects pinned `0.4.*` move once with `handsoff upgrade <project> --to 0.5.*`.
+
+The release's own item (#371): about 100 test cases read the engine's source as text (line counts, registries, write inventories, re-export surfaces, call-site counts). Nothing ran them before a push, and across seven runs they failed CI about eight times, each a one-line fix that cost two CI rounds and a reaffirm, roughly 2 to 3 hours of one session. Fix: every such case carries `@guard`, `python3 -m tests.guards` runs exactly those cases in about a minute and records the repository digest it ran against (captured before, compared after, so an edit during the run leaves no record), a scanner fails on any unmarked source-reading case, and `ci-watch` refuses to start without a record for the current tree.
+
+Lesson: a guard nobody runs before the push is a guard that only ever runs in CI; make the cheap check a gate, not a memory.

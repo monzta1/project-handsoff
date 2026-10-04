@@ -34,6 +34,7 @@ import handsoff_lib as lib  # noqa: E402
 import handsoff_mutation as mutation  # noqa: E402
 import handsoff_supervisor as supervisor  # noqa: E402
 from tests.engine_patch import patch_engine  # noqa: E402
+from tests.guards import guard
 
 
 def _accepted_flags(command):
@@ -335,6 +336,7 @@ class TheRecordStatesWhatWasEstablished(unittest.TestCase):
                       "command", "target", "symbol", "mutation_version", "source_digest"):
             self.assertIn(field, record, f"the record omits {field}, so ok cannot be re-derived")
 
+    @guard
     def test_ok_is_exactly_the_conjunction_of_the_four_conditions(self):
         """Read off the source. If `ok` could be true with any one of them
         false, the recorded fields would no longer explain the verdict."""
@@ -1108,6 +1110,7 @@ class NoOtherPathCanWriteOne(HandsoffTestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("invalid choice", r.stderr)
 
+    @guard
     def test_only_one_call_site_in_the_engine_writes_this_kind(self):
         """Counted across the source, so a second writer added later shows up
         here rather than in a ledger nobody re-reads."""
@@ -1303,6 +1306,7 @@ class AnAbsentFieldHashesExactlyAsBefore(unittest.TestCase):
             lib.criterion_spec_hash({**self.BASE, "mutation_target": None, "mutation_symbol": None}),
             "if these were equal the guard below would be unnecessary; it is not")
 
+    @guard
     def test_no_engine_path_writes_the_fields_as_null(self):
         """Read off the source, because the cost of being wrong is every
         recorded criterion in every project at once."""
@@ -1407,6 +1411,7 @@ class TheProofDoesNotHoldTheProjectLock(HandsoffTestCase):
                         "the project lock was held while the proof ran, so heartbeat and every "
                         "other lock-taking command would block for the whole suite")
 
+    @guard
     def test_the_lock_is_taken_again_to_record(self):
         """The other half: released for the proof, not abandoned. Without the
         second acquisition two proofs could interleave their writes."""
@@ -1500,6 +1505,7 @@ class TheProofDoesNotHoldTheProjectLock(HandsoffTestCase):
 
 
 class TheCommandIsRegisteredLikeEveryOther(unittest.TestCase):
+    @guard
     def test_it_appears_in_the_command_classification(self):
         source = (BIN / "handsoff_supervisor.py").read_text(encoding="utf-8")
         self.assertIn('"mutation-proof": {"class"', source,

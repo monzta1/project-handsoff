@@ -23,6 +23,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_evidence as evidence  # noqa: E402
@@ -311,12 +312,14 @@ class TestRunsNeverEnterTheProjection(unittest.TestCase):
 class ItChangesNoGate(unittest.TestCase):
     """The epic's non-goal, asserted rather than trusted."""
 
+    @guard
     def test_the_module_never_writes_engine_state(self):
         source = (BIN / "handsoff_evidence.py").read_text(encoding="utf-8")
         for forbidden in ("commit(", "write_text(", "atomic_write_json(", "append_event("):
             self.assertNotIn(forbidden, source,
                              f"{forbidden} in the evidence projection: it reads, it does not write")
 
+    @guard
     def test_it_imports_no_layer_that_could_mutate_a_run(self):
         import ast
         tree = ast.parse((BIN / "handsoff_evidence.py").read_text(encoding="utf-8"))

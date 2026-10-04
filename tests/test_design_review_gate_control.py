@@ -27,6 +27,7 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
 from tests.fixture_state import write_version_pin
+from tests.guards import guard
 
 
 class TheLimitIsTheMeasuredPercentile(unittest.TestCase):
@@ -154,6 +155,7 @@ class TheComputedValueIsConsumed(unittest.TestCase):
     out of `required` fails here rather than silently stranding the Pilot.
     """
 
+    @guard
     def test_budget_exhausted_is_a_term_in_required(self):
         import ast
         source = (BIN / "handsoff_dashboard.py").read_text(encoding="utf-8")

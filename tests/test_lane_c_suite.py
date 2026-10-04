@@ -21,12 +21,14 @@ ROOT = BIN.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import shard  # noqa: E402
 from tests.fixture_state import write_version_pin
+from tests.guards import guard
 
 RED_ON_MAIN = ("test_governance_cross", "test_live_verification_view", "test_packaging",
                "test_reviewer_handoff", "test_claude_adapter")
 
 
 class RunnerAndModulesTests(unittest.TestCase):
+    @guard
     def test_the_runner_treats_a_broken_pipe_as_the_childs_exit(self):
         agent = (BIN / "handsoff_agent.py").read_text()
         self.assertIn("except BrokenPipeError:\n                pass\n            try:\n                process.stdin.close()", agent)

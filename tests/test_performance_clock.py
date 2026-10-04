@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
@@ -102,6 +103,7 @@ class TheClockRunsWithoutACommand(HandsoffTestCase):
         self.assertTrue(hasattr(handsoff_dashboard.DashboardServer, "_performance_clock_loop"),
                         "the run-owned dashboard must tick the clock with no browser attached")
 
+    @guard
     def test_the_clock_does_not_retire_at_the_first_pause(self):
         """The bug this replaces: the thread returned on the first pause,
         and `performance-resume` opens a NEW episode with its own deadline.
