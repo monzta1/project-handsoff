@@ -11,16 +11,17 @@
     "bin/handsoff_core.py": "8ff8e1eebffaeb27f9a51cff2ad079e23eafaef4b9d9cd7d027af744c4ea2504",
     "bin/handsoff_dashboard.py": "050c44403922e8d81f8b4bd0ac65567ae2174f434105d6fecf2584ece90f3cf7",
     "bin/handsoff_evidence.py": "f165222647ec17f947547507f4a12c0fab4e199d5140ca08319800895ad1539d",
-    "bin/handsoff_fleet.py": "5bcf4dd30df282818fc0ef5377e39e589747e358bf7fe26f21f99874aea3ba4b",
+    "bin/handsoff_fleet.py": "3a71ddab4a518d511da909cb3a63edae0231f5be132e5998ad8feadcb1a2f405",
     "bin/handsoff_fleet_signals.py": "f425659164f33aab9a42436d18877cfbc05fe39e2c08e1fc1f8c4b07492f24d7",
     "bin/handsoff_ledger.py": "bf79ba4b5cb2579a377974b5495b6c53589ad0d83fdd9de0f410c383417f77e5",
     "bin/handsoff_lib.py": "b35d13e4f9b437ab85026b2d546a2a735beeb24b24bbf983dc4db67a0ea23cea",
-    "bin/handsoff_manifest.py": "001dbe805953c5d338999af1bb1748115d782e58654d0951d501ca0405f678d6",
+    "bin/handsoff_manifest.py": "2f42e814e5ac4d1160addf126e3264bcdcae52d8a0eccac9249423dc00536874",
     "bin/handsoff_mutation.py": "e34053e5f474239bf8e267e26f9a081fa985b3d4bf1ef74b7233b9ea97e22d96",
     "bin/handsoff_observability.py": "81acabac58691dac7fe17c8dbbdc9290a3ac3671ee9bdd0b1a8a7f1faefbfd61",
     "bin/handsoff_preflight.py": "31483bc4c2e853967c127fee6dc0fc7ed00f7012187394554d24c3280790acb5",
     "bin/handsoff_progress.py": "71ca3c940b40c1c717fe51b5d075b9dd93cf2ba7a005070bd8c28cc34acf998d",
     "bin/handsoff_projection.py": "446619c8d0f40f310a424c15e9a81ab7ffeceb87b227ebc6d241a9913807a153",
+    "bin/handsoff_queue.py": "ffd84c7a868797f27eaae30ec0860c8136b675db4c7f7ea291ef7a2885f0267c",
     "bin/handsoff_regress.py": "1e3178a9ed466dd1ec98eccd0b5b1599f8b8626eee7932005167c8417154e589",
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",
     "bin/handsoff_release_transaction.py": "31318f55dc7f7e0d6d19903488164b81e3e458fdc54acc609c5de1b992fb6889",
@@ -71,5 +72,5 @@
     "templates/handsoff.toml": "da9cc7f7289a5bd4a61856acd47fb7ecfbf6423b2af8d5f0d7f9c3c8c9ee8d5f"
   },
   "schema": 1,
-  "version": "v0.4.7"
+  "version": "v0.4.8"
 }
