@@ -530,3 +530,13 @@ Lesson: a recovery rule is part of the durability contract; review it as hard as
 Both items were built by two managed implementers at once, each in its own `--owns` worktree.
 
 Lesson: a temporal holdout is only as good as the timestamp it splits on; split on when the outcome became knowable, not when the work ended.
+
+### v0.4.10 field notes: evidence-assisted routing, off until it earns its place (#303 #299, 2026-10-04)
+
+The last step of the evidence line. `bin/handsoff_evidence_routing.py` selects a managed role's model by measured cost to a verified completion, but only after an approved activation bound to the scoring policy version; off by default, and off means routing is exactly what it was. Hard floors come first, unusable evidence is excluded with its reason, the cheapest candidate whose success lower bound meets the threshold wins, and otherwise the static choice stands as `static_fallback`. A Phase-8 rollback monitor switches assistance off when verified outcomes get worse, never because cost rose, and it stays off until a fresh approved activation.
+
+The design took three reviews and every finding was about the contract, not the code: an undefined cost formula, version cohorts that could be pooled, a below-threshold static pick, activation not bound to a policy version, sparse rollback arms, and a `no_decision` record that would have silently disabled assistance. Each is now a test.
+
+Epic #299 closes with this release: projection, cohorts, shadow evaluation, the provider contract, a local provider and opt-in selection, in that order.
+
+Lesson: when the feature can change live behaviour, spend the review budget on the contract; each ambiguity there becomes either a silent regression or an argument later.

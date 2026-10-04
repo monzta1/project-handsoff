@@ -1358,6 +1358,9 @@ def validate_status_schema(status: dict) -> list[str]:
                     if value is not None:
                         try:
                             validate_session_adaptive_routing(value)
+                            if "evidence" in value:
+                                import handsoff_evidence_routing  # #303
+                                handsoff_evidence_routing.validate_evidence_record(value["evidence"])
                         except HandsoffError as exc:
                             errors.append(f"{label}.adaptive_routing: {exc}")
                     continue

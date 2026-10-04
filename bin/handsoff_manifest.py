@@ -27,6 +27,7 @@ RUNTIME_FILES = (
     "bin/handsoff_cohorts.py",
     "bin/handsoff_adapters.py",
     "bin/handsoff_shadow.py",
+    "bin/handsoff_evidence_routing.py",
     "bin/handsoff_ollama.py",
     "bin/handsoff_projection.py",
     "bin/handsoff_workflow.py",

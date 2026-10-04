@@ -112,6 +112,8 @@ OPERATION_REGISTRY = {
     "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
     # #302: applies one shadow recommendation, only with a Mission Control approval.
     "shadow-apply": {"class": "operator-facing", "surface": "metrics-panel"},
+    # #303: activates evidence-assisted routing, only with a #302 finding's approval.
+    "evidence-routing-activate": {"class": "operator-facing", "surface": "metrics-panel"},
 }
 
 RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
@@ -1059,6 +1061,7 @@ def cmd_advance(args) -> int:
         # may talk to GitHub); the completion event takes the lock itself.
         if archived:
             _analyze_after_archive(root, cfg)
+        _evidence_rollback_after_complete(root)  # #303
         # #40: outside the project lock on purpose. The dashboard's own
         # event stream takes that lock every 0.2 s, so holding it here
         # would keep the server from ever noticing the stop request.
@@ -1212,6 +1215,24 @@ def _analyze_after_archive(root, cfg) -> None:
         print(f"HANDSOFF_ANALYSIS_FAILED (run still completed successfully): {type(exc).__name__}: {exc}")
 
 
+def _evidence_rollback_after_complete(root) -> None:
+    """#303: the rollback monitor, after the Phase 8 archive write and outside
+    the lock (it takes the lock itself). Any failure is reported and never
+    fails the advance: the transition is already committed."""
+    import handsoff_evidence_routing as evidence_routing
+    try:
+        result = evidence_routing.rollback_monitor(root)
+    except Exception as exc:  # noqa: BLE001 - the monitor must never fail a completed run
+        print(f"HANDSOFF_EVIDENCE_ROLLBACK_FAILED (run still completed successfully): {type(exc).__name__}: {exc}")
+        return
+    if result["state"] == "rolled_back":
+        print(f"EVIDENCE_ROUTING_ROLLED_BACK: {result['metric']} (assisted "
+              f"{result['rates'][result['metric']]['assisted']:.3f}, baseline "
+              f"{result['rates'][result['metric']]['baseline']:.3f}); off until a fresh approved activation")
+    elif result["state"] == "no_decision":
+        print(f"EVIDENCE_ROUTING_NO_DECISION: {result['reason']} {result['counts']}")
+
+
 def cmd_analyze_archives(args) -> int:
     """#49: the same scan the Phase 8 trigger runs, on demand. Prints the
     report path. --dry-run files nothing; --archive-dir overrides the
@@ -1266,6 +1287,18 @@ def cmd_shadow_apply(args) -> int:
     result = shadow.apply_finding(root, report, finding=args.finding, approval=args.approval)
     print(f"SHADOW_APPLIED: {result['finding_id']} with {result['approval_id']}: "
           f"{result['change']['role']} -> {result['change']['to']['adapter']}/{result['change']['to']['model']}")
+    return 0
+
+
+def cmd_evidence_routing_activate(args) -> int:
+    """#303: activate evidence-assisted routing. Refused unless a #302 finding
+    and the Mission Control approval recorded for it are named; the approval
+    is consumed and the activation bound to the scoring policy version."""
+    import handsoff_evidence_routing as evidence_routing
+    root = lib.resolve_root(args.root)
+    record = evidence_routing.activate(root, finding=args.finding, approval=args.approval, by=args.by)
+    print(f"EVIDENCE_ROUTING_ACTIVATED: {record['activation_id']} policy {record['policy_version']} "
+          f"from {record['finding_id']} with {record['approval_id']}")
     return 0
 
 
@@ -6115,6 +6148,14 @@ def build_parser() -> argparse.ArgumentParser:
     shadow_apply.add_argument("--finding", required=True, help="the finding id (shf-...)")
     shadow_apply.add_argument("--approval", required=True, help="the approval id Mission Control recorded (apr-...)")
 
+    evidence_activate = sub.add_parser("evidence-routing-activate",
+                                       help="#303: activate evidence-assisted routing; refused without a "
+                                       "#302 finding and its Mission Control approval")
+    evidence_activate.add_argument("--finding", required=True, help="the #302 finding id (shf-...)")
+    evidence_activate.add_argument("--approval", required=True,
+                                   help="the approval id Mission Control recorded for it (apr-...)")
+    evidence_activate.add_argument("--by", required=True)
+
     decline = sub.add_parser("design-decline", help="#177: the Architect declines the change at Phase 1 or 2; "
                              "recorded hash-bound to the criteria, the run closes as not_planned")
     decline.add_argument("--by", required=True, help="the Architect actor")
@@ -6268,6 +6309,7 @@ def main() -> int:
         "analyze-archives": cmd_analyze_archives,
         "pilot-note": cmd_pilot_note,
         "shadow-apply": cmd_shadow_apply,
+        "evidence-routing-activate": cmd_evidence_routing_activate,
         "ci-watch": cmd_ci_watch,
         "design-decline": cmd_design_decline,
         "run-close": cmd_run_close,
