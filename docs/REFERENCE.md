@@ -15,11 +15,12 @@ handsoff doctor /absolute/path/to/project
 `handsoff doctor` reports the exact engine version, installation source, compatible project pin, offline-verifiable manifest identity, adapter availability, Python version, whether run state exists, and whether a copied legacy runtime still needs migration. Runtime-named paths (`bin`, `dashboard`, `fleet`, `prompts`, `schemas`, `templates`, `handsoff-runtime.json`) are classified by content provenance against the installed manifest signatures, never by name alone: `runtime_paths` lists each detected path as `copied-runtime` or `project-owned` with its source, `legacy_runtime_paths` names only the verified copies, and migration previews never move a project-owned directory (#70). The same report carries a read-only `documentation` audit of the project's root and `docs/` Markdown and text files: each obsolete copied-runtime command form (`python3 bin/handsoff_*.py`) or release reference that differs from the installed engine is listed with its path and a deterministic code, alongside the canonical executable, installed version, and supported pin derived from the installed identity; nothing is rewritten (#71). A missing or incompatible `.handsoff-version` refuses before an agent session is reserved. New projects default to the compatible patch pin `0.3.*`; exact pins such as `v0.3.22` remain supported when strict reproducibility is preferred. Configure `[checks].commands` and `[checks].live_commands`, then initialize the mission from the target project's root or from Mission Control:
 
 ```bash
-python3 bin/handsoff_supervisor.py init "Fix the thing that is broken"
-python3 bin/handsoff_supervisor.py criterion-update REQ-001 --requirement "Exact observable outcome" --verification automated --test "pytest tests/test_fix.py -q"
+handsoff supervisor init "Fix the thing that is broken"
+handsoff supervisor criterion-update REQ-001 --requirement "Exact observable outcome" --verification automated --test "pytest tests/test_fix.py -q"
 ```
 
-With an installed engine, the equivalent commands are `handsoff supervisor init ...` and `handsoff supervisor criterion-update ...`; the legacy script paths remain supported for existing drop-in repositories.
+<!-- handsoff-doc: intentional -->
+The legacy script paths `python3 bin/handsoff_supervisor.py ...` remain supported for existing drop-in repositories.
 
 `init` scaffolds `handsoff-status.json` and `handsoff-acceptance.json` at the project root, and flags the run `requires_design_approval: true`. Use `criterion-update`, `criterion-add`, and `criterion-remove` instead of editing the registry by hand. A batch of changes goes through `criteria-apply --file TX.json --by ACTOR` as one all-or-nothing commit (see "Criteria transactions"). Every command resolves the project root itself: `--root DIR`, then `$HANDSOFF_ROOT`, then the nearest ancestor with `handsoff.toml`, then the current directory.
 
@@ -43,23 +44,24 @@ The Architect (see "Agent roles") collaborates with the human to turn that place
 The Architect scales that collaboration to the request. Small, clear, low-risk work gets a concise scope, approach, and criteria proposal; large, ambiguous, high-risk, or cross-cutting work gets fuller exploration and tradeoff analysis. It states which path it recommends and why. The human can say `go deeper` to expand the design or `that's enough, proceed` to stop exploration and submit the smallest sufficient proposal for independent review. That instruction is not itself design approval; both paths retain the same independent-review and human-approval gates.
 
 ```bash
-python3 bin/handsoff_supervisor.py advance 2 20 --new-design-round
-python3 bin/handsoff_supervisor.py record-design-review --by design-reviewer-1 --architect architect-1 --approve --summary "Design and criteria are implementation-ready"
+handsoff supervisor advance 2 20 --new-design-round
+handsoff supervisor record-design-review --by design-reviewer-1 --architect architect-1 --approve --summary "Design and criteria are implementation-ready"
 ```
 
 Every `record-design-review` (approve or request-changes) counts as one design-review attempt. After `[workflow] max_autonomous_design_reviews` attempts (default 3) the run stops asking for reviews on its own; the Pilot permits exactly one more at a time:
 
 ```bash
-python3 bin/handsoff_supervisor.py design-review-authorize --by moncy --note "one more pass on the failure-mode criterion"
+handsoff supervisor design-review-authorize --by moncy --note "one more pass on the failure-mode criterion"
 ```
 
 Only after that independent review does the human give explicit approval before anything is built:
 
 ```bash
-python3 bin/handsoff_supervisor.py design-approve --by moncy --architect architect-1 --summary "Approach, tradeoffs, decisions"
+handsoff supervisor design-approve --by moncy --architect architect-1 --summary "Approach, tradeoffs, decisions"
+handsoff supervisor design-reject --by moncy --reason "The proposed approach does not address the core issue"
 ```
 
-Phase 3 ("Design approved") and every phase after it refuse to advance for a newly initialized run until two current, hash-bound decisions exist: an approved independent design review and explicit human design approval. `record-design-review` accepts `--approve` or `--request-changes`; it refuses a reviewer matching the Architect (case- and whitespace-insensitively), and a change request keeps work in Phase 2. `design-approve` likewise refuses Architect self-approval. `design_hash` deliberately excludes each criterion's mutable `state`/`evidence` (unlike `acceptance_hash`, which `review`/`deployment_approved` use and which DOES include them): recording evidence never invalidates either design decision, while adding, removing, or respecifying a criterion invalidates both and rolls the run back to Phase 2. Each requirement is feature-flagged in status, so a run created before that gate existed remains unaffected after upgrading.
+`design-reject` sends a design the independent reviewer approved, and the Pilot has not yet approved, back for revision: it is accepted only at Phase 2, clears the design review, and records the reason as the next action. Phase 3 ("Design approved") and every phase after it refuse to advance for a newly initialized run until two current, hash-bound decisions exist: an approved independent design review and explicit human design approval. `record-design-review` accepts `--approve` or `--request-changes`; it refuses a reviewer matching the Architect (case- and whitespace-insensitively), and a change request keeps work in Phase 2. `design-approve` likewise refuses Architect self-approval. `design_hash` deliberately excludes each criterion's mutable `state`/`evidence` (unlike `acceptance_hash`, which `review`/`deployment_approved` use and which DOES include them): recording evidence never invalidates either design decision, while adding, removing, or respecifying a criterion invalidates both and rolls the run back to Phase 2. Each requirement is feature-flagged in status, so a run created before that gate existed remains unaffected after upgrading.
 
 The Architect treats existing design docs, settled decisions, and shipped features as settled context to design new work around, not as targets it may reopen on its own judgment (see `prompts/architect.md`); it proposes changing settled/shipped work only when the human explicitly asks for that redesign. `design-approve --redesigns-settled-work "what's changing and why"` is how that explicit exception gets recorded: omitted (the default), an approval makes no claim about touching settled work; passed, it visibly and auditably marks this specific, human-approved design as one that intentionally redesigns something previously settled, rather than fitting around it.
 
@@ -68,11 +70,12 @@ A successful `design-approve` also stamps `authored_by` = the `--architect` iden
 Launch Mission Control from the target project:
 
 ```bash
-python3 bin/handsoff_supervisor.py dashboard
+handsoff supervisor dashboard
 ```
 
 It opens `http://127.0.0.1:8765`, uses a localhost event stream for near-real-time refresh (with focus and polling fallbacks), and shows phase progress, acceptance coverage, audit integrity, evidence, activity, assigned roles, release readiness, and an E.V.E.-style tactical Supervisor briefing. Mission Control is the Pilot control plane: its state-bound **Pilot Operations** panel exposes the decisions currently valid for design approval/revision, deployment approval/hold, design and implementation review budgets, recovery exhaustion/retry, regression authorization/cancellation, amendments, and explicit pause/resume. The existing Questions, Tranche, lane, agent-matrix, and note panels remain their richer operation-specific surfaces. Every control invokes the same lock-protected Supervisor operation as the CLI, carries an action ID bound to the displayed state, rejects stale/double submissions, audits success, and refreshes through SSE immediately. Agent-only design/review/implementation writes are present in one canonical operation inventory but are never exposed as Pilot mutations. The empty dashboard initializes a mission from feature text plus an optional issue reference, so no terminal acknowledgement or follow-up `a` is needed.
 
+<!-- handsoff-doc: intentional -->
 The **Agent Settings** dialog selects `auto`, `codex`, or `claude` plus a runner-default or exact model independently for Supervisor, Architect, Implementer, and Reviewer. A role left unset in `handsoff.toml` launches with the recommended crew (see "Default crew" below) and is labelled `recommended default` in the dialog; an explicit `auto` chooses, at each new role launch, the first installed runnable adapter in the documented order Codex, then Claude Code. Mission Control shows the effective choice either way; selecting Codex or Claude explicitly overrides it per role, and saving the dialog writes every role explicitly. Each role can also have up to eight ordered, explicit Codex/Claude fallback profiles under `[fallback_policy]`; `max_failovers_per_role` defaults to 2 and caps replacement selections without counting the primary. Saving the wrapped settings payload atomically updates `[agents]`, `[models]`, and `[fallback_policy]`. Existing four-role profile and older three-role adapter-only payloads remain valid and leave fallback policy unchanged; the legacy form also preserves the Supervisor adapter/model semantics. Availability means only that the executable was found locally; it does not prove authentication, account entitlement, network access, or model validity. Settings saved during a live session affect future selections only. The pure fallback planner accepts already-classified runtime failures and injected availability, skips unavailable/attempted/non-independent profiles with closed reason codes, and never launches or mutates workflow state. The settings and approval endpoints accept only bounded, exact JSON payloads from the dashboard's own loopback origin and do not enable CORS. Add `--no-open` to start the server without opening a browser, or `--port PORT` to choose another local port. Add `--owned-by-run` when the dashboard is launched for one `/ship-feature` run (`dashboard --no-open --owned-by-run`): the server then writes `.handsoff-dashboard-owner.json` (gitignored) in the project root and `advance 8` with status `complete` shuts it down after the run archive is written, so the port is free for the next run. The persistent LaunchAgent and a manual launch never pass the flag, never write the file, and can never be targeted by a release: the server answers `GET /api/ownership` from the run token and root hash it minted in memory at launch, and `POST /api/shutdown` needs both of them. Note for local development: the dashboard server resolves `dashboard/` and `bin/` relative to the `handsoff_supervisor.py` you actually invoked, not `--root` -- to see edits to the dashboard's own files (`dashboard/*`, `bin/handsoff_dashboard.py`) reflected live, launch it from the copy of this repo you're editing, not a separately installed one.
 
 An owned run dashboard performs immediate managed-role handoffs after a completed role changes the assignment and no Pilot decision is pending. It never manufactures the first session for a manual run, relaunches the same completed role, or retries a non-recoverable failure such as token-budget exhaustion.
@@ -84,8 +87,8 @@ Phase-2 Architect and Reviewer launches receive a bounded managed design context
 Register each project once, then run one persistent fleet service (port `8765` by default):
 
 ```bash
-python3 bin/handsoff_fleet.py register /absolute/path/to/project
-python3 bin/handsoff_fleet.py serve --port 8765
+handsoff fleet register /absolute/path/to/project
+handsoff fleet serve --port 8765
 ```
 
 Fleet Mission Control shows every registered run's feature, phase, progress, state, live role/profile, activity, pending Pilot decisions, recovery state, engine version, repository root, and verified run-owned port. Its SSE feed updates all rows without allocating another port per project. **Release Port** uses the existing token-and-root-bound dashboard shutdown handshake and only removes stale metadata when ownership cannot be proven; it never signals an unverified PID. **Cleanly Close Run** requires a reason and an exact confirmation dialog. An active close additionally verifies the current session, fresh beacon, PID, and process-group leader before TERM/KILL, terminalizes the session once as cancelled, clears leases and pointers, audits closure, and releases only the owned dashboard. Source, Git history, ledgers, and archives are never deleted. Non-complete runs can be reopened from the same row. Set `HANDSOFF_FLEET_REGISTRY` to relocate the default `~/.handsoff/projects.json` registry (useful for tests and managed installations). Both Fleet pages and Mission Control carry an `ENGINE vX.Y.Z` badge in the topbar (#161): on Fleet it is the engine the Fleet server itself runs (`/api/fleet` carries `engine`), and a card whose project engine differs is marked with the Fleet version beside its own; on Mission Control it is the engine the run uses. `handsoff dashboard` and `handsoff fleet serve` open the browser through a focus-or-open step (#162): on macOS with Google Chrome, a tab already on that URL is brought forward instead of a second one being added; `--no-open` skips it. The Metrics tab also exists on the go, without the Mac: `docs/METRICS-SITE.md` describes metrics.tonecommand.com, a Cloudflare Pages site fed straight from GitHub by one Pages Function and fronted by Cloudflare Access (#163).
@@ -143,8 +146,8 @@ Run it after changing anything under `dashboard/`, alongside `tests/test_handsof
 Launch a configured role in a fresh session with the active project as its working directory:
 
 ```bash
-python3 bin/handsoff_agent.py inspect architect --task "Design the requested feature"
-python3 bin/handsoff_agent.py launch implementer --task "Implement the approved criteria" --by implementer-1
+handsoff agent inspect architect --task "Design the requested feature"
+handsoff agent launch implementer --task "Implement the approved criteria" --by implementer-1
 ```
 
 Every managed Codex launch has a hard native rollout ceiling. Defaults are
@@ -171,11 +174,11 @@ Supervisor mutations must cross the typed host dispatcher in `bin/handsoff_broke
 The evidence-bearing part of a normal run looks like this:
 
 ```bash
-python3 bin/handsoff_supervisor.py verify --criterion REQ-001 --by implementer-1
-python3 bin/handsoff_supervisor.py record-symptom-resolved --evidence vr-... --by implementer-1
-python3 bin/handsoff_supervisor.py record-review --by reviewer-1
-python3 bin/handsoff_supervisor.py deployment-gate --approve --by release-owner
-python3 bin/handsoff_supervisor.py verify-live --by production-monitor
+handsoff supervisor verify --criterion REQ-001 --by implementer-1
+handsoff supervisor record-symptom-resolved --evidence vr-... --by implementer-1
+handsoff supervisor record-review --by reviewer-1
+handsoff supervisor deployment-gate --approve --by release-owner
+handsoff supervisor verify-live --by production-monitor
 ```
 
 `verify --all --by ACTOR` (#363) verifies every automated criterion in the registry in one invocation: it selects, in registry order, each criterion whose verification policy includes checks, launches each distinct command once, and writes one record per criterion with its own criterion spec hash and its own pass or fail. `--all` and `--criterion` are mutually exclusive, and `--all` refuses `--expect-fail`. Run one `verify --all` per round, and only after the version bump, the field notes and the documentation are finished, because any later edit is evidence drift that costs another round. The `ignore` list of the `[digest]` table is bound into the review and verification hashes while it is non-empty, so changing the list after `verify` stales the evidence and after `record-review` invalidates the review; an absent or empty list leaves every recorded hash as it was.
@@ -186,7 +189,7 @@ A managed role doing legitimate long background work that has no progress to rep
 
 Each criterion declares one verification policy: `automated`, `manual`, `browser`, or `automated_and_browser`. An automated criterion's `tests` must exactly name commands in `[checks].commands`, and `verify` runs and judges only that criterion's own tests: an unrelated command elsewhere in `[checks].commands` can neither fail it nor satisfy it, and naming several criteria in one call still gives each its own independent evidence record. `[checks].commands` also decides run order: `verify` runs the union of needed commands in that configured order, not alphabetically. The combined policy requires both automated and browser evidence, and a criterion only reads as `passing` once every kind its policy requires has a valid record; one kind landing first leaves it `not_tested`, not a premature `passing`. Command output is shown to the caller but not persisted, only its SHA-256 digest and execution metadata enter the ledger, avoiding accidental secret retention. Each command has a configurable timeout (`[checks].timeout_seconds`, default 600s); a `[[regressions]]` group may override it with its own positive `timeout_seconds`. A hanging check is killed and recorded as exit 124 instead of hanging the Supervisor.
 
-If an interrupted write ever leaves the ledgers out of sync with `handsoff-status.json` (see Known limitations), run `handsoff_supervisor.py doctor` (add `--dry-run` to preview). It recovers only the two specific, provably safe gaps a crash between writes can leave, and refuses, with a specific reason, on anything that looks like real tampering or an invalid resulting state.
+If an interrupted write ever leaves the ledgers out of sync with `handsoff-status.json` (see Known limitations), run `handsoff supervisor doctor` (add `--dry-run` to preview). It recovers only the two specific, provably safe gaps a crash between writes can leave, and refuses, with a specific reason, on anything that looks like real tampering or an invalid resulting state.
 
 ## Eight phases
 
@@ -268,7 +271,7 @@ python3 tests/test_handsoff_supervisor.py -v
 The `automated_and_mutation` verification policy requires both `checks` and `mutation` evidence, so a criterion under it stays `not_tested` until the proof lands; it is opt-in per criterion and no existing project changes. Three further refusals exist because a review reproduced each of them. A symbol whose removal stops the file IMPORTING is refused, because the command then fails the same way for any mutation of any symbol in that file: a function called while the module loads, named by no test, otherwise looked proved. The import check is differential, run against the unmutated copy too, so a module that was never importable standalone cannot produce a false refusal. A name defined more than once in the target is refused with the lines, rather than the first match in walk order deciding silently and the record naming a symbol that is not the one neutralised. And a target that names a re-export rather than the definition is refused with the file that actually defines the symbol, which matters here because the monolith re-exports hundreds of names it no longer defines; `where_defined` and `neutralize` share one definition of "defined", at any nesting depth, so the hint can locate a method too. Every refusal names the file and prints a reason: a target that is not parseable Python, or not UTF-8 text at all, is refused in words rather than as a traceback.
 - **`handsoff.toml`'s governance settings are in the chain of trust.** `deployment_requires_explicit_approval`, `require_live_verification`, `require_design_approval`, and the round/stall limits are hashed into every review, deployment-approval, and live-verification record at the moment it is granted. Changing one of those settings afterward invalidates the decisions bound to the old value, the same way changing the acceptance registry already did; `[checks].commands`/`live_commands` and the file paths are deliberately excluded from this hash so routine test-list edits do not need a fresh review.
 - **A configured state-file path cannot resolve outside the project root, symlinks included.** `handsoff.toml`'s `status_file`, `acceptance_file`, `event_log`, and `verification_log` are checked both as literal strings (no `..`, not absolute) and by resolving the real path and confirming it is still a descendant of the resolved project root, so a symlinked directory component cannot quietly redirect state outside the project.
-- **One validator, not two that can drift.** `handsoff_supervisor.py validate` and `validate_handsoff_status.py` both call the same `compute_errors()` in `handsoff_lib.py`.
+- **One validator, not two that can drift.** `handsoff supervisor validate` and `validate_handsoff_status.py` both call the same `compute_errors()` in `handsoff_lib.py`.
 - **An interrupted cross-file write has a supported recovery path that cannot be used to launder a hand edit.** Every mutating command writes through one shared `commit()` in `handsoff_lib.py`, which journals the exact digest of what it is about to write *before* touching any file, then clears the journal once the describing event is durably appended. `doctor` (see Quick start) uses that journal, not gate-passing alone, to tell a real interrupted write apart from an untracked edit that merely happens to still validate: it closes the event-log gap only when the current status/acceptance content exactly matches a journal entry proving a real command intended it, and it patches a stale `verification_head` anchor (a value it derives itself from the authenticated ledger, never from file content) only when status has not otherwise drifted from the last logged event. A hand edit with no journal behind it is refused, even if it happens to pass every other gate; so is a journal-confirmed write whose content still fails validation. Anything else (a broken hash chain, a deleted tail) is reported and left for the operator to restore from version control or backup.
 
 ## Default crew
@@ -300,11 +303,11 @@ Two rules keep an override from producing something you did not ask for:
 - An explicit `auto` is a real choice, not a placeholder: it keeps the older auto-detect path (first installed adapter in the order Codex, then Claude Code), and its session telemetry still says `auto_detected`.
 - The recommended model belongs to the recommended adapter. If you override a role's adapter to one that differs from its recommended adapter and name no model, the role runs with the runner default (`default`, no model flag) rather than the other runner's model id, and that model is reported with source `runner_default`. Name a model to pin one.
 
-**How the defaults are reported.** `load_config` records `cfg["profile_sources"][role] = {"adapter": ..., "model": ...}`, each `explicit`, `recommended`, or `runner_default`. `handsoff_supervisor.py status` prints `crew` (from `handsoff_lib.crew_view`) with, per role, the requested adapter and model, both sources, `available`, and `executable`; the dashboard settings view carries the same `crew` plus `profile_sources`, and the Agent Settings dialog labels a role `recommended default` when both halves came from the table. `available` is `executable discovery only`: it says the adapter executable is on `PATH` and nothing more. Whether a model id is valid for Claude Code or Codex cannot be checked offline, so the view states that scope instead of claiming it. A managed launch of a recommended role records `resolution_source: "recommended"` on its session; a launch whose adapter is not installed is refused before any session exists, with a message naming the role, that the profile was the recommended default, and the remedies (install the adapter, set `[agents].<role>` and `[models].<role>`, or add a `fallback_policy.<role>` profile), so nothing ever claims the recommended profile ran when it did not.
+**How the defaults are reported.** `load_config` records `cfg["profile_sources"][role] = {"adapter": ..., "model": ...}`, each `explicit`, `recommended`, or `runner_default`. `handsoff supervisor status` prints `crew` (from `handsoff_lib.crew_view`) with, per role, the requested adapter and model, both sources, `available`, and `executable`; the dashboard settings view carries the same `crew` plus `profile_sources`, and the Agent Settings dialog labels a role `recommended default` when both halves came from the table. `available` is `executable discovery only`: it says the adapter executable is on `PATH` and nothing more. Whether a model id is valid for Claude Code or Codex cannot be checked offline, so the view states that scope instead of claiming it. A managed launch of a recommended role records `resolution_source: "recommended"` on its session; a launch whose adapter is not installed is refused before any session exists, with a message naming the role, that the profile was the recommended default, and the remedies (install the adapter, set `[agents].<role>` and `[models].<role>`, or add a `fallback_policy.<role>` profile), so nothing ever claims the recommended profile ran when it did not.
 
 ### Host-driven Supervisor and Architect (#78)
 
-`[agents].supervisor` and `[agents].architect` accept the explicit value `host`: the role is driven by the interactive session or person running the CLI, not by a managed session. It is refused for `implementer` and `reviewer`, so independent review and managed implementation keep their meaning. A host role reports adapter `host` with no model in `status`, `doctor`, and Mission Control's settings payload; `handsoff_agent.py launch` refuses it; an owned dashboard's orchestration loop never launches a host role and, under a host Supervisor, chains only Implementer to Reviewer (an Implementer is never launched from a phase advance alone); recovery reports `not_applicable / host_role` and never launches a replacement. A host Architect records its bounded proposal with `design-propose --file proposal.json --by ARCHITECT`, which applies exactly the validation and hash binding of the managed `HANDSOFF_DESIGN_PROPOSAL` line and emits the same `design_proposal_recorded` event with a null session id.
+`[agents].supervisor` and `[agents].architect` accept the explicit value `host`: the role is driven by the interactive session or person running the CLI, not by a managed session. It is refused for `implementer` and `reviewer`, so independent review and managed implementation keep their meaning. A host role reports adapter `host` with no model in `status`, `doctor`, and Mission Control's settings payload; `handsoff agent launch` refuses it; an owned dashboard's orchestration loop never launches a host role and, under a host Supervisor, chains only Implementer to Reviewer (an Implementer is never launched from a phase advance alone); recovery reports `not_applicable / host_role` and never launches a replacement. A host Architect records its bounded proposal with `design-propose --file proposal.json --by ARCHITECT`, which applies exactly the validation and hash binding of the managed `HANDSOFF_DESIGN_PROPOSAL` line and emits the same `design_proposal_recorded` event with a null session id.
 
 ## Design evidence
 
@@ -319,8 +322,8 @@ inputs = ["bin/*.py", "tools/ast_inventory.py"]   # globs relative to the projec
 
 At most 16 entries; an absent section changes nothing. Two commands:
 
-- `handsoff_supervisor.py design-evidence run [--id ID ...] --by ACTOR [--force]` runs every requested artifact that is missing, stale, or failed and reuses the rest; `--force` reruns even a current one. Commands run with `shell=True` in the project root under `[checks].timeout_seconds`, like `verify`.
-- `handsoff_supervisor.py design-evidence show` prints the state view as JSON (`current`, `stale`, `failed`, `missing`, with the reasons, hashes, and `commit_matches_head`), never the output.
+- `handsoff supervisor design-evidence run [--id ID ...] --by ACTOR [--force]` runs every requested artifact that is missing, stale, or failed and reuses the rest; `--force` reruns even a current one. Commands run with `shell=True` in the project root under `[checks].timeout_seconds`, like `verify`.
+- `handsoff supervisor design-evidence show` prints the state view as JSON (`current`, `stale`, `failed`, `missing`, with the reasons, hashes, and `commit_matches_head`), never the output.
 
 Results live in `handsoff-design-evidence.json`. That file is generated state and belongs in `.gitignore` (this repository's already lists it); it is **not** a ledger: it holds the bounded output (8192 bytes at most) of trusted configured commands and can be deleted at any time to force a fresh measurement. The hash-chained event log records only `design_evidence_recorded` events carrying the artifact id, input hash, output sha256, exit code, truncation flag, and commit. The Architect and the Reviewer receive a `# Design evidence` section in their role input listing every artifact by state, with output for `current` artifacts only; the Supervisor and the Implementer do not. Mission Control shows the same states as pills.
 
@@ -329,10 +332,10 @@ Results live in `handsoff-design-evidence.json`. That file is generated state an
 The first independent design review always gets the full task. Every review after it can start from a delta instead (#36):
 
 ```bash
-handsoff_supervisor.py record-design-review --by codex-reviewer --architect claude-architect \
+handsoff supervisor record-design-review --by codex-reviewer --architect claude-architect \
     --request-changes --summary "Two gaps" --finding "No failure-mode criterion" --finding "Tests name no fixture"
 # ... the Architect revises the criteria, maybe commits ...
-handsoff_supervisor.py design-review-packet --by claude-supervisor \
+handsoff supervisor design-review-packet --by claude-supervisor \
     --disposition "F1.1=resolved" --disposition "F1.2=rejected:the fixture is named in the test list"
 ```
 
@@ -352,7 +355,7 @@ reviewer = "default"
 reviewer_followup = "claude-haiku" # must differ from the architect and implementer profiles
 ```
 
-What sends an attempt back to the primary tier, in precedence order: the first review; an open `handsoff_supervisor.py design-review-escalate --by PILOT [--note "why"]` (Pilot-only, consumed by the next `record-design-review`); the previous review recorded with `record-design-review --request-changes --structural-blocker`; a criterion id added or removed since that review (a text-only `criterion-update` keeps the delta check). The selection is pure over the config, the status file, and the acceptance registry, so `status` (`design_reviewer_selection`) and the dashboard show exactly what the next launch will do, and `next.error` names an independence or availability refusal in advance. Remove both keys to return to a single reviewer profile; the four role keys, the Agent Settings dialog, and every existing record are unaffected either way.
+What sends an attempt back to the primary tier, in precedence order: the first review; an open `handsoff supervisor design-review-escalate --by PILOT [--note "why"]` (Pilot-only, consumed by the next `record-design-review`); the previous review recorded with `record-design-review --request-changes --structural-blocker`; a criterion id added or removed since that review (a text-only `criterion-update` keeps the delta check). The selection is pure over the config, the status file, and the acceptance registry, so `status` (`design_reviewer_selection`) and the dashboard show exactly what the next launch will do, and `next.error` names an independence or availability refusal in advance. Remove both keys to return to a single reviewer profile; the four role keys, the Agent Settings dialog, and every existing record are unaffected either way.
 
 ## Benchmarking the design phase
 
@@ -423,7 +426,11 @@ never blocks a run. Both dashboards carry the Handsoff mark in their header.
 Every release is a wheel attached to a GitHub release whose tag matches `pyproject.toml` and `handsoff-runtime.json`. The steps, in order, with `vX.Y.Z` the release being cut:
 
 1. Set `version` in `pyproject.toml` to `X.Y.Z`.
-2. Regenerate the runtime manifest after the last runtime-file edit: `python3 bin/handsoff_manifest.py --version vX.Y.Z` (it rewrites `handsoff-runtime.json`; a wheel built from a stale manifest makes `doctor` refuse every project). The manifest covers `rules/` too. In this checkout the engine enforces it (#204): once a file the manifest lists changes, every ledger command, the reviewer launch, `doctor` and the dashboard refuse with `the runtime manifest is stale (<files> changed after it was written): run python3 bin/handsoff_manifest.py --version vX.Y.Z, then retry`, so a reviewer never reads a tree the manifest does not describe.
+2. Regenerate the runtime manifest after the last runtime-file edit:
+<!-- handsoff-doc: intentional -->
+`python3 bin/handsoff_manifest.py --version vX.Y.Z` (it rewrites `handsoff-runtime.json`; a wheel built from a stale manifest makes `doctor` refuse every project). The manifest covers `rules/` too. In this checkout the engine enforces it (#204): once a file the manifest lists changes, every ledger command, the reviewer launch, `doctor` and the dashboard refuse with `the runtime manifest is stale (<files> changed after it was written): run
+<!-- handsoff-doc: intentional -->
+python3 bin/handsoff_manifest.py --version vX.Y.Z, then retry`, so a reviewer never reads a tree the manifest does not describe.
 3. Point the wheel references in `INSTALL.md` and this README at `vX.Y.Z`; the rollback example in `INSTALL.md` keeps its older release under its `handsoff-doc: intentional` marker.
 4. Commit as `Bump to vX.Y.Z` (or fold the bump into the feature commit, as the field-note fixes do), then `git tag -a vX.Y.Z -m "vX.Y.Z: one-line summary"`.
 5. `git push origin main` and `git push origin vX.Y.Z`.
@@ -685,7 +692,7 @@ unnecessary work: `prompts/architect.md` names a third protocol line,
 "alternative": ...|null}`, and the host records it:
 
 ```
-python3 bin/handsoff_supervisor.py design-decline --by claude-architect \
+handsoff supervisor design-decline --by claude-architect \
   --reason "the Phase 8 gate already refuses an item without implemented_by" \
   --evidence "lane A refused issue-179 at advance 8 on 2026-09-21" \
   --alternative "fill every required item at Phase 5 and keep the gate"
@@ -766,8 +773,8 @@ pull request and waits for the required check. That wait belongs to the
 run, so it is on the board:
 
 ```
-python3 bin/handsoff_supervisor.py ci-watch --pr 180 --by claude-host
-python3 bin/handsoff_supervisor.py ci-watch --poll
+handsoff supervisor ci-watch --pr 180 --by claude-host
+handsoff supervisor ci-watch --poll
 ```
 
 `ci-watch --pr N`, run right after `gh pr create`, records a
@@ -816,7 +823,27 @@ Implementation reviews are persistent `review_attempts`, not chat claims. Starti
 
 ## Automatic recovery of stalled runs
 
-The `[recovery]` policy drives a lease-protected watchdog. It selects an exact current failed or silent managed session, then recovers only that session's immutable recorded role; a completed or unrelated role can never consume the failure's attempts. New sessions carry their launch phase, retry caps apply to the contiguous failed-session chain rather than lifetime history, and acknowledging an exhausted hold binds to that exact session so the same failure cannot immediately re-arm. `recover --by ACTOR` performs one bounded restart while preserving phase, acceptance, and evidence. Exhaustion becomes a visible blocked escalation. Liveness pings are advisory and unauthenticated: they may postpone recovery, never trigger it; a presumed-lost child is superseded rather than signalled.
+The `[recovery]` policy drives a lease-protected watchdog. It selects an exact current failed or silent managed session, then recovers only that session's immutable recorded role; a completed or unrelated role can never consume the failure's attempts. New sessions carry their launch phase, retry caps apply to the contiguous failed-session chain rather than lifetime history, and acknowledging an exhausted hold binds to that exact session so the same failure cannot immediately re-arm. `recover --by ACTOR` performs one bounded restart while preserving phase, acceptance, and evidence. `recovery-acknowledge --by ACTOR --reason TEXT` records acknowledgement of an exhausted recovery hold, allowing later manual escalation. Exhaustion becomes a visible blocked escalation. Liveness pings are advisory and unauthenticated: they may postpone recovery, never trigger it; a presumed-lost child is superseded rather than signalled.
+
+## Release lifecycle and verification
+
+`release-plan --version vX.Y.Z --by PILOT` records the semantic release class. After acceptance and Phase 7 deployment approval, `release-reconcile --artifact WHEEL --by ACTOR` publishes, installs and verifies the planned release transaction, reading before every action and adopting exact matches. The release cycle continues through live verification at Phase 8.
+
+## Review lifecycle
+
+`review-attempt-start --by ACTOR [--reviewer ID] [--trigger KIND] [--note TEXT]` records the start of an implementation review attempt (Phase 4 or later); it launches no reviewer session. `evidence-routing-activate --finding ID --approval ID --by ACTOR` activates evidence-assisted routing (#303) from a #302 shadow-evaluation finding (`shf-...`) and the Mission Control approval recorded for it; the approval is consumed and the activation is bound to the scoring policy version.
+
+## Monitoring and verification
+
+`monitor-poll --owner ID [--lease-seconds N]` claims or renews the run's monitor lease and advances its event cursor, with no model involved. `evidence-refresh-plan --map PATH --subject ID --changes PATH --hashes PATH --input-hash HASH [--regenerated PATH]` assesses whether recorded evidence drifted after its dependencies changed and appends the assessment to the run's evidence audit.
+
+## Run lifecycle extensions
+
+`run-reopen --by ACTOR --reason TEXT` reopens a non-complete cleanly closed run from its recorded phase.
+
+## Performance tracking
+
+`performance-status` refreshes and prints the 90/120-minute run state. `performance-watch --interval SECONDS` runs the clock that evaluates the 90/120-minute deadline without a CLI call. `performance-resume --by ACTOR --reason TEXT` opens a new episode after explicit reevaluation.
 
 ## Focused checks versus full regressions
 
@@ -832,7 +859,7 @@ name = "python-full"
 commands = ["python3 tests/test_handsoff_supervisor.py"]
 ```
 
-Handsoff normalizes test footprints and refuses a configured whole-suite command, or an equivalent spelling, through ordinary `verify`. First record the intended semantic release with `release-plan --version vX.Y.Z --by PILOT`. Patch and minor plans expose the configured focused checks and block full-regression requests by default; a non-major exception requires `--full-regression-override-reason TEXT` and is audited. Major plans are eligible for the existing gate. The lifecycle is then `regression-request --group NAME --by ACTOR --reason TEXT`, a same-origin Mission Control **Accept Regression** or **Decline** decision, then `regression-run --request-id ID --by ACTOR`. Changing the release plan invalidates a pending or accepted request. Acceptance is single-use and bound to the run, release version/class, exact command hash, repository content and commit pair, configuration, acceptance, work-item scope, requester session, and session/recovery epoch. Expiry or any bound change invalidates it. A launched request locks ordinary workflow mutations until the nonce-bound runner terminalizes; only a human can fail a stranded launch with `regression-finalize`. Handsoff cannot intercept arbitrary operating-system processes outside its execution boundary, so role instructions explicitly prohibit external-shell bypasses.
+Handsoff normalizes test footprints and refuses a configured whole-suite command, or an equivalent spelling, through ordinary `verify`. First record the intended semantic release with `release-plan --version vX.Y.Z --by PILOT`. Patch and minor plans expose the configured focused checks and block full-regression requests by default; a non-major exception requires `--full-regression-override-reason TEXT` and is audited. Major plans are eligible for the existing gate. The lifecycle is then `regression-request --group NAME --by ACTOR --reason TEXT`, a same-origin Mission Control **Accept Regression** or **Decline** decision via `regression-decide --request-id ID --by PILOT --accept|--decline`, then `regression-run --request-id ID --by ACTOR`. `regression-cancel --request-id ID --by ACTOR` stops a pending or accepted request before execution. Changing the release plan invalidates a pending or accepted request. Acceptance is single-use and bound to the run, release version/class, exact command hash, repository content and commit pair, configuration, acceptance, work-item scope, requester session, and session/recovery epoch. Expiry or any bound change invalidates it. A launched request locks ordinary workflow mutations until the nonce-bound runner terminalizes; only a human can fail a stranded launch with `regression-finalize`. Handsoff cannot intercept arbitrary operating-system processes outside its execution boundary, so role instructions explicitly prohibit external-shell bypasses.
 
 The accepted runner writes `.handsoff-regression.json` atomically after each parsed test result. Every managed targeted verification, live verification, regression, and external CI view also publishes or maps to `.handsoff-test-progress.json`'s normalized vocabulary. Each execution has a fresh `execution_id` bound to the run and, when applicable, the accepted regression request and command hash. Mission Control rejects mismatched or superseded identities, suppresses a nonterminal execution after 30 seconds without a heartbeat, and retains a bounded terminal summary for ten minutes. Aggregate counts cover every planned unit even though only 16 secret-safe rows are retained for display; an unknown total remains null, and state precedence is failed, timed out, cancelled, running, queued, then passed.
 
@@ -861,8 +888,8 @@ When the Architect revises several criteria at once (a design round that adds fi
 An `add` criterion object has exactly `id`, `type`, `requirement`, `verification`, and a non-empty `tests` list; `state` and `evidence` are not accepted and start as `not_tested` and `[]`, exactly as `criterion-add` sets them. `update.fields` is any non-empty subset of `requirement`, `verification`, `tests`, `type`, `state` (`state` among `failing`, `not_tested`, `blocked`, the same set `criterion-update` takes); a spec change clears `evidence` and resets `state` to `not_tested` unless `state` is given. Operations apply in file order, and each id may appear in at most one operation, so a criterion the transaction adds cannot also be updated or removed by it. A changed or added `primary_fix` resets the original-symptom binding, as the single commands do.
 
 ```bash
-python3 bin/handsoff_supervisor.py criteria-apply --file TX.json --by architect-1 --dry-run   # plan as JSON, nothing written
-python3 bin/handsoff_supervisor.py criteria-apply --file TX.json --by architect-1             # one commit, one event
+handsoff supervisor criteria-apply --file TX.json --by architect-1 --dry-run   # plan as JSON, nothing written
+handsoff supervisor criteria-apply --file TX.json --by architect-1             # one commit, one event
 ```
 
 The dry-run plan lists every operation with its `previous_hash` (spec hash before, null for add) and `resulting_hash` (null for remove), `registry_hash_before`/`registry_hash_after` (`acceptance_hash`), `design_hash_before`/`design_hash_after`, `work_items_after` (the effective work item ids), and `would_invalidate`. The applied event carries the same operations and hashes, so the plan a reviewer saw and the change that landed can be compared hash for hash. The single commands are unchanged and keep working before and after a transaction; a legacy registry without persisted `work_items` applies cleanly and stays derived.
@@ -877,6 +904,7 @@ The dry-run plan lists every operation with its `previous_hash` (spec hash befor
 
 ### Cohort queries over routing evidence (#301)
 
+<!-- handsoff-doc: intentional -->
 `python3 bin/handsoff_cohorts.py` reads the #300 evidence projection and answers cohort queries keyed by repository, task class, phase, adapter, model and policy version. It never scores and never changes a route. Each metric (`success_rate`, `median_wall_seconds`, `mean_total_tokens`) reports `n_known`, `missing_rate` and a value, and the value is null below `min_sample` (default 20), naming the shortfall, or with no observations at all. A cohort is split by model version (the reported model unless the projection says `UNKNOWN`, else the requested model) after every widening step, so combining versions never qualifies a cohort. Widening follows one documented order and records each step as `sparse` or `never_populated`; `UNKNOWN` task class is its own bucket. Retention keeps the newest 2000 records per repository and 20000 across Fleet. Fixture archives never enter a cohort. An aggregate is a pure function of the source hashes, the derivation version, an explicit `now`, the cohort config and the key.
 
 ### Provider adapter contract (#304)
@@ -885,9 +913,10 @@ The dry-run plan lists every operation with its `previous_hash` (spec hash befor
 
 ### Shadow evaluation and replay (#302)
 
+<!-- handsoff-doc: intentional -->
 `python3 bin/handsoff_shadow.py` replays #301 cohorts against a temporal holdout and records, in shadow, what evidence-driven routing would choose next to the real choice. It never changes a route or the routing config. Records are split on when each outcome became available (the archive's verified or terminal time, not session end), and records with unknown availability are excluded and counted. The boundary is an input fixed before any scoring. The candidate policy is frozen from training records only (per cohort, the cheapest candidate whose training Wilson lower bound meets the threshold, else the static baseline), then scored on the holdout against the baseline. The scorer refuses, naming the shortfall, when full-usage coverage is below its floor (default 50 percent), and a `usage_partial` record never contributes zero for a missing half. Results come with and without low-quality evidence, and every finding names its cohort key and policy version.
 
-`handsoff_supervisor.py shadow-apply` applies one recommendation to routing configuration, and only with a Pilot approval record that names that finding and the hash of the exact change. Mission Control creates that record through `POST /api/shadow-approval`, which requires a same-origin request and the per-dashboard Pilot token. The token is served only inside the Mission Control page itself, never by an API, so another origin cannot read it. No CLI flag creates or accepts one, so an actor name typed on the command line never counts. The boundary is honest: a same-user process that reads the Pilot token, or rewrites the ledger, is outside what this enforces.
+`handsoff supervisor shadow-apply` applies one recommendation to routing configuration, and only with a Pilot approval record that names that finding and the hash of the exact change. Mission Control creates that record through `POST /api/shadow-approval`, which requires a same-origin request and the per-dashboard Pilot token. The token is served only inside the Mission Control page itself, never by an API, so another origin cannot read it. No CLI flag creates or accepts one, so an actor name typed on the command line never counts. The boundary is honest: a same-user process that reads the Pilot token, or rewrites the ledger, is outside what this enforces.
 
 ### Local Ollama provider (#305)
 
@@ -919,10 +948,10 @@ A rollback monitor runs at Phase 8. It compares verified outcomes of assisted de
 Once a design is approved and the run is past Phase 2, a small correction to an already-approved criterion (a requirement sharpened after the Implementer's finding, a test command renamed) does not have to throw the design away. `amendment-open` reads the same `{"operations": [...]}` file as `criteria-apply`, plans it with the same planner, and classifies the delta itself. The caller never chooses: an `add`, a change to which criterion is the `primary_fix`, a verification downgrade, a change spanning two work items, a change to the work-item scope, or `--request-full-redesign` is `full_redesign` and refuses to open; everything else is `scoped`.
 
 ```bash
-python3 bin/handsoff_supervisor.py amendment-open --file TX.json --by architect-1 --summary "Sharpen REQ-002"
-python3 bin/handsoff_supervisor.py verify --criterion REQ-002 --by implementer-1        # evidence the correction while frozen
-python3 bin/handsoff_supervisor.py amendment-review --by reviewer-1 --approve --summary "Scoped, matches the finding"
-python3 bin/handsoff_supervisor.py amendment-approve --by pilot                         # human-only; resumes the frozen phase
+handsoff supervisor amendment-open --file TX.json --by architect-1 --summary "Sharpen REQ-002"
+handsoff supervisor verify --criterion REQ-002 --by implementer-1        # evidence the correction while frozen
+handsoff supervisor amendment-review --by reviewer-1 --approve --summary "Scoped, matches the finding"
+handsoff supervisor amendment-approve --by pilot                         # human-only; resumes the frozen phase
 ```
 
 A scoped open applies the operations in one commit (`amendment_opened`), resets the changed criteria to `not_tested` with their evidence cleared, leaves every other criterion untouched, invalidates the review, deployment, and live decisions, and freezes the run at its current phase and progress. `status["amendment"]` holds the open record: `amendment_id` (`am-<32 hex>`), `base_design_hash`, `changed_ids`, `dependent_ids` (criteria in the same work item whose requirement text names a changed id, a cheap deterministic signal for the reviewer), `affected_work_items`, the `operations` with their spec hashes, `amendment_hash`, `resulting_design_hash`, `classification` and `classification_reasons`, `frozen_phase`/`frozen_progress`, `review`, `pilot_approval`, `state`. While it is open, `advance`, `record-review`, `deployment-gate`, `verify-live`, `criterion-*`, and `criteria-apply` are refused; `verify` and `record-evidence` are not.
@@ -934,9 +963,9 @@ The review binds to `amendment_hash`, recomputed from the registry on disk; `ame
 Naming several criteria in one `verify` call already ran the union of their commands once. Since #43 that launch is also bound to the exact state it proved something about, so a later `verify` of the same commands against unchanged state launches nothing:
 
 ```bash
-python3 bin/handsoff_supervisor.py verify --criterion REQ-001 --criterion REQ-002 --by implementer-1    # launched: [cmd], reused: {}
-python3 bin/handsoff_supervisor.py verify --criterion REQ-001 --criterion REQ-002 --by implementer-1    # launched: [], reused: {cmd: vr-...}
-python3 bin/handsoff_supervisor.py verify --criterion REQ-001 --by implementer-1 --no-cache             # launched again regardless
+handsoff supervisor verify --criterion REQ-001 --criterion REQ-002 --by implementer-1    # launched: [cmd], reused: {}
+handsoff supervisor verify --criterion REQ-001 --criterion REQ-002 --by implementer-1    # launched: [], reused: {cmd: vr-...}
+handsoff supervisor verify --criterion REQ-001 --by implementer-1 --no-cache             # launched again regardless
 ```
 
 Every `checks` record carries `binding` (command to binding hash), `executed`, `reused_from` (the source `vr-...` run id, or null), and `feature_hash` inside the hashed, chained record, and each entry in `results` carries `duration_s`, `timed_out`, `truncated`, and `output_bytes` next to the command, exit code, and output digest. A reused record copies its results from the source (each copied entry also names its `reused_from`), so the flags travel with it. A criterion with several tests gets `executed true` only when every one of its commands was launched in that call; a partially reused record is never a source and names a single `reused_from` only when all of its reused results came from one record. The CLI output lists `launched` and `reused`, the `checks_run` event carries `launched_count` and `reused_count`, and Mission Control's evidence telemetry shows an EXECUTED or REUSED pill per record (a record written before #43 has neither field, loads as before, and is never a reuse source).
@@ -1083,7 +1112,7 @@ Review and human approval are native-phase obligations, not launch-time booleans
 - **Recovery costs real agent time and is bounded.** A recovery launch is a new model session. `max_attempts` limits that cost, and exhaustion requires an operator acknowledgement.
 - **`verify` runs a deliberately small shell-command language.** `[checks].commands` is trusted configuration, but Handsoff rejects command substitution, process substitution, redirects, control operators, and other shell expansion forms before execution. Simple argv and test-path globs remain supported.
 - **Hash chains detect tampering; they do not provide access control.** A writer that can replace a ledger and its separate anchor can forge a new history. Protect the project directory and CI artifacts with normal filesystem/repository permissions. Mission Control exposes bounded same-origin loopback mutations for the canonical Pilot operations described above; every request re-derives current state and uses the same Supervisor gate as the CLI. Anyone able to execute same-origin browser code on that local dashboard can invoke those Pilot actions, while agent-only protocol writes remain unavailable through the dashboard.
-- **Cross-file commits are fail-safe, not transactional.** A crash between appending evidence and updating status leaves a chain-head mismatch that blocks delivery. It will not silently accept the half-commit; run `handsoff_supervisor.py doctor` to attempt recovery. `doctor` only closes the two journal-provable gaps described above: an event log or acceptance/status pair damaged by anything else (a broken hash chain, a deleted tail, hand-edited ledger lines, an edit with no write-ahead journal behind it) still requires restoring from version control or backup.
+- **Cross-file commits are fail-safe, not transactional.** A crash between appending evidence and updating status leaves a chain-head mismatch that blocks delivery. It will not silently accept the half-commit; run `handsoff supervisor doctor` to attempt recovery. `doctor` only closes the two journal-provable gaps described above: an event log or acceptance/status pair damaged by anything else (a broken hash chain, a deleted tail, hand-edited ledger lines, an edit with no write-ahead journal behind it) still requires restoring from version control or backup.
 - **`doctor` recovers ledger *anchoring*, not lost writes.** If the crash happened before a write reached disk at all (as opposed to after one write landed but before its companion write or event did), there is nothing to recover from; `doctor` will correctly report nothing wrong; get the missing information from the operator or agent that was mid-command.
 - **The write-ahead journal (`.handsoff-writeahead.json`) is a single, overwritten-per-command file, not a full log.** It only ever proves the *most recent* in-flight write, matching the project lock's one-writer-at-a-time discipline; it is not a history of past writes and is not meant to be. It is generated state, alongside the lock and chain-head files, and belongs in `.gitignore`.
 - **`design-approve` proves an identity, not a review.** It proves that a non-empty, non-architect identity invoked the command, that a non-empty summary was recorded, and that the approval is bound to the exact criteria hash it applied to; it cannot verify that identity is actually human, or that anyone read or understood the design. The untouched-placeholder guard is a literal, exact-text match against `init`'s default criterion (see "Quick start"), trivially defeated by editing even one character of that text while authoring no real criterion at all -- a real but disclosed gap, not a closed loophole. Both limitations mirror `record-review`'s existing trust model exactly: the tool enforces a distinct identity and a bound hash, not the quality of the judgment behind either.
@@ -1102,10 +1131,10 @@ These prompts are combined with each assigned task by `handsoff_agent.py`. `[age
 ## Import into another project
 
 1. Copy the framework files into the project.
-2. Run `handsoff_supervisor.py init "<feature>"`, then use the criterion commands to define the acceptance registry.
+2. Run `handsoff supervisor init "<feature>"`, then use the criterion commands to define the acceptance registry.
 3. Set `[checks].commands` and `[checks].live_commands` to the project's pre-deployment and deployed-system checks.
 4. Start the Supervisor with the target issue or brief.
-5. Run `python3 bin/handsoff_supervisor.py dashboard` for local monitoring, agent selection, and every Pilot decision. Use the CLI only for automation and agent protocol operations.
+5. Run `handsoff supervisor dashboard` for local monitoring, agent selection, and every Pilot decision. Use the CLI only for automation and agent protocol operations.
 
 No project-specific work, credentials, hostnames, or tracker assumptions are included.
 
@@ -1119,5 +1148,6 @@ A separate, gitignored root remains useful when isolation is preferred (use abso
 mkdir -p .handsoff-selfcheck
 echo ".handsoff-selfcheck/" >> .gitignore
 # write .handsoff-selfcheck/handsoff.toml with real commands, absolute paths
+<!-- handsoff-doc: intentional -->
 cd .handsoff-selfcheck && python3 ../bin/handsoff_supervisor.py init "..."
 ```

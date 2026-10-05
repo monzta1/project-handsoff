@@ -6,7 +6,9 @@ Written 2026-09-13 by the Supervisor session (`claude-supervisor-gov`) at a cont
 
 - Worktree: `/Users/moncyabraham/Projects/project-handsoff-claude-governance`, branch `claude/handsoff-governance-28-31` (from `main` at `8f5d84e`).
 - Handsoff: Phase 2 (Design debate), progress 10, status `in_progress`, design round 1. One open background wait (Architect drafting). Event log intact (10 events at checkpoint).
-- Mission Control: `python3 bin/handsoff_supervisor.py --root <worktree> dashboard --port 8771 --no-open` (session-local process, restart it after any `bin/` or `dashboard/` change). URL http://127.0.0.1:8771/.
+- Mission Control:
+<!-- handsoff-doc: intentional -->
+`python3 bin/handsoff_supervisor.py --root <worktree> dashboard --port 8771 --no-open` (session-local process, restart it after any `bin/` or `dashboard/` change). URL http://127.0.0.1:8771/.
 - Roles: all Claude Code (`[agents]` all `claude`, `[fallback_policy]` Claude-only `opus` entries). Never Codex.
 - Managed Architect session `claude-architect-gov` was RUNNING at checkpoint (launched with a 5400 s timeout). Do not launch a second Architect; wait for its `agent_session_completed` (or failed/timed_out) event in `handsoff-events.jsonl`.
 
@@ -24,6 +26,7 @@ No ticket may be marked done; nothing is implemented yet.
 ## Committed at checkpoint
 
 - `handsoff.toml`: Claude-only roles and fallbacks, temporary `[[tickets]]` bootstrap for 31/30/28/29, `[checks].commands` still empty (the Architect adds focused commands).
+<!-- handsoff-doc: intentional -->
 - `bin/handsoff_dashboard.py`: Mission Control now lights the chiclet of any live managed session and shows a live session on its Command Crew row (a live reviewer goes to DESIGN REVIEWER through Phase 2, to REVIEWER from Phase 5). Verified with `python3 tests/test_handsoff_supervisor.py TestAgentRuntimeTelemetry.test_dashboard_exposes_truthful_crew_and_replacement_telemetry TestAgentRuntimeTelemetry.test_dashboard_distinguishes_managed_legacy_and_next_launch_profiles` (OK) and `node --test tests/dashboard/crew_and_failover.test.js`. Needs a unit test of its own in the implementation phase.
 - This handoff file.
 

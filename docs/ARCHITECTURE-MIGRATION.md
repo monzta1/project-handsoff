@@ -1,5 +1,6 @@
 # Decomposing handsoff_lib.py
 
+<!-- handsoff-doc: intentional -->
 `bin/handsoff_lib.py` centralises storage, schema validation, workflow
 transitions, evidence and ledger handling, agent runtime, model routing,
 Fleet registry, dashboard projection, metrics, recovery and process
@@ -57,6 +58,7 @@ definitions. It is now 8,279 across 351, having taken the #342, #343, #349 and v
 
 ## Stage 1: the core primitives
 
+<!-- handsoff-doc: intentional -->
 `bin/handsoff_core.py` holds the thirteen symbols with **zero** outbound
 dependencies on the engine: `HandsoffError` (121 inbound callers),
 `_canonical`, `_atomic_write_text`, `durable_replace`, `load_unique_json`,
@@ -98,7 +100,9 @@ the monolith with it.
 4. **Evidence and event ledger** (done, stage 3). 54 symbols, 76 inbound
    callers: the point at which re-export carries the migration rather than
    hiding a rename.
-5. **Fleet registry**: not pending. `bin/handsoff_fleet.py` already owns it,
+5. **Fleet registry**: not pending.
+<!-- handsoff-doc: intentional -->
+`bin/handsoff_fleet.py` already owns it,
    907 lines and 33 symbols including `registry_path`, `load_registry`,
    `forget_project` and `registry_lock`. #284 listed it because the review
    inferred subsystems from responsibilities rather than from the file
