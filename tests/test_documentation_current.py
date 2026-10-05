@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "bin"))
 import handsoff_cli as cli
 import handsoff_lib as lib
 import handsoff_supervisor
+from tests.guards import guard  # noqa: E402
 
 
 class TestDocumentationCurrent(unittest.TestCase):
@@ -106,6 +107,7 @@ class TestDocumentationCurrent(unittest.TestCase):
                     f"REFERENCE.md missing documentation for '{name}'"
                 )
 
+    @guard
     def test_req_003_release_adapter_contract_correct(self):
         """REQ-003: Release adapter docstrings mention read-before-act and advisory operation_key."""
         release_tx_path = self.repo_root / 'bin' / 'handsoff_release_transaction.py'
