@@ -8,6 +8,7 @@ import hmac
 import fcntl
 import json
 import os
+import shlex
 import sys
 import threading
 import time
@@ -654,8 +655,75 @@ def build_metrics(path: Path | None = None, issues: "signals_module.IssueCache |
             "rate_limit": issues.last_rate if issues is not None else None, "projects": projects}
 
 
+#: #373: the engine panel lists at most this many projects.
+ENGINE_PANEL_PROJECTS = 64
+
+
+def installed_engine_facts() -> dict:
+    """#373: what `handsoff version --json` computes for this engine (its
+    version and manifest digest), plus whether the manifest is in step;
+    'unknown' and 'unreadable' when the manifest cannot be read."""
+    import handsoff_cli  # deferred: handsoff_cli imports this module
+    try:
+        identity = handsoff_cli._current_identity()
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"installed": "unknown", "manifest": None, "manifest_status": "unreadable"}
+    stale = lib.stale_manifest_refusal(lib.engine_root())
+    return {"installed": str(identity["version"]), "manifest": identity.get("manifest_sha256"),
+            "manifest_status": "stale" if stale else "current"}
+
+
+def upgrade_command(root: str | Path, pin: str, installed: str) -> str | None:
+    """#373: the exact command that moves `root`'s pin onto the installed
+    engine, or None when the pin already accepts it. A wildcard pin moves to
+    the installed line (major.minor.*); an exact pin moves to v<installed>."""
+    if lib.version_satisfies(installed, pin):
+        return None
+    major, minor, _patch = lib._version_tuple(installed)
+    target = f"{major}.{minor}.*" if "*" in pin else f"v{major}.{minor}.{_patch}"
+    return f"handsoff upgrade {shlex.quote(str(root))} --to {target}"
+
+
+def _project_pin(root: Path) -> str | None:
+    try:
+        return (root / lib.VERSION_PIN_FILE).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def engine_block(path: Path | None = None, issues: "signals_module.IssueCache | None" = None, *,
+                 facts: dict | None = None) -> dict:
+    """#373: the engine panel's data: the installed engine (version and
+    manifest, as `handsoff version --json` reads them), the newest engine
+    release in the Fleet issue cache, whether the install is behind it, and
+    per registered project its pin, whether the installed engine satisfies
+    it and, when not, the exact upgrade command."""
+    facts = facts if facts is not None else installed_engine_facts()
+    installed = facts["installed"]
+    try:
+        current = lib._version_tuple(installed)
+    except lib.HandsoffError:
+        current = None
+    latest = signals_module.latest_engine_release(issues)
+    behind = bool(latest and current and lib._version_tuple(latest["tag"]) > current)
+    projects = []
+    for entry in load_registry(path)[:ENGINE_PANEL_PROJECTS]:
+        root = Path(entry["root"])
+        pin = _project_pin(root)
+        satisfied, upgrade = None, None
+        if pin is not None and current is not None:
+            try:
+                satisfied = lib.version_satisfies(installed, pin)
+                upgrade = None if satisfied else upgrade_command(root, pin, installed)
+            except lib.HandsoffError:
+                satisfied = False  # an unreadable pin refuses every engine
+        projects.append({"root": str(root), "pin": pin, "satisfied": satisfied, "upgrade": upgrade})
+    return {**facts, "latest": latest, "behind": behind, "projects": projects}
+
+
 def build_fleet(path: Path | None = None, public_base: str | None = None,
-                signals: "signals_module.SignalCache | None" = None) -> dict:
+                signals: "signals_module.SignalCache | None" = None,
+                issues: "signals_module.IssueCache | None" = None) -> dict:
     forget_missing_roots(path)  # #207: a vanished root is ORPHANED for one pass, then gone
     projects = [_public_dashboard_url(project_view(entry, signals), public_base) for entry in load_registry(path)]
     # #166: a ticket two live open runs both list is shown in red on both cards.
@@ -668,7 +736,8 @@ def build_fleet(path: Path | None = None, public_base: str | None = None,
     decisions = [{"root": item["root"], "project": item["name"], "feature": item.get("feature"), **action}
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
-            "engine": {**FLEET_ENGINE, "install_blocked": install_blocked(path)},  # #161, #216
+            "engine": {**FLEET_ENGINE, "install_blocked": install_blocked(path),  # #161, #216
+                       **engine_block(path, issues)},  # #373
             "decisions": decisions, "counts": {state: sum(item["state"] == state for item in projects)
                                                  for state in ("running", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "idle", "orphaned")}}
 
@@ -776,7 +845,7 @@ class FleetHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/fleet":
             self._json(HTTPStatus.OK, build_fleet(self.server.registry, public_base=self._public_base(),
-                                                  signals=self.server.signals))
+                                                  signals=self.server.signals, issues=self.server.issues))
             return
         if path == "/api/metrics":
             self._json(HTTPStatus.OK, build_metrics(self.server.registry, self.server.issues, self.server.started_at))
@@ -790,7 +859,7 @@ class FleetHandler(BaseHTTPRequestHandler):
             last = None
             try:
                 while not self.server.stopping:
-                    payload = build_fleet(self.server.registry, signals=self.server.signals)
+                    payload = build_fleet(self.server.registry, signals=self.server.signals, issues=self.server.issues)
                     signature = hashlib.sha256(json.dumps(payload["projects"], sort_keys=True).encode()).hexdigest()
                     if signature != last:
                         self.wfile.write(f"event: fleet\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n".encode())

@@ -758,6 +758,33 @@ def _release_row(item: dict) -> dict | None:
             "published_at": item["published_at"]}
 
 
+#: #373: the engine's own repository, whose releases the engine panel reads.
+ENGINE_REPO = "monzta1/project-handsoff"
+_RELEASE_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def latest_engine_release(issues: "IssueCache | None", repo: str = ENGINE_REPO) -> dict | None:
+    """#373: the newest published engine release, {tag, date, title}, from
+    the release lists the issue cache already holds for any registered root
+    whose origin is the engine repository; None when none is cached. Reads
+    the cache only; nothing here fetches."""
+    if issues is None:
+        return None
+    rows = []
+    for entry in issues.snapshot().values():
+        if repo_identity(entry.get("repo")) != repo_identity(repo):
+            continue
+        for row in entry.get("releases") or []:
+            if isinstance(row, dict) and isinstance(row.get("tag_name"), str) and _RELEASE_TAG.match(row["tag_name"]) \
+                    and isinstance(row.get("published_at"), str):
+                rows.append(row)
+    if not rows:
+        return None
+    newest = max(rows, key=lambda row: (row["published_at"], row["tag_name"]))
+    return {"tag": newest["tag_name"], "date": newest["published_at"],
+            "title": str(newest.get("name") or newest["tag_name"])[:200]}
+
+
 def _newest(values) -> str | None:
     dated = [value for value in values if isinstance(value, str) and value]
     return max(dated) if dated else None

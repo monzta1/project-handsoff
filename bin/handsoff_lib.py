@@ -8523,6 +8523,48 @@ def _gh(args: list[str], *, runner=subprocess.run, cwd: Path | None = None):
     return runner(["gh", *args], capture_output=True, text=True, timeout=60, cwd=str(cwd) if cwd else None)
 
 
+def _issues_closed_by_run_pull_requests(root: Path, *, runner=subprocess.run) -> set[int]:
+    """#374: the issues a merged pull request whose head is the run's branch
+    closed. Such a closure is the run's own (a `Closes #N` body), not a
+    human's. Empty when the branch or the pull requests cannot be read."""
+    try:
+        proc = runner(["git", "-C", str(root), "symbolic-ref", "--short", "HEAD"],
+                      capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    branch = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not branch:
+        return set()
+    # Implementation review attempt 1: a closing reference names a number in
+    # SOME repository; only one in this run's own repository is the run's.
+    # When the repository cannot be read, nothing is attributed.
+    viewed = _gh(["repo", "view", "--json", "nameWithOwner"], runner=runner, cwd=root)
+    try:
+        repository = json.loads(viewed.stdout).get("nameWithOwner") if viewed.returncode == 0 else None
+    except (ValueError, AttributeError):
+        repository = None
+    if not isinstance(repository, str) or "/" not in repository:
+        return set()
+    listed = _gh(["pr", "list", "--state", "merged", "--head", branch, "--limit", "20",
+                  "--json", "number,headRefName,closingIssuesReferences"], runner=runner, cwd=root)
+    try:
+        prs = json.loads(listed.stdout) if listed.returncode == 0 else []
+    except ValueError:
+        return set()
+    closed = set()
+    for pr in prs if isinstance(prs, list) else []:
+        if not isinstance(pr, dict) or pr.get("headRefName") != branch:
+            continue
+        for ref in pr.get("closingIssuesReferences") or []:
+            if not isinstance(ref, dict) or not isinstance(ref.get("number"), int):
+                continue
+            repo = ref.get("repository") if isinstance(ref.get("repository"), dict) else {}
+            owner = repo.get("owner") if isinstance(repo.get("owner"), dict) else {}
+            if f"{owner.get('login')}/{repo.get('name')}".lower() == repository.lower():
+                closed.add(ref["number"])
+    return closed
+
+
 def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
                       verifications: list[dict], validate_lines: list[str], *, by: str,
                       runner=subprocess.run,
@@ -8531,7 +8573,9 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
     """#171: one comment per issue work item, marked with the ledger head so
     a second post finds it and does nothing; the item is closed and its box
     ticked in a parent epic. Nothing is posted when a credential shape
-    survives redaction or when gh cannot authenticate."""
+    survives redaction or when gh cannot authenticate. An item that cannot
+    be posted is skipped with its reason and never blocks the others (#374);
+    one marked `unpostable` is settled, the rest are retried."""
     head = _last_hash(event_log_path(root, cfg))
     text = render_final_report(root, cfg, status, acceptance, events, verifications, validate_lines, runner=runner)
     marker = REPORT_MARKER.format(head=head)
@@ -8546,10 +8590,13 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
              if item.get("kind") == "issue" and isinstance(item.get("number"), int)]
     known_handsoff_closed = set(known_handsoff_closed or ())
     # Read every issue before the first mutation.  A pre-existing closure is
-    # safe only when this close transaction already persisted that Handsoff
-    # closed the same item.  Human/unknown closures pause the whole report so
-    # a comment or parent edit cannot leak out before the conflict is known.
+    # the run's own when this close transaction already persisted that
+    # Handsoff closed the same item, or when a merged pull request whose head
+    # is the run's branch closed it (#374).  Any other closure is left alone:
+    # that item is skipped and named, and the others are still posted.
     issue_views: dict[int, dict] = {}
+    skipped: list[dict] = []
+    run_pr_closed: set[int] | None = None
     for item in items:
         number = item["number"]
         view = _gh(["issue", "view", str(number), "--json", "body,url,state,comments"],
@@ -8559,8 +8606,9 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         except ValueError:
             issue = None
         if not isinstance(issue, dict) or str(issue.get("state") or "").upper() not in {"OPEN", "CLOSED"}:
-            return {"posted": [], "skipped": [], "reason": "issue_state",
-                    "detail": f"issue #{number} state could not be read; nothing posted"}
+            # Not unpostable: a read can succeed on the next post.
+            skipped.append({"number": number, "reason": "state could not be read"})
+            continue
         existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
         has_report = any(isinstance(c, str) and c.lstrip().startswith(
             REPORT_MARKER.split("{head}")[0]) for c in existing)
@@ -8578,10 +8626,15 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         )
         if str(issue.get("state")).upper() == "CLOSED" \
                 and not ((number in known_handsoff_closed and has_report) or canonically_attributed):
-            return {"posted": [], "skipped": [], "reason": "issue_state",
-                    "detail": f"issue #{number} is closed without attributable Handsoff ownership; nothing posted"}
+            if run_pr_closed is None:
+                run_pr_closed = _issues_closed_by_run_pull_requests(root, runner=runner)
+            if number not in run_pr_closed:
+                skipped.append({"number": number, "unpostable": True,
+                                "reason": "closed without attributable Handsoff ownership; left alone"})
+                continue
         issue_views[number] = issue
-    posted, skipped = [], []
+    items = [item for item in items if item["number"] in issue_views]
+    posted = []
     body = marker + "\n" + text
     def save(number: int, operation: str, state: str) -> None:
         if checkpoint is not None:
