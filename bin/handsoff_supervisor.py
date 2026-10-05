@@ -122,6 +122,8 @@ OPERATION_REGISTRY = {
 RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
 MONITOR_RECORD = "monitor.json"
 PERFORMANCE_RECORD = "performance.json"
+#: #385: the append-only, hash-chained performance timeline journal.
+PERFORMANCE_TIMELINE_JOURNAL = "performance-timeline.jsonl"
 EVIDENCE_AUDIT_RECORD = "evidence-audit.json"
 PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
     "status", "validate", "verify-log", "doctor", "dashboard", "design-timing",
@@ -175,6 +177,16 @@ def _runtime_write(root: Path, name: str, payload: dict) -> None:
     path = _runtime_path(root, name)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lib.atomic_write_json(path, payload)
+
+
+def _runtime_append_line(root: Path, name: str, payload: dict) -> None:
+    """Durably append one JSON line to a runtime-control journal."""
+    path = _runtime_path(root, name)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _runtime_read(root: Path, name: str, schema: str) -> dict | None:
@@ -244,31 +256,26 @@ def _sync_performance_holds(history: dict, events: list[dict]) -> dict:
     return updated
 
 
-#: #385: the ledger event carrying one entry of the performance timeline
-#: that reconstruct_performance_history reads.
-PERFORMANCE_TIMELINE_EVENT = "performance_timeline"
+def _performance_journal(root: Path, run_id: str) -> tuple[list[dict], str | None]:
+    """#385: this run's timeline entries and the chain head, from the journal.
 
-
-def _performance_timeline_events(events: list[dict]) -> list[dict]:
-    """The run's recorded timeline entries, the first write of each key."""
-    seen: set = set()
-    timeline: list[dict] = []
-    for event in events:
-        entry = event.get("timeline") if event.get("kind") == PERFORMANCE_TIMELINE_EVENT else None
-        if not isinstance(entry, dict):
-            continue
-        key = runtime_control.performance_timeline_key(entry)
-        if key not in seen:
-            seen.add(key)
-            timeline.append(entry)
-    return timeline
+    The timeline lives in its own append-only, hash-chained journal, never
+    in the run's event ledger, so refreshing the clock (which every command
+    and every dashboard snapshot does) leaves the ledger untouched.
+    """
+    path = _runtime_path(root, PERFORMANCE_TIMELINE_JOURNAL)
+    if not path.exists():
+        return [], None
+    lines = path.read_text(encoding="utf-8").splitlines()
+    timeline, head, _refused = runtime_control.accepted_timeline(lines, run_id)
+    return timeline, head
 
 
 def _read_performance_record(root: Path) -> dict | None:
     """The durable clock, or None when it is missing or fails its integrity check.
 
     #385: an unparsable or invalid record, or a legacy record carrying a
-    signature that does not verify, is rebuilt from the ledger timeline. An
+    signature that does not verify, is rebuilt from the timeline journal. An
     unsigned legacy record and an unknown version keep their read-only
     refusal and are never overwritten.
     """
@@ -294,9 +301,10 @@ def _read_performance_record(root: Path) -> dict | None:
     return access.record
 
 
-def _rebuild_performance_history(run_id: str, events: list[dict], status: dict, now: datetime) -> dict:
-    """#385: replay the ledger timeline, so a lost record keeps its elapsed time."""
-    timeline = _performance_timeline_events(events)
+def _rebuild_performance_history(root: Path, run_id: str, events: list[dict], status: dict,
+                                 now: datetime) -> dict:
+    """#385: replay the timeline journal, so a lost record keeps its elapsed time."""
+    timeline, _head = _performance_journal(root, run_id)
     if timeline:
         try:
             return runtime_control.reconstruct_performance_history(run_id, timeline, now=now)
@@ -306,22 +314,24 @@ def _rebuild_performance_history(run_id: str, events: list[dict], status: dict, 
     return runtime_control.new_performance_history(run_id, "episode-1", now=min(started, now))
 
 
-def _append_performance_timeline(root: Path, cfg: dict, history: dict, events: list[dict],
-                                 *, lock_held: bool) -> None:
-    """#385: append each transition, hold and sleep once, keyed by episode, kind and hold id."""
+def _append_performance_timeline(root: Path, history: dict, *, lock_held: bool) -> None:
+    """#385: journal each transition, hold and sleep once, keyed by episode, kind and hold id."""
     key = runtime_control.performance_timeline_key
-    recorded = {key(entry) for entry in _performance_timeline_events(events)}
-    pending = [entry for entry in runtime_control.performance_timeline(history) if key(entry) not in recorded]
-    if not pending:
+    run_id = history["run_id"]
+    entries = runtime_control.performance_timeline(history)
+    timeline, _head = _performance_journal(root, run_id)
+    if {key(entry) for entry in entries} <= {key(entry) for entry in timeline}:
         return
 
     def write() -> None:
-        current = {key(entry) for entry in _performance_timeline_events(lib.read_events(root, cfg))}
-        for entry in pending:
-            if key(entry) not in current:
-                current.add(key(entry))
-                lib.append_event(root, cfg, PERFORMANCE_TIMELINE_EVENT,
-                                 f"performance {entry['kind']} in {entry['episode_id']}", timeline=entry)
+        current, head = _performance_journal(root, run_id)
+        recorded = {key(entry) for entry in current}
+        for entry in entries:
+            if key(entry) not in recorded:
+                recorded.add(key(entry))
+                line = runtime_control.chain_timeline_entry(run_id, head, entry)
+                _runtime_append_line(root, PERFORMANCE_TIMELINE_JOURNAL, line)
+                head = line["hash"]
 
     if lock_held:
         write()
@@ -353,7 +363,7 @@ def refresh_performance_state(
     run_id = _runtime_run_id(root, events)
     history = _read_performance_record(root)
     if history is None or history.get("run_id") != run_id:
-        history = _rebuild_performance_history(run_id, events, status, now)
+        history = _rebuild_performance_history(root, run_id, events, status, now)
     history = _sync_performance_holds(history, events)
     live_sessions = [
         {"operation_id": session_id, "kind": "agent", "location": "local",
@@ -364,7 +374,7 @@ def refresh_performance_state(
     history, decision = runtime_control.transition_performance(history, now=now, in_flight=live_sessions)
     if persist:
         _runtime_write(root, PERFORMANCE_RECORD, history)
-        _append_performance_timeline(root, cfg, history, events, lock_held=lock_held)
+        _append_performance_timeline(root, history, lock_held=lock_held)
     episode = history["episodes"][-1]
     active_seconds = runtime_control.episode_active_seconds(episode, now=now)
     progress = max(0, min(100, int(float(status.get("progress", 0) or 0))))
@@ -6277,8 +6287,7 @@ def cmd_performance_resume(args) -> int:
             history, decision, f"episode-{len(history['episodes']) + 1}",
         )
         _runtime_write(root, PERFORMANCE_RECORD, resumed)
-        cfg = lib.load_config(root)
-        _append_performance_timeline(root, cfg, resumed, lib.read_events(root, cfg), lock_held=True)
+        _append_performance_timeline(root, resumed, lock_held=True)
     print(f"PERFORMANCE_RESUMED: bound to paused episode hash {expected}")
     return 0
 

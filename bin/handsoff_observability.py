@@ -36,7 +36,9 @@ GATE_FUNCTIONS = {
     # attributes, so the file named must be the file that defines the gate.
     "handsoff_workflow.py": ("compute_errors", "gate_progress"),
     "handsoff_agent_runtime.py": ("design_review_budget",),
-    "handsoff_supervisor.py": ("refresh_performance_state",),
+    # #385: the clock's rebuild, called by refresh_performance_state, reads
+    # status.updated_at as the episode start when the ledger has no event.
+    "handsoff_supervisor.py": ("refresh_performance_state", "_rebuild_performance_history"),
     "handsoff_agent.py": ("build_launch_spec", "build_profile_launch_spec"),
 }
 

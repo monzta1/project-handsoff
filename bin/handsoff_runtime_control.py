@@ -1147,6 +1147,60 @@ def performance_timeline_key(event: Mapping[str, Any]) -> tuple[Any, Any, Any]:
     return (event.get("episode_id"), event.get("kind"), event.get("hold_id"))
 
 
+PERFORMANCE_JOURNAL_SCHEMA = "handsoff.performance_timeline"
+
+
+def _journal_line_hash(line: Mapping[str, Any]) -> str:
+    return content_hash({key: line[key] for key in ("schema", "version", "run_id", "previous", "timeline")})
+
+
+def chain_timeline_entry(run_id: str, previous: str | None, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """#385: one journal line, bound to the hash of the line before it."""
+
+    line = {"schema": PERFORMANCE_JOURNAL_SCHEMA, "version": 1, "run_id": run_id,
+            "previous": previous, "timeline": copy.deepcopy(dict(entry))}
+    line["hash"] = _journal_line_hash(line)
+    return line
+
+
+def accepted_timeline(lines: Iterable[str], run_id: str) -> tuple[list[dict[str, Any]], str | None, int]:
+    """#385: replay the journal and return (this run's entries, chain head, refused count).
+
+    A line is accepted only when it parses, its hash matches its content and
+    its `previous` names the last accepted line. A line failing the chain is
+    refused, not used, and so is every line chained to it; the next append
+    chains to the last accepted line. Each key is kept once, first write wins.
+    """
+
+    head: str | None = None
+    refused = 0
+    seen: set = set()
+    timeline: list[dict[str, Any]] = []
+    for raw in lines:
+        if not raw.strip():
+            continue
+        try:
+            line = json.loads(raw)
+            valid = (isinstance(line, dict)
+                     and set(line) == {"schema", "version", "run_id", "previous", "timeline", "hash"}
+                     and line["schema"] == PERFORMANCE_JOURNAL_SCHEMA and line["version"] == 1
+                     and isinstance(line["timeline"], dict)
+                     and line["previous"] == head and line["hash"] == _journal_line_hash(line))
+        except (ValueError, TypeError):
+            valid = False
+        if not valid:
+            refused += 1
+            continue
+        head = line["hash"]
+        if line["run_id"] != run_id:
+            continue
+        key = performance_timeline_key(line["timeline"])
+        if key not in seen:
+            seen.add(key)
+            timeline.append(line["timeline"])
+    return timeline, head, refused
+
+
 def performance_timeline(history: Mapping[str, Any]) -> list[dict[str, Any]]:
     """#385: the events reconstruct_performance_history reads, derived from a record.
 

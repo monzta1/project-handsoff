@@ -528,9 +528,12 @@ OWNER_PROBE_WORKERS = 16
 #: The run's durable runtime-control records (monitor, performance clock).
 RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
 #: #393: the performance clock is rewritten by every snapshot build (its
-#: active seconds tick), so it is the build's output, not an input; a pause
-#: or resume also writes the ledger, which the signature does read.
-RUNTIME_CONTROL_SELF_WRITTEN = frozenset({"performance.json", "performance.json.bak"})
+#: active seconds tick), and its timeline journal (#385) is appended by the
+#: same refresh on a transition, so both are the build's output, not an
+#: input. A pause or resume therefore reaches the card within the cache's
+#: SNAPSHOT_MAX_AGE_SECONDS rather than at once.
+RUNTIME_CONTROL_SELF_WRITTEN = frozenset({"performance.json", "performance.json.bak",
+                                          "performance-timeline.jsonl"})
 
 
 def project_config(root: Path) -> dict:

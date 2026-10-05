@@ -28,7 +28,7 @@ from unittest import mock
 
 from tests.fixture_state import write_version_pin
 from tests.test_compact_review import session_fields_accepted
-from tests.test_handsoff_supervisor import BIN, HandsoffTestCase
+from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 from tests.guards import guard
 
 sys.path.insert(0, str(BIN))
@@ -217,9 +217,10 @@ class TheTimerCountsTheRightTime(HandsoffTestCase):
         self.assertAlmostEqual(seconds, 35 * 60, delta=1)
 
 
-class TheClockIsRebuiltFromTheLedger(HandsoffTestCase):
-    """#385/REQ-006: the timeline is written once per transition, and a lost
-    or damaged record is rebuilt from it with the same elapsed time."""
+class TheClockIsRebuiltFromTheJournal(HandsoffTestCase):
+    """#385/REQ-006: the timeline is written once per transition to its own
+    hash-chained journal, never the event ledger, and a lost or damaged
+    record is rebuilt from it with the same elapsed time."""
 
     def setUp(self):
         super().setUp()
@@ -227,10 +228,39 @@ class TheClockIsRebuiltFromTheLedger(HandsoffTestCase):
         self.cfg = lib.load_config(self.tmp)
         self.start = datetime.now(timezone.utc)
         self.record = self.tmp / supervisor.RUNTIME_CONTROL_DIR / supervisor.PERFORMANCE_RECORD
+        self.journal = self.tmp / supervisor.RUNTIME_CONTROL_DIR / supervisor.PERFORMANCE_TIMELINE_JOURNAL
 
     def _timeline(self):
-        return [event["timeline"] for event in lib.read_events(self.tmp, self.cfg)
-                if event.get("kind") == supervisor.PERFORMANCE_TIMELINE_EVENT]
+        run_id = supervisor._runtime_run_id(self.tmp, lib.read_events(self.tmp, self.cfg))
+        return supervisor._performance_journal(self.tmp, run_id)[0]
+
+    def test_no_timeline_entry_is_written_to_the_event_ledger(self):
+        self._refresh(30)
+        supervisor.performance_tick(self.tmp, now=self.start + timedelta(minutes=135))
+        self.assertTrue(self._timeline())
+        kinds = {event.get("kind") for event in lib.read_events(self.tmp, self.cfg)}
+        self.assertNotIn("performance_timeline", kinds)
+
+    def test_read_only_commands_leave_the_event_ledger_byte_identical(self):
+        ledger = lib.event_log_path(self.tmp, self.cfg)
+        before = ledger.read_bytes()
+        for argv in (["status"], ["validate"], ["doctor", "--dry-run"]):
+            with self.subTest(argv[0]):
+                run(argv, cwd=self.tmp)
+                self.assertEqual(ledger.read_bytes(), before)
+        self.assertTrue(self.journal.exists())
+
+    def test_a_line_failing_its_chain_is_refused_not_used(self):
+        self._refresh(30)
+        lines = self.journal.read_text(encoding="utf-8").splitlines()
+        hold = next(index for index, line in enumerate(lines) if '"hold_started"' in line)
+        forged = json.loads(lines[hold])
+        forged["timeline"]["at"] = (self.start + timedelta(minutes=1)).isoformat()
+        lines[hold] = json.dumps(forged)
+        self.journal.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _timeline, _head, refused = runtime_control.accepted_timeline(lines, forged["run_id"])
+        self.assertGreaterEqual(refused, 1)
+        self.assertNotIn(forged["timeline"], self._timeline())
 
     def _events_with_hold(self):
         """The run's ledger plus a ten-minute Pilot hold starting at +10."""
