@@ -9,6 +9,7 @@ from pathlib import Path
 
 RUNTIME_FILES = (
     "bin/handsoff_agent.py",
+    "bin/handsoff_analyzer.py",
     "bin/handsoff_broker.py",
     "bin/handsoff_cli.py",
     "bin/handsoff_close_transaction.py",
