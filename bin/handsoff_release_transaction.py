@@ -6,10 +6,9 @@ ledger.  A caller supplies a durable record store and an adapter for external
 state.  This keeps all network and installation work injectable while the
 ordering and conflict rules remain reusable and testable.
 
-Adapters MUST make actions idempotent for the supplied ``operation_key``.
-Every retry reads first; an exact object is adopted, a conflicting object is
-never overwritten or deleted, and a missing object is created only through
-the corresponding idempotent action.
+Every step reads before it acts and adopts an exact match; the provider
+enforces uniqueness (tag name, one release per tag, asset name). The
+operation_key is advisory and adapters are not required to dedupe on it.
 """
 
 from __future__ import annotations
@@ -231,7 +230,7 @@ class ManifestState:
 
 
 class ReleaseAdapter(Protocol):
-    """External operations. Action methods must honor ``operation_key``."""
+    """External operations. Every step reads before it acts and adopts an exact match; the provider enforces uniqueness (tag, release per tag, asset name). The operation_key is advisory and not required for deduplication."""
 
     def read_tag(self, identity: ReleaseIdentity) -> Observation[TagState]: ...
     def create_annotated_tag(self, identity: ReleaseIdentity, operation_key: str) -> None: ...

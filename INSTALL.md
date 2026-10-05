@@ -161,6 +161,7 @@ fails, Handsoff restores the files it already moved.
 After migration, replace old invocations such as:
 
 ```text
+<!-- handsoff-doc: intentional -->
 <project>/bin/handsoff_supervisor.py
 <version-specific-venv>/bin/handsoff
 ```
