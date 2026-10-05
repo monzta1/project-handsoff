@@ -207,6 +207,10 @@ class CiWatchStartsOnlyOnTheTreeTheGuardsPassedOn(HandsoffTestCase):
         self.init("ci-watch needs a guard record")
         for part in ("gtests", "bin"):
             shutil.copytree(RUNNER_FIXTURES / "passing" / part, self.tmp / part, dirs_exist_ok=True)
+        # #392: ci-watch requires the guard record only in a project that has
+        # the guards module, as this repository does.
+        (self.tmp / "tests").mkdir(exist_ok=True)
+        (self.tmp / "tests" / "guards.py").write_text('"""fixture: the guards module exists."""\n', encoding="utf-8")
 
     def ci_watch(self):
         r = run(["ci-watch", "--pr", "7", "--by", "claude-host"], cwd=self.tmp)

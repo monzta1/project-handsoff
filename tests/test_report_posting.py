@@ -276,8 +276,9 @@ class ReportPostingTests(ReportPostingFixture):
         self.assertTrue(self._gh_state()["issues"]["40"]["closed"])
         records = list((self.tmp / ".handsoff-archive" / "close-transactions").glob("*.json"))
         record = json.loads(records[0].read_text())
-        self.assertTrue(record["items"]["40"]["closed_intent"])
-        self.assertTrue(record["items"]["40"]["closed_dispatched"])
+        closed = record["items"]["40"]["operations"]["closed"]
+        self.assertEqual(closed["state"], "pending", "the read-back was lost")
+        self.assertTrue(closed["acted_at"], "the close was dispatched")
 
         self._gh_state({**self._gh_state(), "fail_close_readback": False})
         retry = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
@@ -291,8 +292,9 @@ class ReportPostingTests(ReportPostingFixture):
         self.assertNotEqual(first.returncode, 0)
         records = list((self.tmp / ".handsoff-archive" / "close-transactions").glob("*.json"))
         record = json.loads(records[0].read_text())
-        self.assertTrue(record["items"]["40"]["closed_intent"])
-        self.assertNotIn("closed_dispatched", record["items"]["40"])
+        closed = record["items"]["40"]["operations"]["closed"]
+        self.assertTrue(closed["intent_at"], "the close intent was persisted")
+        self.assertNotIn("acted_at", closed, "the close was never dispatched")
 
         state = self._gh_state()
         state["issues"]["40"]["closed"] = True

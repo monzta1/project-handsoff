@@ -16,7 +16,9 @@ from tests.test_handsoff_supervisor import BIN, run
 from tests.test_report_posting import ReportPostingFixture
 
 sys.path.insert(0, str(BIN))
+import handsoff_close_transaction as close  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+import handsoff_supervisor as supervisor  # noqa: E402
 
 BRANCH = "claude/lane-374"
 MUTATIONS = (["issue", "comment"], ["issue", "close"], ["issue", "edit"], ["issue", "reopen"])
@@ -73,6 +75,15 @@ class EveryItemIsPosted(ReportPostingFixture):
         posted = self._report_events()[-1]["posted"]
         self.assertEqual([(p["number"], p["comment"], p["closed"]) for p in posted],
                          [(40, "posted", True), (41, "posted", True)])
+        # #381: the observation was checkpointed and the close adopted, not redone
+        items = self._transaction_items()
+        self.assertEqual(items["40"]["issue_states"]["pre_report"]["closure"]["kind"], "pull_request")
+        self.assertEqual(items["40"]["issue_states"]["pre_report"]["closure"]["pr_number"], 99)
+        self.assertEqual(items["40"]["operations"]["closed"]["completion"], "adopted")
+        self.assertEqual(items["41"]["operations"]["closed"]["completion"], "read_back")
+        for number in ("40", "41"):
+            self.assertEqual({name: row["state"] for name, row in items[number]["operations"].items()},
+                             {"commented": "complete", "closed": "complete", "ticked": "complete"})
 
     def test_the_same_number_in_another_repository_is_not_the_runs(self):
         # implementation review attempt 1: the run's PR closing other/repo#40
@@ -107,7 +118,12 @@ class EveryItemIsPosted(ReportPostingFixture):
         event = self._report_events()[-1]
         self.assertEqual([p["number"] for p in event["posted"]], [41])
         self.assertEqual([(s["number"], s.get("unpostable")) for s in event["skipped"]], [(40, True)])
-        self.assertTrue(self._transaction_items()["40"]["unpostable"])
+        items = self._transaction_items()
+        self.assertTrue(items["40"]["unpostable"])
+        # #381: the hand closure was checkpointed before anything was decided
+        self.assertEqual(items["40"]["issue_states"]["pre_report"]["state"], "closed")
+        self.assertEqual(items["40"]["issue_states"]["pre_report"]["closure"]["kind"], "unknown")
+        self.assertFalse(items["40"].get("operations"), "no operation was attempted")
 
     def _already_posted(self):
         self._run()
@@ -123,10 +139,10 @@ class EveryItemIsPosted(ReportPostingFixture):
         self.assertIn("final_report_post incomplete", result.stdout)
         self.assertNotIn(["issue", "comment", "40"], mutations, "deduplicated, never commented twice")
         self.assertIn(["issue", "close", "40"], mutations, "the close is still attempted")
-        items = self._transaction_items()
-        self.assertTrue(items["40"]["commented"])
-        self.assertFalse(items["40"]["closed"])
-        self.assertNotIn("unpostable", items["40"])
+        operations = self._transaction_items()["40"]["operations"]
+        self.assertEqual(operations["commented"]["state"], "complete")
+        self.assertEqual(operations["closed"]["state"], "pending")
+        self.assertNotIn("unpostable", self._transaction_items()["40"])
 
     def test_an_existing_comment_with_a_failing_tick_stays_incomplete(self):
         self._gh_state({**self._already_posted(), "fail_edit": True})
@@ -134,10 +150,47 @@ class EveryItemIsPosted(ReportPostingFixture):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("final_report_post incomplete", result.stdout)
         self.assertIn(["issue", "edit", "9"], mutations, "the tick is still attempted")
-        items = self._transaction_items()
-        self.assertTrue(items["40"]["closed"])
-        self.assertFalse(items["40"]["ticked"])
+        operations = self._transaction_items()["40"]["operations"]
+        self.assertEqual(operations["closed"]["state"], "complete")
+        self.assertEqual(operations["ticked"]["state"], "pending")
         self.assertIn("- [ ] #40", self._gh_state()["issues"]["9"]["body"])
+
+    def test_legacy_flat_rows_migrate_to_pending_operations_and_are_never_completion_proof(self):
+        # #381: a v1 record a pre-#381 engine wrote says every item is done;
+        # GitHub says nothing was posted, so read-back posts it all
+        self._run()
+        cfg = lib.load_config(self.tmp)
+        token, path = supervisor._close_transaction_identity(self.tmp, cfg)
+        flat = {"commented": True, "closed": True, "ticked": True,
+                "commented_intent": True, "closed_dispatched": True}
+        record = close.new_transaction(self.tmp, token)
+        record["items"] = {"40": dict(flat), "41": dict(flat)}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record))
+        result, mutations = self._post()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(mutations, [["issue", "comment", "40"], ["issue", "close", "40"], ["issue", "edit", "9"],
+                                     ["issue", "comment", "41"], ["issue", "close", "41"]])
+        items = self._transaction_items()
+        for number in ("40", "41"):
+            self.assertEqual(items[number]["legacy"], flat)
+            self.assertFalse(set(flat) & set(items[number]), "no flat key survives")
+            self.assertEqual({name: (row["state"], row["completion"])
+                              for name, row in items[number]["operations"].items()},
+                             {"commented": ("complete", "read_back"), "closed": ("complete", "read_back"),
+                              "ticked": ("complete", "adopted" if number == "41" else "read_back")})
+
+    def test_migrate_transaction_lifts_flat_rows_as_pending(self):
+        record = close.new_transaction(".", "run-a")
+        record["items"] = {"40": {"commented": True, "closed": False, "ticked": True, "unpostable": "x"}}
+        migrated = close.migrate_transaction(record, root=".", run_token="run-a", authenticated=True)
+        item = migrated["items"]["40"]
+        self.assertEqual(item["legacy"], {"commented": True, "closed": False, "ticked": True})
+        self.assertEqual(item["unpostable"], "x")
+        self.assertEqual({name: row["state"] for name, row in item["operations"].items()},
+                         {"commented": "pending", "closed": "pending", "ticked": "pending"})
+        self.assertEqual(close.migrate_transaction(migrated, root=".", run_token="run-a", authenticated=True),
+                         migrated, "a migrated record migrates to itself")
 
 
 class TheLandingPlaybookSaysRefsNotCloses(unittest.TestCase):

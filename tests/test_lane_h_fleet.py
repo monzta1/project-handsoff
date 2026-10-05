@@ -88,7 +88,7 @@ class ForgottenRootTests(_FleetFixture):
         entries = fleet.load_registry(self.registry)
         self.assertEqual([item["root"] for item in entries], [str(root)])
         self.assertNotIn("missing_since", entries[0])
-        self.assertEqual(self._states(), {str(root): "quiet"})
+        self.assertEqual(self._states(), {str(root): "host_working"})  # #389: a fresh ledger
         self.assertEqual(self._log(), "")
 
     def test_forget_removes_exactly_one_entry_and_refuses_a_root_that_exists(self):
@@ -129,7 +129,7 @@ class ForgottenRootTests(_FleetFixture):
             server.server_close()
             thread.join(2)
         self.assertEqual([item["root"] for item in fleet.load_registry(self.registry)], [str(kept)])
-        self.assertEqual(self._states(), {str(kept): "quiet"})
+        self.assertEqual(self._states(), {str(kept): "host_working"})  # #389: a fresh ledger
         line = self._log().splitlines()[-1]
         self.assertIn(f"fleet_entry_forgotten root={gone}", line)
         self.assertIn("last_state=open", line)

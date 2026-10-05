@@ -61,9 +61,10 @@ class OfflineAndClosedTest(HandsoffTestCase):
         self.assertIn("not responding", project["dashboard_note"])
         self.assertEqual(payload["counts"]["offline"], 1)
         self.assertEqual(payload["counts"]["quiet"], 0)
-        # Without an owner record the same run is simply quiet.
+        # Without an owner record the same run is no longer offline; its
+        # ledger was just written, so #389 reads it as host_working.
         (self.tmp / ".handsoff-dashboard-owner.json").unlink()
-        self.assertEqual(fleet.build_fleet(registry)["projects"][0]["state"], "quiet")
+        self.assertEqual(fleet.build_fleet(registry)["projects"][0]["state"], "host_working")
 
     def test_complete_run_with_a_dead_owner_stays_complete(self):
         self.init("Complete mission")

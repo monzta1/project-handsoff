@@ -88,7 +88,9 @@ ADAPTIVE_ESCALATION_QUESTION_STATES = ("open", "resolved", "withdrawn")
 ADAPTIVE_ESCALATION_CLAIM_DECISIONS = ("accept", "reject", "repair")
 
 
-ADAPTIVE_ESCALATION_CHECK_OUTCOMES = ("pass", "fail", "not_applicable", "error")
+# #387: not_run is a check the verification ledger never executed (a manual
+# criterion, or an automated command nobody ran); it is never a pass.
+ADAPTIVE_ESCALATION_CHECK_OUTCOMES = ("pass", "fail", "not_applicable", "error", "not_run")
 
 
 ADAPTIVE_BUDGET_FIELDS = ("premium_calls", "repair_rounds", "total_calls", "concurrent_premium_agents")

@@ -63,6 +63,9 @@ class LaunchSpec:
     routing_contract: dict | None = None
     # #359: the implementer's declared ownership (--owns), normalized.
     owned_paths: tuple[str, ...] | None = None
+    # #388: a compact reviewer's validated file ranges. Set, the reviewer runs
+    # in a scratch directory holding only those slices and cannot run tests.
+    compact_scope: tuple[dict, ...] | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -103,6 +106,46 @@ def _claude_allowed_tools(cfg: dict, root: Path, role: str, *, which=shutil.whic
     if role in {"supervisor", "architect"}:
         return []
     return lib.implementer_allowed_tools(cfg, root, which)
+
+
+def parse_compact_scope(values: list[str] | None) -> list[dict] | None:
+    """#388: turn repeated `--compact-scope PATH:START-END` into a validated scope."""
+    if not values:
+        return None
+    entries = []
+    for value in values:
+        path, separator, span = str(value).rpartition(":")
+        start, dash, end = span.partition("-")
+        if not separator or not dash or not start.isdigit() or not end.isdigit():
+            raise lib.HandsoffError(f"--compact-scope {value!r} must be PATH:START-END")
+        entries.append({"path": path, "start": int(start), "end": int(end)})
+    return lib.validate_compact_review_scope(entries)
+
+
+def _compact_denied_tools(root: Path) -> list[str]:
+    """#388: what a compact Claude reviewer may not do: run a shell, or read,
+    grep or glob the project by its absolute path (`//` is Claude's absolute
+    path form). Its working directory, the slices, stays readable."""
+    project = f"/{Path(root).resolve()}/**"
+    return ["Bash"] + [f"{tool}({project})" for tool in ("Read", "Grep", "Glob")]
+
+
+def build_compact_role_input(root: Path, task: str, scope: list[dict]) -> str:
+    """#388: the reduced reviewer packet. It names only the slices: no
+    playbook, briefing, design packet, delta or project root, because the
+    reviewer can open nothing else and a packet pointing at the project
+    invites exactly the exploration the compact scope exists to prevent."""
+    if not isinstance(task, str) or not task.strip():
+        raise lib.HandsoffError("task must be a non-empty string")
+    if len(task.encode("utf-8")) > MAX_AGENT_TASK_BYTES:
+        raise lib.HandsoffError(f"task exceeds {MAX_AGENT_TASK_BYTES} UTF-8 bytes")
+    slices = "\n".join(f"- {entry['path']} lines {entry['start']}-{entry['end']}" for entry in scope)
+    return ("# Sandbox\n\nYou review a compact scope. Do not run `handsoff supervisor` commands. The host "
+            "records your HANDSOFF_REVIEW_RESULT line.\n\n"
+            "# Compact review scope\n\nYour working directory holds only these slices, one `.slice` "
+            "file each, and SCOPE.json. The project is not readable and no test can run, so this "
+            f"review is recorded with tests_executed no.\n\n{slices}\n\n"
+            f"{_role_prompt(Path(root).resolve(), 'reviewer')}\n\n# Assigned task\n\n{task}")
 
 
 def _codex_argv(executable: str, role: str, model: str, token_budget: int,
@@ -352,6 +395,102 @@ def _session_started_at(root: Path, session_id: str) -> str | None:
         return None
 
 
+def _record_session_fields(root: Path, session_id: str, fields: dict, *, event_kind: str,
+                           event_message: str, **extra) -> None:
+    """Write named fields onto one session record and log the event, in one commit."""
+    with lib.project_lock(root):
+        cfg = lib.load_config(root)
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        if not isinstance((status.get("agent_sessions") or {}).get(session_id), dict):
+            raise lib.HandsoffError("agent session was not found")
+        proposed = json.loads(json.dumps(status))
+        proposed["agent_sessions"][session_id].update(json.loads(json.dumps(fields)))
+        errors = lib.validate_status_schema(proposed)
+        if errors:
+            raise lib.HandsoffError(errors[0])
+        lib.commit(root, cfg, status=proposed, event_kind=event_kind, event_message=event_message,
+                   session_id=session_id, **extra)
+
+
+def _utc(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _launch_episode(history: dict, started_at: str | None) -> dict | None:
+    """#383: the episode a session was launched in is the last one started at
+    or before the session's started_at, whichever episode is current now."""
+    started = _utc(started_at)
+    if started is None:
+        return None
+    launch = None
+    for episode in history.get("episodes") or []:
+        begun = _utc(episode.get("started_at"))
+        if begun is not None and begun <= started:
+            launch = episode
+    return launch
+
+
+#: #383: implementer sessions whose workspace is held for adoption, so the
+#: launcher's cleanup leaves it in place even if the session record refused.
+_HELD_WORKSPACES: set[str] = set()
+
+
+def _quarantine_late_result(root: Path, session_id: str, role: str, kind: str,
+                            result: dict | None) -> dict | None:
+    """#383: hold a result whose launch episode was paused for performance review.
+
+    A session that finishes during a pause did its work under an episode the
+    Pilot has stopped; dispatching or applying it would start exactly the work
+    the pause exists to stop. The result is kept on the session as
+    `quarantined_result` (an implementer's workspace stays unapplied) so
+    session-result-adopt can apply it once after performance-resume. Returns
+    the record when the result was quarantined, None when it may proceed.
+    A run with no performance record has never been on a clock and cannot be
+    paused, so nothing is created for it here.
+    """
+    try:
+        import handsoff_runtime_control as runtime_control
+        supervisor = __import__("handsoff_supervisor")
+        if not supervisor._runtime_path(root, supervisor.PERFORMANCE_RECORD).exists():
+            return None
+        # The deadline may have passed while the session ran; evaluate it now
+        # so the pause is on the record before the result is judged.
+        supervisor.performance_tick(root)
+        history = supervisor._runtime_read(root, supervisor.PERFORMANCE_RECORD,
+                                           "handsoff.performance_history")
+        episode = _launch_episode(history or {}, _session_started_at(root, session_id))
+        if episode is None or runtime_control.late_result_disposition(
+                history, episode["episode_id"], session_id) != "quarantine":
+            return None
+    except (ImportError, lib.HandsoffError, OSError, ValueError):
+        return None
+    record = {"kind": kind, "role": role, "episode_id": episode["episode_id"],
+              "quarantined_at": datetime.now(timezone.utc).isoformat(),
+              "result": result, "adopted_at": None, "adopted_by": None}
+    if kind == "implementer_workspace":
+        _HELD_WORKSPACES.add(session_id)
+    message = "Late managed result quarantined: its launch episode is paused for performance review"
+    try:
+        _record_session_fields(root, session_id, {"quarantined_result": record},
+                               event_kind="late_result_quarantined", event_message=message,
+                               episode_id=episode["episode_id"], role=role)
+    except lib.HandsoffError as exc:
+        # Still held: the event says so, and the reviewer's verdict is
+        # already on the session as its persisted result.
+        lib.append_event(root, lib.load_config(root), "late_result_quarantined", message,
+                         session_id=session_id, episode_id=episode["episode_id"], role=role,
+                         record_refused=str(exc)[:200])
+    sys.stdout.write(f"LATE_RESULT_QUARANTINED: session {session_id} ({role}) launched in "
+                     f"{episode['episode_id']}, which is paused_for_performance_review; adopt it "
+                     "with session-result-adopt after performance-resume\n")
+    sys.stdout.flush()
+    return record
+
+
 def _describe_tree_changes(root: Path, before: dict, after: dict, changed_paths: list[str], started_at: str | None) -> list[dict]:
     """#203: one record per changed path: appeared, vanished or changed, the
     file's mtime, and how many seconds after the session started it was
@@ -461,11 +600,17 @@ def _phase2_design_reviewer_selection(root: Path, cfg: dict, role: str, *, which
 
 def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, skip_preflight: bool = False,
                       inspection: bool = False, amendment: bool = False, topic: str | None = None,
-                      owned_paths: list[str] | None = None) -> LaunchSpec:
+                      owned_paths: list[str] | None = None,
+                      compact_scope: list[dict] | None = None) -> LaunchSpec:
     root = root.resolve()
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
         raise lib.HandsoffError("role must be architect, implementer, or reviewer")
+    scope = None
+    if compact_scope:
+        if role != "reviewer":
+            raise lib.HandsoffError("--compact-scope applies to reviewer launches only")
+        scope = lib.validate_compact_review_scope(compact_scope)
     if owned_paths:
         if role != "implementer":
             raise lib.HandsoffError("--owns applies to implementer launches only")
@@ -601,7 +746,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             f"reviewer launch refused before session reservation: {isolation['reason']} "
             f"(adapter={adapter}, enforcement={isolation['enforcement']}, decision={isolation['decision']})"
         )
-    stdin = build_role_input(root, role, task, topic)
+    stdin = build_compact_role_input(root, task, scope) if scope else build_role_input(root, role, task, topic)
     implementation_delta = implementation_review_delta_packet(root, cfg, role)
     packet = applicable_design_review_packet(root, cfg, role)
     criteria_count = 0
@@ -636,12 +781,10 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     # Refusing here costs nothing; letting it run costs the whole ceiling
     # and returns no verdict, which is what session
     # hs-d26f19a8a3754328ae26f3a156740692 did.
-    # compact_scope is False because #290 built the compact review scope and
-    # never wired it to a launch: lib.materialize_compact_scope has no
-    # production caller, only its own tests. Until it has one, the ceiling
-    # is the only remedy a caller can actually take, and the refusal says so.
+    # #388: a compact reviewer can reach nothing but its slices, so its turns
+    # are bounded by the scope and the refusal does not apply.
     turn_refusal = lib.turn_bound_refusal(
-        adapter=adapter, role=role, ceiling=token_budget, compact_scope=False,
+        adapter=adapter, role=role, ceiling=token_budget, compact_scope=scope is not None,
         safe_minimum=budget_decision["safe_minimum"])
     if turn_refusal:
         raise lib.HandsoffError(f"managed launch refused before session creation: {turn_refusal}")
@@ -669,13 +812,17 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     # empty allowlist and run from the project root, and a probe that applied
     # to every role would refuse launches #343 never asked to change.
     if role == "reviewer" and adapter == "claude":
-        access = lib.reviewer_read_access(root)
+        # #388: a compact reviewer never reads the project, so there is
+        # nothing for the probe to check.
+        access = {"readable": True} if scope else lib.reviewer_read_access(root)
         if not access["readable"]:
             raise lib.HandsoffError(
                 "managed Claude reviewer launch refused before session reservation: "
                 + access["reason"])
     scratch = _reviewer_scratch(root, adapter, role, create=not inspection)
     with _scratch_released_on_refusal(scratch, created=not inspection):
+        if scope and not inspection:
+            lib.materialize_compact_scope(root, scope, scratch)
         if adapter == "codex":
             argv = _codex_argv(executable, role, model, provider_limit,
                                reviewer_sandbox=scratch is not None,
@@ -684,9 +831,14 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             argv = adapters.build_argv(adapter, executable, role, model,
                                        provider_limit=provider_limit, project_root=root)
         else:
-            allowed = _claude_allowed_tools(cfg, root, role, which=which)
-            argv = lib.claude_argv(executable, role, allowed, model, project_root=root,
+            allowed = [tool for tool in _claude_allowed_tools(cfg, root, role, which=which)
+                       if not (scope and tool == "Bash")]
+            # #388: a compact reviewer gets no --add-dir and an explicit deny
+            # on the project path, so a read outside its slices is refused.
+            argv = lib.claude_argv(executable, role, allowed, model, project_root=root if not scope else None,
                                    owned_paths=owned_paths)
+            if scope:
+                argv += ["--disallowedTools", ",".join(_compact_denied_tools(root))]
         if not skip_preflight and not inspection \
                 and os.environ.get("HANDSOFF_SKIP_PREFLIGHT") != "1":
             if adapter in lib.CONTRACT_AGENT_ADAPTERS:
@@ -725,14 +877,17 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         reasoning_effort=cfg["model_reasoning"].get(role),
         routing_contract=routing_contract,
         owned_paths=tuple(owned_paths) if owned_paths else None,
+        compact_scope=tuple(scope) if scope else None,
     )
 
 
 def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
                               *, which=shutil.which, skip_preflight: bool = False,
-                              owned_paths: tuple[str, ...] | None = None) -> LaunchSpec:
+                              owned_paths: tuple[str, ...] | None = None,
+                              compact_scope: tuple[dict, ...] | None = None) -> LaunchSpec:
     """Build a launch only from the exact fallback profile reserved by the host.
-    `owned_paths` (#359) carries a replaced implementer's ownership over."""
+    `owned_paths` (#359) carries a replaced implementer's ownership over, and
+    `compact_scope` (#388) a replaced compact reviewer's slices."""
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES or not isinstance(profile, dict) \
             or set(profile) != {"adapter", "model"}:
@@ -764,6 +919,9 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     # #352: plan_role_token_budget below decides the ceiling, exactly as on
     # the primary path.
     configured_budget = cfg["agent_token_budgets"][role]
+    scope = lib.validate_compact_review_scope(list(compact_scope)) if compact_scope else None
+    if scope and role != "reviewer":
+        raise lib.HandsoffError("--compact-scope applies to reviewer launches only")
     isolation = lib.reviewer_isolation_contract(adapter, cfg) if role == "reviewer" else None
     if isolation is not None and isolation["decision"] != "enforce":
         raise lib.HandsoffError(
@@ -778,21 +936,28 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
     # empty allowlist and run from the project root, and a probe that applied
     # to every role would refuse launches #343 never asked to change.
     if role == "reviewer" and adapter == "claude":
-        access = lib.reviewer_read_access(root)
+        # #388: a compact reviewer never reads the project, so there is
+        # nothing for the probe to check.
+        access = {"readable": True} if scope else lib.reviewer_read_access(root)
         if not access["readable"]:
             raise lib.HandsoffError(
                 "managed Claude reviewer launch refused before session reservation: "
                 + access["reason"])
     scratch = _reviewer_scratch(root, adapter, role)
     with _scratch_released_on_refusal(scratch, created=True):
+        if scope:
+            lib.materialize_compact_scope(root, scope, scratch)
         # #290: the codex argv is built once, below, after the budget decision
         # exists, so the meter can be set to the provider limit. Building it
         # here as well left a second copy metered on the whole ceiling.
         argv = []
         if adapter != "codex" and adapter not in lib.CONTRACT_AGENT_ADAPTERS:
-            allowed = _claude_allowed_tools(cfg, root, role)
-            argv = lib.claude_argv(executable, role, allowed, model, project_root=root,
+            allowed = [tool for tool in _claude_allowed_tools(cfg, root, role)
+                       if not (scope and tool == "Bash")]
+            argv = lib.claude_argv(executable, role, allowed, model, project_root=root if not scope else None,
                                    owned_paths=list(owned_paths) if owned_paths else None)
+            if scope:
+                argv += ["--disallowedTools", ",".join(_compact_denied_tools(root))]
         budget_decision = lib.plan_role_token_budget(
             configured_ceiling=configured_budget, role=role,
             # The failover path. #347 shipped with one of its two launch builders
@@ -852,6 +1017,7 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
         reasoning_effort=cfg["model_reasoning"].get(role),
         routing_contract=adapters.session_contract(adapters.catalog_profile(cfg, adapter, model), token_budget),
         owned_paths=tuple(owned_paths) if owned_paths else None,
+        compact_scope=tuple(scope) if scope else None,
     )
 
 
@@ -1269,6 +1435,18 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         )
         actor = session["actor"]
     session_id = session["session_id"]
+    if spec.compact_scope:
+        # #388: recorded before the child starts, so a compact verdict can
+        # never be mistaken for a review that could have run the tests.
+        try:
+            _record_session_fields(root, session_id, {"compact": True}, event_kind="agent_session_compact",
+                                   event_message="Compact reviewer: only its slices, no tests",
+                                   ranges=len(spec.compact_scope))
+        except lib.HandsoffError as exc:
+            lib.transition_agent_session(root, session_id, "failed_to_start",
+                                         failure=lib.classify_runtime_failure(exit_code=-1))
+            raise AgentLaunchError(f"compact session could not be recorded: {str(exc)[:160]}",
+                                   session_id) from exc
     cwd = spec.cwd
     if isinstance(session.get("workspace"), dict):
         # #359: a concurrent implementer works in its own worktree outside
@@ -1285,7 +1463,9 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         return _execute_started_session(spec, root, session, cwd, timeout=timeout,
                                         popen_factory=popen_factory, beacon_interval=beacon_interval)
     finally:
-        lib.remove_implementer_workspace(root, session)
+        # #383: a quarantined workspace is the result itself; adoption applies it.
+        if session_id not in _HELD_WORKSPACES:
+            lib.remove_implementer_workspace(root, session)
         if isinstance(session.get("workspace"), dict):
             lib.live_beacon_path(root, session_id).unlink(missing_ok=True)
 
@@ -1425,6 +1605,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
 
     def persist_new(items, kind):
         if items:
+            if kind == "review" and spec.compact_scope:
+                # #388: a compact reviewer had no suite to run, whatever it wrote.
+                items[-1]["tests_executed"] = "no"
             lib.record_session_result(root, session_id, kind, items[-1])
     try:
         lib.transition_agent_session(root, session_id, "running")
@@ -1906,6 +2089,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(exit_code=1),
         )
         raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
+    if reviewer_results and _quarantine_late_result(root, session_id, spec.role, "review", reviewer_results[0]):
+        end_session("completed", exit_code=0)
+        return 0
     if reviewer_results:
         try:
             import handsoff_broker as broker
@@ -1957,6 +2143,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                    "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
         end_session("failed", exit_code=0, failure=failure)
         raise AgentLaunchError(failure["reason"], session_id)
+    if workspace and _quarantine_late_result(root, session_id, spec.role, "implementer_workspace", None):
+        end_session("completed", exit_code=0)
+        return 0
     if workspace:
         # #359: only owned-path changes come back, all or nothing.
         try:
@@ -2039,6 +2228,7 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
                 root, proposed["role"], fallback_input,
                 proposed["selected_profile"], which=which,
                 owned_paths=current_spec.owned_paths,  # #359
+                compact_scope=current_spec.compact_scope,  # #388
             )
 
         replacement = lib.reserve_agent_replacement(
@@ -2103,6 +2293,8 @@ def _autoadopt_reviewer_result(root: Path, session_id: str, spec: LaunchSpec,
     adopted, False leaves that failed session exactly as it is."""
     if spec.role != "reviewer" or len(reviewer_results) != 1 or recovered_results:
         return False
+    if _quarantine_late_result(root, session_id, spec.role, "review", reviewer_results[0]):
+        return True  # #383: held for adoption after performance-resume
     supervisor = __import__("handsoff_supervisor")
     try:
         adopted, message = supervisor.adopt_session_result(root, session_id, AUTOADOPT_ACTOR, automatic=True)
@@ -2370,6 +2562,9 @@ def main() -> int:
                              help="implementer only, repeatable: a project path this launch owns; "
                                   "with it a second implementer may run beside a live one whose "
                                   "owned paths do not overlap, in its own worktree")
+        command.add_argument("--compact-scope", action="append", default=None, metavar="PATH:START-END",
+                             help="reviewer only, repeatable: review only these line ranges; the "
+                                  "reviewer sees nothing else and cannot run tests")
         if name == "launch":
             command.add_argument("--timeout", type=int, default=3600)
             command.add_argument(
@@ -2398,7 +2593,8 @@ def main() -> int:
                 raise lib.HandsoffError(refusal)
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False),
                                  inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)),
-                                 topic=args.topic, owned_paths=args.owns)
+                                 topic=args.topic, owned_paths=args.owns,
+                                 compact_scope=parse_compact_scope(args.compact_scope))
         if getattr(args, "amendment", None):
             spec = dataclasses.replace(spec, amendment_id=args.amendment)
         if args.command == "inspect":
@@ -2414,6 +2610,7 @@ def main() -> int:
                 "stdin_sha256": hashlib.sha256(spec.stdin.encode("utf-8")).hexdigest(),
                 "token_budget": spec.token_budget,
                 "owned_paths": list(spec.owned_paths) if spec.owned_paths else None,
+                "compact_scope": list(spec.compact_scope) if spec.compact_scope else None,
                 "fresh_session": True,
             }, indent=2))
             return 0

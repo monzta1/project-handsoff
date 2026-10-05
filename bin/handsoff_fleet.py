@@ -12,6 +12,8 @@ import shlex
 import sys
 import threading
 import time
+import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet_signals as signals_module  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
+import handsoff_queue  # noqa: E402
 
 FLEET_ASSET_ROOT = lib.engine_root() / "fleet"
 MAX_BODY = 8192
@@ -167,20 +170,26 @@ def forget_missing_roots(path: Path | None = None, *, now: datetime | None = Non
     return forgotten
 
 
-def live_managed_sessions(path: Path | None = None) -> list[dict]:
+def live_managed_sessions(path: Path | None = None, states: dict | None = None) -> list[dict]:
     """#216: every managed session that is launching or running on any
     registered root, read from each root's own status file: [{root, role,
     session_id, actor, state}]. A root that is gone or whose status cannot
     be read is skipped, never counted; the register is the list of roots
-    and the ledger is the truth about sessions."""
+    and the ledger is the truth about sessions. #393: `states` (root ->
+    _run_state) is the build's own read, reused instead of reading again."""
     out = []
     for entry in load_registry(path):
         root = Path(entry["root"])
-        try:
-            cfg = lib.load_config(root)
-            status = lib.load_unique_json(lib.status_path(root, cfg))
-        except (lib.HandsoffError, OSError, ValueError):
-            continue
+        if states is not None:
+            status = (states.get(entry["root"]) or {}).get("status")
+            if not isinstance(status, dict):
+                continue
+        else:
+            try:
+                cfg = lib.load_config(root)
+                status = lib.load_unique_json(lib.status_path(root, cfg))
+            except (lib.HandsoffError, OSError, ValueError):
+                continue
         for role, session in lib.current_agent_sessions(status).items():
             if isinstance(session, dict) and session.get("state") in ("launching", "running"):
                 out.append({"root": str(root), "role": role, "session_id": session.get("session_id"),
@@ -188,10 +197,10 @@ def live_managed_sessions(path: Path | None = None) -> list[dict]:
     return sorted(out, key=lambda item: (item["root"], item["role"]))
 
 
-def install_blocked(path: Path | None = None) -> dict | None:
+def install_blocked(path: Path | None = None, states: dict | None = None) -> dict | None:
     """#216: the engine badge's word while an install would land on a live
     session: {count, sessions: [{root, role, session_id}]} or None."""
-    sessions = live_managed_sessions(path)
+    sessions = live_managed_sessions(path, states)
     if not sessions:
         return None
     return {"count": len(sessions), "sessions": [{k: s[k] for k in ("root", "role", "session_id")} for s in sessions]}
@@ -263,13 +272,14 @@ class registry_lock:
         return False
 
 
-def _run_state(root: Path) -> dict:
+def _run_state(root: Path, cfg: dict | None = None) -> dict:
     """What the run at `root` is right now, from its own files: phase,
     status, whether it is closed or complete, its work item numbers and
-    last event time. A root with no run reads {'state': 'none'}."""
+    last event time. A root with no run reads {'state': 'none'}. #393: a
+    build passes the config it already loaded."""
     root = Path(root)
     try:
-        cfg = lib.load_config(root)
+        cfg = cfg if cfg is not None else lib.load_config(root)
         status_file = lib.status_path(root, cfg)
         if not status_file.is_file():
             return {"state": "none", "numbers": set()}
@@ -406,11 +416,12 @@ def note_registry_state(root: Path, numbers: set[int] | None, state: str, *, pat
         return write()
 
 
-def claimed_twice(path: Path | None = None) -> dict[str, list[int]]:
+def claimed_twice(path: Path | None = None, states: dict | None = None) -> dict[str, list[int]]:
     """#166: root -> ticket numbers that another live open run also lists,
     for the red mark on both Fleet cards. Possible only through a register
     written outside the lock (or two machines), so it is shown, never fixed."""
-    states = {entry["root"]: _run_state(Path(entry["root"])) for entry in load_registry(path)}
+    if states is None:
+        states = {entry["root"]: _run_state(Path(entry["root"])) for entry in load_registry(path)}
     result: dict[str, list[int]] = {}
     roots = [r for r, st in states.items() if st["state"] == "open" and st["numbers"]]
     for root in roots:
@@ -508,14 +519,205 @@ def project_logo_url(root: Path) -> str | None:
     return f"/project-logo/{logo_key(root)}" if found else None
 
 
-def project_view(entry: dict, signals: "signals_module.SignalCache | None" = None) -> dict:
+#: #393: a cached view is rebuilt after this long even when no file moved,
+#: because a few snapshot fields (a stalled beacon, a host's silence) are
+#: read from the clock rather than from a file.
+SNAPSHOT_MAX_AGE_SECONDS = 30.0
+#: #393: owner probes run side by side, at most this many at once.
+OWNER_PROBE_WORKERS = 16
+#: The run's durable runtime-control records (monitor, performance clock).
+RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
+#: #393: the performance clock is rewritten by every snapshot build (its
+#: active seconds tick), so it is the build's output, not an input; a pause
+#: or resume also writes the ledger, which the signature does read.
+RUNTIME_CONTROL_SELF_WRITTEN = frozenset({"performance.json", "performance.json.bak"})
+
+
+def project_config(root: Path) -> dict:
+    """#393: the one read of a project's handsoff.toml in a Fleet build:
+    the loaded config (None when it does not load) and (#389) its configured
+    [project] name, which load_config does not keep."""
+    root = Path(root)
+    try:
+        cfg = lib.load_config(root)
+    except (lib.HandsoffError, OSError, ValueError):
+        cfg = None
+    try:
+        value = (tomllib.loads((root / "handsoff.toml").read_text(encoding="utf-8")).get("project") or {}).get("name")
+    except (OSError, ValueError, AttributeError):
+        value = None
+    return {"cfg": cfg, "configured_name": value.strip() if isinstance(value, str) and value.strip() else None}
+
+
+def card_name(root: Path, configured_name: str | None, origin: str | None = None) -> str:
+    """#389: a card is named by the project's configured [project] name,
+    else its origin repository's name, else its folder."""
+    if configured_name:
+        return configured_name
+    root = Path(root)
+    repo = origin if origin is not None else (signals_module.origin_repo(root) if root.exists() else None)
+    return repo.rsplit("/", 1)[-1] if repo else root.name
+
+
+def _git_paths(root: Path) -> list[Path]:
+    """#393: the repository files whose change means a commit or checkout:
+    HEAD, the ref HEAD names, packed-refs and the index. A worktree's .git
+    file is followed to its own git dir and the common dir it shares."""
+    for candidate in (root, *root.parents):
+        dot = candidate / ".git"
+        if dot.exists():
+            break
+    else:
+        return []
+    try:
+        if dot.is_dir():
+            gitdir = dot
+        else:
+            text = dot.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return []
+            gitdir = (candidate / text[len("gitdir:"):].strip()).resolve()
+        common = gitdir
+        if (gitdir / "commondir").is_file():
+            common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
+        paths = [gitdir / "HEAD", gitdir / "index", common / "packed-refs"]
+        head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            ref = head[len("ref:"):].strip()
+            paths += [gitdir / ref, common / ref]
+        return paths
+    except OSError:
+        return []
+
+
+def artifact_signature(root: Path, cfg: dict | None) -> tuple:
+    """#393: a cheap fingerprint of everything a project's Fleet view is
+    built from: the ledger files (the dashboard's own SSE list), the
+    runtime-control records, the dashboard owner record, and the repository
+    HEAD and index, so a commit or a checkout invalidates it too."""
+    root = Path(root)
+    paths = [root / "handsoff.toml", root / lib.RUNTIME_MANIFEST_FILE, root / lib.VERSION_PIN_FILE,
+             lib.dashboard_owner_path(root), lib.live_beacon_path(root)]
+    if cfg is not None:
+        try:
+            paths += [lib.status_path(root, cfg), lib.acceptance_path(root, cfg), lib.event_log_path(root, cfg),
+                      lib.verification_log_path(root, cfg), lib.design_evidence_path(root),
+                      lib.output_liveness_path(root), lib.agent_output_path(root), lib.operations_path(root),
+                      root / lib.PREFLIGHT_FILE, root / ".handsoff-regression.json",
+                      root / dashboard.test_progress.PROGRESS_FILE, root / dashboard.tranche.PROPOSAL_FILE]
+        except lib.HandsoffError:
+            pass
+    try:
+        paths += sorted(root.glob(".handsoff-live-*.json"))
+        control = root / RUNTIME_CONTROL_DIR
+        paths += sorted(path for path in control.iterdir()
+                        if path.name not in RUNTIME_CONTROL_SELF_WRITTEN) if control.is_dir() else []
+    except OSError:
+        pass
+    paths += _git_paths(root)
+    signature = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            signature.append((str(path), stat.st_mtime_ns, stat.st_size, stat.st_ino))
+        except OSError:
+            signature.append((str(path), -1, -1, -1))
+    return tuple(signature)
+
+
+class ProjectViewCache:
+    """#393: each project's snapshot and run state, kept until its artifact
+    signature changes (or SNAPSHOT_MAX_AGE_SECONDS pass), so a warm Fleet
+    build rebuilds nothing that did not change."""
+
+    def __init__(self, max_age: float = SNAPSHOT_MAX_AGE_SECONDS):
+        self.max_age = max_age
+        self.lock = threading.Lock()
+        self.entries: dict[str, dict] = {}
+
+    def get(self, root: str, signature: tuple) -> dict | None:
+        with self.lock:
+            entry = self.entries.get(root)
+        if entry and entry["signature"] == signature and time.monotonic() - entry["at"] < self.max_age:
+            return entry
+        return None
+
+    def put(self, root: str, signature: tuple, snap: dict, state: dict) -> None:
+        with self.lock:
+            self.entries[root] = {"signature": signature, "snap": snap, "state": state, "at": time.monotonic()}
+
+    def retain(self, roots: set[str]) -> None:
+        with self.lock:
+            for root in set(self.entries) - roots:
+                del self.entries[root]
+
+
+VIEW_CACHE = ProjectViewCache()
+
+
+def project_facts(root: Path, config: dict | None = None, cache: ProjectViewCache | None = None) -> dict:
+    """#393: the config read once, plus the snapshot and run state, from
+    `cache` when the project's artifact signature is unchanged."""
+    root = Path(root)
+    config = config if config is not None else project_config(root)
+    cfg = config["cfg"]
+    signature = artifact_signature(root, cfg)
+    hit = cache.get(str(root), signature) if cache is not None else None
+    if hit is not None:
+        return {**config, "snap": hit["snap"], "state": hit["state"]}
+    try:
+        snap = dashboard.build_snapshot(root)
+    except Exception as exc:  # fleet must retain a broken project as an actionable row
+        snap = {"initialized": False, "error": f"{type(exc).__name__}: {exc}"}
+    state = _run_state(root, cfg) if cfg is not None else {"state": "unreadable", "numbers": set()}
+    if cache is not None:
+        cache.put(str(root), signature, snap, state)
+    return {**config, "snap": snap, "state": state}
+
+
+def host_working_age(root: Path, cfg: dict | None, status: dict, now: float | None = None) -> int | None:
+    """#389: seconds since the run's ledger (status or event log) was last
+    written, when no managed session is live and that write falls within
+    [recovery] live_session_silence_minutes; None otherwise."""
+    if cfg is None or any(isinstance(session, dict) and session.get("state") in lib.AGENT_SESSION_LIVE_STATES
+                          for session in (status.get("agent_sessions") or {}).values()):
+        return None
+    written = []
+    for path in (lib.status_path(root, cfg), lib.event_log_path(root, cfg)):
+        try:
+            written.append(path.stat().st_mtime)
+        except OSError:
+            pass
+    if not written:
+        return None
+    age = max(0.0, (time.time() if now is None else now) - max(written))
+    window = float((cfg.get("recovery") or {}).get("live_session_silence_minutes", 10)) * 60
+    return int(age) if age <= window else None
+
+
+_PROBE = object()
+
+
+def project_view(entry: dict, signals: "signals_module.SignalCache | None" = None, *,
+                 facts: dict | None = None, owner=_PROBE) -> dict:
     root = Path(entry["root"])
     # #152: the GitHub and Beakon signals come from the cache the server's
     # refresh thread fills; this function runs once a second and never
     # fetches anything itself.
     cached = signals.get(root) if signals is not None else dict(signals_module.EMPTY)
-    owner = _owner_view(root)
-    logo_url = project_logo_url(root) if root.exists() else None
+    # #393: a build hands in the facts it read (config once, snapshot from
+    # the cache) and the owner it probed alongside the others.
+    facts = facts if facts is not None else project_facts(root)
+    owner = _owner_view(root) if owner is _PROBE else owner
+    cfg = facts["cfg"]
+    logo_url = None
+    if root.exists() and cfg is not None:
+        try:
+            logo_url = f"/project-logo/{logo_key(root)}" if lib.project_logo(root, cfg) else None
+        except (lib.HandsoffError, OSError):
+            logo_url = None
+    github = cached.get("github") if isinstance(cached.get("github"), dict) else {}
+    name = card_name(root, facts["configured_name"], github.get("repo"))
     # REQ-006: Fleet may link only to a currently verified run-owned listener.
     # The loopback URL is deliberate so registry metadata can never redirect a
     # Fleet operator to a host chosen by project data or a stale owner file.
@@ -527,14 +729,12 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
         dashboard_url, dashboard_note = f"http://127.0.0.1:{owner['port']}/", ""
     else:
         dashboard_url, dashboard_note = None, "run dashboard is unavailable"
-    try:
-        snap = dashboard.build_snapshot(root)
-    except Exception as exc:  # fleet must retain a broken project as an actionable row
-        snap = {"initialized": False, "error": f"{type(exc).__name__}: {exc}"}
+    snap = facts["snap"]
     if not snap.get("initialized"):
         seed = {"root": str(root), "error": snap.get("error"), "owner": owner}
         binding = hashlib.sha256(json.dumps(seed, sort_keys=True).encode()).hexdigest()[:20]
-        return {"root": str(root), "name": root.name, "registered_at": entry["registered_at"], "logo_url": logo_url,
+        return {"root": str(root), "name": name, "folder": root.name,  # #389
+                "registered_at": entry["registered_at"], "logo_url": logo_url, "host_working_age_seconds": None,
                 # #154: a registered project with no run is idle, not quiet; idle
                 # is filed with the finished runs, quiet is an ongoing run.
                 "initialized": False, "state": "orphaned" if not root.exists() else "idle",
@@ -569,6 +769,11 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
         state = "failed"
     else:
         state = "quiet"
+    # #389: no managed session is live, but a host that wrote the ledger
+    # within the silence window is working; quiet means nothing is happening.
+    host_age = host_working_age(root, cfg, status) if state == "quiet" else None
+    if host_age is not None:
+        state = "host_working"
     role = snap.get("actors", {}).get("active_role")
     session = (snap.get("runtime", {}).get("current_sessions") or {}).get(role) if role else None
     decisions = [item for item in (snap.get("operator_actions") or [])
@@ -578,8 +783,9 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
             "closed": status.get("run_closed"), "actions": [item.get("action_id") for item in decisions]}
     binding = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:20]
     return {
-        "root": str(root), "name": root.name, "registered_at": entry["registered_at"], "initialized": True,
-        "logo_url": logo_url,
+        "root": str(root), "name": name, "folder": root.name,  # #389
+        "registered_at": entry["registered_at"], "initialized": True,
+        "logo_url": logo_url, "host_working_age_seconds": host_age,
         "feature": snap.get("project", {}).get("feature"), "phase": status.get("phase"),
         "host": (snap.get("host") or {}).get("family") or "unknown",  # #186
         "host_wait": snap.get("host_wait"),  # #194
@@ -719,14 +925,33 @@ def engine_block(path: Path | None = None, issues: "signals_module.IssueCache | 
     return {**facts, "latest": latest, "behind": behind, "projects": projects}
 
 
-def build_fleet(path: Path | None = None, public_base: str | None = None,
-                signals: "signals_module.SignalCache | None" = None,
-                issues: "signals_module.IssueCache | None" = None) -> dict:
+def _probe_owners(roots: list[Path]) -> list[dict | None]:
+    """#393: every registered root's owner probe at once (each is a loopback
+    request with its own short timeout), in registry order."""
+    if not roots:
+        return []
+    with ThreadPoolExecutor(max_workers=min(OWNER_PROBE_WORKERS, len(roots))) as pool:
+        return list(pool.map(_owner_view, roots))
+
+
+def _build_fleet(path: Path | None = None, public_base: str | None = None,
+                 signals: "signals_module.SignalCache | None" = None,
+                 issues: "signals_module.IssueCache | None" = None,
+                 cache: ProjectViewCache | None = None) -> dict:
+    cache = VIEW_CACHE if cache is None else cache
     forget_missing_roots(path)  # #207: a vanished root is ORPHANED for one pass, then gone
-    projects = [_public_dashboard_url(project_view(entry, signals), public_base) for entry in load_registry(path)]
+    entries = load_registry(path)
+    roots = [Path(entry["root"]) for entry in entries]
+    owners = _probe_owners(roots)
+    # #393: one config read per project per build, reused by every reader below.
+    facts = [project_facts(root, project_config(root), cache) for root in roots]
+    cache.retain({str(root) for root in roots})
+    projects = [_public_dashboard_url(project_view(entry, signals, facts=fact, owner=owner), public_base)
+                for entry, fact, owner in zip(entries, facts, owners)]
+    states = {entry["root"]: fact["state"] for entry, fact in zip(entries, facts)}
     # #166: a ticket two live open runs both list is shown in red on both cards.
     try:
-        twice = claimed_twice(path)
+        twice = claimed_twice(path, states)
     except lib.HandsoffError:
         twice = {}
     for item in projects:
@@ -734,10 +959,138 @@ def build_fleet(path: Path | None = None, public_base: str | None = None,
     decisions = [{"root": item["root"], "project": item["name"], "feature": item.get("feature"), **action}
                  for item in projects for action in item.get("decisions", [])]
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
-            "engine": {**FLEET_ENGINE, "install_blocked": install_blocked(path),  # #161, #216
+            "engine": {**FLEET_ENGINE, "install_blocked": install_blocked(path, states),  # #161, #216
                        **engine_block(path, issues)},  # #373
             "decisions": decisions, "counts": {state: sum(item["state"] == state for item in projects)
-                                                 for state in ("running", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "idle", "orphaned")}}
+                                                 for state in ("running", "host_working", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "idle", "orphaned")}}
+
+
+class SingleFlight:
+    """#393: concurrent callers with one key share one in-flight call; the
+    first runs it, the rest wait for its result (or its exception)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.calls: dict = {}
+
+    def do(self, key, function):
+        with self.lock:
+            call = self.calls.get(key)
+            leader = call is None
+            if leader:
+                call = self.calls[key] = {"done": threading.Event(), "result": None, "error": None, "waiting": 0}
+            else:
+                call["waiting"] += 1
+        if leader:
+            try:
+                call["result"] = function()
+            except BaseException as exc:  # noqa: BLE001 - handed to every waiter as is
+                call["error"] = exc
+            finally:
+                with self.lock:
+                    self.calls.pop(key, None)
+                call["done"].set()
+        else:
+            call["done"].wait()
+        if call["error"] is not None:
+            raise call["error"]
+        return call["result"]
+
+    def waiting(self, key) -> int:
+        with self.lock:
+            call = self.calls.get(key)
+            return call["waiting"] if call else 0
+
+
+FLEET_BUILDS = SingleFlight()
+
+
+def build_fleet(path: Path | None = None, public_base: str | None = None,
+                signals: "signals_module.SignalCache | None" = None,
+                issues: "signals_module.IssueCache | None" = None) -> dict:
+    """The /api/fleet payload. #393: single-flight, so concurrent requests
+    for the same view share one build; each project's view comes from the
+    signature cache when nothing it is built from has changed."""
+    key = (str(path), public_base, id(signals), id(issues))
+    return FLEET_BUILDS.do(key, lambda: _build_fleet(path, public_base, signals, issues))
+
+
+def _rediscovery_ledger_state(status: dict) -> str:
+    if isinstance(status.get("run_closed"), dict) or status.get("status") in ("closed", "complete"):
+        return "completed"
+    value = status.get("status")
+    if value in ("active", "in_progress", "paused", "blocked", "cancelled", "failed"):
+        return value
+    return "paused" if str(value or "").startswith("paused") else "active"
+
+
+def _rediscovery_time(*values) -> str:
+    for value in values:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if parsed.tzinfo is not None:
+            return parsed.isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+
+#: #384: the registry's own run states, as rediscovery reads them.
+REGISTRY_REDISCOVERY_STATES = {"open": "active", "closed": "completed", "complete": "completed"}
+
+
+def rediscovery_inputs(path: Path | None = None) -> dict:
+    """#384: make_rediscovery_inputs from the Fleet registry, each registered
+    root's ledger (status and event log) and its runtime-control monitor
+    record. Reads only; a root with no run, or a monitor record that does
+    not validate, contributes nothing."""
+    import handsoff_runtime_control as runtime_control
+    import handsoff_supervisor as supervisor  # deferred: the run id is the supervisor's (#383 lane A)
+    fleet_runs, ledger_runs, monitors = [], [], []
+    for entry in load_registry(path):
+        root = Path(entry["root"])
+        state = _run_state(root)
+        status, cfg = state.get("status"), state.get("cfg")
+        if not isinstance(status, dict) or cfg is None:
+            continue
+        events = lib.read_events(root, cfg)
+        run_id = supervisor._runtime_run_id(root, events)
+        registry_state = REGISTRY_REDISCOVERY_STATES.get(entry.get("state"))
+        if registry_state:
+            fleet_runs.append({"run_id": run_id, "root": entry["root"], "state": registry_state, "cursor": 0,
+                               "updated_at": _rediscovery_time(entry.get("updated_at"), entry.get("registered_at"))})
+        ledger_runs.append({"run_id": run_id, "root": entry["root"], "state": _rediscovery_ledger_state(status),
+                            "cursor": len(events), "updated_at": _rediscovery_time(status.get("updated_at"))})
+        try:
+            monitor = json.loads((root / RUNTIME_CONTROL_DIR / "monitor.json").read_text(encoding="utf-8"))
+            runtime_control.validate_monitor(monitor)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            continue
+        monitors.append(monitor)
+    return runtime_control.make_rediscovery_inputs(fleet_runs, ledger_runs, monitors)
+
+
+def rediscover(path: Path | None = None) -> list[dict]:
+    """#384: the runs whose monitoring must resume, from rediscover_active_runs.
+    Writes no file."""
+    import handsoff_runtime_control as runtime_control
+    return runtime_control.rediscover_active_runs(rediscovery_inputs(path))
+
+
+def queue_listing(store: dict) -> dict:
+    """#386: a queue store as the CLI and /api/queue print it: last_seq and
+    every job in submission order. `list` and `replay` share this shape."""
+    jobs = sorted(store["jobs"].values(), key=lambda job: (job["created_at"], job["id"]))
+    return {"last_seq": store["last_seq"], "jobs": jobs}
+
+
+def read_queue(base_dir: Path | None = None) -> dict:
+    """#386: the queue's listing, read-only: a queue never written to reads
+    empty instead of creating its directory."""
+    queue = handsoff_queue.Queue(base_dir)
+    if not queue.store_path.exists() and not queue.journal_dir.exists():
+        return queue_listing(handsoff_queue.empty_store())
+    return queue_listing(queue.load())
 
 
 class FleetServer(ThreadingHTTPServer):
@@ -755,6 +1108,14 @@ class FleetServer(ThreadingHTTPServer):
         # slower clock (default 900 s; the lists are larger).
         self.signals = signals if signals is not None else signals_module.SignalCache(registry=registry or registry_path())
         self.issues = issues if issues is not None else signals_module.IssueCache(registry=registry or registry_path())
+        # #384: the runs to resume monitoring, found once as the server starts
+        # (after a reboot nothing else would) and served on /api/fleet.
+        try:
+            self.rediscovered, self.rediscovery_error = rediscover(registry), None
+        except Exception as exc:  # a broken record must not stop Fleet from serving
+            self.rediscovered, self.rediscovery_error = [], f"{type(exc).__name__}: {exc}"
+        _fleet_log(f"fleet_rediscovered runs={len(self.rediscovered)}"
+                   f"{' error=' + self.rediscovery_error if self.rediscovery_error else ''}", registry)
         super().__init__(address, FleetHandler)
         # Only a server that bound its port collects; a failed bind leaves no thread behind.
         roots = lambda: [entry["root"] for entry in load_registry(self.registry)]  # noqa: E731
@@ -842,8 +1203,19 @@ class FleetHandler(BaseHTTPRequestHandler):
         if not self._require_token(path):
             return
         if path == "/api/fleet":
-            self._json(HTTPStatus.OK, build_fleet(self.server.registry, public_base=self._public_base(),
-                                                  signals=self.server.signals, issues=self.server.issues))
+            payload = build_fleet(self.server.registry, public_base=self._public_base(),
+                                  signals=self.server.signals, issues=self.server.issues)
+            self._json(HTTPStatus.OK, {**payload, "rediscovered": self.server.rediscovered,  # #384
+                                       "rediscovery_error": self.server.rediscovery_error})
+            return
+        if path == "/api/queue":
+            # #386: the durable queue, read-only, behind the same token check.
+            try:
+                listing = read_queue((self.server.registry or registry_path()).parent)
+            except handsoff_queue.QueueError as exc:
+                self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                return
+            self._json(HTTPStatus.OK, listing)
             return
         if path == "/api/metrics":
             self._json(HTTPStatus.OK, build_metrics(self.server.registry, self.server.issues, self.server.started_at))
@@ -943,7 +1315,9 @@ class FleetHandler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise lib.HandsoffError("request must be a JSON object")
             root = str(Path(body.get("root", "")).resolve())
-            project = next((item for item in build_fleet(self.server.registry, signals=self.server.signals)["projects"]
+            # #393: a mutation checks its binding against a build of its own,
+            # never one that started before the request arrived.
+            project = next((item for item in _build_fleet(self.server.registry, signals=self.server.signals)["projects"]
                             if item["root"] == root), None)
             if not project:
                 raise lib.HandsoffError("project is not registered")
@@ -991,6 +1365,41 @@ def serve(host="127.0.0.1", port=8765, *, open_browser=True, registry=None, toke
     return 0
 
 
+def queue_command(args) -> int:
+    """#386: one queue operation on the Queue at its default directory,
+    printed as JSON. A refusal (a stale epoch, an unknown job) raises a
+    QueueError, which main reports as HANDSOFF_FLEET_BLOCKED."""
+    queue = handsoff_queue.Queue()
+    command = args.queue_command
+    if command == "submit":
+        try:
+            payload = json.loads(args.payload)
+        except ValueError as exc:
+            raise handsoff_queue.QueueError(f"--payload is not JSON: {exc}") from exc
+        result = {"job_id": queue.submit(args.key, payload, max_attempts=args.max_attempts)}
+    elif command == "list":
+        result = read_queue()
+    elif command == "show":
+        result = read_queue()
+        result = next((job for job in result["jobs"] if job["id"] == args.job), None)
+        if result is None:
+            raise handsoff_queue.QueueError(f"unknown job {args.job}")
+    elif command == "claim":
+        result = queue.claim(args.worker, lease_seconds=args.lease_seconds)
+    elif command == "heartbeat":
+        result = queue.heartbeat(args.job, args.worker, args.epoch, lease_seconds=args.lease_seconds)
+    elif command == "succeed":
+        result = queue.succeed(args.job, args.worker, args.epoch)
+    elif command == "fail":
+        result = queue.fail(args.job, args.worker, args.epoch)
+    elif command == "cancel":
+        result = queue.cancel(args.job)
+    else:
+        result = queue_listing(queue.replay(from_start=args.from_start))
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Handsoff Fleet Mission Control")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1003,8 +1412,37 @@ def main():
     server.add_argument("--port", type=int, default=8765)
     server.add_argument("--no-open", action="store_true")
     server.add_argument("--token-file", help=f"file holding the Fleet access token (else {FLEET_TOKEN_ENV})")
+    sub.add_parser("rediscover", help="print the runs whose monitoring must resume; writes nothing (#384)")
+    queue = sub.add_parser("queue", help="the durable Fleet job queue (#386)")
+    queue_sub = queue.add_subparsers(dest="queue_command", required=True)
+    submit = queue_sub.add_parser("submit")
+    submit.add_argument("--key", required=True, help="idempotency key; a known key returns its job")
+    submit.add_argument("--payload", default="{}", help="the job's JSON object")
+    submit.add_argument("--max-attempts", type=int, default=handsoff_queue.DEFAULT_MAX_ATTEMPTS)
+    queue_sub.add_parser("list")
+    show = queue_sub.add_parser("show")
+    show.add_argument("job")
+    claim = queue_sub.add_parser("claim")
+    claim.add_argument("--worker", required=True)
+    claim.add_argument("--lease-seconds", type=int, default=handsoff_queue.DEFAULT_LEASE_SECONDS)
+    for name in ("heartbeat", "succeed", "fail"):
+        owner = queue_sub.add_parser(name)
+        owner.add_argument("job")
+        owner.add_argument("--worker", required=True)
+        owner.add_argument("--epoch", type=int, required=True, help="the epoch claim returned")
+        if name == "heartbeat":
+            owner.add_argument("--lease-seconds", type=int, default=handsoff_queue.DEFAULT_LEASE_SECONDS)
+    cancel = queue_sub.add_parser("cancel")
+    cancel.add_argument("job")
+    replay = queue_sub.add_parser("replay")
+    replay.add_argument("--from-start", action="store_true", help="replay from segment 1, not the latest checkpoint")
     args = parser.parse_args()
     try:
+        if args.command == "rediscover":
+            print(json.dumps(rediscover(), indent=2, sort_keys=True))
+            return 0
+        if args.command == "queue":
+            return queue_command(args)
         if args.command == "register":
             print(json.dumps(register_project(Path(args.root)), sort_keys=True))
             return 0

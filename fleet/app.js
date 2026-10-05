@@ -185,6 +185,29 @@ function hostWaitTag(project) {
   return `<span class="host-wait">WAITING ON HOST ${esc(String(wait.family || "unknown").toUpperCase())}${words ? " " + esc(words) : ""}</span>`;
 }
 
+// #389: a host working without a managed session (it wrote the ledger within
+// the silence window) reads HOST WORKING with the age of that write; the
+// shared vocabulary has no word for it, so the card supplies its own.
+function stateLabel(project) {
+  const state = project.state || "quiet";
+  if (state !== "host_working") return STATE_LABELS[state] || state.toUpperCase();
+  const seconds = Number(project.host_working_age_seconds);
+  const age = !Number.isFinite(seconds) || seconds < 0 ? "" : seconds < 60 ? `${Math.floor(seconds)} s` : `${Math.floor(seconds / 60)} min`;
+  return `HOST WORKING${age ? " " + age : ""}`;
+}
+
+// #389: the card is named by the project; the folder (a lane worktree, say)
+// is shown beside it so two lanes of one project stay apart.
+function projectName(project) {
+  const folder = project.folder ? ` <span class="project-folder">${esc(project.folder)}</span>` : "";
+  return `${esc(project.name)}${folder}`;
+}
+
+// A host working sorts with the running cards, not ahead of the Pilot's turn.
+function stateRank(state) {
+  return STATE_ORDER.indexOf(state === "host_working" ? "running" : state);
+}
+
 // #193: the card's phase line names how long the machine slept in this phase.
 function asleepSuffix(project) {
   const seconds = Number(project && project.phase_asleep_seconds);
@@ -209,12 +232,12 @@ function projectCard(project) {
   const crew = project.role ? `${esc(project.role.toUpperCase())} · ${esc(project.adapter || "-")}/${esc(project.model || "-")}` : "NO ACTIVE ROLE";
   return `<article class="project${engine.drift ? " engine-drift" : ""}" data-state="${esc(state)}">
     <div class="project-head">
-      <span class="badge">${esc(STATE_LABELS[state] || state.toUpperCase())}</span>
+      <span class="badge">${esc(stateLabel(project))}</span>
       ${lcd(project)}
       <span class="progress">${esc(project.progress ?? 0)}%</span>
     </div>
     <div class="project-title">${project.logo_url ? `<img class="project-logo" src="${esc(project.logo_url)}" alt="" width="44" height="44">` : ""}<div><h3>${esc(title)}</h3>
-    <p class="project-name">${esc(project.name)}${hostTag(project)}</p></div></div>
+    <p class="project-name">${projectName(project)}${hostTag(project)}</p></div></div>
     ${phaseRail(project)}
     <p class="phase">${phase}${asleepSuffix(project)}${missing}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}
@@ -245,7 +268,7 @@ function render(data) {
   $("decisions").classList.toggle("hidden", !data.decisions.length);
   $("decision-count").textContent = data.decisions.length;
   $("decision-list").innerHTML = data.decisions.map((item) => `<div class="decision"><div><strong>${esc(item.label)}</strong><p>${esc(item.consequence)}</p></div><span>${esc(item.project)}</span></div>`).join("");
-  const projects = data.projects.slice().sort((a, b) => STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state));
+  const projects = data.projects.slice().sort((a, b) => stateRank(a.state) - stateRank(b.state));
   // #150: finished runs (complete, closed) sit in their own collapsed
   // section so the grid shows only what is ongoing.
   const ongoing = projects.filter((project) => !FINISHED_STATES.has(project.state));

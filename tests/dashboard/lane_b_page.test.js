@@ -48,7 +48,8 @@ test("a host-adapter station reads the family instead of the word host when it i
 
 test("the Fleet card carries a host tag for a known family and nothing for unknown", () => {
   assert.match(fleetApp, /function hostTag\(project\)/);
-  assert.match(fleetApp, /<p class="project-name">\$\{esc\(project\.name\)\}\$\{hostTag\(project\)\}<\/p>/);
+  // #389: the name now comes from projectName (project name plus folder); the host tag still sits beside it.
+  assert.match(fleetApp, /<p class="project-name">\$\{projectName\(project\)\}\$\{hostTag\(project\)\}<\/p>/);
   const start = fleetApp.indexOf("function hostTag("), end = fleetApp.indexOf("\nfunction projectCard(");
   const esc = (v) => String(v ?? "");
   const hostTag = new Function("esc", `${fleetApp.slice(start, end)}\nreturn hostTag;`)(esc);

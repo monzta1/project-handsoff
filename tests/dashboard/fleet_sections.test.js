@@ -7,6 +7,57 @@ const root = path.resolve(__dirname, "../..");
 const html = fs.readFileSync(path.join(root, "fleet/index.html"), "utf8");
 const app = fs.readFileSync(path.join(root, "fleet/app.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "fleet/styles.css"), "utf8");
+const vm = require("node:vm");
+
+// #389: the page loaded whole, as fleet_signals.test.js does, so the real
+// projectCard renders from snapshot fields.
+function loadFleetPage() {
+  const element = () => ({
+    textContent: "", innerHTML: "", value: "", dataset: {}, open: false,
+    classList: { toggle() {}, add() {}, remove() {} },
+    addEventListener() {}, querySelector: element, showModal() {},
+  });
+  const context = {
+    document: { getElementById: element, querySelectorAll: () => [], body: element() },
+    localStorage: { getItem: () => null, setItem() {} },
+    fetch: () => new Promise(() => {}),
+    EventSource: class { addEventListener() {} },
+    setTimeout: () => 0, setInterval: () => 0, clearTimeout() {},
+    Date, JSON, Math, Number, String, Array, Boolean, Set, Object, Promise, Error,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(root, "dashboard/lib/run-vocabulary.js"), "utf8"), context);
+  vm.runInContext(app, context, { filename: "fleet/app.js" });
+  return context;
+}
+const card = (extra) => ({
+  root: "/tmp/project-handsoff-lane-381-393", registered_at: new Date().toISOString(), initialized: true,
+  feature: "Lane", phase: "Implementation", phase_number: 4, progress: 40, decisions: [], engine_version: "v0.5.6",
+  updated_at: new Date().toISOString(), dashboard_url: null, dashboard_note: "no run-owned dashboard", ...extra,
+});
+const flat = (html) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+test("#389: the card is named by the project, with the folder shown separately", () => {
+  const page = loadFleetPage();
+  const html = page.projectCard(card({ name: "project-handsoff", folder: "project-handsoff-lane-381-393", state: "running" }));
+  assert.match(html, /<p class="project-name">project-handsoff <span class="project-folder">project-handsoff-lane-381-393<\/span>/);
+  assert.match(css, /\.project-folder \{/);
+});
+
+test("#389: host_working reads HOST WORKING with its age; quiet still reads QUIET", () => {
+  const page = loadFleetPage();
+  const working = page.projectCard(card({ name: "p", folder: "p", state: "host_working", host_working_age_seconds: 185 }));
+  assert.match(working, /data-state="host_working"/);
+  assert.match(flat(working), /^HOST WORKING 3 min /);
+  const fresh = page.projectCard(card({ name: "p", folder: "p", state: "host_working", host_working_age_seconds: 42 }));
+  assert.match(flat(fresh), /^HOST WORKING 42 s /);
+  const quiet = page.projectCard(card({ name: "p", folder: "p", state: "quiet", host_working_age_seconds: null }));
+  assert.match(flat(quiet), /^QUIET /);
+  assert.doesNotMatch(flat(quiet), /HOST WORKING/);
+  assert.match(css, /\.project\[data-state="host_working"\] \{/);
+});
 
 // #150: ongoing runs are the main grid; completed and closed runs sit in a
 // collapsed section below with a count, remembered per browser.
@@ -24,8 +75,10 @@ test("fleet splits ongoing and finished runs", () => {
   assert.match(app, /\$\("finished-projects"\)\.innerHTML = finished\.map\(projectCard\)/);
   assert.match(app, /\$\("finished-count"\)\.textContent = `\$\{finished\.length\} RUN/);
   assert.match(app, /finishedSection\.classList\.toggle\("hidden", finished\.length === 0\)/);
-  // The ordering is Fleet's existing state order; counters and decisions are untouched.
-  assert.match(app, /STATE_ORDER\.indexOf\(a\.state\) - STATE_ORDER\.indexOf\(b\.state\)/);
+  // The ordering is Fleet's existing state order (#389: host_working ranks
+  // as running); counters and decisions are untouched.
+  assert.match(app, /stateRank\(a\.state\) - stateRank\(b\.state\)/);
+  assert.match(app, /return STATE_ORDER\.indexOf\(state === "host_working" \? "running" : state\);/);
   assert.match(app, /\$\("summary"\)\.innerHTML = STATE_ORDER\.map/);
   assert.match(app, /\$\("decision-list"\)\.innerHTML = data\.decisions\.map/);
 });

@@ -58,7 +58,9 @@ class IssueStateTests(unittest.TestCase):
         attributable = self.snapshot(kind="pull_request", pr_number=88, merged=True, merged_commit="abc123")
         wrong_commit = self.snapshot(kind="pull_request", pr_number=88, merged=True, merged_commit="different")
         human = self.snapshot(kind="human", actor="maintainer")
-        self.assertEqual(close.issue_state_decision(attributable, self.RUN_PRS, run_token="run-a"), "reopen")
+        # #381: a closure by the run's own merged PR is the run's, never reopened
+        self.assertEqual(close.issue_state_decision(attributable, self.RUN_PRS, run_token="run-a"),
+                         "already_closed")
         self.assertEqual(close.issue_state_decision(wrong_commit, self.RUN_PRS, run_token="run-a"), "pause")
         self.assertEqual(close.issue_state_decision(human, self.RUN_PRS, run_token="run-a"), "pause")
         self.assertEqual(close.issue_state_decision(self.snapshot(state="open"), self.RUN_PRS,
