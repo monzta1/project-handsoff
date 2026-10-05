@@ -577,14 +577,6 @@ def _enumerate_unittest_ids(root: Path, argv: list[str]) -> tuple[list[str] | No
         raise CollectionFailure(f"collection failed: {type(exc).__name__}: {exc}") from exc
 
 
-def _count_unittest_total(root: Path, argv: list[str]) -> int | None:
-    try:
-        ids, _ = _enumerate_unittest_ids(root, argv)
-    except CollectionFailure:
-        return None
-    return len(ids) if ids is not None else None
-
-
 def _verbose_argv(command: str) -> list[str]:
     argv = shlex.split(command)
     if len(argv) >= 3 and argv[1] == "-m" and argv[2] == "unittest" and "-v" not in argv and "--verbose" not in argv:

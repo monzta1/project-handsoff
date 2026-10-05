@@ -53,7 +53,6 @@ from handsoff_agent_runtime import (
 )
 
 
-
 LIVE_BEACON_KEYS = ("session_id", "role", "state", "pid", "beacon_at", "ended_at", "exit_code")
 
 
@@ -539,7 +538,6 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
     if session.get("state") in AGENT_SESSION_TERMINAL_STATES:
         result["reason"] = "assigned session is terminal but not recoverable"
         return result
-    state = session.get("state")
     result["lost_session_id"] = session_id
     ping = (liveness or {}).get(session_id) or session.get("running_at") or session.get("started_at")
     silent = _minutes_since(ping, now)

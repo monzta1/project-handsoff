@@ -74,7 +74,6 @@ LOW_QUALITY_FLAGS = frozenset({"usage_not_reported", "usage_partial", "duration_
 
 VARIANTS = ("all_evidence", "excluding_low_quality")
 
-RECOMMENDATIONS = ("cheaper", "baseline", "refused")
 
 MAX_COHORT_KEY = 128
 MAX_APPROVALS = 256

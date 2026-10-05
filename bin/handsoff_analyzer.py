@@ -1,6 +1,7 @@
 """Report-only, lane-aware checks for completed Handsoff archives."""
 
 import json
+import re
 from pathlib import Path
 
 import handsoff_lib as lib
@@ -40,12 +41,17 @@ def applicable_findings(record: dict, findings: list[dict]) -> list[dict]:
     result = []
     for finding in findings:
         rule = str(finding.get("rule", "")).lower()
-        if lane == "design" and ("implementation" in rule or "review" in rule or "r4" in rule):
+        # Whole rule ids, not substrings: "r1" in "r10" dropped the review
+        # lane's own R10 finding and its run ids.
+        rule_id = re.match(r"r\d+", rule)
+        rule_id = rule_id.group(0) if rule_id else ""
+        if lane == "design" and ("implementation" in rule or "review" in rule or rule_id == "r4"):
             continue
-        if lane == "review" and ("design" in rule or "r1" in rule or "r2" in rule or "r3" in rule):
+        if lane == "review" and ("design" in rule or rule_id in {"r1", "r2", "r3"}):
             continue
         result.append(finding)
-    if lane == "review" and 6 in phases and not status.get("review"):
+    if lane == "review" and 6 in phases and not status.get("review") \
+            and not any(str(item.get("rule", "")).upper() == "R10" for item in result):
         result.append({"rule": "R10", "title": "Review lane has no review record",
                        "text": "review-lane archive has no review record", "run_ids": [],
                        "numbers": [], "excluded": []})

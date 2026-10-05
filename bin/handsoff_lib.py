@@ -21,7 +21,6 @@ tool let an ungated transition into Phase 6 succeed.
 from __future__ import annotations
 
 import hashlib
-import fnmatch
 import html
 import json
 import math
@@ -29,19 +28,16 @@ import os
 import re
 import secrets
 import signal
-import shlex
 import shutil
 import socket
 import subprocess
 import sys
-import sysconfig
 import webbrowser
 import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
-import uuid
 from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -252,7 +248,6 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     verify_event_log,
     version_satisfies,
 )
-
 
 
 from handsoff_workflow import (  # noqa: E402,F401
@@ -607,7 +602,6 @@ from handsoff_routing import (  # noqa: E402,F401
 )
 
 
-
 #: #317: every reader of an archive's kind, named rather than remembered.
 #: A reader that classifies without appearing here fails the build, so a
 #: fourth private answer cannot appear the way the third one did.
@@ -754,7 +748,7 @@ def worst_recorded_overshoot(adapter: str, role: str, archives_dir: "Path | None
 
 def turn_bound_refusal(*, adapter: str, role: str, ceiling: int, compact_scope: bool,
                        safe_minimum: int = 0, archives_dir: "Path | None" = None) -> str | None:
-    """Refuse a launch the engine cannot bound, naming both remedies.
+    """Refuse a launch the engine cannot bound, naming the remedy a caller can take.
 
     A reserve carves headroom from BELOW the ceiling, so it only helps if
     the session stops below the limit. Session
@@ -796,9 +790,8 @@ def turn_bound_refusal(*, adapter: str, role: str, ceiling: int, compact_scope: 
         f"{adapter} reports usage only at exit, so a {role} that runs tools cannot be bounded "
         f"by the {PROTOCOL_RESERVE_TOKENS}-token protocol reserve: a single turn can exceed the "
         f"whole {ceiling}-token ceiling, and this ceiling cannot absorb one such turn on top of "
-        f"the {safe_minimum} tokens a viable session needs. Either give the launch a compact "
-        f"review scope, so no suite is materialised and turns stay small, or raise "
-        f"[agent_budget].{role} to at least {needed} to cover the worst measured turn ({basis})."
+        f"the {safe_minimum} tokens a viable session needs. Raise [agent_budget].{role} to at "
+        f"least {needed} to cover the worst measured turn ({basis})."
     )
 
 
@@ -913,8 +906,6 @@ ROLE_PROTOCOL_PREFIXES = {"reviewer": "HANDSOFF_REVIEW_RESULT:",
                           "supervisor": "HANDSOFF_BROKER_REQUEST:"}
 
 
-
-
 def origin_allowed(origin: str | None, server_port: int, public_origins: list[str]) -> bool:
     """Loopback on the server's own port is always allowed; otherwise the
     origin must equal one configured public origin exactly."""
@@ -993,20 +984,6 @@ def open_dashboard_url(url: str, *, platform: str | None = None, chrome: Path | 
     return "fallback"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def engine_manifest_version() -> str | None:
     """The version of the engine running this code, from its own manifest;
     None when it cannot be read."""
@@ -1014,8 +991,6 @@ def engine_manifest_version() -> str | None:
         return json.loads((engine_root() / RUNTIME_MANIFEST_FILE).read_text(encoding="utf-8")).get("version")
     except (OSError, ValueError, AttributeError):
         return None
-
-
 
 
 def retire_finished_run(root: Path, cfg: dict) -> Path | None:
@@ -1054,8 +1029,6 @@ def engine_history(events: list[dict]) -> list[dict]:
         if isinstance(engine, dict) and engine not in seen:
             seen.append(engine)
     return seen
-
-
 
 
 def validate_runtime_integrity(root: Path) -> dict:
@@ -1136,10 +1109,6 @@ def project_resource_path(root: Path, relative: str) -> Path:
 MAX_PLAYBOOK_SECTION_BYTES = 16 * 1024  # #217: room for the protocol topic (8 KB) beside the index and the lanes
 
 
-
-
-
-
 def playbook_text(topic: str | None = None) -> str:
     """`handsoff playbook [topic]`: the index, or one topic's files."""
     manifest = playbook_index()
@@ -1175,8 +1144,6 @@ def playbook_section(topic: str | None = None) -> str:
         raise HandsoffError(f"the playbook section for a launch is {size} bytes, over {MAX_PLAYBOOK_SECTION_BYTES}"
                             f" (files: {', '.join(unique)}); shorten the playbook")
     return text
-
-
 
 
 def prompt_override_diagnosis(root: Path) -> list[dict]:
@@ -1252,8 +1219,6 @@ def run_triage(root: Path, cfg: dict) -> dict | None:
             ]}
 
 
-
-
 # #284 stage 1: the core primitives now live in bin/handsoff_core.py, a
 # layer with zero outbound dependencies on the rest of the engine.
 # Re-exported here so no caller changed.
@@ -1293,8 +1258,6 @@ def resolve_root(explicit: str | None = None) -> Path:
         if (candidate / "handsoff.toml").is_file():
             return candidate
     return here
-
-
 
 
 #: The two supervisor operations an implementer may run, in every form the
@@ -1449,8 +1412,6 @@ def reviewer_isolation_contract(adapter: str, cfg: dict | None = None) -> dict:
     return contract
 
 
-
-
 def codex_argv(executable: str, role: str, model: str, token_budget: int, *,
                reviewer_sandbox: bool = False, reasoning: str | None = None) -> list[str]:
     """The one Codex argv shape Handsoff launches (and pre-flights).
@@ -1535,8 +1496,6 @@ def implementer_permissions_section(root: Path | None, which=shutil.which) -> st
     return "\n".join(lines)
 
 
-
-
 def render_review_report(status: dict, acceptance: dict) -> str:
     """Render the stable human-readable report for a completed review lane."""
     review = status.get("review") if isinstance(status.get("review"), dict) else {}
@@ -1565,59 +1524,11 @@ def render_review_report(status: dict, acceptance: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _canonical_provider_model(model: object) -> str | None:
     """Normalize provider decorations without pretending an alias was reported."""
     if not isinstance(model, str) or not model.strip():
         return None
     return model.strip().split("[", 1)[0]
-
-
-
-
-
-
-
-
-
-
 
 
 def _agent_assignment(session: dict) -> dict:
@@ -1675,20 +1586,6 @@ def _agent_assignment(session: dict) -> dict:
     return assignment
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def followup_reviewer_profile(cfg: dict) -> dict | None:
     """#37: the configured follow-up reviewer profile, or None when the run
     has no reviewer tiering (both keys absent, or a cfg predating #37)."""
@@ -1712,8 +1609,6 @@ def unavailable_adapter_message(role: str, adapter: str, model: str, resolution_
     )
 
 
-
-
 def contract_adapter_availability(cfg: dict) -> dict:
     """#305: adapter discovery for contract adapters. A local adapter is not
     an executable on PATH; it is available when the project declares it (an
@@ -1725,10 +1620,6 @@ def contract_adapter_availability(cfg: dict) -> dict:
 
 def fallback_profiles(cfg: dict) -> dict:
     return {role: deepcopy(cfg.get("fallbacks", {}).get(role, [])) for role in SELECTABLE_AGENT_ROLES}
-
-
-
-
 
 
 def audited_agent_profile(cfg: dict, role: str) -> dict:
@@ -1951,8 +1842,6 @@ def plan_role_token_budget(*, configured_ceiling: int, role: str,
          "changed_files": changed_files, "followup": bool(followup),
          "basis": "risk_role_packet_scope", **sizing},
         role=role, safe_minimum=safe_minimum)
-
-
 
 
 def adapter_availability(cfg: dict | None = None, *, which=None) -> dict:
@@ -2202,8 +2091,6 @@ def launch_preflight(root: Path, *, adapter: str, model: str, executable: str,
     store["incident"] = deepcopy(entry) if category else None
     atomic_write_json(path, store)
     return {**deepcopy(entry), "cached": False}
-
-
 
 
 #: Providers surfaced read-only in the Agent Settings UI so a user can see
@@ -2530,7 +2417,6 @@ def update_agent_settings(root: Path, payload: object) -> dict:
 # --------------------------------------------------------------------------
 
 
-
 class PacketRuleViolation(HandsoffError):
     """A reviewer packet broke a packet rule. `recovered` is the packet with
     the offending field set to the rule's recover_as value (or None when
@@ -2539,10 +2425,6 @@ class PacketRuleViolation(HandsoffError):
     def __init__(self, message: str, *, rule_id: str, field: str, value, recovered: dict | None):
         super().__init__(message)
         self.rule_id, self.field, self.value, self.recovered = rule_id, field, value, recovered
-
-
-
-
 
 
 def rule_refusal(rule: dict) -> str:
@@ -2615,20 +2497,11 @@ def evaluate_packet_rules(root: Path | None, cfg: dict | None, value: dict, *, r
 # --------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
 def rules_binding(root: Path, cfg: dict) -> dict:
     """What a decision records: the hash and the entries behind it."""
     entries = rules_set_entries(root)
     return {"rules_hash": hashlib.sha256(_canonical(entries).encode("utf-8")).hexdigest(),
             "rules_entries": entries}
-
-
 
 
 def update_feature_settings(root: Path, payload: object) -> dict:
@@ -2665,26 +2538,9 @@ def update_feature_settings(root: Path, payload: object) -> dict:
     return {"features": dict(payload)}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # --------------------------------------------------------------------------
 # JSON I/O: duplicate-key detection, atomic writes
 # --------------------------------------------------------------------------
-
 
 
 def durability_capability(path: Path) -> dict:
@@ -2708,10 +2564,6 @@ def durability_capability(path: Path) -> dict:
     return {"level": "full", "file_fsync": True, "directory_fsync": True, "reason": None}
 
 
-
-
-
-
 def restore_durable_backup(path: Path) -> dict:
     """Restore the bounded last-known-good copy after validating JSON."""
     path = Path(path)
@@ -2726,16 +2578,9 @@ def restore_durable_backup(path: Path) -> dict:
             "durability": capability}
 
 
-
-
 # --------------------------------------------------------------------------
 # write-ahead journal: lets `doctor` prove a crash, not launder a hand edit
 # --------------------------------------------------------------------------
-
-
-
-
-
 
 
 def read_write_ahead(root: Path) -> dict | None:
@@ -2748,8 +2593,6 @@ def read_write_ahead(root: Path) -> dict | None:
         return None
 
 
-
-
 # --------------------------------------------------------------------------
 # managed-agent runtime telemetry
 # --------------------------------------------------------------------------
@@ -2760,26 +2603,6 @@ def default_agent_actor(adapter: str, role: str) -> str:
             or not adapter_serves_role(adapter, role):
         raise HandsoffError("cannot derive an actor for an unsupported agent adapter or role")
     return f"{adapter}-{role}"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def abandon_stale_review_attempt(status: dict, acceptance: dict) -> bool:
@@ -2817,10 +2640,6 @@ def refresh_review_attempt_after_evidence(status: dict, acceptance: dict) -> dic
     }
 
 
-
-
-
-
 # --------------------------------------------------------------------------
 # #168: usage, from the adapter's own words
 # --------------------------------------------------------------------------
@@ -2854,8 +2673,14 @@ class UsageWatcher:
         #: How many banner rules have gone by. The model field is only
         #: trusted between the first and the second.
         self._banner_rules = 0
+        #: stdout and stderr are read on two threads that both feed here.
+        self._lock = threading.Lock()
 
     def feed(self, line: str) -> None:
+        with self._lock:
+            self._feed(line)
+
+    def _feed(self, line: str) -> None:
         text = line.rstrip("\r\n")
         if self._awaiting_number:
             self._awaiting_number = False
@@ -2972,8 +2797,6 @@ def _find_reported_model(event: object, adapter: str | None) -> str | None:
     return None
 
 
-
-
 def usage_totals(status: dict) -> dict:
     """#168: what the run cost so far, from recorded session usage only."""
     by_role: dict[str, int] = {}
@@ -3045,12 +2868,6 @@ def record_reported_model(root: Path, session_id: str, model: str) -> dict:
                event_message=f"{session_id} reported model {model}", by="runtime",
                session_id=session_id, reported_model=model)
     return {"session_id": session_id, "reported_model": model, "written": True, "reason": None}
-
-
-
-
-
-
 
 
 def record_quality_finding(root: Path, *, session_id: str, finding_code: str,
@@ -3346,14 +3163,9 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
         return deepcopy(record)
 
 
-
-
-
-
 # --------------------------------------------------------------------------
 # tamper-evident event log
 # --------------------------------------------------------------------------
-
 
 
 def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict) -> str:
@@ -3407,26 +3219,9 @@ def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict
         + readable + f'<script type="application/json" id="handsoff-design">{script_payload}</script></body></html>\n'
 
 
-
-
-
-
-
-
-
-
-
-
 # --------------------------------------------------------------------------
 # immutable verification ledger
 # --------------------------------------------------------------------------
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------------------
@@ -3435,27 +3230,9 @@ def render_design_document(root: Path, cfg: dict, status: dict, acceptance: dict
 # --------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # --------------------------------------------------------------------------
 # the gates
 # --------------------------------------------------------------------------
-
-
-
 
 
 def features_view(cfg: dict) -> dict:
@@ -3465,23 +3242,9 @@ def features_view(cfg: dict) -> dict:
             for name, (default, text) in FEATURES.items()}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def sync_coverage(status: dict, acceptance: dict) -> None:
     resolved = status.get("requirement_coverage", {}).get("original_symptom_resolved") is True
     status["requirement_coverage"] = coverage_for(acceptance.get("criteria", []), resolved)
-
-
 
 
 def criterion_fully_evidenced(criterion: dict, verifications: list[dict]) -> bool:
@@ -3523,32 +3286,6 @@ def reviewer_launch_evidence_gaps(criteria: list[dict], verifications: list[dict
             else:
                 gaps.append(f"{cid}: run handsoff_supervisor.py record-evidence {cid} --kind {kind} --description ... --by ACTOR")
     return gaps
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def select_design_reviewer_tier(cfg: dict, status: dict, acceptance: dict) -> tuple[str, str]:
@@ -3719,18 +3456,6 @@ def design_reviewer_selection_view(cfg: dict, status: dict, acceptance: dict, *,
     return {"current": current, "consistency_errors": consistency_errors,
             "next": {"tier": tier, "reason": reason, "adapter": profile["adapter"],
                      "model": profile["model"], "error": error}}
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # #121: what an orchestration launch tells each role. The Supervisor gets
@@ -4039,20 +3764,6 @@ def reviewer_implementation_contract(status: dict, acceptance: dict) -> dict | N
     return body
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _expire_recovery_lease(status: dict, now: datetime) -> bool:
     lease = status.get("recovery_lease")
     if not isinstance(lease, dict):
@@ -4105,7 +3816,7 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
     with project_lock(root):
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
-        acceptance = load_unique_json(acceptance_path(root, cfg))
+        load_unique_json(acceptance_path(root, cfg))
         ensure_no_launched_regression(status)
         _assert_agent_telemetry_integrity(root, cfg, status)
         if _expire_recovery_lease(status, now):
@@ -4270,26 +3981,11 @@ def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None,
     return None
 
 
-
-
-
-
-
-
-
-
-
-
 def regression_group(cfg: dict, name: str) -> dict:
     item = next((entry for entry in cfg.get("regressions", []) if entry.get("name") == name), None)
     if item is None:
         raise HandsoffError(f"unknown regression group: {name}")
     return item
-
-
-RELEASE_CLASSES = ("patch", "minor", "major")
-
-
 
 
 def release_plan_payload(cfg: dict, version: str, by: str, *, override_reason: str | None = None,
@@ -4310,24 +4006,8 @@ def release_plan_payload(cfg: dict, version: str, by: str, *, override_reason: s
     }
 
 
-
-
-
-
 def command_sha256(commands: list[str]) -> str:
     return hashlib.sha256(json.dumps(commands, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def add_work_item_tombstone(acceptance: dict, item_id: str, by: str, at: str) -> None:
@@ -4348,18 +4028,6 @@ def clear_work_item_tombstones(acceptance: dict, item_ids) -> list[str]:
     return cleared
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
     """Item-scoped delivery state for new runs.  Legacy runs omit this
     mapping and continue to use the existing run-level gates."""
@@ -4371,12 +4039,6 @@ def new_work_item_delivery(items: list[dict], lane: str = "full") -> dict:
         "implemented_by": None, "reviewed_by": None, "review_hash": None,
         "baseline_head": None,
     } for item in items}
-
-
-
-
-
-
 
 
 def repository_change_facts(root: Path) -> dict:
@@ -4447,14 +4109,6 @@ def small_fix_facts(root: Path, acceptance: dict, item_id: str, cfg: dict,
     facts["eligible"] = not reasons
     facts["reasons"] = reasons
     return facts
-
-
-
-
-
-
-
-
 
 
 def work_item_checkpoints(status: dict, acceptance: dict, events: list[dict] | None = None,
@@ -4542,10 +4196,6 @@ def resume_scope_section(root: Path) -> str:
 MAX_CRITERIA_TRANSACTION_BYTES = 256 * 1024
 
 
-
-
-
-
 def repeat_seed(run_hash: str | None, attempt: int) -> str:
     """#169: a distinct, reproducible seed per attempt."""
     return hashlib.sha256(f"{run_hash or ''}:{attempt}".encode("utf-8")).hexdigest()[:8]
@@ -4573,8 +4223,6 @@ def run_repeated_checks(cfg: dict, root: Path, commands: list[str], repeat: int,
     return last, attempts
 
 
-
-
 def load_criteria_transaction(path: Path) -> list[dict]:
     """Read TX.json: an object with exactly `operations`, 1 to 64 entries,
     at most 256 KiB, duplicate keys refused. Operation shapes are checked
@@ -4596,10 +4244,6 @@ def load_criteria_transaction(path: Path) -> list[dict]:
             f"transaction file: 'operations' must contain 1 to {MAX_CRITERIA_TRANSACTION_OPERATIONS} entries"
         )
     return operations
-
-
-
-
 
 
 def criteria_plan_preview(plan: dict, status: dict) -> dict:
@@ -4653,9 +4297,6 @@ def apply_criteria_plan(acceptance: dict, plan: dict) -> None:
 # --------------------------------------------------------------------------
 
 
-
-
-
 def amendment_hash(base_design_hash: str, operations: list[dict]) -> str:
     """sha256 of the base design hash concatenated with the canonical
     operation records ({op, id, previous_hash, resulting_hash}, in order).
@@ -4664,8 +4305,6 @@ def amendment_hash(base_design_hash: str, operations: list[dict]) -> str:
     return hashlib.sha256(
         (str(base_design_hash) + _canonical({"operations": operations})).encode("utf-8")
     ).hexdigest()
-
-
 
 
 def _amendment_changed_ids(operations: list[dict]) -> list[str]:
@@ -4929,8 +4568,6 @@ def recompute_amendment_hash(amendment: dict, criteria: list[dict]) -> tuple[str
     return (None if problems else recomputed), problems
 
 
-
-
 def amendment_mutation_refusal(status: dict) -> str | None:
     amendment = open_amendment(status)
     if amendment is None:
@@ -5005,19 +4642,12 @@ def amendment_view(status: dict, acceptance: dict, cfg: dict, verifications: lis
     }
 
 
-
-
-
-
 # --------------------------------------------------------------------------
 # #33: live session status. A managed child beacons `.handsoff-live.json`
 # every few seconds; `live_status` folds that liveness signal into the
 # structured state (run status, human pause, the ledger-bound session
 # record) into one small view the dashboard strip and `status` show.
 # --------------------------------------------------------------------------
-
-
-
 
 
 def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
@@ -5049,8 +4679,6 @@ def write_live_beacon(root: Path, *, session_id: str, role: str, state: str,
     except OSError:
         return False
     return True
-
-
 
 
 def liveness_view(status: dict, root: Path, cfg: dict,
@@ -5140,9 +4768,6 @@ def record_stall_transition(root: Path, cfg: dict, warning: str | None) -> str |
 # --------------------------------------------------------------------------
 
 
-
-
-
 _AGENT_OUTPUT_LOCK = threading.Lock()
 
 
@@ -5163,13 +4788,9 @@ def agent_output_lock(root: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-
-
 def operations_path(root: Path) -> Path:
     """Return the bounded, telemetry-only operation journal for ROOT."""
     return Path(root) / OPERATIONS_FILE
-
-
 
 
 def record_session_progress(root: Path, session_id: str, record: dict) -> list[dict]:
@@ -5194,8 +4815,6 @@ def record_session_progress(root: Path, session_id: str, record: dict) -> list[d
                event_message=f"Implementer progress: {record['criterion']} {record['state']}",
                session_id=session_id, criterion=record["criterion"], progress_state=record["state"])
         return deepcopy(progress)
-
-
 
 
 def latest_failed_implementer_progress(status: dict) -> dict | None:
@@ -5229,8 +4848,9 @@ def validate_operation_line(payload: object) -> dict | None:
     if set(payload) - allowed:
         return None
     required = ("operation_id", "dependency", "operation", "state", "attempt", "timeout_seconds")
-    if any(key not in payload or not isinstance(payload[key], str)
-           for key in ("operation_id", "dependency", "operation", "state")):
+    if any(key not in payload for key in required):
+        return None
+    if any(not isinstance(payload[key], str) for key in ("operation_id", "dependency", "operation", "state")):
         return None
     if not OPERATION_ID_PATTERN.fullmatch(payload["operation_id"]):
         return None
@@ -5315,8 +4935,14 @@ def record_operation(root: Path, session_id: str, role: str, record: dict, now: 
             if terminal:
                 existing["ended_at"] = stamp
         session["operations"] = operations[-64:]
+        # Evict the least recently active session, never the one just written.
+        # The store is saved with sorted keys, so dict order is session-id
+        # order, not age: evicting next(iter()) dropped an arbitrary session,
+        # and with it the succeeded-operation ids a replacement must not repeat.
         while len(sessions) > 8:
-            oldest = next(iter(sessions))
+            oldest = min((sid for sid in sessions if sid != session_id),
+                         key=lambda sid: max((str(op.get("updated_at") or "")
+                                              for op in sessions[sid].get("operations") or []), default=""))
             sessions.pop(oldest, None)
         _atomic_write_text(operations_path(root), json.dumps(store, sort_keys=True) + "\n")
     return next(item for item in session["operations"] if item["operation_id"] == record["operation_id"])
@@ -5426,16 +5052,6 @@ def start_agent_output(root: Path, session_id: str, role: str, adapter: str, *,
             _atomic_write_text(agent_output_path(root), json.dumps(store, sort_keys=True) + "\n")
     except OSError:
         pass
-
-
-def append_agent_output(root: Path, session_id: str, stream: str, text: str,
-                        source_bytes: int, *, now: datetime | None = None) -> bool:
-    """Compatibility wrapper for one already-redacted line."""
-    stamp = (now or datetime.now(timezone.utc)).isoformat()
-    return append_agent_output_batch(
-        root, session_id,
-        [{"at": stamp, "stream": stream, "text": text}], source_bytes,
-    )
 
 
 def append_agent_output_batch(root: Path, session_id: str, batch: list[dict],
@@ -5561,8 +5177,6 @@ def _output_bytes_missed(root: Path, session_id: str | None, record) -> bool:
         return False
 
 
-
-
 _OUTPUT_LIVENESS_LOCK = threading.Lock()
 _OUTPUT_LIVENESS_COUNTERS: dict[str, dict] = {}
 _MAX_OUTPUT_LIVENESS_SESSIONS = 64
@@ -5610,14 +5224,6 @@ def note_output_liveness(root: Path, session_id: str, role: str, nbytes: int, *,
     return True
 
 
-
-
-
-
-
-
-
-
 def mark_beacon_adopted(root: Path, session_id: str) -> bool:
     """#172: after session-result-adopt the last beacon says what the host
     did with the session. Only a beacon naming that session is rewritten;
@@ -5628,8 +5234,6 @@ def mark_beacon_adopted(root: Path, session_id: str) -> bool:
     return write_live_beacon(root, session_id=session_id, role=beacon.get("role") or "reviewer",
                              state="adopted", pid=None, ended_at=beacon.get("ended_at"),
                              exit_code=beacon.get("exit_code"))
-
-
 
 
 def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None = None) -> dict:
@@ -5785,14 +5389,6 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
 CHECK_OUTPUT_TAIL_CHARS = 2000
 
 
-
-
-
-
-
-
-
-
 def repository_digest_from_entries(entries: dict[str, str | None]) -> str:
     """The digest `repository_digest` would produce for one scan's entries,
     so a caller that already holds the per-path scan does not list the tree
@@ -5800,10 +5396,6 @@ def repository_digest_from_entries(entries: dict[str, str | None]) -> str:
     existed between them)."""
     pairs = [[relative, entries[relative]] for relative in sorted(entries)]
     return hashlib.sha256(_canonical({"files": pairs}).encode("utf-8")).hexdigest()
-
-
-
-
 
 
 def record_session_result(root: Path, session_id: str, kind: str, payload: dict, *,
@@ -5842,8 +5434,6 @@ def record_session_result(root: Path, session_id: str, kind: str, payload: dict,
         return deepcopy(result)
 
 
-
-
 def verification_binding(command: str, repo_digest: str, config_digest: str,
                          criterion_hashes: list[str]) -> str:
     """The cache key for one command: any change to the command, the
@@ -5855,8 +5445,6 @@ def verification_binding(command: str, repo_digest: str, config_digest: str,
         "verification_config_hash": config_digest,
         "criterion_hashes": sorted(criterion_hashes),
     }).encode("utf-8")).hexdigest()
-
-
 
 
 def check_result_reusable(result: object) -> bool:
@@ -5895,8 +5483,6 @@ def reusable_check_record(records: list[dict], command: str, binding: str,
 
 def verify_inflight_lock_path(root: Path, binding: str) -> Path:
     return root / VERIFY_INFLIGHT_DIR / f"{binding}.lock"
-
-
 
 
 @contextmanager
@@ -6519,7 +6105,6 @@ def design_review_packet_summary(status: dict) -> dict | None:
 # --------------------------------------------------------------------------
 
 
-
 # Order matters: tier 3 checks these in sequence and the first match wins,
 # even when a tail matches more than one (e.g. an auth error surfaced while
 # refreshing a rate-limited token) -- there is no such thing as an
@@ -6610,8 +6195,6 @@ FALLBACK_SKIP_REASONS = {
 def _fallback_decision(action: str, reason: str, *, profile: dict | None = None,
                        skipped: list[dict] | None = None) -> dict:
     return {"action": action, "reason": reason, "profile": profile, "skipped": skipped or []}
-
-
 
 
 def plan_agent_fallback(role: str, failure_category: str, fallback_entries: object,
@@ -7164,17 +6747,6 @@ def record_pilot_note(root: Path, *, by: object, text: object) -> dict:
 # --------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
-
-
-
 def awake_seconds(start: datetime | None, end: datetime | None, intervals: list[tuple[datetime, datetime]]) -> float | None:
     """Wall clock minus sleep; None without both ends; never negative."""
     if start is None or end is None:
@@ -7188,13 +6760,6 @@ def awake_seconds(start: datetime | None, end: datetime | None, intervals: list[
 # by side; the page said "host" for both. The family is read from an actor
 # prefix (the #164 rule), never inferred from anything else.
 # --------------------------------------------------------------------------
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------------------
@@ -7257,8 +6822,6 @@ def _ci_checks(root: Path, pr: int, runner=None, which=None) -> list[dict]:
             "workflow": item.get("workflow") if isinstance(item.get("workflow"), str) else None,
         })
     return sorted(checks, key=lambda c: c["name"])
-
-
 
 
 CI_EXPECTED_SAMPLE = 5
@@ -7469,8 +7032,6 @@ def ci_view(status: dict, root: Path, cfg: dict, *, now: datetime | None = None,
     }
 
 
-
-
 # --------------------------------------------------------------------------
 # #177: the Architect can say "do not build this". A decline is recorded
 # like a proposal (bounded, hash-bound to the criteria) and closes the run
@@ -7536,10 +7097,6 @@ def record_design_decline(root: Path, cfg: dict, *, by: object, reason: object, 
                alternative=record["alternative"], design_hash=record["design_hash"],
                acceptance_hash=record["acceptance_hash"])
     return record
-
-
-
-
 
 
 # --------------------------------------------------------------------------
@@ -7837,7 +7394,7 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
     with project_lock(root):
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
-        acceptance = load_unique_json(acceptance_path(root, cfg))
+        load_unique_json(acceptance_path(root, cfg))
         existing = status.get("run_closed")
         if isinstance(existing, dict):
             return {"closed": True, "already_closed": True, "run_closed": existing,
@@ -8397,10 +7954,6 @@ def question_cards(status: dict) -> list[dict]:
     return [{"role": role, "count": count} for role, count in cards.items()]
 
 
-
-
-
-
 # --------------------------------------------------------------------------
 # #171: the final report, from the ledger, posted once per ticket
 # --------------------------------------------------------------------------
@@ -8662,7 +8215,6 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
             save(number, "commented", "complete")
             url = comment.stdout.strip().splitlines()[-1] if comment.stdout.strip() else None
         closed = str(issue.get("state") or "").upper() == "CLOSED"
-        did_close = did_tick = False
         if not closed:
             # Persist before the provider call.  If the response/read-back is
             # lost, a retry may safely reconcile this attempted operation
@@ -8681,7 +8233,6 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
                     json.loads(close_readback.stdout).get("state") or "").upper() == "CLOSED"
             except ValueError:
                 closed = False
-            did_close = closed
         if closed:
             save(number, "closed", "complete")
         parent_match = re.search(r"(?im)^\s*parent:\s*#([1-9][0-9]{0,8})\b", str(issue.get("body") or ""))
@@ -8707,7 +8258,6 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
                     observed_parent = ""
                 ticked = bool(re.search(rf"^\s*- \[x\] #{number}\b", observed_parent,
                                         re.MULTILINE | re.IGNORECASE))
-                did_tick = ticked
             elif re.search(rf"^\s*- \[x\] #{number}\b", parent_body, re.MULTILINE | re.IGNORECASE):
                 ticked = True
         if ticked or not parent:

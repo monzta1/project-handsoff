@@ -32,7 +32,6 @@ from handsoff_config import (
 from handsoff_routing import classify_adaptive_risk, validate_session_adaptive_routing, validate_session_routing_contract
 
 
-
 PHASES = {
     1: "Orient",
     2: "Design debate",

@@ -6303,8 +6303,9 @@ class TestOutputLiveness(HandsoffTestCase):
             sid = self._sid(40 + index)
             self.lib.start_agent_output(self.tmp, sid, "implementer", "codex")
             for line in range(self.lib.MAX_AGENT_OUTPUT_ENTRIES + 5):
-                self.assertTrue(self.lib.append_agent_output(
-                    self.tmp, sid, "stdout", f"line {line}", line + 1,
+                self.assertTrue(self.lib.append_agent_output_batch(
+                    self.tmp, sid, [{"at": datetime.now(timezone.utc).isoformat(), "stream": "stdout",
+                                     "text": f"line {line}"}], line + 1,
                 ))
             self.lib.finish_agent_output(self.tmp, sid, "completed")
         store = json.loads(self.lib.agent_output_path(self.tmp).read_text())
@@ -6323,7 +6324,8 @@ class TestOutputLiveness(HandsoffTestCase):
         self.lib.transition_agent_session(self.tmp, session["session_id"], "running")
         self.lib.start_agent_output(self.tmp, session["session_id"], "implementer", "codex")
         self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "connected_no_output")
-        self.lib.append_agent_output(self.tmp, session["session_id"], "stdout", "working", 7)
+        self.lib.append_agent_output_batch(self.tmp, session["session_id"], [
+            {"at": datetime.now(timezone.utc).isoformat(), "stream": "stdout", "text": "working"}], 7)
         self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"], "active_output")
         self.lib.note_output_liveness(self.tmp, session["session_id"], "implementer", 100)
         self.assertEqual(self.lib.agent_output_view(self.read_status(), self.tmp)["state"],

@@ -473,16 +473,16 @@ def cmd_init(args) -> int:
             return 1
         try:
             resolved = subprocess.run(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
-                                     cwd=str(root), text=True, capture_output=True, check=False)
+                                     cwd=str(root), text=True, capture_output=True, check=False, timeout=60)
             if resolved.returncode != 0 or not resolved.stdout.strip():
                 raise ValueError("ref does not resolve to a commit")
             sha = resolved.stdout.strip()
             author = subprocess.run(["git", "show", "-s", "--format=%an <%ae>", sha],
-                                    cwd=str(root), text=True, capture_output=True, check=False)
+                                    cwd=str(root), text=True, capture_output=True, check=False, timeout=60)
             commit_author = author.stdout.strip() if author.returncode == 0 else ""
             if not commit_author or commit_author == "<>" or not re.search(r"\S", commit_author):
                 raise ValueError("commit has no usable author identity")
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             print(f"SHIP_FEATURE_BLOCKED: review lane adoption refused: {exc}")
             return 1
         review_adoption = {"ref": ref, "sha": sha, "commit_author": commit_author,
@@ -1010,7 +1010,6 @@ def cmd_advance(args) -> int:
         if args.dry_run:
             print("SHIP_FEATURE_ADVANCE_WOULD_SUCCEED")
             return 0
-        progress_was_clamped = args.progress is not None and args.progress < current_progress
 
         review_report = None
         if args.phase == 6 and proposed.get("lane") == "review":
@@ -4296,7 +4295,7 @@ def cmd_criterion_remove(args) -> int:
         lib.migrate_review_ledger(status)
         abandoned = lib.abandon_stale_review_attempt(status, acceptance)
         lib.sync_coverage(status, acceptance)
-        decisions_revoked = _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
+        _invalidate_decisions(status, rollback_to=4, invalidate_design=True)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         extra = [{"kind": "review_attempt_closed", "message": "Stale review attempt abandoned",
                   "disposition": "abandoned", "reason": "acceptance_changed"}] if abandoned else None
@@ -4364,7 +4363,6 @@ def cmd_criteria_apply(args) -> int:
     print(f"CRITERIA_TRANSACTION_APPLIED: {plan['operation_count']} operations, "
           f"registry {plan['registry_hash_after'][:12]}")
     return 0
-
 
 
 def _refuse_if_amendment_open(status: dict, *, action: str | None = None) -> int | None:
@@ -4849,7 +4847,8 @@ def cmd_watch(args) -> int:
             return code
         if args.once:
             return 0
-        time.sleep(args.interval)
+        # as cmd_performance_watch: 0 would spin on the lock, a negative raises
+        time.sleep(max(1, int(args.interval)))
 
 
 def cmd_recovery_acknowledge(args) -> int:

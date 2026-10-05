@@ -26,7 +26,6 @@ import json
 import os
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 # The monolith guarded this and so must the core: `project_lock` degrades to a

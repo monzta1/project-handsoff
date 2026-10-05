@@ -60,6 +60,23 @@ class TestOperations(HandsoffTestCase):
         lib.record_operation(self.tmp, "sess-operations", "implementer", record(operation_id="op-live"), now)
         self.assertEqual(lib.current_operation(self.tmp, "sess-operations")["operation_id"], "op-live")
 
+    def test_eviction_drops_the_least_recently_active_session_not_the_first_by_id(self):
+        # The store is saved with sorted keys, so the first key is the lowest
+        # id. sess-a is the lowest id but the most recently active: its
+        # succeeded operation must survive for a replacement session.
+        start = datetime(2026, 10, 5, tzinfo=timezone.utc)
+        lib.record_operation(self.tmp, "sess-a", "implementer", record(operation_id="op-a", state="succeeded"), start)
+        for index, suffix in enumerate("bcdefgh", start=1):
+            lib.record_operation(self.tmp, f"sess-{suffix}", "implementer", record(operation_id=f"op-{suffix}"),
+                                 start + timedelta(minutes=index))
+        lib.record_operation(self.tmp, "sess-a", "implementer", record(operation_id="op-a2", state="succeeded"),
+                             start + timedelta(minutes=8))
+        lib.record_operation(self.tmp, "sess-i", "implementer", record(operation_id="op-i"), start + timedelta(minutes=9))
+        sessions = lib.read_operations(self.tmp)["sessions"]
+        self.assertEqual(len(sessions), 8)
+        self.assertNotIn("sess-b", sessions)
+        self.assertEqual(lib.succeeded_operation_ids(self.tmp, "sess-a"), ["op-a", "op-a2"])
+
     def test_current_operation_falls_back_to_newest_terminal(self):
         now = datetime.now(timezone.utc)
         lib.record_operation(self.tmp, "sess-operations", "implementer", record(operation_id="op-done", state="succeeded"), now)

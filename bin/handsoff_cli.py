@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import handsoff_agent
-import handsoff_dashboard
 import handsoff_fleet
 import handsoff_lib as lib
 import handsoff_supervisor
@@ -537,6 +536,8 @@ def main() -> int:
             result = init_project(_root(args.root), args.pin, dry_run=args.dry_run)
         elif args.command == "doctor":
             root = _root(args.root)
+            if args.docs_only and args.restore_state:
+                raise lib.HandsoffError("--docs-only does not restore state; run --restore-state on its own")
             if args.docs_only:
                 identity = lib.validate_runtime_integrity(root)
                 result = _documentation_diagnosis(root, identity, lib.load_config(root))

@@ -555,3 +555,17 @@ Lesson: a guard nobody runs before the push is a guard that only ever runs in CI
 2. **One PR-closed issue stopped every report (#374).** On the ToneCommand thin-core lane the PR body said `Closes #209`, GitHub closed it at merge, and `run-close --post` refused to post anything to the other three items. Fix: an item closed by a merged PR whose head is the run's branch (read from `closingIssuesReferences`) counts as closed by the run; any other unpostable item is skipped and named without blocking the rest; an already-posted comment still has its close and tick checked. The landing playbook says `Refs #N`, never `Closes #N`.
 
 Lesson: a batch operation that fails whole on one item turns one surprise into N silent misses; post each item and name what was skipped.
+
+### v0.5.2 field notes: a whole-engine review, seven defects and the code nothing reached (2026-10-05)
+
+A read of every engine module, in four slices, each finding confirmed against the source before it was acted on.
+
+1. **Operation telemetry evicted the wrong session.** `record_operation` kept eight sessions and dropped `next(iter(sessions))`, but the store is saved with sorted keys, so that was the lowest session id, not the oldest. A replacement session could lose the succeeded-operation ids that tell it not to repeat a push or a release. Fix: evict the least recently active session, never the one being written.
+2. **Usage parsing raced across two threads.** `UsageWatcher.feed` keeps two-line parse state and is fed by the stdout and the stderr reader threads at once. Fix: one lock around each line.
+3. **`watch --interval 0` spun on the project lock, and a negative interval crashed in `time.sleep`.** Fix: at least one second, as `performance-watch` already did.
+4. **`init --lane review --adopt` ran `git rev-parse` and `git show` with no timeout.** Fix: 60 seconds, and a timeout refuses the adoption.
+5. **`doctor --docs-only --restore-state` silently skipped the restore.** Fix: the combination is refused.
+6. **The archive analyzer matched rule ids as substrings**, so `"r1" in "r10"` dropped the review lane's own R10 finding and replaced it with a copy that had no run ids. Fix: whole rule ids.
+7. **The turn-bound refusal offered a compact review scope as a remedy**, which no launch path accepts (#290 never wired it). Fix: the refusal names only the budget it can act on.
+
+Also: the live gate's rules-binding check ran twice per validation and now runs once. Removed, each confirmed unreferenced or reached only by its own tests with production using another path: 17 unused imports, 12 dead locals and one unused parameter, six runtime-control aliases nothing called, `DRIFT_CLASSES`, `RELEASE_CLASSES`, `RECOMMENDATIONS`, `is_loopback_host`, `_count_unittest_total`, `append_agent_output` (production writes batches), `fetch_commits`, `fetch_releases` and `_paged` (Fleet builds the same rows through `_commit_row` and `_release_row`), and about 450 blank lines that earlier extractions left behind. Lesson: a static dead-code scan is a candidate list, not a verdict; one flagged tuple was a contract a guard test reads from source, and it is now used by the validator it declares.

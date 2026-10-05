@@ -127,10 +127,6 @@ def validate_host(value: object) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def is_loopback_host(host: str) -> bool:
-    return (urlsplit(host).hostname or "") in {"127.0.0.1", "localhost", "::1"}
-
-
 def _call(host: str, path: str, payload: dict | None, timeout: float) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(

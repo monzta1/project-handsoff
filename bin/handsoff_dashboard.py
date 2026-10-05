@@ -19,7 +19,6 @@ import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -375,7 +374,7 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
 
 
 def _phase_view(current: int, run_complete: bool, current_name: str | None = None, closed: bool = False,
-                lane: str | None = None, phases_run: list[int] | None = None,
+                lane: str | None = None,
                 phases_waived: list[int] | None = None) -> list[dict]:
     """The current phase renders "active" (the pulsing in-progress bar) only
     while the run is still moving. Once status is complete, phase 8 being
@@ -1234,7 +1233,6 @@ def build_snapshot(root: Path) -> dict:
             display_status["phase"],
             closed=isinstance(status.get("run_closed"), dict),
             lane=status.get("lane"),
-            phases_run=status.get("phases_run"),
             phases_waived=status.get("phases_waived"),
         ),
         "acceptance": {

@@ -297,6 +297,15 @@ class VersionedRuntimeTests(unittest.TestCase):
             self.assertEqual(cli.main(), 0)
         self.assertEqual(output.getvalue().strip(), "DOCUMENTATION_OK")
 
+    def test_doctor_refuses_docs_only_with_restore_state_instead_of_skipping_the_restore(self):
+        root = self.base / "docs-only-restore"
+        cli.init_project(root, None)
+        with mock.patch.object(sys, "argv", ["handsoff", "doctor", str(root), "--docs-only",
+                                             "--restore-state", str(root / "handsoff-status.json")]), \
+                mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as errors:
+            self.assertEqual(cli.main(), 1)
+        self.assertIn("--docs-only does not restore state", errors.getvalue())
+
     def test_commands_reference_comes_from_both_argparse_trees(self):
         with mock.patch.object(sys, "argv", ["handsoff", "commands"]), \
                 mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as output:
