@@ -6,7 +6,9 @@
 #   CLOUDFLARE_ACCOUNT_ID   the account that owns the "handsoff-metrics" Pages project
 #   METRICS_GITHUB_TOKEN    a read-only GitHub token for the repositories the site shows
 # and one repository variable (Settings, Secrets and variables, Actions, Variables):
-#   METRICS_REPOS           comma-separated owner/repo list the site shows
+#   METRICS_REPOS           optional: an explicit owner/repo list. EMPTY (the
+#                           default) means every repository the token owns, so a
+#                           new one appears without anybody editing a list.
 # The Pages project itself is created by this workflow on first run; the custom
 # domain and the Access policy are console steps (docs/METRICS-SITE.md).
 name: metrics-site
@@ -51,12 +53,23 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           METRICS_GITHUB_TOKEN: ${{ secrets.METRICS_GITHUB_TOKEN }}
         run: printf '%s' "$METRICS_GITHUB_TOKEN" | npx --yes wrangler@3 pages secret put GITHUB_TOKEN --project-name handsoff-metrics
-      - name: Put the repository list into the project's settings
+      - name: Set or clear the explicit repository list
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           METRICS_REPOS: ${{ vars.METRICS_REPOS }}
-        run: printf '%s' "$METRICS_REPOS" | npx --yes wrangler@3 pages secret put METRICS_REPOS --project-name handsoff-metrics
+        # An EMPTY list must DELETE the secret, not skip the step. Skipping
+        # would leave whatever was last pushed sitting in the Pages project,
+        # so clearing the variable would appear to do nothing and the site
+        # would go on showing a list nobody could find any more.
+        run: |
+          if [ -n "$METRICS_REPOS" ]; then
+            printf '%s' "$METRICS_REPOS" | npx --yes wrangler@3 pages secret put METRICS_REPOS --project-name handsoff-metrics
+          else
+            echo "METRICS_REPOS is empty: the site lists every repository the token owns"
+            npx --yes wrangler@3 pages secret delete METRICS_REPOS --project-name handsoff-metrics 2>&1 || \
+              echo "(no METRICS_REPOS secret to remove, which is the wanted state)"
+          fi
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

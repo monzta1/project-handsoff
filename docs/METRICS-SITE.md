@@ -27,11 +27,33 @@ deploys `web/dist` with `web/functions` beside it.
 
 ### Repository variable (Settings, Secrets and variables, Actions, Variables)
 
-`METRICS_REPOS`: comma-separated `owner/repo` list, for example
-`monzta1/project-handsoff,monzta1/ToneCommand,monzta1/beakon,monzta1/ircommand`.
-The workflow copies it into the Pages project on every deploy (as a Pages
-secret, which the Function reads like any variable). Optional
-`METRICS_COMMITS_DAYS` (default 180) can be set the same way if wanted.
+`METRICS_REPOS`: **leave it empty**, which is the point. Empty means the site
+shows every repository the token owns, so a new one appears by itself.
+
+It was a comma-separated `owner/repo` list, and that is why this needed
+fixing: it was set once in September with four repositories, and months later
+the site was showing a third of the work with nothing to say the list had gone
+stale. A list of what exists is wrong the moment anything is created.
+
+Set it only to force an explicit subset, for example while testing. A value
+there wins and no listing happens.
+
+Optional, set the same way:
+
+| | |
+| --- | --- |
+| `METRICS_COMMITS_DAYS` | how far back commits are counted (default 180) |
+| `METRICS_ACTIVE_MONTHS` | a repository with no push inside this window is left out (default 24) |
+
+The window is why the four repositories last pushed between 2018 and 2020 are
+not on the board. It is a window rather than a list of names to exclude, so a
+project that goes quiet drops off on its own and one that wakes up comes back,
+neither needing anybody to remember.
+
+The token must be able to see the repositories it lists. A fine-grained token
+is scoped to chosen repositories, so **it only lists what it was granted**: a
+new repository needs adding to the token's scope, or a classic token with
+`repo` scope covers everything at once.
 
 ### Custom domain (Workers & Pages, handsoff-metrics, Custom domains)
 

@@ -104,3 +104,99 @@ test("onRequestGet caches a good answer for 60 s under the request URL and serve
   assert.equal(store.size, 0);
   delete globalThis.caches;
 });
+
+// --- which repositories the site shows -------------------------------------
+//
+// METRICS_REPOS was set once in September and four repositories later the site
+// was showing a third of the work, with nothing to say it had gone stale. The
+// list is now the token's own repositories, filtered by a window, so a new
+// repository appears by itself and a dead one drops off.
+
+const repoRow = (name, pushed) => ({ full_name: `o/${name}`, pushed_at: pushed });
+
+const emptyRepo = (name) => ({
+  [`/repos/o/${name}/issues?state=all`]: { items: [] },
+  [`/repos/o/${name}/commits?since`]: { items: [] },
+  [`/repos/o/${name}/releases`]: { items: [] },
+});
+
+test("with no METRICS_REPOS it lists the token's own repositories", async () => {
+  const { buildMetrics } = await load();
+  const seen = [];
+  const fetchImpl = stubFetch({
+    "/user/repos": { items: [repoRow("zebra", "2026-09-01T00:00:00Z"),
+                             repoRow("alpha", "2026-08-01T00:00:00Z")] },
+    ...emptyRepo("zebra"), ...emptyRepo("alpha"),
+  }, seen);
+  const body = (await buildMetrics({ GITHUB_TOKEN: "tok" }, fetchImpl, NOW)).body;
+  assert.deepEqual(body.projects.map((p) => p.repo), ["o/alpha", "o/zebra"],
+    "it did not list the account's repositories, or did not sort them");
+  // Owned, not every repository this account can see: a collaborator invite
+  // must not silently put somebody else's project on the board.
+  assert.ok(seen.some((r) => r.url.includes("affiliation=owner")),
+    "it asked for every repository the token can see, not the owned ones");
+});
+
+test("a repository nobody has pushed to for two years is left out", async () => {
+  const { buildMetrics } = await load();
+  const fetchImpl = stubFetch({
+    "/user/repos": { items: [
+      repoRow("live", "2026-09-01T00:00:00Z"),
+      repoRow("quiet", "2025-06-01T00:00:00Z"),      // inside the window
+      repoRow("dead", "2020-06-07T00:00:00Z"),       // the 2018-2020 ones
+      repoRow("ancient", "2018-03-17T00:00:00Z"),
+    ] },
+    ...emptyRepo("live"), ...emptyRepo("quiet"),
+    ...emptyRepo("dead"), ...emptyRepo("ancient"),
+  }, []);
+  const body = (await buildMetrics({ GITHUB_TOKEN: "tok" }, fetchImpl, NOW)).body;
+  assert.deepEqual(body.projects.map((p) => p.repo), ["o/live", "o/quiet"],
+    "a board carrying repositories last touched in 2018 is one people scroll past");
+});
+
+test("the window is a setting, not a number buried in the code", async () => {
+  const { buildMetrics } = await load();
+  const fetchImpl = stubFetch({
+    "/user/repos": { items: [repoRow("live", "2026-09-01T00:00:00Z"),
+                             repoRow("quiet", "2025-06-01T00:00:00Z")] },
+    ...emptyRepo("live"), ...emptyRepo("quiet"),
+  }, []);
+  const body = (await buildMetrics({ GITHUB_TOKEN: "tok", METRICS_ACTIVE_MONTHS: "6" },
+                                   fetchImpl, NOW)).body;
+  assert.deepEqual(body.projects.map((p) => p.repo), ["o/live"]);
+});
+
+test("a repository with no commits at all is not counted as quiet", async () => {
+  const { buildMetrics } = await load();
+  const fetchImpl = stubFetch({
+    "/user/repos": { items: [repoRow("live", "2026-09-01T00:00:00Z"),
+                             { full_name: "o/empty", pushed_at: null }] },
+    ...emptyRepo("live"),
+  }, []);
+  const body = (await buildMetrics({ GITHUB_TOKEN: "tok" }, fetchImpl, NOW)).body;
+  assert.deepEqual(body.projects.map((p) => p.repo), ["o/live"]);
+});
+
+test("METRICS_REPOS still wins when somebody wants an explicit subset", async () => {
+  const { buildMetrics } = await load();
+  const seen = [];
+  const fetchImpl = stubFetch({
+    "/user/repos": { items: [repoRow("everything", "2026-09-01T00:00:00Z")] },
+    ...emptyRepo("named"),
+  }, seen);
+  const body = (await buildMetrics({ GITHUB_TOKEN: "tok", METRICS_REPOS: "o/named" },
+                                   fetchImpl, NOW)).body;
+  assert.deepEqual(body.projects.map((p) => p.repo), ["o/named"]);
+  assert.ok(!seen.some((r) => r.url.includes("/user/repos")),
+    "it listed the account even though it was told exactly what to show");
+});
+
+test("GitHub being unreachable while listing says so rather than showing nothing", async () => {
+  const { buildMetrics } = await load();
+  const fetchImpl = stubFetch({ "/user/repos": { status: 503 } }, []);
+  const result = await buildMetrics({ GITHUB_TOKEN: "tok" }, fetchImpl, NOW);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.projects, []);
+  assert.match(result.body.error, /GitHub HTTP 503/,
+    "an empty board with no explanation reads as 'you have no repositories'");
+});
