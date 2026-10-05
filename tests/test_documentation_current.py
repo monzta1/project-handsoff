@@ -151,27 +151,14 @@ class TestDocumentationCurrent(unittest.TestCase):
                 self.assertEqual(self.unmarked_occurrences(path), [],
                                  f"{name}: drop-in occurrences without the marker line above them")
 
-        # Run the documentation audit
-        try:
-            result = subprocess.run(
-                [sys.executable, "-c",
-                 f"import sys; sys.path.insert(0, '{self.repo_root}/bin'); "
-                 f"import handsoff_cli as cli; "
-                 f"from pathlib import Path; "
-                 f"diag = cli._documentation_diagnosis(Path('{self.repo_root}'), "
-                 f"{{'version': '0.5.3', 'source': 'installed-engine'}}); "
-                 f"print(len(diag['diagnostics']))"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode != 0:
-                self.fail(f"Documentation audit failed: {result.stderr}")
-            diagnostic_count = int(result.stdout.strip())
-            self.assertEqual(diagnostic_count, 0,
-                           f"Documentation audit found {diagnostic_count} issues")
-        except Exception as e:
-            self.fail(f"Could not run documentation audit: {e}")
+        # The audit judges release references against the engine version, so
+        # it is given this checkout's own version, not a fixed one.
+        import tomllib
+        with open(self.repo_root / "pyproject.toml", "rb") as handle:
+            version = tomllib.load(handle)["project"]["version"]
+        diagnosis = cli._documentation_diagnosis(self.repo_root.resolve(),
+                                                 {"version": version, "source": "installed-engine"})
+        self.assertEqual(diagnosis["diagnostics"], [], "the documentation audit reported diagnostics")
 
 
 if __name__ == "__main__":
