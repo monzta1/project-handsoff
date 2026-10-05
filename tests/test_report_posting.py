@@ -38,6 +38,10 @@ if args[:2] == ["issue", "view"]:
         print(json.dumps({"body": issue["body"], "url": issue["url"], "state": "CLOSED" if issue.get("closed") else "OPEN",
                           "comments": [{"body": c} for c in issue["comments"]]}))
     sys.exit(0)
+if args[:2] == ["pr", "list"]:
+    head = args[args.index("--head") + 1]
+    print(json.dumps([pr for pr in state.get("prs", []) if pr.get("headRefName") == head]))
+    sys.exit(0)
 if args[:2] == ["issue", "close"] and state.get("fail_close"):
     sys.exit(1)
 if args[:2] == ["issue", "edit"] and state.get("fail_edit"):
@@ -62,7 +66,9 @@ sys.exit(2)
 '''
 
 
-class ReportPostingTests(HandsoffTestCase):
+class ReportPostingFixture(HandsoffTestCase):
+    """A fake gh on PATH and a run walked to verified Phase 8."""
+
     def setUp(self):
         super().setUp()
         self.bin = self.tmp / "fakebin"
@@ -145,6 +151,8 @@ class ReportPostingTests(HandsoffTestCase):
         records, _ = lib.load_verifications(self.tmp, cfg)
         return cfg, status, acceptance, events, records
 
+
+class ReportPostingTests(ReportPostingFixture):
     def test_the_report_is_fixed_wording_from_ledger_fields_and_matches_the_golden_file(self):
         self._run(deliver=False)
         cfg, status, acceptance, events, records = self._loaded()
@@ -237,18 +245,25 @@ class ReportPostingTests(HandsoffTestCase):
         mutations = [c for c in self._calls()[before:] if c[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
         self.assertEqual(mutations, [])
 
-    def test_an_unknown_closed_issue_pauses_before_any_github_mutation(self):
+    def test_an_unknown_closed_issue_is_left_alone_and_named_while_the_others_post(self):
+        # #374: a foreign closure no longer pauses the whole report.
         self._run()
         state = self._gh_state()
         state["issues"]["40"]["closed"] = True
         self._gh_state(state)
         before = len(self._calls())
         result = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("closed without attributable Handsoff ownership", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("HANDSOFF_REPORT_POSTED: #41 (skipped: #40 closed without attributable Handsoff ownership",
+                      result.stdout)
         mutations = [call for call in self._calls()[before:]
                      if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
-        self.assertEqual(mutations, [])
+        self.assertEqual([call[:3] for call in mutations], [["issue", "comment", "41"], ["issue", "close", "41"]])
+        state = self._gh_state()
+        self.assertEqual(state["issues"]["40"]["comments"], [])
+        self.assertIn("- [ ] #40", state["issues"]["9"]["body"])
+        self.assertEqual(len(state["issues"]["41"]["comments"]), 1)
+        self.assertTrue(state["issues"]["41"]["closed"])
 
     def test_a_lost_close_readback_is_attributed_and_reconciled_on_retry(self):
         self._run()
@@ -283,11 +298,18 @@ class ReportPostingTests(HandsoffTestCase):
         self._gh_state(state)
         before = len(self._calls())
         retry = run(["run-close", "--by", "moncy", "--reason", "shipped", "--post"], cwd=self.tmp)
-        self.assertNotEqual(retry.returncode, 0)
-        self.assertIn("closed without attributable Handsoff ownership", retry.stdout)
+        # #374: the human closure is not attributed; #40 is left alone and
+        # named, and #41 (commented on the first post) is now closed.
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertIn("(skipped: #40 closed without attributable Handsoff ownership", retry.stdout)
         mutations = [call for call in self._calls()[before:]
                      if call[:2] in (["issue", "comment"], ["issue", "close"], ["issue", "edit"])]
-        self.assertEqual(mutations, [])
+        self.assertEqual([call[:3] for call in mutations], [["issue", "close", "41"]])
+        state = self._gh_state()
+        self.assertEqual(len(state["issues"]["40"]["comments"]), 1)
+        self.assertIn("- [ ] #40", state["issues"]["9"]["body"])
+        self.assertEqual(len(state["issues"]["41"]["comments"]), 1)
+        self.assertTrue(state["issues"]["41"]["closed"])
 
     def test_without_post_nothing_leaves(self):
         self._run()

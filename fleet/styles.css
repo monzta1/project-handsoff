@@ -272,3 +272,13 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .asleep { color: var(--faint); font-size: 10px; letter-spacing: .04em; }
 .missing { color: var(--faint); font-size: 10px; letter-spacing: .04em; }
 .engine-badge.install-blocked { color: var(--warn, #f0b35a); border-color: var(--warn, #f0b35a); }
+/* #373: the engine panel, installed engine against the newest release and each project's pin */
+.engine-panel { margin-bottom: 18px; }
+.engine-release { margin: 0 0 10px; color: var(--muted, #8fa0b3); font: 600 11px/1.4 var(--mono); letter-spacing: .04em; }
+.engine-behind, .engine-manifest { color: var(--amber); font: 700 11px/1 var(--mono); letter-spacing: .06em; }
+.engine-pins { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.engine-pin { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; font: 600 11px/1.4 var(--mono); }
+.engine-pin .pin-root { color: var(--muted, #8fa0b3); overflow-wrap: anywhere; }
+.engine-pin .pin-ok { color: #7ee2a8; }
+.engine-pin .pin-refused { color: var(--red); font-weight: 700; }
+.engine-pin .pin-upgrade { color: var(--amber); user-select: all; }

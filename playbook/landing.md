@@ -12,7 +12,9 @@ with the checkout. The order, with the refusal each step prevents:
    --delete-branch`; wait for MERGED. A red shard on a green tree: `gh run
    rerun <id> --failed` reruns only the red jobs; a real failure is a new
    commit and a full run by design. Stay in the worktree: its tree is what
-   `main` now holds, so the evidence stands.
+   `main` now holds, so the evidence stands. Write `Refs #N`, never
+   `Closes #N`, in the pull request body: GitHub would close the item at
+   the merge, before `run-close --post` reports on it (#374).
 3. `advance 7 70`.
 4. Cut the release from the merged commit: bump `pyproject` to the next
    free PATCH number read from `gh release list`. Patch only, in every

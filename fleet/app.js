@@ -137,6 +137,30 @@ function engineBadgeTitle(engine) {
   return base;
 }
 
+// #373: the installed engine against the newest release, and per project
+// whether its pin accepts the installed engine, with the exact upgrade
+// command when it does not. The panel is part of the page; no target throws.
+function renderEnginePanel(engine) {
+  const panel = $("engine-panel");
+  if (!panel) throw new Error("engine panel target #engine-panel is missing");
+  engine = engine || {};
+  const latest = engine.latest
+    ? `<span class="engine-latest">LATEST ${esc(engine.latest.tag)} · ${esc(stamp(engine.latest.date) || engine.latest.date)} · ${esc(engine.latest.title)}</span>`
+    : '<span class="engine-latest">LATEST UNKNOWN</span>';
+  const behind = engine.behind ? '<span class="engine-behind">BEHIND</span>' : "";
+  const manifest = engine.manifest_status && engine.manifest_status !== "current"
+    ? ` <span class="engine-manifest">MANIFEST ${esc(String(engine.manifest_status).toUpperCase())}</span>` : "";
+  const rows = (engine.projects || []).map((project) => {
+    const refused = project.satisfied === false;
+    const mark = refused ? '<span class="pin-refused">REFUSED</span>'
+      : project.satisfied ? '<span class="pin-ok">OK</span>' : '<span class="pin-unknown">NO PIN</span>';
+    const command = refused && project.upgrade ? `<code class="pin-upgrade">${esc(project.upgrade)}</code>` : "";
+    return `<li class="engine-pin${refused ? " refused" : ""}" data-root="${esc(project.root)}"><span class="pin-root">${esc(project.root)}</span><span class="pin-value">PIN ${esc(project.pin || "none")}</span>${mark}${command}</li>`;
+  }).join("");
+  panel.innerHTML = `<div class="section-head"><div><p class="panel-label">ENGINE</p><h2>Installed ${esc(engine.installed || "unknown")}${manifest}</h2></div>${behind}</div>`
+    + `<p class="engine-release">${latest}</p><ul class="engine-pins">${rows}</ul>`;
+}
+
 function engineMeta(project) {
   const own = project.engine_version || "unknown";
   const fleetVersion = fleetEngineVersion();
@@ -215,6 +239,7 @@ function projectCard(project) {
 function render(data) {
   fleet = data;
   renderEngineBadge(data);
+  renderEnginePanel(data.engine);
   $("synced").textContent = `SYNCED ${new Date(data.generated_at).toLocaleTimeString()}`;
   $("summary").innerHTML = STATE_ORDER.map((state) => `<article class="${data.counts[state] ? "has-some" : ""}" data-state="${state}"><span>${esc(STATE_LABELS[state] || state.toUpperCase())}</span><strong>${data.counts[state] || 0}</strong></article>`).join("");
   $("decisions").classList.toggle("hidden", !data.decisions.length);
@@ -338,3 +363,5 @@ stream.onerror = () => {
     refresh();
   }
 };
+// #373: the page's render path, for the Node test; the browser has no module.
+if (typeof module !== "undefined" && module.exports) module.exports = { render };

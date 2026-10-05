@@ -5415,10 +5415,13 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
                     if event.get("kind") in {"report_posted", "report_not_posted"}
                     and str(event.get("at") or "") >= started_at]
         rows = transaction.record.get("items") or {}
+        # #374: an item skipped as unpostable (closed by someone else) is
+        # settled and left alone; it does not hold the close open.
         complete = all(
-            bool(rows.get(str(number), {}).get("commented"))
-            and bool(rows.get(str(number), {}).get("closed"))
-            and bool(rows.get(str(number), {}).get("ticked"))
+            bool(rows.get(str(number), {}).get("unpostable"))
+            or (bool(rows.get(str(number), {}).get("commented"))
+                and bool(rows.get(str(number), {}).get("closed"))
+                and bool(rows.get(str(number), {}).get("ticked")))
             for number in expected_issue_numbers
         )
         kind = matching[-1].get("kind") if matching else None
@@ -5463,6 +5466,10 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
             row["commented"] = posted.get("comment") in {"posted", "skipped"}
             row["closed"] = posted.get("closed") is True
             row["ticked"] = posted.get("parent") is None or posted.get("ticked") is True
+            row.pop("unpostable", None)
+        for skipped in outcome.get("skipped") or []:
+            if isinstance(skipped.get("number"), int) and skipped.get("unpostable") is True:
+                rows.setdefault(str(skipped["number"]), {})["unpostable"] = str(skipped.get("reason") or "")
         transaction._persist()
 
     def fleet_action() -> None:
@@ -5550,7 +5557,8 @@ def _post_report(root, cfg, *, by: str, known_handsoff_closed: set[int] | None =
         print(f"HANDSOFF_REPORT_NOT_POSTED: {outcome['detail']}")
     else:
         print("HANDSOFF_REPORT_POSTED: " + ", ".join(f"#{p['number']}" for p in outcome["posted"])
-              + (f" (skipped: {', '.join('#' + str(x['number']) for x in outcome['skipped'])})" if outcome["skipped"] else ""))
+              + (" (skipped: " + ", ".join(f"#{x['number']} {x['reason']}" for x in outcome["skipped"]) + ")"
+                 if outcome["skipped"] else ""))
     return outcome
 
 

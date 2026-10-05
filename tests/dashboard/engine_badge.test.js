@@ -35,7 +35,7 @@ function fleetPage() {
     if (id) byId.set(id, el);
     return el;
   };
-  for (const id of ["engine-badge", "synced", "summary", "decisions", "decision-count", "decision-list", "fleet-count", "projects", "finished-runs", "finished-count", "finished-projects", "link", "offline-banner", "confirm", "toast", "fleet-clock"]) element(id);
+  for (const id of ["engine-badge", "synced", "summary", "decisions", "decision-count", "decision-list", "fleet-count", "projects", "finished-runs", "finished-count", "finished-projects", "link", "offline-banner", "confirm", "toast", "fleet-clock", "engine-panel"]) element(id);
   const context = {
     document: { getElementById: (id) => byId.get(id) || null, querySelectorAll: () => [], body: element("body") },
     localStorage: { getItem: () => null, setItem() {} }, fetch: () => new Promise(() => {}),

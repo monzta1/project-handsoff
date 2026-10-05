@@ -434,7 +434,9 @@ class EngineBadgeTests(_FleetFixture):
         snapshot = fleet.build_fleet(self.registry)
         self.assertEqual(snapshot["engine"]["version"], CURRENT_VERSION)
         self.assertIn(snapshot["engine"]["source"], {"project-drop-in", "installed-engine"})
-        self.assertEqual({**fleet.fleet_engine_identity(), "install_blocked": None}, snapshot["engine"])  # #216
+        # #216, #373: the identity and install block, then the engine panel's block
+        self.assertEqual({**fleet.fleet_engine_identity(), "install_blocked": None, **fleet.engine_block(self.registry)},
+                         snapshot["engine"])
 
     def test_an_unreadable_manifest_reads_unknown(self):
         with patch_engine("engine_root", return_value=self.base / "nowhere"):
