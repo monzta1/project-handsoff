@@ -32,7 +32,6 @@ from handsoff_core import HandsoffError, load_unique_json
 from handsoff_ledger import PREFLIGHT_FILE
 
 
-
 PREFLIGHT_SCHEMA = 2
 
 

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 MAX_SUBJECTS = 256
@@ -35,13 +35,6 @@ DEPENDENCY_CLASSES = (
     "governance_policy",
     "deployment_target",
     "runtime_bytes",
-)
-DRIFT_CLASSES = DEPENDENCY_CLASSES + (
-    "framework_state",
-    "generated_release_metadata",
-    "unrelated",
-    "unknown",
-    "mixed",
 )
 BLOCKING_GATES = frozenset(
     {"regression", "deployment", "performance_pause", "new_authority"}
@@ -1254,12 +1247,3 @@ def load_versioned_record(
     else:
         raise MutationRefused(f"no authenticated legacy migration for {expected_schema}")
     return RecordAccess(migrated, False, True, "authenticated legacy migration pending persistence")
-
-
-# Compatibility aliases kept deliberately small for integration callers.
-acquire_monitor_lease = claim_monitor
-monitor_cursor_cas = advance_monitor_cursor
-classify_drift = classify_dependency_changes
-dependency_refresh_decision = assess_dependency_drift
-polling_recovery_decision = decide_monitor_action
-evaluate_performance_episode = transition_performance

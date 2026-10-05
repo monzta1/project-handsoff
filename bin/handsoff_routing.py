@@ -36,7 +36,7 @@ import json
 import os
 import re
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from handsoff_core import HandsoffError, load_unique_json, status_path

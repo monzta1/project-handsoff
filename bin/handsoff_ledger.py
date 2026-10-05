@@ -56,7 +56,6 @@ from handsoff_config import (  # noqa: F401
 from handsoff_schema import validate_acceptance_schema, validate_status_schema
 
 
-
 PREFLIGHT_FILE = ".handsoff-preflight.json"
 
 
@@ -680,7 +679,6 @@ def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> di
     own = item_criteria(acceptance, item_id)
     delivery = work_item_delivery(status, item_id)
     passing = sum(c.get("state") == "passing" for c in own)
-    criteria_points = 60.0 * passing / len(own) if own else 0.0
     lane_gate = (bool(delivery.get("confirmed_by")) if delivery.get("lane") == "small-fix"
                  else not _design_errors(status, acceptance, cfg)
                  and not _design_review_errors(status, acceptance, cfg))

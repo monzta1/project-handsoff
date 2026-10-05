@@ -131,9 +131,8 @@ class IssueCollectorTests(_Env):
             signals.fetch_issues("o/gone", lambda path: None)
 
     def test_commits_carry_sha_date_and_first_message_line_since_the_window(self):
-        client = _Client(commits=[_commit("a" * 40, "2026-09-10T12:00:00Z"), _commit("b" * 40, "2026-09-11T12:00:00Z", "One line")])
-        commits = signals.fetch_commits("o/r", client, "2026-03-23T13:20:42Z")
-        self.assertEqual(client.calls, ["repos/o/r/commits?since=2026-03-23T13:20:42Z&per_page=100&page=1"])
+        commits = [signals._commit_row(item) for item in
+                   (_commit("a" * 40, "2026-09-10T12:00:00Z"), _commit("b" * 40, "2026-09-11T12:00:00Z", "One line"))]
         self.assertEqual(commits, [{"sha": "a" * 40, "date": "2026-09-10T12:00:00Z", "message": "Do the thing"},
                                    {"sha": "b" * 40, "date": "2026-09-11T12:00:00Z", "message": "One line"}])
 
@@ -148,9 +147,10 @@ class IssueCollectorTests(_Env):
             self.assertEqual(signals.commits_days(), signals.DEFAULT_COMMITS_DAYS)
 
     def test_releases_skip_drafts_and_unpublished(self):
-        client = _Client(releases=[_release("v1", "2026-09-01T00:00:00Z", name="First"), _release("v2", "2026-09-02T00:00:00Z", draft=True),
-                                   {"tag_name": "v3", "name": "v3", "html_url": "u", "published_at": None, "draft": False}])
-        releases = signals.fetch_releases("o/r", client)
+        rows = [signals._release_row(item) for item in
+                (_release("v1", "2026-09-01T00:00:00Z", name="First"), _release("v2", "2026-09-02T00:00:00Z", draft=True),
+                 {"tag_name": "v3", "name": "v3", "html_url": "u", "published_at": None, "draft": False})]
+        releases = [row for row in rows if row is not None]
         self.assertEqual(releases, [{"tag_name": "v1", "name": "First", "html_url": "https://github.com/o/r/releases/tag/v1",
                                      "published_at": "2026-09-01T00:00:00Z"}])
 

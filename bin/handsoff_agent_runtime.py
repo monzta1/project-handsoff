@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -42,7 +41,6 @@ from handsoff_core import (
 from handsoff_routing import (
     adaptive_fleet_usage,
     adaptive_usage,
-    classify_adaptive_risk,
     route_adaptive_profile,
     validate_session_adaptive_routing,
     validate_session_routing_contract,
@@ -61,10 +59,8 @@ from handsoff_config import (
     validate_model_policy,
 )
 from handsoff_ledger import (
-    MAX_WORK_ITEMS,
     config_hash,
     feature_enabled,
-    VERIFICATION_REQUIREMENTS,
     _digest_excluded,
     _file_sha256,
     commit,
@@ -74,7 +70,6 @@ from handsoff_ledger import (
     verification_log_path,
 )
 from handsoff_resources import RUNTIME_MANIFEST_FILE, engine_root
-
 
 
 from handsoff_schema import (  # noqa: E402,F401
@@ -190,8 +185,6 @@ from handsoff_schema import (  # noqa: E402,F401
 )
 
 
-
-
 DESIGN_REVIEW_AUTHORIZATION_COMMAND = "handsoff_supervisor.py design-review-authorize --by <pilot>"
 
 
@@ -204,8 +197,6 @@ AGENT_OUTPUT_FILE = ".handsoff-agent-output.json"
 AGENT_OUTPUT_LOCK_FILE = ".handsoff-agent-output.lock"
 
 
-
-
 AGENT_OUTPUT_FLUSH_INTERVAL_SECONDS = 0.25
 
 
@@ -215,70 +206,10 @@ AGENT_OUTPUT_FLUSH_MAX_ENTRIES = 20
 AGENT_OUTPUT_FLUSH_MAX_BYTES = 32768
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 DEFAULT_AGENT_PREFERENCE = SELECTABLE_AGENT_ADAPTERS
 
 
-
-
-
-
-
-
 VERSION_PIN_FILE = ".handsoff-version"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _version_tuple(value: str) -> tuple[int, int, int]:
@@ -430,60 +361,6 @@ def stale_manifest_refusal(root: Path) -> str | None:
             f"run python3 bin/handsoff_manifest.py --version {tag}, then retry")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #: "baseline" (#165): a criterion's own commands run BEFORE the feature,
 #: recorded as ok=True when every one of them failed (a valid red) and
 #: ok=False when any passed (baseline_invalid). It never satisfies the
@@ -493,10 +370,6 @@ def stale_manifest_refusal(root: Path) -> str | None:
 # behaviour it names is removed. Every other kind proves something happened;
 # this one proves the test would notice if it stopped happening.
 VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline", "mutation"}
-
-
-
-
 
 
 def agent_profiles(cfg: dict) -> dict:
@@ -511,10 +384,6 @@ def default_agent_adapter(*, which=None) -> str | None:
     """Return the first installed runnable adapter in documented order."""
     lookup = which or shutil.which
     return next((adapter for adapter in DEFAULT_AGENT_PREFERENCE if lookup(adapter)), None)
-
-
-
-
 
 
 def _new_agent_session_id(sessions: dict, *, id_factory=None) -> str:
@@ -1349,12 +1218,6 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         return deepcopy(session)
 
 
-
-
-
-
-
-
 def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
                              failure: dict | None = None, usage: dict | None = None,
@@ -1698,22 +1561,6 @@ def load_verifications(root: Path, cfg: dict) -> tuple[list[dict], list[str]]:
     return records, problems
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def design_review_budget(status: dict, cfg: dict) -> dict:
     """#35: the one rule for both kinds of design-review attempt.
 
@@ -1815,12 +1662,6 @@ def update_session_liveness(root: Path, session_id: str, *, at: str | None = Non
                 pass
 
 
-
-
-
-
-
-
 def active_regression_request(status: dict) -> dict | None:
     requests = status.get("regression_requests") or []
     return next((item for item in reversed(requests)
@@ -1833,38 +1674,6 @@ def ensure_no_launched_regression(status: dict) -> None:
         raise HandsoffError(
             f"regression {item.get('request_id')} is running; workflow mutations are locked until it terminalizes"
         )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def progress_summary(progress: list | None, acceptance: dict | None) -> dict:
@@ -1885,10 +1694,6 @@ def progress_summary(progress: list | None, acceptance: dict | None) -> dict:
     return out
 
 
-
-
-
-
 def _canonical_implementer_identity(profile: object) -> tuple[str, str] | None:
     """Accept immutable runtime-session or implementation-review snapshots."""
     if not isinstance(profile, dict):
@@ -1906,27 +1711,5 @@ def _canonical_implementer_identity(profile: object) -> tuple[str, str] | None:
     except HandsoffError:
         return None
     return adapter, model
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

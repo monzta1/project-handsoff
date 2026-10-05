@@ -474,7 +474,7 @@ class ReleaseTransaction:
             self.adapter.upload_checksum(identity, str(self.plan.checksum_name),
                                          self.plan.checksum_contents, key)
         elif step == "install":
-            release = self._exact_release()
+            self._exact_release()
             asset = self._inspect_asset("wheel_asset")
             self._require_exact("wheel_asset", asset)
             self.adapter.install(identity, str(asset.result["url"]), key)  # type: ignore[index]

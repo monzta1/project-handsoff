@@ -65,8 +65,6 @@ BROKER_REQUEST_FIELDS = {
 }
 
 
-
-
 def _exact_fields(request: dict, required: set[str], optional: set[str] = set()) -> None:
     actual = set(request)
     missing = required - actual
@@ -177,7 +175,6 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
         base.extend([_text(request, "item"), "--by", _text(request, "by")])
         return base
     if command == "work-item-update":
-        optional = {"title", "url", "github_state", "notes"}
         _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend([_text(request, "item"), "--by", _text(request, "by")])
         for field, flag in (("title", "--title"), ("url", "--url"),
@@ -186,9 +183,6 @@ def _workflow_argv(root: Path, request: dict) -> list[str]:
                 base.extend([flag, _text(request, field)])
         return base
     if command in {"background-wait-start", "background-wait-end", "human-pause-start", "human-pause-end"}:
-        optional = {"note"}
-        if command == "background-wait-start":
-            optional.add("resume_after_authorization")
         _exact_fields(request, *BROKER_REQUEST_FIELDS[command])
         base.extend(["--by", _text(request, "by")])
         if "note" in request:

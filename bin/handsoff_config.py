@@ -46,7 +46,6 @@ from handsoff_routing import (
 )
 
 
-
 MAX_FALLBACK_PROFILES = 8
 
 

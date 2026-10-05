@@ -503,48 +503,6 @@ def commits_since(now: datetime | None = None, days: int | None = None) -> str:
     return since.astimezone(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _paged(client, base: str) -> list:
-    """Every item of a paged GitHub list endpoint; raises on any failed page."""
-    items: list = []
-    page = 1
-    while True:
-        joiner = "&" if "?" in base else "?"
-        payload = client(f"{base}{joiner}per_page={PAGE_SIZE}&page={page}")
-        if payload is None:
-            raise GitHubUnavailable(f"GitHub answered 404 for {base.split('?')[0]}")
-        if not isinstance(payload, list):
-            raise GitHubUnavailable("GitHub list answer was not a list")
-        items.extend(item for item in payload if isinstance(item, dict))
-        if len(payload) < PAGE_SIZE:
-            return items
-        page += 1
-
-
-def fetch_commits(repo: str, client, since: str) -> list[dict]:
-    """#156: commits on the default branch dated at or after `since`
-    (GitHub's since is inclusive): sha, committer date, first message line."""
-    commits = []
-    for item in _paged(client, f"repos/{repo}/commits?since={since}"):
-        commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
-        committer = commit.get("committer") if isinstance(commit.get("committer"), dict) else {}
-        message = commit.get("message") if isinstance(commit.get("message"), str) else ""
-        commits.append({"sha": item.get("sha"), "date": committer.get("date"),
-                        "message": message.splitlines()[0] if message else ""})
-    return commits
-
-
-def fetch_releases(repo: str, client) -> list[dict]:
-    """#156: every published release: tag, name, link, published_at; drafts
-    and entries without a published_at are skipped."""
-    releases = []
-    for item in _paged(client, f"repos/{repo}/releases"):
-        if item.get("draft") or not isinstance(item.get("published_at"), str):
-            continue
-        releases.append({"tag_name": item.get("tag_name"), "name": item.get("name"),
-                         "html_url": item.get("html_url"), "published_at": item["published_at"]})
-    return releases
-
-
 def fetch_issues(repo: str, client) -> list[dict]:
     """Every issue of `repo` (pull requests skipped), newest first as GitHub
     lists them, with just ISSUE_FIELDS. Pages until a short page; a failure

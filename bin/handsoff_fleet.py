@@ -12,7 +12,6 @@ import shlex
 import sys
 import threading
 import time
-import webbrowser
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -546,7 +545,6 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
                 "github": cached["github"], "beakon": cached["beakon"]}
     status = snap["status"]
     live = snap.get("live") or {}
-    verification_live = (snap.get("verification") or {}).get("live") or {}
     closed = isinstance(status.get("run_closed"), dict) or status.get("status") == "closed"
     if closed:
         state = "closed"

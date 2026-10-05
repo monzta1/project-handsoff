@@ -269,7 +269,14 @@ class ReviewLaneTests(HandsoffTestCase):
         self.assertNotIn("R4", {item["rule"] for item in design_findings})
         self.assertNotIn("R10-review", {item["rule"] for item in design_findings})
         self.assertEqual(handsoff_analyzer.applicable_findings(
-                         json.loads(review.read_text()), findings), [{"rule": "R4", "title": "implementation review rule"}])
+                         json.loads(review.read_text()), findings),
+                         [{"rule": "R4", "title": "implementation review rule"},
+                          {"rule": "R10-review", "title": "review rule"}])
+        # A whole rule id, not a substring: "r1" must not drop R10, and the
+        # scanned finding keeps its run ids instead of a blank duplicate.
+        unreviewed = {"status": {"lane": "review", "phases_run": [5, 6]}}
+        scanned = [{"rule": "R10", "title": "Review lane has no review record", "run_ids": ["missing.json"]}]
+        self.assertEqual(handsoff_analyzer.applicable_findings(unreviewed, scanned), scanned)
         missing = archive / "missing.json"
         missing.write_text(json.dumps({"status": {"lane": "review", "phases_run": [5, 6]}}))
         missing_findings = handsoff_analyzer.scan(archive)

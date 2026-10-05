@@ -64,7 +64,9 @@ class RecoveryTests(unittest.TestCase):
         self.commit_status(status)
         toml = self.root / "handsoff.toml"
         toml.write_text(toml.read_text() + f"\n[recovery.protocol_silence_minutes]\nimplementer = {limit_minutes}\n")
-        lib.append_agent_output(self.root, sid, "stdout", "working quietly\n", 16, now=now - timedelta(minutes=silent_for_minutes))
+        lib.append_agent_output_batch(self.root, sid, [
+            {"at": (now - timedelta(minutes=silent_for_minutes)).isoformat(), "stream": "stdout",
+             "text": "working quietly\n"}], 16)
         lib.write_live_beacon(self.root, session_id=sid, role="implementer", state="running", pid=os.getpid(), now=now)
         return sid, status, now
 
@@ -349,6 +351,23 @@ class RecoveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WatchIntervalTests(unittest.TestCase):
+    def test_watch_sleeps_at_least_one_second(self):
+        # 0 spun on the project lock; a negative raised ValueError from sleep.
+        for interval in (0, -5):
+            slept = []
+
+            def stop(seconds):
+                slept.append(seconds)
+                raise KeyboardInterrupt
+
+            args = mock.Mock(once=False, interval=interval)
+            with mock.patch.object(supervisor, "cmd_recover", return_value=0), \
+                    mock.patch("time.sleep", stop), self.assertRaises(KeyboardInterrupt):
+                supervisor.cmd_watch(args)
+            self.assertEqual(slept, [1], interval)
 
 
 class BeaconProcessAliveTests(RecoveryTests):

@@ -50,7 +50,6 @@ from handsoff_agent_runtime import (
 )
 
 
-
 def lane_gate_refusal(status: dict, action: str) -> str | None:
     """Return the refusal for an action unavailable to a design-lane run."""
     lane = status.get("lane")
@@ -668,10 +667,12 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                 errors.append("live gate: acceptance changed since live verification")
             elif record.get("config_hash") != config_hash(cfg):
                 errors.append("live gate: workflow policy changed since live verification; run it again")
-            elif rules_binding_errors(root, cfg, record, "live gate"):
-                errors.extend(rules_binding_errors(root, cfg, record, "live gate"))  # #170
-            elif approval.get("at") and record.get("at", "") <= approval.get("at", ""):
-                errors.append("live gate: live verification must occur after deployment approval")
+            else:
+                live_rules_errors = rules_binding_errors(root, cfg, record, "live gate")
+                if live_rules_errors:
+                    errors.extend(live_rules_errors)  # #170
+                elif approval.get("at") and record.get("at", "") <= approval.get("at", ""):
+                    errors.append("live gate: live verification must occur after deployment approval")
 
     design_round = int(status.get("design_round", 0) or 0)
     review_round = int(status.get("review_round", 0) or 0)
@@ -713,7 +714,6 @@ def full_design_required(status: dict, acceptance: dict, cfg: dict) -> bool:
 def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
     registry, source = effective_work_items(acceptance, cfg)
     criteria = acceptance.get("criteria", [])
-    multi = len(registry) > 1
     mapping: dict[str, list[dict]] = {item["id"]: [] for item in registry}
     for criterion in criteria:
         item_id = criterion_work_item_id(criterion)
@@ -1158,7 +1158,7 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
         culprit_record = records[culprit - 1]
         raise CriteriaTransactionError(culprit, culprit_record["op"], culprit_record["id"],
                                        "resulting registry fails validation: " + "; ".join(errors))
-    registry_changed = sync_work_item_registry(planned, cfg)
+    sync_work_item_registry(planned, cfg)
     after_items, _ = effective_work_items(planned, cfg)
     return {
         "operations": records,

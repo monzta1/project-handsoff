@@ -88,11 +88,13 @@ class ATurnThatCouldExceedTheCeilingIsRefusedAtLaunch(unittest.TestCase):
         self.assertIsNotNone(refusal)
         self.assertIn("reports usage only at exit", refusal)
 
-    def test_the_refusal_names_both_remedies(self):
+    def test_the_refusal_names_only_the_remedy_a_caller_can_take(self):
+        # No launch path accepts a compact review scope (#290 was never
+        # wired), so the refusal must not offer one.
         refusal = self.refusal(
             adapter="codex", role="reviewer", ceiling=80_000, compact_scope=False,
             safe_minimum=75_000)
-        self.assertIn("compact review scope", refusal)
+        self.assertNotIn("compact review scope", refusal)
         self.assertIn("[agent_budget].reviewer", refusal)
 
     def test_the_refusal_carries_the_number_and_its_basis(self):
