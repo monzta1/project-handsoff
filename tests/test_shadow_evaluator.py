@@ -378,6 +378,28 @@ class RoutingUntouchedAndApprovalTests(HandsoffTestCase):
         after = (self.toml(), shadow.routing_config_sha256(self.tmp), shadow.routed_choice(self.tmp))
         self.assertEqual(before, after)
 
+    def test_shadow_route_cli_prints_routed_shadow_and_agreement_and_leaves_handsoff_toml_unchanged(self):
+        path = self.write_report(self.report())
+        before = self.toml()
+        result = run(["shadow-route", "--report", str(path), "--role", "implementer",
+                      "--repository", "acme/app", "--task-class", "bug"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        view = json.loads(result.stdout)
+        self.assertEqual(view["routed"], OPUS)
+        self.assertEqual(view["shadow"], HAIKU)
+        self.assertFalse(view["agrees"])
+        self.assertEqual(self.toml(), before)
+
+    def test_shadow_route_refuses_a_missing_report_naming_it(self):
+        missing = self.tmp / "no-such-report.json"
+        before = self.toml()
+        result = run(["shadow-route", "--report", str(missing), "--role", "implementer",
+                      "--repository", "acme/app", "--task-class", "bug"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("SHADOW_REFUSED", result.stdout)
+        self.assertIn(str(missing), result.stdout)
+        self.assertEqual(self.toml(), before)
+
     def test_the_routing_guard_fails_an_action_that_changes_routing(self):
         def mutate():
             cfg = lib.load_config(self.tmp)

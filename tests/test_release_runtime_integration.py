@@ -1,12 +1,13 @@
 import copy
 import hashlib
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from collections import Counter
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -134,6 +135,48 @@ class ReleaseRuntimeIntegrationTests(unittest.TestCase):
         assets = adapter.read_assets_url(release.assets_url).value
         self.assertEqual({asset.name for asset in assets}, {plan.artifact_name, plan.checksum_name})
         self.assertEqual(next(a for a in assets if a.name == plan.checksum_name).contents, checksum)
+
+    def inspect_release(self):
+        parsed = supervisor.build_parser().parse_args([
+            "--root", str(self.root), "release-reconcile", "--inspect",
+        ])
+        out = io.StringIO()
+        with mock.patch.object(supervisor, "_load_all") as load_all, redirect_stdout(out):
+            code = supervisor.cmd_release_reconcile(parsed)
+        load_all.assert_not_called()
+        return code, out.getvalue()
+
+    def test_release_reconcile_inspect_reports_a_half_finished_record_and_leaves_it_untouched(self):
+        class CrashingAdapter(MemoryAdapter):
+            def create_release(self, identity, _key):
+                raise RuntimeError("provider went away")
+
+        with self.assertRaises(RuntimeError):
+            runtime.reconcile_release(
+                self.root, self.release_plan, self.artifact, repository="owner/repo",
+                commit=COMMIT, manifest=self.manifest, adapter_factory=CrashingAdapter,
+            )
+        record_path = self.root / runtime.RECORD_NAME
+        digest_before = hashlib.sha256(record_path.read_bytes()).hexdigest()
+        mtime_before = record_path.stat().st_mtime_ns
+        code, out = self.inspect_release()
+        self.assertEqual(code, 0)
+        self.assertEqual(hashlib.sha256(record_path.read_bytes()).hexdigest(), digest_before)
+        self.assertEqual(record_path.stat().st_mtime_ns, mtime_before)
+        record = json.loads(record_path.read_text())
+        printed = json.loads(out)
+        self.assertTrue(printed["present"])
+        self.assertFalse(printed["complete"])
+        self.assertEqual(printed["steps"], {name: record["steps"][name]["state"] for name in tx.STEP_NAMES})
+        self.assertIn("complete", printed["steps"].values())
+        self.assertNotEqual(printed["steps"]["release"], "complete")
+
+    def test_release_reconcile_inspect_with_no_record_prints_present_false_and_exits_zero(self):
+        self.assertFalse((self.root / runtime.RECORD_NAME).exists())
+        code, out = self.inspect_release()
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out)["present"])
+        self.assertFalse((self.root / runtime.RECORD_NAME).exists())
 
     def test_supervisor_exposes_and_ledgers_release_reconcile(self):
         parsed = supervisor.build_parser().parse_args([

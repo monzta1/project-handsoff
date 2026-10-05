@@ -1,11 +1,13 @@
 """Review-lane adoption and its preflight gates."""
 
 import json
+import os
 import subprocess
 import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_handsoff_supervisor import HandsoffTestCase, run
@@ -283,6 +285,41 @@ class ReviewLaneTests(HandsoffTestCase):
         self.assertTrue(any(item["rule"] == "R10" and "no review record" in item["text"]
                             for item in missing_findings))
         self.assertEqual(before, {path: path.read_bytes() for path in archive.glob("*.json") if path != missing})
+
+    def test_archive_scan_keeps_each_finding_only_in_the_lanes_it_applies_to(self):
+        # #380: the Miner files an R4 finding on a design-lane archive and an
+        # R10 finding on a review-lane archive; R4 is not applicable there and
+        # is dropped from the report and its counts, R10 keeps its run id.
+        archive = self.tmp / "archive"
+        archive.mkdir()
+        (archive / "design.json").write_text(json.dumps({"status": {"lane": "design", "phases_run": [1, 2, 3]}}))
+        (archive / "review.json").write_text(json.dumps({"status": {"lane": "review", "phases_run": [5, 6]}}))
+        reply = self.tmp / "miner-reply.json"
+        reply.write_text(json.dumps({
+            "runs": {}, "report_path": str(self.tmp / "miner-report.md"), "filing": "dry_run",
+            "filed": [], "suppressed": [], "not_filed": [], "excluded": [],
+            "findings": [
+                {"rule": "R4", "title": "implementation review rule", "text": "implementation review rule",
+                 "run_ids": ["design.json"], "numbers": [], "excluded": []},
+                {"rule": "R10", "title": "Review lane has no review record", "text": "no review record",
+                 "run_ids": ["review.json"], "numbers": [], "excluded": []},
+            ],
+        }))
+        stub = self.tmp / "miner-stub"
+        stub.write_text(f"#!{sys.executable}\nimport sys\nsys.stdout.write(open({str(reply)!r}).read())\n")
+        stub.chmod(0o755)
+        with mock.patch.dict(os.environ, {"HANDSOFF_MINER": str(stub)}):
+            result = run(["analyze-archives", "--archive-dir", str(archive), "--dry-run"], cwd=self.tmp)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            printed = json.loads(result.stdout[result.stdout.index("{"):])
+            self.assertEqual([(item["rule"], item["run_ids"]) for item in printed["findings"]],
+                             [("R10", ["review.json"])])
+            import handsoff_supervisor
+            report = handsoff_supervisor._miner_run("scan", self.tmp, archive_dir=archive, dry_run=True)
+            fields = handsoff_supervisor._scan_event_fields(report)
+        self.assertEqual(fields["findings"], 1)
+        self.assertEqual([(item["rule"], item["run_ids"]) for item in report["findings"]],
+                         [("R10", ["review.json"])])
 
 
 if __name__ == "__main__":

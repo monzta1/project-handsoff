@@ -112,6 +112,8 @@ OPERATION_REGISTRY = {
     "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
     # #302: applies one shadow recommendation, only with a Mission Control approval.
     "shadow-apply": {"class": "operator-facing", "surface": "metrics-panel"},
+    # #379: reads the report and the routed choice; writes nothing.
+    "shadow-route": {"class": "diagnostic", "surface": "metrics-panel"},
     # #303: activates evidence-assisted routing, only with a #302 finding's approval.
     "evidence-routing-activate": {"class": "operator-facing", "surface": "metrics-panel"},
 }
@@ -1171,7 +1173,46 @@ def _miner_run(subcommand: str, root, *, archive_dir=None, dry_run: bool = False
             report.setdefault("findings", []).extend(local_findings)
         except (OSError, ValueError, TypeError):
             pass
+    if subcommand == "scan":
+        _lane_filter_findings(report, Path(archive_dir) if archive_dir else lib.archive_dir())
     return report
+
+
+def _archive_record(archive_dir: Path, run_id: object) -> dict | None:
+    """The archive JSON a finding's run id names, or None when it cannot be read."""
+    if not isinstance(run_id, str):
+        return None
+    try:
+        record = json.loads((archive_dir / run_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _lane_filter_findings(report: dict, archive_dir: Path) -> None:
+    """#380: keep a finding's run id only when that archive's lane still applies
+    the finding's rule, and drop a finding left with no run id. Findings that
+    never named run ids pass through. The Miner's own filing is not touched;
+    only the findings this engine prints and counts are trimmed."""
+    import handsoff_analyzer
+    if not isinstance(report.get("findings"), list):
+        return
+    kept = []
+    for finding in report["findings"]:
+        run_ids = finding.get("run_ids") if isinstance(finding, dict) else None
+        if not isinstance(run_ids, list) or not run_ids:
+            kept.append(finding)
+            continue
+        survivors = []
+        for run_id in run_ids:
+            record = _archive_record(archive_dir, run_id)
+            if record is not None and any(
+                    item.get("rule") == finding.get("rule")
+                    for item in handsoff_analyzer.applicable_findings(record, [finding])):
+                survivors.append(run_id)
+        if survivors:
+            kept.append({**finding, "run_ids": survivors})
+    report["findings"] = kept
 
 
 def _scan_event_fields(report: dict) -> dict:
@@ -1286,6 +1327,27 @@ def cmd_shadow_apply(args) -> int:
     result = shadow.apply_finding(root, report, finding=args.finding, approval=args.approval)
     print(f"SHADOW_APPLIED: {result['finding_id']} with {result['approval_id']}: "
           f"{result['change']['role']} -> {result['change']['to']['adapter']}/{result['change']['to']['model']}")
+    return 0
+
+
+def cmd_shadow_route(args) -> int:
+    """#379: read-only shadow mode. Prints the live routed choice beside what
+    the frozen policy in the report would pick for one cohort; handsoff.toml
+    is hashed before and after and never written."""
+    import handsoff_shadow as shadow
+    root = lib.resolve_root(args.root)
+    try:
+        report = lib.load_unique_json(Path(args.report).expanduser().resolve())
+    except (OSError, ValueError, lib.HandsoffError) as exc:
+        print(f"SHADOW_REFUSED: cannot read the report {args.report}: {exc}")
+        return 1
+    try:
+        view = shadow.shadow_route(root, report, role=args.role, repository=args.repository,
+                                   task_class=args.task_class, variant=args.variant)
+    except lib.HandsoffError as exc:
+        print(f"SHADOW_REFUSED: {exc}")
+        return 1
+    print(json.dumps(view, sort_keys=True))
     return 0
 
 
@@ -2052,7 +2114,22 @@ def cmd_release_plan(args) -> int:
 
 
 def cmd_release_reconcile(args) -> int:
-    """Run or resume the Phase-7 release transaction."""
+    """Run or resume the Phase-7 release transaction. #378: --inspect only
+    prints the record's state; it takes no plan, lock or ledger and never
+    writes the record."""
+    if args.inspect:
+        root = lib.resolve_root(args.root)
+        store = release_runtime.tx.JsonFileRecordStore(root / release_runtime.RECORD_NAME)
+        try:
+            inspection = release_runtime.tx.ReleaseTransaction(None, store, None).inspect()
+        except release_runtime.tx.ReleaseTransactionError as exc:
+            print(f"RELEASE_BLOCKED: {exc}")
+            return 1
+        print(json.dumps(inspection, sort_keys=True))
+        return 0
+    if not args.artifact or not args.by:
+        print("RELEASE_BLOCKED: release-reconcile needs --artifact and --by (only --inspect runs without them)")
+        return 1
     actor = lib.validate_agent_actor(args.by)
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -5801,12 +5878,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     release_reconcile = sub.add_parser(
         "release-reconcile", help="publish, install and verify the planned release transaction")
-    release_reconcile.add_argument("--artifact", required=True)
-    release_reconcile.add_argument("--by", required=True)
+    # Required for a release; --inspect is read-only and needs neither.
+    release_reconcile.add_argument("--artifact")
+    release_reconcile.add_argument("--by")
     release_reconcile.add_argument("--repository")
     release_reconcile.add_argument("--commit")
     release_reconcile.add_argument("--manifest")
     release_reconcile.add_argument("--notes-file")
+    release_reconcile.add_argument("--inspect", action="store_true",
+                                   help="#378: print the release transaction record's state; read-only")
 
     regression_request = sub.add_parser("regression-request")
     regression_request.add_argument("--group", required=True)
@@ -6201,6 +6281,15 @@ def build_parser() -> argparse.ArgumentParser:
     shadow_apply.add_argument("--finding", required=True, help="the finding id (shf-...)")
     shadow_apply.add_argument("--approval", required=True, help="the approval id Mission Control recorded (apr-...)")
 
+    shadow_route = sub.add_parser("shadow-route", help="#379: read-only shadow mode; the routed choice beside "
+                                  "the frozen policy's pick for one cohort, with handsoff.toml unchanged")
+    shadow_route.add_argument("--report", required=True, help="the handsoff_shadow report JSON")
+    shadow_route.add_argument("--role", required=True)
+    shadow_route.add_argument("--repository", required=True, help="OWNER/NAME")
+    shadow_route.add_argument("--task-class", required=True)
+    shadow_route.add_argument("--variant", default="all_evidence",
+                              choices=["all_evidence", "excluding_low_quality"])
+
     evidence_activate = sub.add_parser("evidence-routing-activate",
                                        help="#303: activate evidence-assisted routing; refused without a "
                                        "#302 finding and its Mission Control approval")
@@ -6362,6 +6451,7 @@ def main() -> int:
         "analyze-archives": cmd_analyze_archives,
         "pilot-note": cmd_pilot_note,
         "shadow-apply": cmd_shadow_apply,
+        "shadow-route": cmd_shadow_route,
         "evidence-routing-activate": cmd_evidence_routing_activate,
         "ci-watch": cmd_ci_watch,
         "design-decline": cmd_design_decline,
