@@ -22,6 +22,12 @@ BRANCH = "claude/lane-374"
 MUTATIONS = (["issue", "comment"], ["issue", "close"], ["issue", "edit"], ["issue", "reopen"])
 
 
+def _ref(number, owner="acme", name="project"):
+    """A closing reference as gh returns it: the number in a named repository."""
+    return {"number": number, "repository": {"name": name, "owner": {"login": owner}},
+            "url": f"https://github.com/{owner}/{name}/issues/{number}"}
+
+
 class EveryItemIsPosted(ReportPostingFixture):
     """REQ-001: a fake gh drives run-close --post item by item."""
 
@@ -49,7 +55,7 @@ class EveryItemIsPosted(ReportPostingFixture):
         self._run()
         state = self._gh_state()
         state["issues"]["40"]["closed"] = True
-        state["prs"] = [{"number": 99, "headRefName": BRANCH, "closingIssuesReferences": [{"number": 40}]}]
+        state["prs"] = [{"number": 99, "headRefName": BRANCH, "closingIssuesReferences": [_ref(40)]}]
         self._gh_state(state)
         result, mutations = self._post()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -68,12 +74,26 @@ class EveryItemIsPosted(ReportPostingFixture):
         self.assertEqual([(p["number"], p["comment"], p["closed"]) for p in posted],
                          [(40, "posted", True), (41, "posted", True)])
 
+    def test_the_same_number_in_another_repository_is_not_the_runs(self):
+        # implementation review attempt 1: the run's PR closing other/repo#40
+        # must not make a hand-closed local #40 attributable
+        self._run()
+        state = self._gh_state()
+        state["issues"]["40"]["closed"] = True
+        state["prs"] = [{"number": 99, "headRefName": BRANCH,
+                         "closingIssuesReferences": [_ref(40, owner="other", name="repository")]}]
+        self._gh_state(state)
+        result, mutations = self._post()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("skipped: #40 closed without attributable Handsoff ownership", result.stdout)
+        self.assertEqual(self._gh_state()["issues"]["40"]["comments"], [])
+
     def test_an_unpostable_item_is_skipped_and_named_while_the_others_post(self):
         self._run()
         state = self._gh_state()
         state["issues"]["40"]["closed"] = True
         # a merged pull request from another branch closing #40 is not the run's
-        state["prs"] = [{"number": 98, "headRefName": "someone-else", "closingIssuesReferences": [{"number": 40}]}]
+        state["prs"] = [{"number": 98, "headRefName": "someone-else", "closingIssuesReferences": [_ref(40)]}]
         self._gh_state(state)
         result, mutations = self._post()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

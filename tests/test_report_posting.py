@@ -38,6 +38,9 @@ if args[:2] == ["issue", "view"]:
         print(json.dumps({"body": issue["body"], "url": issue["url"], "state": "CLOSED" if issue.get("closed") else "OPEN",
                           "comments": [{"body": c} for c in issue["comments"]]}))
     sys.exit(0)
+if args[:2] == ["repo", "view"]:
+    print(json.dumps({"nameWithOwner": state.get("repo", "acme/project")}))
+    raise SystemExit(0)
 if args[:2] == ["pr", "list"]:
     head = args[args.index("--head") + 1]
     print(json.dumps([pr for pr in state.get("prs", []) if pr.get("headRefName") == head]))

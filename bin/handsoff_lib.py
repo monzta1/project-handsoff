@@ -8535,6 +8535,16 @@ def _issues_closed_by_run_pull_requests(root: Path, *, runner=subprocess.run) ->
     branch = proc.stdout.strip() if proc.returncode == 0 else ""
     if not branch:
         return set()
+    # Implementation review attempt 1: a closing reference names a number in
+    # SOME repository; only one in this run's own repository is the run's.
+    # When the repository cannot be read, nothing is attributed.
+    viewed = _gh(["repo", "view", "--json", "nameWithOwner"], runner=runner, cwd=root)
+    try:
+        repository = json.loads(viewed.stdout).get("nameWithOwner") if viewed.returncode == 0 else None
+    except (ValueError, AttributeError):
+        repository = None
+    if not isinstance(repository, str) or "/" not in repository:
+        return set()
     listed = _gh(["pr", "list", "--state", "merged", "--head", branch, "--limit", "20",
                   "--json", "number,headRefName,closingIssuesReferences"], runner=runner, cwd=root)
     try:
@@ -8546,7 +8556,11 @@ def _issues_closed_by_run_pull_requests(root: Path, *, runner=subprocess.run) ->
         if not isinstance(pr, dict) or pr.get("headRefName") != branch:
             continue
         for ref in pr.get("closingIssuesReferences") or []:
-            if isinstance(ref, dict) and isinstance(ref.get("number"), int):
+            if not isinstance(ref, dict) or not isinstance(ref.get("number"), int):
+                continue
+            repo = ref.get("repository") if isinstance(ref.get("repository"), dict) else {}
+            owner = repo.get("owner") if isinstance(repo.get("owner"), dict) else {}
+            if f"{owner.get('login')}/{repo.get('name')}".lower() == repository.lower():
                 closed.add(ref["number"])
     return closed
 
