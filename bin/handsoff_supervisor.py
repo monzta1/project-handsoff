@@ -6463,8 +6463,13 @@ def main() -> int:
         "performance-watch": cmd_performance_watch,
         "performance-resume": cmd_performance_resume,
     }
+    # #378/#379: pure readers of a record or report never touch the run, so
+    # they skip the performance gate, whose clock refresh writes state and
+    # which refuses work once a run is paused.
+    pure_reader = args.command == "shadow-route" or (
+        args.command == "release-reconcile" and getattr(args, "inspect", False))
     try:
-        if args.command != "init":
+        if args.command != "init" and not pure_reader:
             root = lib.resolve_root(args.root)
             refusal = performance_mutation_refusal(root, args.command)
             if refusal:

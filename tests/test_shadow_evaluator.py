@@ -389,6 +389,8 @@ class RoutingUntouchedAndApprovalTests(HandsoffTestCase):
         self.assertEqual(view["shadow"], HAIKU)
         self.assertFalse(view["agrees"])
         self.assertEqual(self.toml(), before)
+        # a pure reader skips the performance gate, whose clock refresh writes run state
+        self.assertFalse((self.tmp / ".handsoff-runtime-control").exists())
 
     def test_shadow_route_refuses_a_missing_report_naming_it(self):
         missing = self.tmp / "no-such-report.json"

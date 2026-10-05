@@ -171,6 +171,20 @@ class ReleaseRuntimeIntegrationTests(unittest.TestCase):
         self.assertIn("complete", printed["steps"].values())
         self.assertNotEqual(printed["steps"]["release"], "complete")
 
+    def test_inspect_through_main_skips_the_performance_gate_and_writes_nothing(self):
+        """Implementation review attempt 1: main() ran the performance gate
+        first, which writes the run clock and refuses a paused run."""
+        refused = "release-reconcile is blocked: active run time reached 120 minutes"
+        out = io.StringIO()
+        with mock.patch.object(supervisor, "performance_mutation_refusal", return_value=refused) as gate, \
+                mock.patch.object(sys, "argv", ["handsoff_supervisor.py", "--root", str(self.root),
+                                                "release-reconcile", "--inspect"]), redirect_stdout(out):
+            code = supervisor.main()
+        self.assertEqual(code, 0, out.getvalue())
+        gate.assert_not_called()
+        self.assertFalse(json.loads(out.getvalue())["present"])
+        self.assertFalse((self.root / ".handsoff-runtime-control").exists())
+
     def test_release_reconcile_inspect_with_no_record_prints_present_false_and_exits_zero(self):
         self.assertFalse((self.root / runtime.RECORD_NAME).exists())
         code, out = self.inspect_release()
