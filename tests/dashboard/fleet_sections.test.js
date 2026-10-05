@@ -93,3 +93,11 @@ test("the finished section is a collapsed disclosure with a count, remembered pe
   assert.match(css, /\.finished-runs > summary::after \{ content: "SHOW"/);
   assert.match(css, /\.finished-runs\[open\] > summary::after \{ content: "HIDE"; \}/);
 });
+
+test("#389: the summary strip has a HOST WORKING tile, so a host-working run is counted where it is seen", () => {
+  const vocabulary = require("../../dashboard/lib/run-vocabulary.js");
+  assert.ok(vocabulary.STATE_ORDER.includes("host_working"));
+  assert.equal(vocabulary.STATE_LABELS.host_working, "HOST WORKING");
+  assert.ok(vocabulary.STATE_ORDER.indexOf("host_working") > vocabulary.STATE_ORDER.indexOf("running"));
+  assert.ok(!vocabulary.FINISHED_STATES.has("host_working"));
+});

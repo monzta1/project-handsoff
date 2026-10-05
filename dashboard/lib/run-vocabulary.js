@@ -5,7 +5,9 @@
 // tag and via require() (the dashboard-logic.js pattern).
 
 // Fleet card states, in the order the summary strip lists them.
-const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "quiet", "released", "installed", "live_verified", "complete", "closed", "aborted", "idle", "orphaned"];
+// #389: host_working sits beside running; without it the summary strip had
+// no tile for a run whose host was doing the work, though the API counted it.
+const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "host_working", "quiet", "released", "installed", "live_verified", "complete", "closed", "aborted", "idle", "orphaned"];
 // #150/#154: only a run that is moving belongs in the grid; finished runs and
 // projects with no run at all sit in the collapsed section.
 // #296: "released" and "installed" are NOT finished. A published release
@@ -13,7 +15,7 @@ const STATE_ORDER = ["waiting", "failed", "offline", "stalled", "running", "quie
 // showing it as finished is what let v0.3.80 read as delivered at Phase 7.
 const FINISHED_STATES = new Set(["complete", "closed", "aborted", "idle", "orphaned"]);
 const STATE_LABELS = {
-  waiting: "WAITING ON PILOT", failed: "FAILED", stalled: "STALLED", running: "RUNNING",
+  waiting: "WAITING ON PILOT", failed: "FAILED", stalled: "STALLED", running: "RUNNING", host_working: "HOST WORKING",
   quiet: "QUIET", offline: "DASHBOARD OFFLINE", complete: "COMPLETE", closed: "CLOSED", idle: "NO RUN", orphaned: "ORPHANED",
   // #296: the four things that are not the same as "done".
   released: "RELEASED, NOT INSTALLED", installed: "INSTALLED, NOT VERIFIED",

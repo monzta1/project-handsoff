@@ -10,7 +10,7 @@ const read = (p) => fs.readFileSync(path.join(__dirname, "..", "..", p), "utf8")
 test("the module exports the states, the labels and the clock", () => {
   // #296 inserted the four closeout rungs ahead of "complete": a published
   // release that was never installed and verified is not a delivered one.
-  assert.deepEqual(vocab.STATE_ORDER, ["waiting", "failed", "offline", "stalled", "running", "quiet", "released", "installed", "live_verified", "complete", "closed", "aborted", "idle", "orphaned"]);
+  assert.deepEqual(vocab.STATE_ORDER, ["waiting", "failed", "offline", "stalled", "running", "host_working", "quiet", "released", "installed", "live_verified", "complete", "closed", "aborted", "idle", "orphaned"]);
   assert.equal(vocab.STATE_LABELS.waiting, "WAITING ON PILOT");
   assert.equal(vocab.STATE_LABELS.orphaned, "ORPHANED");
   assert.ok(vocab.FINISHED_STATES.has("closed") && !vocab.FINISHED_STATES.has("running"));
