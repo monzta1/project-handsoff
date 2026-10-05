@@ -596,3 +596,9 @@ Documentation audit of installed command references (#377): every reference to t
 5. **Two v0.5.3 slips, fixed on landing.** The documentation test handed the audit a fixed engine version (0.5.3), so the next version bump made its own README links look obsolete; it now reads the checkout's version. The v0.5.3 field-note entry had been inserted mid-file and is now in release order.
 
 Lesson: a helper with tests is not a wired guard. Check that production calls it before counting it as the fix.
+
+### v0.5.5 field notes: the analyzer ships in the wheel (#380, 2026-10-05)
+
+1. **v0.5.4's installed `analyze-archives` crashed with `ModuleNotFoundError: handsoff_analyzer`.** #380 made `analyze-archives` call `handsoff_analyzer.applicable_findings`, the first production import of that module, but the module was in neither `pyproject.toml`'s `py-modules` nor the manifest's `RUNTIME_FILES`. The packaging test compared those two lists with each other, so a module missing from both passed. The drop-in checkout and every unit test ran from `bin/` and never saw it; the installed engine's live Miner check did. Fix: the module ships, and the packaging test now also compares the manifest with every `.py` file in `bin/`.
+
+Lesson: a closed set is closed against the files on disk, not against another hand-kept list. Connecting dead code can expose packaging that only worked because nothing imported it.

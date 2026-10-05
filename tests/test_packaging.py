@@ -399,3 +399,8 @@ class WheelShipsEveryRuntimeFile(unittest.TestCase):
         self.assertEqual(missing, [], f"runtime files the wheel would not ship: {missing}")
         unlisted = sorted(path for path in shipped if path.startswith("bin/") and path not in manifest.RUNTIME_FILES)
         self.assertEqual(unlisted, [], f"shipped modules the manifest does not guard: {unlisted}")
+        # v0.5.4 shipped without handsoff_analyzer: it was missing from both
+        # lists, so the lists agreed. Close the set against the files on disk.
+        on_disk = sorted(f"bin/{path.name}" for path in (ROOT / "bin").glob("*.py"))
+        self.assertEqual(sorted(set(on_disk) - set(manifest.RUNTIME_FILES)), [],
+                         "engine modules in bin/ that the manifest and the wheel do not ship")
