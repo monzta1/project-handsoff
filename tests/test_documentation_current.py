@@ -44,7 +44,9 @@ class TestDocumentationCurrent(unittest.TestCase):
             re.compile(r"python\d*(?:\.\d+)?\s+(?:\S*/)?bin/handsoff_\w+\.py"),
             re.compile(r"(?<![\w/.])handsoff_(?:supervisor|agent|fleet)\.py\s+[a-z]"),
         ]
-        cls.markers = {"handsoff-doc: intentional", "<!-- handsoff-doc: intentional -->"}
+        # REQ-001/REQ-004 name the HTML comment exactly; the audit also
+        # accepts the bare text, but the contract does not.
+        cls.markers = {"<!-- handsoff-doc: intentional -->"}
 
     def unmarked_occurrences(self, path):
         """1-based line numbers of contracted occurrences without the exact
@@ -74,7 +76,8 @@ class TestDocumentationCurrent(unittest.TestCase):
             for body, expected in (
                     ("<!-- handsoff-doc: intentional -->\npython3 bin/handsoff_cohorts.py --x\n", []),
                     ("intro\npython3 bin/handsoff_cohorts.py --x\n", [2]),
-                    ("see handsoff-doc: intentional here\nhandsoff_supervisor.py init x\n", [2])):
+                    ("see handsoff-doc: intentional here\nhandsoff_supervisor.py init x\n", [2]),
+                    ("handsoff-doc: intentional\npython3 bin/handsoff_cohorts.py --x\n", [2])):
                 doc.write_text(body, encoding="utf-8")
                 self.assertEqual(self.unmarked_occurrences(doc), expected, body)
 
