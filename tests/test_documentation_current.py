@@ -35,35 +35,48 @@ class TestDocumentationCurrent(unittest.TestCase):
             'governance-design': cls.repo_root / 'docs' / 'governance-design.md',
             'ARCHITECTURE-MIGRATION': cls.repo_root / 'docs' / 'ARCHITECTURE-MIGRATION.md',
         }
-        cls.old_command = re.compile(
-            r"(?:python\d*(?:\.\d+)?\s+)?(?:\S*/)?bin/handsoff_(?:supervisor|dashboard|agent|cli|fleet)\.py"
-        )
+        # The contract: the audit's own drop-in pattern (bin/handsoff_cli.py),
+        # which it checks only once per file, plus every script invocation,
+        # including a maintainer helper and the bare handsoff_supervisor.py
+        # form. Every occurrence needs the exact marker line above it.
+        cls.contracted = [
+            re.compile(r"(?:python\d*(?:\.\d+)?\s+)?(?:\S*/)?bin/handsoff_(?:supervisor|dashboard|agent|cli|fleet)\.py"),
+            re.compile(r"python\d*(?:\.\d+)?\s+(?:\S*/)?bin/handsoff_\w+\.py"),
+            re.compile(r"(?<![\w/.])handsoff_(?:supervisor|agent|fleet)\.py\s+[a-z]"),
+        ]
+        cls.markers = {"handsoff-doc: intentional", "<!-- handsoff-doc: intentional -->"}
+
+    def unmarked_occurrences(self, path):
+        """1-based line numbers of contracted occurrences without the exact
+        standalone marker on the line immediately above."""
+        text = path.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        found = sorted({text.count("\n", 0, match.start())
+                        for pattern in self.contracted for match in pattern.finditer(text)})
+        return [index + 1 for index in found
+                if index == 0 or lines[index - 1].strip() not in self.markers]
 
     def test_req_001_drop_in_commands_marked_in_reference_files(self):
-        """REQ-001: Every drop-in occurrence in doc files has intentional marker above it."""
+        """REQ-001: no drop-in invocation remains in the user docs outside a
+        line marked intentional, checked for every occurrence, per file."""
         for name, path in self.doc_files.items():
             with self.subTest(file=name):
-                if not path.exists():
-                    self.fail(f"{name} not found at {path}")
+                self.assertTrue(path.exists(), f"{name} not found at {path}")
+                self.assertEqual(self.unmarked_occurrences(path), [],
+                                 f"{name}: drop-in occurrences without the marker line above them")
 
-                text = path.read_text(encoding="utf-8")
-                lines = text.splitlines()
-
-                for match in self.old_command.finditer(text):
-                    line_number = text.count("\n", 0, match.start())
-                    # Check that this is not a supervisor/agent/fleet invocation after replacement
-                    matched_text = match.group(0)
-                    if "supervisor" in matched_text or "agent" in matched_text or "fleet" in matched_text:
-                        # This should have been replaced or marked
-                        if line_number > 0:
-                            prev_line = lines[line_number - 1].strip()
-                            self.assertIn(
-                                "handsoff-doc: intentional",
-                                prev_line,
-                                f"{name} line {line_number + 1}: drop-in command not marked with intentional marker"
-                            )
-                        else:
-                            self.fail(f"{name} line {line_number + 1}: drop-in command at start of file, cannot be marked")
+    def test_the_marker_check_rejects_a_missing_or_inexact_marker(self):
+        """The REQ-001/REQ-004 check fails when a marker is removed or is not
+        the exact standalone line."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = Path(tmp) / "doc.md"
+            for body, expected in (
+                    ("<!-- handsoff-doc: intentional -->\npython3 bin/handsoff_cohorts.py --x\n", []),
+                    ("intro\npython3 bin/handsoff_cohorts.py --x\n", [2]),
+                    ("see handsoff-doc: intentional here\nhandsoff_supervisor.py init x\n", [2])):
+                doc.write_text(body, encoding="utf-8")
+                self.assertEqual(self.unmarked_occurrences(doc), expected, body)
 
     def test_req_002_all_supervisor_subcommands_documented(self):
         """REQ-002: Every supervisor subcommand appears in REFERENCE.md as a whole token."""
@@ -125,26 +138,13 @@ class TestDocumentationCurrent(unittest.TestCase):
                      "ReleaseAdapter docstring should mention operation_key is advisory")
 
     def test_req_004_historical_records_marked(self):
-        """REQ-004: Historical records have markers before drop-in occurrences; audit is clean."""
+        """REQ-004: every drop-in quote in the historical records keeps its
+        text and has the marker line above it; the audit is clean."""
         for name, path in self.historical_files.items():
-            if not path.exists():
-                continue
-
             with self.subTest(file=name):
-                text = path.read_text(encoding="utf-8")
-                lines = text.splitlines()
-
-                for match in self.old_command.finditer(text):
-                    line_number = text.count("\n", 0, match.start())
-                    if line_number > 0:
-                        prev_line = lines[line_number - 1].strip()
-                        self.assertIn(
-                            "handsoff-doc: intentional",
-                            prev_line,
-                            f"{name} line {line_number + 1}: drop-in command not marked"
-                        )
-                    else:
-                        self.fail(f"{name} line {line_number + 1}: drop-in command at start of file")
+                self.assertTrue(path.exists(), f"{name} not found at {path}")
+                self.assertEqual(self.unmarked_occurrences(path), [],
+                                 f"{name}: drop-in occurrences without the marker line above them")
 
         # Run the documentation audit
         try:

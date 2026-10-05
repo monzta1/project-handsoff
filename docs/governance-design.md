@@ -178,6 +178,7 @@ The launcher is injectable for tests (fake popen); production callers pass `hand
 | `recover --by ACTOR [--dry-run]` | One step. `--dry-run` prints the assessment only. Outputs `RECOVERY_SKIPPED: <reason>`, `RECOVERY_LAUNCHED: hv-... (attempt n of cap)`, `RECOVERY_RECOVERED`, `RECOVERY_FAILED`, `RECOVERY_ESCALATED`. Brokered: a live Supervisor may request it for a lost worker. |
 | `watch --by ACTOR [--interval S]` | Foreground loop calling `recover` every interval; Ctrl-C stops it. |
 | Mission Control watchdog | `DashboardServer` starts a daemon thread when `recovery.dashboard_watchdog` is true, actor `Mission Control Watchdog`, interval `recovery.poll_seconds`. Exceptions are printed to stderr and never stop serving. |
+<!-- handsoff-doc: intentional -->
 | `recovery-acknowledge --by OPERATOR --reason TEXT` | Human only (broker refuses). Clears an `escalation` of kind `recovery_exhausted` or `recovery_paused`, sets `status in_progress` and a `next_action` telling the operator to relaunch manually with `handsoff_agent.py launch`, and resets nothing else (attempt history stays). Event `recovery_acknowledged`. |
 
 Duplicate prevention: the lease plus the `reserved/launched must be last` invariant. A second watcher inside the same lock window sees the lease and skips with `lease_held`; a crashed holder's lease expires after `lease_minutes` and the next watcher may proceed (its abandoned attempt is closed as `failed` with reason `lease_expired` first).
