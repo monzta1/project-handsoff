@@ -25,7 +25,6 @@ from tests.test_fleet import _FleetFixture, fleet
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
-from tests.engine_patch import patch_engine  # noqa: E402
 import handsoff_fleet_signals as signals  # noqa: E402
 
 
@@ -208,34 +207,45 @@ class FleetSnapshotTests(_FleetFixture, _SignalsEnv):
             os.utime(root / name, (stamp, stamp))
         subprocess.run(["git", "update-index", "-q", "--really-refresh"], cwd=root, check=False)
 
-    def _rebuilt(self):
-        """The roots whose snapshot one build_fleet call rebuilt, and how
-        often each project's handsoff.toml was loaded through lib."""
+    def _rebuilt(self, reads=None):
+        """The roots whose snapshot one build_fleet call rebuilt. With
+        `reads`, every actual open of a project's handsoff.toml during the
+        build is appended to it (its directory), however the open is reached.
+        The engine's own handsoff.toml (the installed-engine check) is not
+        a project's and is not counted."""
+        import builtins
+        import io
         import handsoff_dashboard
-        rebuilt, loaded = [], []
-        real_snapshot, real_config = handsoff_dashboard.build_snapshot, fleet.lib.load_config
+        rebuilt = []
+        real_snapshot, real_open = handsoff_dashboard.build_snapshot, io.open
 
-        def snapshot(root):
+        def snapshot(root, *args, **kwargs):
             rebuilt.append(str(root))
-            return real_snapshot(root)
+            return real_snapshot(root, *args, **kwargs)
 
-        def config(root, *args, **kwargs):
-            loaded.append(str(root))
-            return real_config(root, *args, **kwargs)
+        def counting_open(file, *args, **kwargs):
+            if reads is not None and isinstance(file, (str, os.PathLike)) and Path(file).name == "handsoff.toml" \
+                    and Path(file).resolve().is_relative_to(self.base.resolve()):
+                reads.append(str(Path(file).parent.resolve()))
+            return real_open(file, *args, **kwargs)
         with mock.patch.object(handsoff_dashboard, "build_snapshot", snapshot), \
-                patch_engine("load_config", config):
+                mock.patch.object(io, "open", counting_open), mock.patch.object(builtins, "open", counting_open):
             fleet.build_fleet(self.registry)
-        return sorted(rebuilt), loaded
+        return sorted(rebuilt)
 
-    def test_a_warm_build_rebuilds_no_unchanged_project_and_loads_each_config_once(self):
+    def test_a_build_reads_each_handsoff_toml_once_cold_and_never_warm(self):
         alpha, _git = self._committed_project("alpha")
         beta, _git = self._committed_project("beta")
-        cold, _loaded = self._rebuilt()
-        self.assertEqual(cold, sorted([str(alpha.resolve()), str(beta.resolve())]))
-        warm, loaded = self._rebuilt()
-        self.assertEqual(warm, [], "nothing changed, nothing is rebuilt")
-        self.assertEqual(sorted(loaded), sorted([str(alpha.resolve()), str(beta.resolve())]),
-                         "each project's handsoff.toml is loaded once per build")
+        roots = sorted([str(alpha.resolve()), str(beta.resolve())])
+        cold_reads, warm_reads = [], []
+        self.assertEqual(self._rebuilt(cold_reads), roots)
+        self.assertEqual(sorted(cold_reads), roots, "a cold build reads each project's handsoff.toml once")
+        self.assertEqual(self._rebuilt(warm_reads), [], "nothing changed, nothing is rebuilt")
+        self.assertEqual(warm_reads, [], "a warm build reads no unchanged handsoff.toml")
+        (alpha / "handsoff.toml").write_text((alpha / "handsoff.toml").read_text() + "\n")
+        edited_reads = []
+        self._rebuilt(edited_reads)
+        self.assertEqual(edited_reads, [str(alpha.resolve())], "an edited handsoff.toml is read again, once")
 
     def test_a_ledger_write_or_a_commit_invalidates_only_that_project(self):
         alpha, _git = self._committed_project("alpha")
@@ -243,15 +253,15 @@ class FleetSnapshotTests(_FleetFixture, _SignalsEnv):
         self._rebuilt()
         with (alpha / "handsoff-events.jsonl").open("a", encoding="utf-8") as handle:
             handle.write("\n")
-        self.assertEqual(self._rebuilt()[0], [str(alpha.resolve())], "a ledger write rebuilds only its project")
+        self.assertEqual(self._rebuilt(), [str(alpha.resolve())], "a ledger write rebuilds only its project")
         (beta / "notes.txt").write_text("a change\n")
         subprocess.run([*git, "add", "notes.txt"], cwd=beta, check=True)
         subprocess.run([*git, "commit", "-q", "-m", "second"], cwd=beta, check=True)
         self._settle(beta)
-        self.assertEqual(self._rebuilt()[0], [str(beta.resolve())], "a commit rebuilds only its project")
+        self.assertEqual(self._rebuilt(), [str(beta.resolve())], "a commit rebuilds only its project")
         subprocess.run(["git", "checkout", "-q", "-b", "elsewhere"], cwd=beta, check=True)
-        self.assertEqual(self._rebuilt()[0], [str(beta.resolve())], "a checkout rebuilds only its project")
-        self.assertEqual(self._rebuilt()[0], [])
+        self.assertEqual(self._rebuilt(), [str(beta.resolve())], "a checkout rebuilds only its project")
+        self.assertEqual(self._rebuilt(), [])
 
     def test_owner_probes_run_concurrently(self):
         roots = [self.base / f"root-{index}" for index in range(3)]

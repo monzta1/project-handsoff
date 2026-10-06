@@ -349,6 +349,7 @@ def refresh_performance_state(
     now: datetime | None = None,
     persist: bool = True,
     lock_held: bool = False,
+    cfg: dict | None = None,
 ) -> dict:
     """Refresh durable 90/120-minute state and return content-free telemetry.
 
@@ -357,7 +358,7 @@ def refresh_performance_state(
     """
     root = Path(root)
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    cfg = lib.load_config(root)
+    cfg = cfg if cfg is not None else lib.load_config(root)  # #393: Fleet passes the config it parsed
     status = status or lib.load_unique_json(lib.status_path(root, cfg))
     events = events if events is not None else lib.read_events(root, cfg)
     run_id = _runtime_run_id(root, events)

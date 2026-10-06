@@ -449,16 +449,19 @@ def _quarantine_late_result(root: Path, session_id: str, role: str, kind: str,
     `quarantined_result` (an implementer's workspace stays unapplied) so
     session-result-adopt can apply it once after performance-resume. Returns
     the record when the result was quarantined, None when it may proceed.
-    A run with no performance record has never been on a clock and cannot be
-    paused, so nothing is created for it here.
+    A run with neither a performance record nor a timeline journal has never
+    been on a clock and cannot be paused, so nothing is created for it here.
+    A missing or tampered record with a journal is still clocked (#385).
     """
     try:
         import handsoff_runtime_control as runtime_control
         supervisor = __import__("handsoff_supervisor")
-        if not supervisor._runtime_path(root, supervisor.PERFORMANCE_RECORD).exists():
+        if not any(supervisor._runtime_path(root, name).exists()
+                   for name in (supervisor.PERFORMANCE_RECORD, supervisor.PERFORMANCE_TIMELINE_JOURNAL)):
             return None
         # The deadline may have passed while the session ran; evaluate it now
-        # so the pause is on the record before the result is judged.
+        # so the pause is on the record before the result is judged. The tick
+        # rebuilds a missing or failing record from the timeline journal.
         supervisor.performance_tick(root)
         history = supervisor._runtime_read(root, supervisor.PERFORMANCE_RECORD,
                                            "handsoff.performance_history")

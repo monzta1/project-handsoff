@@ -536,20 +536,59 @@ RUNTIME_CONTROL_SELF_WRITTEN = frozenset({"performance.json", "performance.json.
                                           "performance-timeline.jsonl"})
 
 
-def project_config(root: Path) -> dict:
+def _pinned_root(root: Path, text: str) -> Path:
+    """#393: `root` as a path whose handsoff.toml reads back `text`, so
+    load_config parses the build's one read instead of reading the file
+    again. Every path derived from it keeps the pin (it is a class attribute)."""
+    pinned = str(root / "handsoff.toml")
+
+    class PinnedPath(type(Path())):
+        def read_text(self, *args, **kwargs):
+            return text if str(self) == pinned else super().read_text(*args, **kwargs)
+    return PinnedPath(root)
+
+
+def _file_stamp(path: Path) -> tuple:
+    try:
+        stat = path.stat()
+        return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+    except OSError:
+        return (-1, -1, -1)
+
+
+def project_config(root: Path, cache: "ProjectViewCache | None" = None) -> dict:
     """#393: the one read of a project's handsoff.toml in a Fleet build:
-    the loaded config (None when it does not load) and (#389) its configured
-    [project] name, which load_config does not keep."""
+    the loaded config (None when it does not load, with the reason) and
+    (#389) its configured [project] name, which load_config does not keep.
+    With `cache`, an unchanged file is not read at all."""
     root = Path(root)
+    stamp = _file_stamp(root / "handsoff.toml")
+    hit = cache.config(str(root), stamp) if cache is not None else None
+    if hit is not None:
+        return hit
     try:
-        cfg = lib.load_config(root)
-    except (lib.HandsoffError, OSError, ValueError):
-        cfg = None
+        text = (root / "handsoff.toml").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = None
+    except OSError as exc:
+        text = exc
+    cfg, error, value = None, None, None
     try:
-        value = (tomllib.loads((root / "handsoff.toml").read_text(encoding="utf-8")).get("project") or {}).get("name")
-    except (OSError, ValueError, AttributeError):
-        value = None
-    return {"cfg": cfg, "configured_name": value.strip() if isinstance(value, str) and value.strip() else None}
+        if isinstance(text, OSError):
+            raise lib.HandsoffError(f"cannot load {root / 'handsoff.toml'}: {text}")
+        cfg = lib.load_config(_pinned_root(root, text) if isinstance(text, str) else root)
+    except (lib.HandsoffError, OSError, ValueError) as exc:
+        error = str(exc)
+    if isinstance(text, str):
+        try:
+            value = (tomllib.loads(text).get("project") or {}).get("name")
+        except (ValueError, AttributeError):
+            value = None
+    config = {"cfg": cfg, "configured_name": value.strip() if isinstance(value, str) and value.strip() else None,
+              "config_error": error}
+    if cache is not None:
+        cache.put_config(str(root), stamp, config)
+    return config
 
 
 def card_name(root: Path, configured_name: str | None, origin: str | None = None) -> str:
@@ -637,6 +676,18 @@ class ProjectViewCache:
         self.max_age = max_age
         self.lock = threading.Lock()
         self.entries: dict[str, dict] = {}
+        self.configs: dict[str, dict] = {}
+
+    def config(self, root: str, stamp: tuple) -> dict | None:
+        with self.lock:
+            entry = self.configs.get(root)
+        if entry and entry["stamp"] == stamp and time.monotonic() - entry["at"] < self.max_age:
+            return entry["config"]
+        return None
+
+    def put_config(self, root: str, stamp: tuple, config: dict) -> None:
+        with self.lock:
+            self.configs[root] = {"stamp": stamp, "config": config, "at": time.monotonic()}
 
     def get(self, root: str, signature: tuple) -> dict | None:
         with self.lock:
@@ -653,6 +704,8 @@ class ProjectViewCache:
         with self.lock:
             for root in set(self.entries) - roots:
                 del self.entries[root]
+            for root in set(self.configs) - roots:
+                del self.configs[root]
 
 
 VIEW_CACHE = ProjectViewCache()
@@ -662,16 +715,21 @@ def project_facts(root: Path, config: dict | None = None, cache: ProjectViewCach
     """#393: the config read once, plus the snapshot and run state, from
     `cache` when the project's artifact signature is unchanged."""
     root = Path(root)
-    config = config if config is not None else project_config(root)
+    config = config if config is not None else project_config(root, cache)
     cfg = config["cfg"]
     signature = artifact_signature(root, cfg)
     hit = cache.get(str(root), signature) if cache is not None else None
     if hit is not None:
         return {**config, "snap": hit["snap"], "state": hit["state"]}
-    try:
-        snap = dashboard.build_snapshot(root)
-    except Exception as exc:  # fleet must retain a broken project as an actionable row
-        snap = {"initialized": False, "error": f"{type(exc).__name__}: {exc}"}
+    if cfg is None:
+        # The snapshot would load the same config and fail the same way.
+        snap = {"initialized": False, "generated_at": datetime.now(timezone.utc).isoformat(), "root": str(root),
+                "error": config.get("config_error") or "handsoff.toml did not load"}
+    else:
+        try:
+            snap = dashboard.build_snapshot(root, cfg=cfg)
+        except Exception as exc:  # fleet must retain a broken project as an actionable row
+            snap = {"initialized": False, "error": f"{type(exc).__name__}: {exc}"}
     state = _run_state(root, cfg) if cfg is not None else {"state": "unreadable", "numbers": set()}
     if cache is not None:
         cache.put(str(root), signature, snap, state)
@@ -947,7 +1005,7 @@ def _build_fleet(path: Path | None = None, public_base: str | None = None,
     roots = [Path(entry["root"]) for entry in entries]
     owners = _probe_owners(roots)
     # #393: one config read per project per build, reused by every reader below.
-    facts = [project_facts(root, project_config(root), cache) for root in roots]
+    facts = [project_facts(root, project_config(root, cache), cache) for root in roots]
     cache.retain({str(root) for root in roots})
     projects = [_public_dashboard_url(project_view(entry, signals, facts=fact, owner=owner), public_base)
                 for entry, fact, owner in zip(entries, facts, owners)]

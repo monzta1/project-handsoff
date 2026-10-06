@@ -257,20 +257,45 @@ LEGACY_ITEM_KEYS = tuple(
 )
 
 
-def _migrate_flat_items(items: MutableMapping[str, Any]) -> None:
+def _migrate_flat_items(items: MutableMapping[str, Any]) -> bool:
     """#381: lift flat ``commented``/``closed``/``ticked`` rows into pending
     operations rows. The flat values stay under ``legacy`` as evidence and
-    are never completion proof; read-back decides."""
+    are never completion proof; read-back decides. Returns whether any item
+    was migrated."""
+    migrated = False
     for item_id, item in items.items():
         if not isinstance(item, MutableMapping):
             raise ReadOnlyTransactionError(f"close transaction item {item_id} is malformed")
         flat = {key: item.pop(key) for key in list(item) if key in LEGACY_ITEM_KEYS}
         if not flat:
             continue
-        item.setdefault("legacy", {}).update(flat)
+        migrated = True
+        legacy = item.setdefault("legacy", {})
+        legacy.update(flat)
+        if "state" in item:
+            legacy["state"] = item["state"]
+        item["state"] = "open"
         operations = item.setdefault("operations", {})
         for name in ITEM_OPERATIONS[1:]:
             operations.setdefault(name, _pending_operation())
+    return migrated
+
+
+def _reopen_report_gates(record: MutableMapping[str, Any]) -> None:
+    """#381: a migrated item is pending, so the report step and the
+    transaction completion that rested on it are pending too; otherwise
+    ``run`` returns early and nothing is ever observed. The prior values
+    stay under ``legacy`` as evidence."""
+    legacy = record.setdefault("legacy", {})
+    step = record["steps"].get("final_report_post")
+    if isinstance(step, MutableMapping) and step.get("state") != "pending":
+        legacy["final_report_post"] = deepcopy(dict(step))
+        record["steps"]["final_report_post"] = _pending_operation()
+    if record.get("state") == "complete":
+        legacy["state"] = "complete"
+        legacy["completed_at"] = record.get("completed_at")
+        record["state"] = "open"
+        record["completed_at"] = None
 
 
 def new_transaction(root: str | os.PathLike[str], run_token: str) -> dict[str, Any]:
@@ -316,7 +341,8 @@ def migrate_transaction(raw: Mapping[str, Any] | None, *, root: str | os.PathLik
         raise ReadOnlyTransactionError("close transaction steps/items are malformed")
     if record.get("state") not in {"open", "complete"}:
         raise ReadOnlyTransactionError("close transaction state is malformed")
-    _migrate_flat_items(record["items"])
+    if _migrate_flat_items(record["items"]):
+        _reopen_report_gates(record)
     return record
 
 

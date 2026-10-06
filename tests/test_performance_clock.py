@@ -411,8 +411,12 @@ class ALateResultIsQuarantined(HandsoffTestCase):
         self.init("Late result")
         self.enterContext(session_fields_accepted("quarantined_result"))
 
-    def _pause(self):
+    def _pause(self, lose_record=False):
         supervisor.performance_tick(self.tmp, now=datetime.now(timezone.utc) + timedelta(minutes=121))
+        if lose_record:
+            # #385: only the timeline journal says the episode is paused.
+            supervisor._runtime_path(self.tmp, supervisor.PERFORMANCE_RECORD).unlink()
+            self.assertTrue(supervisor._runtime_path(self.tmp, supervisor.PERFORMANCE_TIMELINE_JOURNAL).exists())
 
     def _launch(self, spec, stdout="", work=None):
         out = io.StringIO()
@@ -436,8 +440,8 @@ class ALateResultIsQuarantined(HandsoffTestCase):
         sid = status["current_agent_sessions"][role]
         return status, sid, status["agent_sessions"][sid]
 
-    def test_a_reviewer_verdict_in_a_paused_episode_is_held_not_dispatched(self):
-        self._pause()
+    def test_a_reviewer_verdict_in_a_paused_episode_is_held_not_dispatched(self, lose_record=False):
+        self._pause(lose_record)
         code, out = self._launch(self._reviewer(), APPROVED)
         self.assertEqual(code, 0)
         status, sid, session = self._session("reviewer")
@@ -452,13 +456,13 @@ class ALateResultIsQuarantined(HandsoffTestCase):
                          [(sid, "episode-1", "reviewer")])
         self.assertIn("LATE_RESULT_QUARANTINED", out)
 
-    def test_an_implementer_workspace_in_a_paused_episode_is_left_unapplied(self):
+    def test_an_implementer_workspace_in_a_paused_episode_is_left_unapplied(self, lose_record=False):
         (self.tmp / "a.txt").write_text("original\n")
         for args in (["init", "-q"], ["add", "-A"],
                      ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base"]):
             subprocess.run(["git", *args], cwd=self.tmp, check=True, capture_output=True)
         self.addCleanup(shutil.rmtree, lib.implementer_workspace_dir(self.tmp), True)
-        self._pause()
+        self._pause(lose_record)
         spec = runtime.LaunchSpec("implementer", "codex", "default", ("/bin/codex", "exec", "-"),
                                   str(self.tmp), "bounded task", project_root=str(self.tmp.resolve()),
                                   owned_paths=("a.txt",))
@@ -476,6 +480,12 @@ class ALateResultIsQuarantined(HandsoffTestCase):
                           for e in self._events("late_result_quarantined")],
                          [(sid, "episode-1", "implementer")])
         self.assertIn("LATE_RESULT_QUARANTINED", out)
+
+    def test_a_reviewer_verdict_is_held_when_only_the_journal_records_the_pause(self):
+        self.test_a_reviewer_verdict_in_a_paused_episode_is_held_not_dispatched(lose_record=True)
+
+    def test_an_implementer_workspace_is_held_when_only_the_journal_records_the_pause(self):
+        self.test_an_implementer_workspace_in_a_paused_episode_is_left_unapplied(lose_record=True)
 
     def test_a_result_in_a_healthy_episode_proceeds(self):
         supervisor.performance_tick(self.tmp)
