@@ -49,7 +49,6 @@ class ReproducibleBuildTest(unittest.TestCase):
         cls.scratch = tempfile.TemporaryDirectory(prefix="release-wheel-test-")
         base = Path(cls.scratch.name)
         cls.commit = git(ROOT, "rev-parse", "HEAD")
-        cls.other = git(ROOT, "rev-parse", "HEAD~1")
         clean, dirty = base / "clean", base / "dirty"
         for checkout in (clean, dirty):
             subprocess.run(["git", "clone", "--quiet", str(ROOT), str(checkout)], check=True, capture_output=True)
@@ -68,6 +67,12 @@ class ReproducibleBuildTest(unittest.TestCase):
         (egg / "PKG-INFO").write_text("Version: 0.0.0\n")
         cls.clean_wheel = run_script(clean, cls.commit, base / "out-clean")
         cls.dirty_wheel = run_script(dirty, cls.commit, base / "out-dirty")
+        # a second commit made here, not HEAD~1: CI checks out one commit
+        lib_file = clean / "bin" / "handsoff_lib.py"
+        lib_file.write_text(lib_file.read_text() + "# a later commit\n")
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-am", "later"],
+                       cwd=clean, check=True, capture_output=True)
+        cls.other = git(clean, "rev-parse", "HEAD")
         cls.other_wheel = run_script(clean, cls.other, base / "out-other")
 
     @classmethod
