@@ -43,7 +43,9 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-host-") as tmp:
 
     run("supervisor", "--root", str(project), "advance", "2", "10")
     synced = run("supervisor", "--root", str(project), "work-items-sync", "--by", "host-supervisor")
-    assert "WORK_ITEM_SYNC_SKIPPED: ask-" in synced.stdout, synced.stdout
+    # #400: a run initialised with --item derives nothing from its title, so
+    # there is no title ask to skip and none appears
+    assert "ask-" not in synced.stdout, synced.stdout
     registry = json.loads((project / "handsoff-acceptance.json").read_text(encoding="utf-8"))["work_items"]
     assert [item["id"] for item in registry] == ["issue-1"], registry
 
