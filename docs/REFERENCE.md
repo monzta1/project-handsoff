@@ -468,7 +468,7 @@ python3 bin/handsoff_manifest.py --version vX.Y.Z, then retry`, so a reviewer ne
 3. Point the wheel references in `INSTALL.md` and this README at `vX.Y.Z`; the rollback example in `INSTALL.md` keeps its older release under its `handsoff-doc: intentional` marker.
 4. Commit as `Bump to vX.Y.Z` (or fold the bump into the feature commit, as the field-note fixes do), then `git tag -a vX.Y.Z -m "vX.Y.Z: one-line summary"`.
 5. `git push origin main` and `git push origin vX.Y.Z`.
-6. `python3 -m pip wheel --no-deps -w dist .` (the checkout's own `build/` folder shadows the `build` module, so `python3 -m build` fails here) and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
+6. `python3 scripts/build_release_wheel.py vX.Y.Z --out dist` (it builds the tag commit's tracked tree, exported into a temporary directory, with `SOURCE_DATE_EPOCH` set to the commit's time, and prints the wheel path and sha256; the bytes are reproducible from any clone, and `tests/live_release_smoke.py` rebuilds the tag the same way and requires the published asset to match it byte for byte, #403) and `gh release create vX.Y.Z dist/project_handsoff-X.Y.Z-py3-none-any.whl --title vX.Y.Z --notes "..."`; the asset URL is the one `INSTALL.md` prints.
 7. `handsoff install-check` (it refuses while any registered run has a live managed session, naming the root, role and session id; `--force --by <you>` is ledgered on each affected run, #216), then upgrade the dedicated environment per `INSTALL.md` ("Clean patch upgrade") and confirm with `handsoff version --json` and `handsoff doctor` on a thin project. Projects on `0.3.*` need nothing else.
 
 #### What CI runs
