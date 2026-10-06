@@ -224,6 +224,25 @@ class APhaseFiveReviewerLaunch(HandsoffTestCase):
         self.assertTrue(records, "verify must have written the ledger")
         self._set_phase(5, original_symptom_evidence_id=records[-1]["run_id"])
 
+    def test_handsoff_state_files_are_not_changed_files_even_when_not_gitignored(self):
+        """REQ-004's live proof: a project whose .gitignore does not cover
+        Handsoff's own state listed 21 .handsoff* files and ledger backups as
+        changed files and counted them in the size estimate."""
+        (self.tmp / ".gitignore").write_text("")
+        before = lib.implementation_review_diff(self.tmp)
+        for name in (".handsoff-live.json", ".handsoff-preflight.json", "handsoff-status.json.bak",
+                     ".handsoff-runtime-control/performance.json"):
+            path = self.tmp / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("{}" * 5000)
+        diff = lib.implementation_review_diff(self.tmp)
+        paths = [entry["path"] for entry in diff["files"]]
+        created = {".handsoff-live.json", ".handsoff-preflight.json", "handsoff-status.json.bak",
+                   ".handsoff-runtime-control/performance.json"}
+        self.assertFalse(created & set(paths), paths)
+        self.assertIn("src/mod.py", paths)
+        self.assertEqual(diff["bytes"], before["bytes"])
+
     def _set_phase(self, number, **extra):
         path = self.tmp / "handsoff-status.json"
         status = json.loads(path.read_text())

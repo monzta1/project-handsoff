@@ -6305,10 +6305,24 @@ def implementation_review_diff(root: Path) -> dict:
     base = _review_merge_base(root)
     files: dict[str, list[str]] = {}
     diff_bytes = 0
+    # The packet's "what changed" is the digest's: Handsoff's own state files,
+    # backups, locks and every `.handsoff*` path are run artifacts, not code
+    # under review, and must not inflate the packet or the size estimate.
+    try:
+        names = load_config(root)
+        state_files = {names["status_file"], names["acceptance_file"], names["event_log"],
+                       names["verification_log"]}
+    except (HandsoffError, OSError, KeyError, ValueError):
+        state_files = {"handsoff-status.json", "handsoff-acceptance.json", "handsoff-events.jsonl",
+                       "handsoff-verifications.jsonl"}
+    import handsoff_ledger
+
+    def reviewed(name: str) -> bool:
+        return bool(name) and not handsoff_ledger._digest_excluded(name, state_files)
     if base:
         names = _review_git(root, "diff", "--name-only", "--no-renames", "-z", base, "--")
         for name in (names.stdout.decode("utf-8", "replace").split("\0") if names and names.returncode == 0 else []):
-            if name:
+            if reviewed(name):
                 files.setdefault(name, [])
         hunks = _review_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", base, "--")
         current, in_header = None, False
@@ -6317,15 +6331,21 @@ def implementation_review_diff(root: Path) -> dict:
                 current, in_header = None, True
             elif in_header and line.startswith(("--- a/", "+++ b/")):
                 current = line[6:]
-            elif current is not None and (match := _REVIEW_HUNK.match(line)):
+            elif current is not None and reviewed(current) and (match := _REVIEW_HUNK.match(line)):
                 in_header = False
                 files.setdefault(current, []).append(f"-{match.group(1)} +{match.group(2)}")
         full = _review_git(root, "diff", "--no-color", "--no-ext-diff", "--no-renames", base, "--")
-        diff_bytes += len(full.stdout) if full is not None and full.returncode == 0 else 0
+        if full is not None and full.returncode == 0:
+            # count only the reviewed files' sections of the diff
+            for section in full.stdout.split(b"\ndiff --git "):
+                header = section.split(b"\n", 1)[0].decode("utf-8", "replace")
+                path = header.rsplit(" b/", 1)[-1] if " b/" in header else ""
+                if reviewed(path):
+                    diff_bytes += len(section)
     untracked = _review_git(root, "ls-files", "--others", "--exclude-standard", "-z")
     for name in (untracked.stdout.decode("utf-8", "replace").split("\0")
                  if untracked is not None and untracked.returncode == 0 else []):
-        if not name:
+        if not reviewed(name):
             continue
         try:
             content = (root / name).read_bytes()
