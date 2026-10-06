@@ -5,8 +5,10 @@ Proves that the release this tree declares is the one published and
 installed, per the README's "Cutting a release" procedure: the annotated tag
 on origin resolves to a commit origin main carries whose tree declares the
 same version in pyproject.toml and handsoff-runtime.json; the public GitHub
-release carries the wheel whose sha256 equals the locally built dist wheel
-(the asset URL is the one INSTALL.md prints); and the dedicated-venv
+release carries the wheel that scripts/build_release_wheel.py builds from the
+tag commit, byte for byte (#403: the tag is rebuilt here, in a temporary
+directory, and compared through compare_wheels; the asset URL is the one
+INSTALL.md prints); and the dedicated-venv
 installation is that published wheel, member for member, with the engine
 manifest identity `version --json` reports. Read-only: nothing here fetches
 into or otherwise changes the checkout, and no GitHub credential is needed
@@ -17,6 +19,8 @@ import io
 import json
 import re
 import subprocess
+import sys
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -25,6 +29,8 @@ ROOT = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_outp
                            text=True, check=True).stdout.strip())
 HANDSOFF = str(Path.home() / ".local" / "bin" / "handsoff")
 VENV = (Path.home() / ".local" / "share" / "handsoff" / "venv").resolve()
+sys.path.insert(0, str(ROOT / "scripts"))
+from build_release_wheel import compare_wheels  # noqa: E402
 
 
 def git(*args: str) -> str:
@@ -100,9 +106,10 @@ else:
 assert ancestry, f"tag {tag} commit {tag_commit} is not on origin main {origin_main}"
 
 # 2. The public GitHub release carries the wheel, and it is byte-for-byte the
-#    local build.
-local_wheel = ROOT / "dist" / wheel_name
-assert local_wheel.is_file(), f"local wheel missing: {local_wheel} (python3 -m build --wheel)"
+#    wheel scripts/build_release_wheel.py builds from the tag commit (#403).
+#    The build runs in a temporary directory, from this checkout's objects
+#    when it has the commit, otherwise from a shallow clone of the tag into
+#    that directory; no build output in the checkout is ever read.
 release = fetch_json(f"https://api.github.com/repos/{slug}/releases/tags/{tag}", "op-ghrel", "get_release_by_tag")
 assets = release.get("assets", [])
 if not assets and release.get("assets_url"):
@@ -113,7 +120,24 @@ expected_url = f"https://github.com/{slug}/releases/download/{tag}/{wheel_name}"
 assert asset["browser_download_url"] == expected_url, (asset["browser_download_url"], expected_url)
 published = fetch_bytes(expected_url, "op-ghdl", "download_release_asset", timeout=120)
 published_sha256 = sha256(published)
-assert published_sha256 == sha256(local_wheel.read_bytes()), "published wheel differs from the local build"
+with tempfile.TemporaryDirectory(prefix="handsoff-release-smoke-") as scratch:
+    checkout = ROOT
+    if not have_objects:
+        checkout = Path(scratch) / "tag"
+        operation("op-ghclone", "clone_tag", "started")
+        try:
+            subprocess.run(["git", "clone", "--quiet", "--depth", "1", "--branch", tag, remote, str(checkout)],
+                           capture_output=True, check=True)
+        except Exception:
+            operation("op-ghclone", "clone_tag", "failed")
+            raise
+        operation("op-ghclone", "clone_tag", "succeeded")
+    built_path = Path(subprocess.run([sys.executable, str(ROOT / "scripts" / "build_release_wheel.py"), tag_commit,
+                                      "--out", str(Path(scratch) / "wheel")], cwd=checkout, capture_output=True,
+                                     text=True, check=True).stdout.splitlines()[0])
+    assert built_path.name == wheel_name, (built_path.name, wheel_name)
+    built = built_path.read_bytes()
+compare_wheels(published, built)
 
 # 3. The dedicated-venv installation IS the published wheel: every module and
 #    data member installed from it is byte-identical, and the engine manifest
