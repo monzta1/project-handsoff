@@ -572,7 +572,9 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
                 "issue", number,
                 supplied or tickets.get(number, {}).get("title") or f"Issue #{number}",
             )
-    else:
+    elif acceptance.get("work_items_explicit") is not True:
+        # #400: a scope init named with --item is the whole scope; the title
+        # feeds derivation only for a run initialised without one.
         # Explicit separators are promises. A segment containing issue refs
         # contributes those issues; a segment without one remains a plain ask.
         parts = [part.strip(" -\t") for part in

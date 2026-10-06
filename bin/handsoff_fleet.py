@@ -335,10 +335,21 @@ def _age_text(stamp: str | None) -> str:
 
 
 def _entry_repo(entry: dict) -> str | None:
-    """#400: the owner/name a registered run belongs to, read from its root's
-    origin remote. Never stored on the register: an older engine refuses a
-    register entry with a key it does not know, so the format stays as is."""
-    return signals_module.origin_repo(Path(entry["root"]))
+    """#400: the owner/name a registered run belongs to: the repository its
+    init recorded on its own acceptance registry at claim time, so a later
+    origin change never releases its tickets. Only a run with no recorded
+    repository (initialised before #400) is read from its root's origin.
+    Never stored on the register: an older engine refuses a register entry
+    with a key it does not know, so the format stays as is."""
+    root = Path(entry["root"])
+    try:
+        acceptance = lib.load_unique_json(lib.acceptance_path(root, lib.load_config(root)))
+    except (lib.HandsoffError, OSError, ValueError):
+        acceptance = {}
+    if isinstance(acceptance, dict) and "repository" in acceptance:
+        recorded = acceptance["repository"]
+        return recorded if isinstance(recorded, str) and recorded else None
+    return signals_module.origin_repo(root)
 
 
 def ticket_owners(numbers: set[int], *, exclude_root: Path | None = None, path: Path | None = None,

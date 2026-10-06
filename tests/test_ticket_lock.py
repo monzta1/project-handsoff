@@ -212,15 +212,44 @@ class TicketLockTests(HandsoffTestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("repository monzta1/sentinel-sandbox", r.stdout)
 
-    def test_400_an_owners_repository_is_read_from_its_root_on_every_check(self):
+    def _acceptance(self, root):
+        return json.loads((root / "handsoff-acceptance.json").read_text())
+
+    def test_400_an_owner_whose_origin_changes_after_its_claim_still_holds_its_ticket(self):
+        """The owner's repository is the one recorded on its own acceptance
+        registry at claim time, not whatever its origin says later."""
+        self._origin(self.first, "monzta1/sentinel")
         self.assertEqual(self._init(self.first, "#4").returncode, 0)
+        self.assertEqual(self._acceptance(self.first)["repository"], "monzta1/sentinel")
+        self.assertNotIn("repo", self._entry(self.first))
         self._make_alive(self.first)
+        subprocess.run(["git", "remote", "set-url", "origin", "https://github.com/monzta1/elsewhere.git"],
+                       cwd=self.first, check=True)
         second = self._project("second")
         self._origin(second, "monzta1/sentinel")
         r = self._init(second, "#4")
-        self.assertEqual(r.returncode, 1, "an owner whose root has no origin still holds #4")
-        # the same entry, once its root has an origin, is in that repository
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("repository monzta1/sentinel,", r.stdout)
+        # an owner with no origin at claim stays unknown when one is added later
+        third, fourth = self._project("third"), self._project("fourth")
+        self.assertEqual(self._init(third, "#5").returncode, 0)
+        self.assertIsNone(self._acceptance(third)["repository"])
+        self._make_alive(third)
+        self._origin(third, "monzta1/sentinel-sandbox")
+        self._origin(fourth, "monzta1/sentinel")
+        r = self._init(fourth, "#5")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("repository unknown", r.stdout)
+
+    def test_400_an_owner_initialised_before_400_is_read_from_its_origin(self):
         self._origin(self.first, "monzta1/sentinel-sandbox")
+        self.assertEqual(self._init(self.first, "#4").returncode, 0)
+        self._make_alive(self.first)
+        acceptance = self._acceptance(self.first)
+        del acceptance["repository"]  # what a pre-#400 engine wrote
+        (self.first / "handsoff-acceptance.json").write_text(json.dumps(acceptance))
+        second = self._project("second")
+        self._origin(second, "monzta1/sentinel")
         r = self._init(second, "#4")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 

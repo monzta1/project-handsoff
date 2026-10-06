@@ -626,10 +626,11 @@ def cmd_init(args) -> int:
             return 1
     # #400: a qualified owner/name#N (or issue URL) of the run's own
     # repository is its issue-N; another repository's ticket is refused,
-    # since a run's issue items belong to its own repository.
+    # since a run's issue items belong to its own repository. The title is
+    # checked as well as every --item.
     import handsoff_fleet_signals
     own_repo = handsoff_fleet_signals.origin_repo(root)
-    foreign = lib.foreign_issue_refs(args.item or ([args.feature] if source_design is None else []), own_repo)
+    foreign = lib.foreign_issue_refs([args.feature, *(args.item or [])], own_repo)
     if foreign:
         print(f"SHIP_FEATURE_BLOCKED: {foreign[0]} is an issue of {foreign[0].split('#')[0]}, not of this "
               f"run's repository {own_repo}; a run's issue items belong to its own repository")
@@ -667,13 +668,17 @@ def cmd_init(args) -> int:
                 acceptance["work_items"] = source_design["items"]
         # A carried review stays valid only while the policy and scope it was bound to still hold;
         # a take-up that changes either earns a new review rather than inheriting the old one.
+        if args.item:
+            # #400: the scope was named; the title never derives items later.
+            acceptance["work_items_explicit"] = True
         if source_design is None or args.item or not acceptance.get("work_items"):
             acceptance["work_items"] = lib.derive_work_item_registry(
                 acceptance, cfg, now=now, explicit_items=args.item, repo=own_repo,
             )
-        if args.item:
-            # #400: the scope was named; the title never mints asks later.
-            acceptance["work_items_explicit"] = True
+        # #400: the repository the ticket claim below is made in, recorded on
+        # the run's own registry (never the shared register) so a later
+        # origin change cannot release the claim. None when there is no origin.
+        acceptance["repository"] = own_repo
         numbers = {item["number"] for item in acceptance["work_items"]
                    if item.get("kind") == "issue" and isinstance(item.get("number"), int)}
         adopted = {"adopted_from": []}

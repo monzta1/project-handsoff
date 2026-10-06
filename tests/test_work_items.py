@@ -177,11 +177,13 @@ class WorkItemCliTests(HandsoffTestCase):
 
     def test_sync_skips_title_ask_beside_issue_items(self):
         # REQ-005: feature-title asks are skipped beside persisted issue items.
+        # #400: a scope named with --item never derives from the title at all,
+        # so there is no title ask to skip.
         initialized = run(["init", "Feature without issue refs", "--item", "#70"], cwd=self.tmp)
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
         synced = run(["work-items-sync", "--by", "supervisor"], cwd=self.tmp)
         self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
-        self.assertIn("WORK_ITEM_SYNC_SKIPPED: ask-", synced.stdout)
+        self.assertNotIn("ask-", synced.stdout)
         self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-70"])
 
     def test_sync_item_appends_explicit_issue(self):
@@ -256,6 +258,30 @@ class WorkItemCliTests(HandsoffTestCase):
         control = dict(acceptance, work_items=acceptance["work_items"] + [dict(
             acceptance["work_items"][0], id="ask-title-asks-stop", kind="ask", number=None)])
         self.assertTrue(any("ask-title-asks-stop" in e for e in gate(control)), "the gate still bites")
+
+    def test_400_title_refs_are_checked_and_never_derive_items_beside_an_explicit_scope(self):
+        self._origin("monzta1/sentinel")
+        refused = run(["init", "Fix other/repo#4", "--item", "#5"], cwd=self.tmp)
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("other/repo#4 is an issue of other/repo", refused.stdout)
+        self.assertFalse((self.tmp / "handsoff-status.json").exists())
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
+        started = run(["init", "Fix #4", "--item", "#5"], cwd=self.tmp)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-5"])
+        folder = self.tmp / ".handsoff-fixture"
+        folder.mkdir()
+        tx = folder / "tx.json"
+        tx.write_text(json.dumps({"operations": [
+            {"op": "update", "id": "REQ-001", "fields": {"type": "primary_fix", "requirement": "[#5] refs",
+                                                          "verification": "automated", "tests": ["true"]}}]}))
+        applied = run(["criteria-apply", "--file", str(tx), "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-5"])
+        synced = run(["work-items-sync", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-5"])
 
     def test_400_a_run_without_item_keeps_title_derived_asks(self):
         started = run(["init", "fix parser; improve copy"], cwd=self.tmp)
