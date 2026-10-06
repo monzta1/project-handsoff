@@ -6232,6 +6232,271 @@ def design_review_packet_summary(status: dict) -> dict | None:
 
 
 # --------------------------------------------------------------------------
+# #397: the implementation review packet. The #381-#393 run's first review
+# spent 199K of a 200K budget re-deriving every criterion's results from a
+# 30-file diff and verbose tests, and ended with no verdict. The engine
+# already holds those results, so it hands them over: per criterion, each
+# test command's latest ledger result, then the changed files' hunk ranges.
+# --------------------------------------------------------------------------
+
+MAX_IMPLEMENTATION_REVIEW_PACKET_BYTES = 65536
+IMPLEMENTATION_REVIEW_TAIL_BYTES = 1024
+IMPLEMENTATION_REVIEW_TRIMMED_TAIL_BYTES = 256
+IMPLEMENTATION_REVIEW_DESCRIPTION_CHARS = 600
+IMPLEMENTATION_REVIEW_TRIMMED_DESCRIPTION_CHARS = 300
+#: Review tokens per diff token, measured on the #381-#393 run: an 81K-token
+#: diff took 121K and 74K tokens with a lean packet, 199K without. One
+#: constant so a later run's data can tune it.
+IMPLEMENTATION_REVIEW_DIFF_MULTIPLE = 1.5
+IMPLEMENTATION_REVIEW_EVIDENCE_KINDS = ("manual", "browser", "live")
+IMPLEMENTATION_REVIEW_INSTRUCTIONS = (
+    "Judge from this packet: each criterion's recorded results and the changed hunks. "
+    "Open only the hunks you doubt. Rerun the tests once, quietly: send the output to a file "
+    "and read only its final lines."
+)
+IMPLEMENTATION_REVIEW_COMPACT_INSTRUCTIONS = (
+    "Judge from this packet and your slices. Do not run tests; judge from the recorded results."
+)
+
+
+def implementation_review_packet_applies(status: object, role: str) -> bool:
+    """A Reviewer launched at Phase 5, and nothing else."""
+    if role != "reviewer" or not isinstance(status, dict):
+        return False
+    try:
+        return int(status.get("phase_number") or 0) == 5
+    except (TypeError, ValueError):
+        return False
+
+
+def _review_git(root: Path, *args: str) -> "subprocess.CompletedProcess[bytes] | None":
+    try:
+        return subprocess.run(["git", *args], cwd=str(root), capture_output=True, check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _review_merge_base(root: Path) -> str | None:
+    """The merge base with the default branch: origin's declared HEAD first,
+    then the conventional names. None outside a repository."""
+    candidates = []
+    symbolic = _review_git(root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    if symbolic is not None and symbolic.returncode == 0 and symbolic.stdout.strip():
+        candidates.append(symbolic.stdout.decode("utf-8", "replace").strip())
+    candidates.extend(["refs/remotes/origin/main", "main", "master"])
+    for candidate in dict.fromkeys(candidates):
+        merged = _review_git(root, "merge-base", "HEAD", candidate)
+        if merged is None or merged.returncode != 0:
+            continue
+        base = merged.stdout.decode("utf-8", "replace").strip()
+        if re.fullmatch(r"[0-9a-fA-F]{40,64}", base):
+            return base.lower()
+    return None
+
+
+_REVIEW_HUNK = re.compile(r"^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@")
+
+
+def implementation_review_diff(root: Path) -> dict:
+    """Changed files with hunk ranges (`git diff -U0` from the merge base with
+    the default branch, which includes uncommitted changes to tracked files,
+    plus untracked files), and the byte size of the diff a reviewer reads."""
+    root = Path(root).resolve()
+    base = _review_merge_base(root)
+    files: dict[str, list[str]] = {}
+    diff_bytes = 0
+    if base:
+        names = _review_git(root, "diff", "--name-only", "--no-renames", "-z", base, "--")
+        for name in (names.stdout.decode("utf-8", "replace").split("\0") if names and names.returncode == 0 else []):
+            if name:
+                files.setdefault(name, [])
+        hunks = _review_git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", base, "--")
+        current, in_header = None, False
+        for line in (hunks.stdout.decode("utf-8", "replace").splitlines() if hunks and hunks.returncode == 0 else []):
+            if line.startswith("diff --git "):
+                current, in_header = None, True
+            elif in_header and line.startswith(("--- a/", "+++ b/")):
+                current = line[6:]
+            elif current is not None and (match := _REVIEW_HUNK.match(line)):
+                in_header = False
+                files.setdefault(current, []).append(f"-{match.group(1)} +{match.group(2)}")
+        full = _review_git(root, "diff", "--no-color", "--no-ext-diff", "--no-renames", base, "--")
+        diff_bytes += len(full.stdout) if full is not None and full.returncode == 0 else 0
+    untracked = _review_git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    for name in (untracked.stdout.decode("utf-8", "replace").split("\0")
+                 if untracked is not None and untracked.returncode == 0 else []):
+        if not name:
+            continue
+        try:
+            content = (root / name).read_bytes()
+        except OSError:
+            continue
+        diff_bytes += len(content)
+        lines = content.count(b"\n") + (0 if not content or content.endswith(b"\n") else 1)
+        files[name] = [f"-0,0 +1,{lines}"]
+    return {"base": base, "bytes": diff_bytes,
+            "files": [{"path": path, "hunks": files[path]} for path in sorted(files)]}
+
+
+def compact_scope_bytes(root: Path, scope: list[dict]) -> int:
+    """The bytes of a compact scope's slices: what a compact reviewer reads
+    instead of the diff."""
+    root = Path(root).resolve()
+    total = 0
+    for entry in scope:
+        try:
+            lines = (root / entry["path"]).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        total += len("\n".join(lines[entry["start"] - 1:entry["end"]]).encode("utf-8")) + 1
+    return total
+
+
+def _review_tail(text: str, limit: int) -> str:
+    raw = text.encode("utf-8", "replace")
+    return raw[-limit:].decode("utf-8", "ignore") if len(raw) > limit else text
+
+
+def _review_criterion_entry(criterion: dict, records: list[dict], tail_bytes: int,
+                            description_chars: int) -> dict:
+    """One criterion: for each of its test commands the latest ledger result
+    bound to this criterion for that exact command, or 'missing'; for a
+    non-automated criterion its latest evidence record."""
+    cid = criterion["id"]
+    verification = criterion.get("verification")
+    bound = [record for record in records
+             if isinstance(record, dict) and cid in (record.get("criteria") or [])]
+    entry: dict = {"id": cid, "verification": verification}
+    if verification != "manual" and "automated" in str(verification or ""):
+        commands = []
+        for command in criterion.get("tests") or []:
+            latest = None
+            for record in bound:
+                for result in record.get("results") or []:
+                    if isinstance(result, dict) and result.get("command") == command:
+                        latest = (record, result)
+            if latest is None:
+                commands.append({"command": command, "result": "missing"})
+                continue
+            record, result = latest
+            commands.append({
+                "command": command, "run_id": record.get("run_id"), "exit_code": result.get("exit_code"),
+                "output_tail": _review_tail(redact_output_text(str(result.get("output_tail") or "")),
+                                            tail_bytes),
+            })
+        entry["commands"] = commands
+    if verification != "automated":
+        evidence = next((record for record in reversed(bound)
+                         if record.get("kind") in IMPLEMENTATION_REVIEW_EVIDENCE_KINDS), None)
+        entry["evidence"] = "missing" if evidence is None else {
+            "run_id": evidence.get("run_id"),
+            "description": str(evidence.get("description") or "")[:description_chars],
+        }
+    return entry
+
+
+def implementation_review_packet_bytes(packet: dict) -> int:
+    return len(_canonical(packet).encode("utf-8"))
+
+
+def build_implementation_review_packet(criteria: list, records: list[dict], diff: dict, *,
+                                       compact: bool = False, cap: int | None = None) -> dict:
+    """Assemble the packet and trim it deterministically to `cap` bytes.
+
+    Criterion data is kept first. Over the cap, hunk ranges collapse to
+    per-file hunk counts, then the files beyond the cap are listed only as a
+    count; `omitted` names what was dropped. If the criterion data alone
+    cannot fit, tails are cut to 256 bytes and descriptions to 300
+    characters, recorded in `truncated`; if it still cannot fit, this
+    raises, because no criterion or command result is ever dropped."""
+    cap = MAX_IMPLEMENTATION_REVIEW_PACKET_BYTES if cap is None else cap
+    criteria = [item for item in criteria or [] if isinstance(item, dict) and isinstance(item.get("id"), str)]
+    files = [item for item in diff.get("files") or [] if isinstance(item, dict)]
+
+    def assemble(entries, changed, files_omitted, omitted, truncated):
+        return {
+            "schema": 1,
+            "instructions": (IMPLEMENTATION_REVIEW_COMPACT_INSTRUCTIONS if compact
+                             else IMPLEMENTATION_REVIEW_INSTRUCTIONS),
+            "criteria": entries, "base": diff.get("base"), "changed_files": changed,
+            "files_omitted": files_omitted, "omitted": omitted, "truncated": truncated,
+        }
+
+    entries = [_review_criterion_entry(item, records, IMPLEMENTATION_REVIEW_TAIL_BYTES,
+                                       IMPLEMENTATION_REVIEW_DESCRIPTION_CHARS) for item in criteria]
+    truncated: list[str] = []
+    # The worst-case trailer, so criterion data that fits here fits with any file trimming.
+    worst = ["hunk_ranges", "files_beyond_cap"]
+    if implementation_review_packet_bytes(assemble(entries, [], len(files), worst, truncated)) > cap:
+        trimmed = [_review_criterion_entry(item, records, IMPLEMENTATION_REVIEW_TRIMMED_TAIL_BYTES,
+                                           IMPLEMENTATION_REVIEW_TRIMMED_DESCRIPTION_CHARS) for item in criteria]
+        if any(full.get("commands") != cut.get("commands") for full, cut in zip(entries, trimmed)):
+            truncated.append(f"output_tail:{IMPLEMENTATION_REVIEW_TRIMMED_TAIL_BYTES}")
+        if any(full.get("evidence") != cut.get("evidence") for full, cut in zip(entries, trimmed)):
+            truncated.append(f"description:{IMPLEMENTATION_REVIEW_TRIMMED_DESCRIPTION_CHARS}")
+        entries = trimmed
+        size = implementation_review_packet_bytes(assemble(entries, [], len(files), worst, truncated))
+        if size > cap:
+            raise HandsoffError(
+                f"implementation review packet is {size} bytes of criterion data, over the {cap}-byte "
+                "cap even with tails and descriptions cut; no criterion or command result is dropped, "
+                "so split the review or its criteria")
+    packet = assemble(entries, [{"path": item.get("path"), "hunks": list(item.get("hunks") or [])}
+                                for item in files], 0, [], truncated)
+    if implementation_review_packet_bytes(packet) <= cap:
+        return packet
+    counted = [{"path": item.get("path"), "hunk_count": len(item.get("hunks") or [])} for item in files]
+    packet = assemble(entries, counted, 0, ["hunk_ranges"], truncated)
+    if implementation_review_packet_bytes(packet) <= cap:
+        return packet
+
+    def kept(count):
+        return assemble(entries, counted[:count], len(counted) - count, worst, truncated)
+
+    low, high = 0, len(counted)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if implementation_review_packet_bytes(kept(middle)) <= cap:
+            low = middle
+        else:
+            high = middle - 1
+    return kept(low)
+
+
+def implementation_review_packet(root: Path, cfg: dict, *, compact: bool = False,
+                                 diff: dict | None = None) -> dict:
+    """#397: the packet for this project now. Read-only: it reads the
+    acceptance file, the verification ledger and git, and writes nothing."""
+    root = Path(root).resolve()
+    acceptance = load_unique_json(acceptance_path(root, cfg))
+    records, _problems = load_verifications(root, cfg)
+    return build_implementation_review_packet(
+        (acceptance or {}).get("criteria") or [], records,
+        diff if diff is not None else implementation_review_diff(root), compact=compact)
+
+
+def implementation_review_estimate(*, diff_bytes: int, packet_bytes: int) -> int:
+    """Review tokens: 1.5 times the diff's tokens plus the packet's, at four
+    bytes a token."""
+    return (math.ceil(IMPLEMENTATION_REVIEW_DIFF_MULTIPLE * diff_bytes / 4)
+            + math.ceil(packet_bytes / 4))
+
+
+def implementation_review_size_refusal(*, diff_bytes: int, packet_bytes: int, budget: int,
+                                       compact: bool) -> str | None:
+    """Refuse a review that cannot fit its budget, before it starts."""
+    estimate = implementation_review_estimate(diff_bytes=diff_bytes, packet_bytes=packet_bytes)
+    if estimate <= budget:
+        return None
+    basis = "the compact slices" if compact else "the diff"
+    return (f"the implementation review is estimated at {estimate} tokens "
+            f"({IMPLEMENTATION_REVIEW_DIFF_MULTIPLE} x {math.ceil(diff_bytes / 4)} tokens of {basis} plus "
+            f"{math.ceil(packet_bytes / 4)} packet tokens), over [agent_budget].reviewer {budget}. "
+            "Remedies: a review per implementer lane, --compact-scope PATH:START-END, "
+            "or a larger [agent_budget] reviewer budget")
+
+
+# --------------------------------------------------------------------------
 # runtime failure classification: lets the Supervisor distinguish
 # a launched agent that is working from one that failed, exhausted quota or
 # context, or was cancelled/timed out. The public launcher routes classified

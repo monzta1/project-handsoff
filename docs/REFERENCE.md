@@ -356,6 +356,25 @@ handsoff supervisor design-review-packet --by claude-supervisor \
 
 The packet (`design_review_packet` on status, printed as JSON) carries the criteria delta since the last recorded review, each prior finding with its disposition (omitted means `unresolved`), the new findings, the cached design-evidence states flagged `stale_for_packet` when the repository moved, the repository identity, `stale`/`stale_reasons`, and `files_changed_since_previous`. It is canonical and sorted, at most 65536 bytes (trimmed in a fixed order with a `truncated` map, ids and hashes never cut), and `packet_id` is the sha256 of the final body. The next managed Reviewer launch in Phase 2 receives it as `# Delta review packet` in front of the role prompt only while it matches the next attempt and the current `design_hash`; edit a criterion after generating it and the reviewer silently gets full context again until a new packet is generated. The session records `packet_id`/`design_hash`, and the `design_review_packet_generated` event carries the id, attempt, hash, byte size, and counts, never finding text. The Supervisor can run both commands through the broker (`record-design-review` with `findings`, `design-review-packet` with `dispositions`).
 
+## Implementation review packets
+
+A Reviewer launched at Phase 5 receives an engine-built packet as `# Implementation review packet` (canonical JSON) ahead of its task (#397). It is computed at launch and never stored:
+
+- `criteria`: per criterion, its `id` and `verification`; for each of its test commands the latest ledger result bound to that criterion for that exact command (`command`, `run_id`, `exit_code`, `output_tail` of at most 1 KiB) or `"result": "missing"`; for a non-automated criterion, `evidence` with its latest manual, browser or live record's `run_id` and `description` (at most 600 characters), or `"missing"`.
+- `changed_files`: each changed file with its hunk ranges, from `git diff -U0` against the merge base with the default branch (uncommitted edits included) plus untracked files; `base` names the merge base.
+- `instructions`: judge from the packet, open only doubted hunks, rerun the tests once quietly. A `--compact-scope` reviewer gets the same packet through its compact input, told instead not to run tests and to judge from the recorded results.
+
+The packet is at most 65536 bytes, trimmed in a fixed order. Criterion data is kept first. Over the cap, hunk ranges collapse to per-file `hunk_count`s, then the files beyond the cap are dropped to a `files_omitted` count; `omitted` names what was dropped (`hunk_ranges`, `files_beyond_cap`). If the criterion data alone exceeds the cap, tails are cut to 256 bytes and descriptions to 300 characters, recorded in `truncated`. If it still exceeds the cap, the launch is refused before any session or reservation, naming the packet size and the cap; no criterion or command result is ever dropped. A follow-up attempt also carries the existing `# Implementation review delta`.
+
+```bash
+handsoff supervisor implementation-review-packet            # what the next Phase-5 reviewer gets
+handsoff supervisor implementation-review-packet --compact  # the compact-scope variant
+```
+
+The command prints the packet as JSON and writes nothing: the ledger, status and acceptance files are byte-identical afterwards, and it runs during a performance pause.
+
+**Size check.** Before the scratch, the session or any reservation, a Phase-5 reviewer launch estimates the review at 1.5 times the diff's tokens (diff bytes divided by 4) plus the packet's tokens, and refuses when that exceeds `[agent_budget] reviewer`. The 1.5 multiple is measured on the #381-#393 run: an 81K-token diff took 121K and 74K tokens with a lean packet, 199K without. The refusal names the estimate, the budget and the remedies: a review per implementer lane, `--compact-scope`, or a larger reviewer budget. A compact-scope launch is estimated from its slices, not the diff.
+
 ## Follow-up reviewer profile
 
 A design that came back with two findings rarely needs the premium reviewer to read the whole thing again. With both keys set, every attempt after the first that reaches the `delta_check` rule launches the follow-up profile instead (#37):

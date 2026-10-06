@@ -81,6 +81,8 @@ READER_DRAIN_SECONDS = 60
 MAX_REPLACEMENT_INPUT_BYTES = 64 * 1024
 MAX_SUPERVISOR_REQUESTS = 8
 IMPLEMENTATION_REVIEW_PACKET_HEADING = "# Implementation review delta"
+#: #397: the engine-built packet every Phase-5 reviewer launch carries.
+IMPLEMENTATION_REVIEW_FULL_PACKET_HEADING = "# Implementation review packet"
 
 # Managed coding roles need the repository shell, not the user's entire
 # interactive Codex plugin/app/tool catalogue.  Disabling those optional
@@ -140,7 +142,13 @@ def build_compact_role_input(root: Path, task: str, scope: list[dict]) -> str:
     if len(task.encode("utf-8")) > MAX_AGENT_TASK_BYTES:
         raise lib.HandsoffError(f"task exceeds {MAX_AGENT_TASK_BYTES} UTF-8 bytes")
     slices = "\n".join(f"- {entry['path']} lines {entry['start']}-{entry['end']}" for entry in scope)
-    return ("# Sandbox\n\nYou review a compact scope. Do not run `handsoff supervisor` commands. The host "
+    # #397: a Phase-5 compact reviewer gets the same packet, told to judge
+    # from the recorded results because it cannot run them.
+    review_packet = applicable_implementation_review_packet(Path(root).resolve(), "reviewer", compact=True)
+    packet_section = ("" if review_packet is None else
+                      f"{IMPLEMENTATION_REVIEW_FULL_PACKET_HEADING}\n\n"
+                      f"{json.dumps(review_packet, sort_keys=True, separators=(',', ':'))}\n\n")
+    return (f"{packet_section}# Sandbox\n\nYou review a compact scope. Do not run `handsoff supervisor` commands. The host "
             "records your HANDSOFF_REVIEW_RESULT line.\n\n"
             "# Compact review scope\n\nYour working directory holds only these slices, one `.slice` "
             "file each, and SCOPE.json. The project is not readable and no test can run, so this "
@@ -294,6 +302,21 @@ def implementation_review_delta_packet(root: Path, cfg: dict, role: str) -> dict
     return payload
 
 
+def applicable_implementation_review_packet(root: Path, role: str, *, compact: bool = False,
+                                            diff: dict | None = None) -> dict | None:
+    """#397: the engine-built packet for a Reviewer launched at Phase 5; None
+    for any other role or phase, or an uninitialized project."""
+    if role != "reviewer":
+        return None
+    cfg = lib.load_config(root)
+    status_file = lib.status_path(root, cfg)
+    if not status_file.is_file() or not lib.acceptance_path(root, cfg).is_file():
+        return None
+    if not lib.implementation_review_packet_applies(lib.load_unique_json(status_file), role):
+        return None
+    return lib.implementation_review_packet(root, cfg, compact=compact, diff=diff)
+
+
 def build_role_input(root: Path, role: str, task: str, topic: str | None = None) -> str:
     """Build the in-memory role prompt without persisting the assigned task.
 
@@ -353,6 +376,11 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
         if packet is not None:
             packet_json = json.dumps(packet, sort_keys=True, separators=(",", ":"))
             text = f"{DESIGN_REVIEW_PACKET_HEADING}\n\n{packet_json}\n\n{text}"
+        # #397: the engine-built packet; a follow-up still carries its delta.
+        review_packet = applicable_implementation_review_packet(root, role)
+        if review_packet is not None:
+            review_json = json.dumps(review_packet, sort_keys=True, separators=(",", ":"))
+            text = f"{IMPLEMENTATION_REVIEW_FULL_PACKET_HEADING}\n\n{review_json}\n\n{text}"
         if implementation_delta is not None:
             delta_json = json.dumps(implementation_delta, sort_keys=True, separators=(",", ":"))
             text = f"{IMPLEMENTATION_REVIEW_PACKET_HEADING}\n\n{delta_json}\n\n{text}"
@@ -800,6 +828,18 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             f"leaving {provider_limit} after the {budget_decision['reserved_protocol_tokens']}-token "
             "protocol reserve"
         )
+    # #397: a Phase-5 review whose diff cannot fit the reviewer budget is
+    # refused here, before the scratch, the session or any reservation. A
+    # compact launch is estimated from its slices, not the diff.
+    if lib.implementation_review_packet_applies(run_status, role):
+        diff = lib.implementation_review_diff(root)
+        review_packet = lib.implementation_review_packet(root, cfg, compact=scope is not None, diff=diff)
+        size_refusal = lib.implementation_review_size_refusal(
+            diff_bytes=lib.compact_scope_bytes(root, scope) if scope else diff["bytes"],
+            packet_bytes=lib.implementation_review_packet_bytes(review_packet),
+            budget=cfg["agent_token_budgets"]["reviewer"], compact=scope is not None)
+        if size_refusal:
+            raise lib.HandsoffError(f"managed launch refused before session creation: {size_refusal}")
     executable = _contract_executable(cfg, adapter) if adapter in lib.CONTRACT_AGENT_ADAPTERS \
         else cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
