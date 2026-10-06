@@ -11,6 +11,9 @@ const ISSUE_FIELDS = ["number", "title", "html_url", "created_at", "closed_at", 
 const GITHUB_API = "https://api.github.com";
 const CACHE_SECONDS = 60;
 const DEFAULT_COMMITS_DAYS = 180;
+//: Two years. Everything worked on lives well inside it, and the four
+//: repositories last pushed between 2018 and 2020 fall well outside.
+const DEFAULT_ACTIVE_MONTHS = 24;
 
 class GitHubUnavailable extends Error {}
 
@@ -19,6 +22,37 @@ function commitsSince(now, days) {
   since.setUTCMilliseconds(0);
   return since.toISOString().replace(".000Z", "Z");
 }
+
+//: Which repositories the site shows.
+//:
+//: METRICS_REPOS, when set, is an explicit list and is used as given. When it
+//: is empty the token's own repositories are listed, which is the point: a new
+//: repository appears by itself and nothing has to be remembered.
+//:
+//: `affiliation=owner` rather than the default, so a repository somebody else
+//: added this account to as a collaborator does not silently join the board.
+//:
+//: Anything not pushed to within METRICS_ACTIVE_MONTHS is left out. A board
+//: showing four repositories last touched in 2018 is a board people learn to
+//: scroll past. A WINDOW rather than a list of names to exclude, so a project
+//: that goes quiet drops off on its own and one that wakes up comes back,
+//: neither needing anybody to remember.
+async function repoList(fetchImpl, token, env, tally, now) {
+  const named = String(env.METRICS_REPOS || "").split(",").map((item) => item.trim()).filter(Boolean);
+  if (named.length) return named;
+  const months = Number(env.METRICS_ACTIVE_MONTHS) > 0
+    ? Number(env.METRICS_ACTIVE_MONTHS) : DEFAULT_ACTIVE_MONTHS;
+  const cutoff = new Date(now.getTime() - months * 30 * 86400000).toISOString();
+  const mine = await readPaged(fetchImpl, token, "user/repos?affiliation=owner", tally);
+  return mine
+    .filter((row) => row && typeof row.full_name === "string" && row.full_name.includes("/"))
+    // A repository with no pushed_at has never had a commit; it is not quiet,
+    // it is empty, and it is left out for the same reason.
+    .filter((row) => typeof row.pushed_at === "string" && row.pushed_at >= cutoff)
+    .map((row) => row.full_name)
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
 
 async function readPaged(fetchImpl, token, path, tally) {
   const items = [];
@@ -77,7 +111,22 @@ export async function buildMetrics(env, fetchImpl = globalThis.fetch, now = new 
   if (!token) {
     return { status: 500, body: { error: "GitHub is not configured" } };
   }
-  const repos = String(env.METRICS_REPOS || "").split(",").map((item) => item.trim()).filter(Boolean);
+  // EVERY repository the token can see, not a list somebody has to remember
+  // to extend. METRICS_REPOS was set once in September and four repositories
+  // later the site was quietly showing a third of the work: a hand-kept list
+  // of what exists is wrong the moment anything is created, and nothing tells
+  // you it has gone stale.
+  //
+  // It stays as an explicit override, because a test wants a fixed list and
+  // somebody may one day want a subset. Empty, which is now the default, means
+  // all of them.
+  let repos;
+  try {
+    repos = await repoList(fetchImpl, token, env, { total: 0, counted: 0, rate: null }, now);
+  } catch (error) {
+    const message = error instanceof GitHubUnavailable ? error.message : `GitHub unreachable: ${error.name || "Error"}`;
+    return { status: 200, body: { generated_at: now.toISOString(), projects: [], error: message } };
+  }
   const days = Number(env.METRICS_COMMITS_DAYS) > 0 ? Number(env.METRICS_COMMITS_DAYS) : DEFAULT_COMMITS_DAYS;
   const since = commitsSince(now, days);
   const generated = now.toISOString();
