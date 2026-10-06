@@ -54,7 +54,7 @@ and its transactional write in `handsoff_ledger` (`commit`, `write_ahead`),
 which is where the journal has to live.
 
 At the first extraction the monolith was 15,013 lines across 466 top-level
-definitions. It is now 8,741 across 351, having taken the #342, #343, #349 and v0.4.2 to v0.5.7 work.
+definitions. It is now 8,761 across 351, having taken the #342, #343, #349 and v0.4.2 to v0.5.7 work.
 
 ## Stage 1: the core primitives
 
@@ -170,7 +170,7 @@ that existed nowhere, overstating the coupling by one. That is why the test
 compares in both directions: a rule that only asks "is every import declared"
 cannot see an entry that names nothing.
 
-**What is left in the monolith, measured.** `handsoff_lib` is 8,741 lines and
+**What is left in the monolith, measured.** `handsoff_lib` is 8,761 lines and
 351 top-level symbols. Seven clusters in it close cleanly under the reference
 graph and are the obvious next extractions:
 
@@ -290,7 +290,7 @@ cannot produce, which those tests had been asserting against. None of this was
 reachable while the validators lived above the ledger.
 
 **Re-export keeps the monolith naming every moved symbol**, so extracting a
-subsystem barely reduces the line count (15,013 to 8,741 after eight extractions and three features since,
+subsystem barely reduces the line count (15,013 to 8,761 after eight extractions and three features since,
 which is 44 percent out and still leaves the largest file in the tree).
 Line count is the wrong measure. What changes is that the boundary is
 enforced: `tests/test_routing_boundary.py` holds the import allowlist,
