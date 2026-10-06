@@ -76,23 +76,34 @@ class _InputPipe:
         return None
 
 
+#: #399: a safety ceiling only, so a hang cannot block CI forever. Nothing
+#: waits on it in a passing run: a gate holds until the test releases it,
+#: and a launch is awaited by its own start signal.
+CEILING_SECONDS = 300
+
+
 class _Process:
     """A fake adapter child: `work` runs in its working directory when it
-    starts, and it stays running until `gate` is set."""
+    starts, and it stays running until `gate` is set. `started` is set when
+    the launcher waits on it: the session is running and the gate blocks."""
     pid = 4242
 
-    def __init__(self, cwd, work=None, gate=None):
+    def __init__(self, cwd, work=None, gate=None, started=None):
         if work:
             work(Path(cwd))
         self._gate = gate
+        self._started = started
         self.returncode = None if gate else 0
         self.stdin = _InputPipe()
         self.stdout = io.StringIO("")
         self.stderr = io.StringIO("")
 
     def wait(self, timeout=None):
-        if self._gate is not None:
-            self._gate.wait(30)
+        if self._started is not None:
+            self._started.set()
+        if self._gate is not None and not self._gate.wait(CEILING_SECONDS):
+            self.returncode = 1  # a gate nobody released fails the launch, never passes it
+            return 1
         self.returncode = 0
         return 0
 
@@ -104,6 +115,25 @@ class _Process:
 
     def kill(self):
         return None
+
+
+class _SlowRunner:
+    """#399: a loaded CI runner, simulated. Every sleep it is asked for
+    advances its clock and takes only a sliver of real time, so a launch can
+    start minutes late without the test taking minutes."""
+
+    def __init__(self):
+        self.now = 0.0
+        self._lock = threading.Lock()
+
+    def monotonic(self):
+        with self._lock:
+            return self.now
+
+    def sleep(self, seconds):
+        with self._lock:
+            self.now += seconds
+        time.sleep(0.01)
 
 
 ORIGINAL = {"a.txt": "a original\n", "b.txt": "b original\n", "c.txt": "c original\n",
@@ -143,15 +173,41 @@ class ConcurrentImplementerTests(HandsoffTestCase):
                                   str(self.tmp), "bounded task", project_root=str(self.tmp.resolve()),
                                   owned_paths=tuple(owned) or None)
 
-    def _launch(self, spec, work=None, gate=None, seen=None):
+    def _launch(self, spec, work=None, gate=None, seen=None, started=None, delay=None):
         def factory(argv, **kwargs):
             if seen is not None:
                 seen.append(kwargs["cwd"])
-            return _Process(kwargs["cwd"], work=work, gate=gate)
+            if delay is not None:
+                delay()
+            return _Process(kwargs["cwd"], work=work, gate=gate, started=started)
         try:
             return runtime.execute_launch(spec, popen_factory=factory, beacon_interval=0.01), None
         except runtime.AgentLaunchError as exc:
             return None, exc
+
+    def _launch_thread(self, name, results, **kwargs):
+        """A launch on its own thread whose outcome, whatever it is, lands in
+        `results[name]`, so a waiter can report it rather than time out."""
+        def target():
+            try:
+                results[name] = self._launch(**kwargs)
+            except BaseException as exc:  # noqa: BLE001 - reported to the waiter, not swallowed
+                results[name] = (None, exc)
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        return thread
+
+    def _wait_started(self, name, started, thread, results, clock=time):
+        """#399: wait for the launch's own start signal while its thread is
+        alive, never a fixed wall-clock budget: a thread that ends first
+        fails the test at once with the launch's result or error."""
+        begun = clock.monotonic()
+        while not started.wait(0.02):
+            if not thread.is_alive() and not started.is_set():
+                code, error = results.get(name, (None, "no result"))
+                self.fail(f"launch {name} ended before its process started: exit {code}, error {error!r}")
+            if clock.monotonic() - begun > CEILING_SECONDS:
+                self.fail(f"launch {name} did not start within the {CEILING_SECONDS} s safety ceiling")
 
     def _status_bytes(self):
         return ((self.tmp / "handsoff-status.json").read_bytes(),
@@ -258,52 +314,98 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertIn("b.txt", failure["reason"])
 
     def test_disjoint_concurrent_writers_both_apply_in_either_order(self):
-        for order in (("A", "B"), ("B", "A")):
-            with self.subTest(order=order):
-                if order == ("B", "A"):
+        # #399: the third case is a loaded runner: B's launch starts 45
+        # simulated seconds late and every status read costs 5, past the
+        # fixed 30 s deadline that failed on CI run 37401038853.
+        for order, slow in ((("A", "B"), False), (("B", "A"), False), (("A", "B"), True)):
+            with self.subTest(order=order, slow=slow):
+                if order == ("B", "A") or slow:
                     self._fresh()
-                self._hold("c.txt")
-                gates = {"A": threading.Event(), "B": threading.Event()}
-                work = {
-                    "A": lambda cwd: (cwd / "a.txt").write_text("a by A\n"),
-                    "B": lambda cwd: ((cwd / "src" / "x.py").write_text("x = 2\n"),
-                                      (cwd / "src" / "new.py").write_text("new = True\n")),
-                }
-                owns = {"A": ("a.txt",), "B": ("src",)}
-                results, threads = {}, {}
-                with mock.patch("sys.stdout", io.StringIO()):
-                    for name in ("A", "B"):
-                        threads[name] = threading.Thread(target=lambda n=name: results.__setitem__(
-                            n, self._launch(self._spec(*owns[n]), work=work[n], gate=gates[n])))
-                        threads[name].start()
-                        self._wait_running(len(threads))
-                    status = self.read_status()
-                    running = [s for s in status["agent_sessions"].values() if s["state"] == "running"]
-                    self.assertEqual(len(running), 2)
-                    for name in order:
-                        gates[name].set()
-                        threads[name].join(30)
-                        self.assertEqual(results[name], (0, None), name)
-                self.assertEqual(self._read("a.txt"), "a by A\n")
-                self.assertEqual(self._read("src/x.py"), "x = 2\n")
-                self.assertEqual(self._read("src/new.py"), "new = True\n")
-                applied = sorted((s["owned_paths"], s["apply"])
-                                 for s in self.read_status()["agent_sessions"].values() if "apply" in s)
-                self.assertEqual(applied, [
-                    (["a.txt"], {"state": "applied", "paths": ["a.txt"]}),
-                    (["src"], {"state": "applied", "paths": ["src/new.py", "src/x.py"]}),
-                ])
-                self.assertEqual(list(self.tmp.glob(".handsoff-live-hs-*.json")), [],
-                                 "each session's own beacon is removed when it ends")
+                clock = _SlowRunner() if slow else time
+                self._concurrent_writers(order, clock, launch_delay={"B": 45} if slow else {},
+                                         read_delay=5 if slow else 0)
+                if slow:
+                    self.assertGreater(clock.monotonic(), 30, "the simulated start outlasted the old deadline")
 
-    def _wait_running(self, count):
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            sessions = self.read_status()["agent_sessions"].values()
-            if sum(s["state"] == "running" for s in sessions) >= count:
-                return
-            time.sleep(0.02)
-        self.fail(f"{count} sessions never reached running")
+    def _concurrent_writers(self, order, clock, launch_delay, read_delay):
+        self._hold("c.txt")
+        gates = {"A": threading.Event(), "B": threading.Event()}
+        started = {"A": threading.Event(), "B": threading.Event()}
+        work = {
+            "A": lambda cwd: (cwd / "a.txt").write_text("a by A\n"),
+            "B": lambda cwd: ((cwd / "src" / "x.py").write_text("x = 2\n"),
+                              (cwd / "src" / "new.py").write_text("new = True\n")),
+        }
+        owns = {"A": ("a.txt",), "B": ("src",)}
+        results, threads = {}, {}
+
+        def read_status():
+            if read_delay:
+                clock.sleep(read_delay)
+            return self.read_status()
+        try:
+            with mock.patch("sys.stdout", io.StringIO()):
+                for name in ("A", "B"):
+                    delay = (lambda s=launch_delay[name]: clock.sleep(s)) if name in launch_delay else None
+                    threads[name] = self._launch_thread(name, results, spec=self._spec(*owns[name]),
+                                                        work=work[name], gate=gates[name],
+                                                        started=started[name], delay=delay)
+                    self._wait_started(name, started[name], threads[name], results, clock)
+                running = [s for s in read_status()["agent_sessions"].values() if s["state"] == "running"]
+                self.assertEqual(len(running), 2)
+                # A has been blocked at its gate the whole time B was starting
+                self.assertTrue(threads["A"].is_alive())
+                self.assertNotIn("A", results)
+                for name in order:
+                    gates[name].set()
+                    threads[name].join(CEILING_SECONDS)
+                    self.assertEqual(results[name], (0, None), name)
+        finally:
+            for gate in gates.values():
+                gate.set()
+            for thread in threads.values():
+                thread.join(CEILING_SECONDS)
+        self.assertEqual(self._read("a.txt"), "a by A\n")
+        self.assertEqual(self._read("src/x.py"), "x = 2\n")
+        self.assertEqual(self._read("src/new.py"), "new = True\n")
+        applied = sorted((s["owned_paths"], s["apply"])
+                         for s in read_status()["agent_sessions"].values() if "apply" in s)
+        self.assertEqual(applied, [
+            (["a.txt"], {"state": "applied", "paths": ["a.txt"]}),
+            (["src"], {"state": "applied", "paths": ["src/new.py", "src/x.py"]}),
+        ])
+        self.assertEqual(list(self.tmp.glob(".handsoff-live-hs-*.json")), [],
+                         "each session's own beacon is removed when it ends")
+
+    def test_a_launch_that_fails_before_starting_fails_the_wait_at_once(self):
+        """#399: the waiter reports the launch's own error, not a timeout."""
+        self._hold("c.txt")
+        started, gate, results = threading.Event(), threading.Event(), {}
+
+        def refuse():
+            raise OSError("adapter executable vanished")  # the launch names the class, not the text
+        begun = time.monotonic()
+        try:
+            with mock.patch("sys.stdout", io.StringIO()):
+                thread = self._launch_thread("A", results, spec=self._spec("a.txt"), gate=gate,
+                                             started=started, delay=refuse)
+                with self.assertRaises(AssertionError) as caught:
+                    self._wait_started("A", started, thread, results)
+        finally:
+            gate.set()
+            thread.join(CEILING_SECONDS)
+        self.assertLess(time.monotonic() - begun, 30, "failed at once, not at a deadline")
+        self.assertFalse(started.is_set())
+        self.assertIn("launch A ended before its process started", str(caught.exception))
+        self.assertIn("codex process failed to start: OSError", str(caught.exception))
+
+    def test_a_gate_that_is_never_released_fails_the_launch(self):
+        """#399: a gate used to auto-complete after 30 s and report success."""
+        gate = threading.Event()
+        with mock.patch.object(threading.Event, "wait", return_value=False):
+            process = _Process(self.tmp, gate=gate)
+            self.assertEqual(process.wait(), 1)
+        self.assertEqual(process.returncode, 1)
 
     def test_a_host_edit_to_an_owned_path_is_refused_not_overwritten(self):
         self._hold("c.txt")

@@ -334,14 +334,27 @@ def _age_text(stamp: str | None) -> str:
     return f"{minutes} min ago" if minutes < 120 else f"{minutes // 60} h ago"
 
 
-def ticket_owners(numbers: set[int], *, exclude_root: Path | None = None, path: Path | None = None) -> list[dict]:
+def _entry_repo(entry: dict) -> str | None:
+    """#400: the owner/name a registered run belongs to, read from its root's
+    origin remote. Never stored on the register: an older engine refuses a
+    register entry with a key it does not know, so the format stays as is."""
+    return signals_module.origin_repo(Path(entry["root"]))
+
+
+def ticket_owners(numbers: set[int], *, exclude_root: Path | None = None, path: Path | None = None,
+                  repo: str | None = None) -> list[dict]:
     """Every registered run that is not closed or complete and lists one of
-    `numbers`. Caller holds registry_lock when the answer decides a write."""
+    `numbers`. Caller holds registry_lock when the answer decides a write.
+    #400: tickets compare within one repository; two known, different
+    repositories never share one, and an unknown side compares by number."""
     exclude = str(Path(exclude_root).expanduser().resolve()) if exclude_root else None
     owners = []
     for entry in load_registry(path):
         if entry["root"] == exclude or not Path(entry["root"]).is_dir():
             continue  # a root that is gone holds nothing
+        entry_repo = _entry_repo(entry)
+        if repo and entry_repo and signals_module.repo_identity(repo) != signals_module.repo_identity(entry_repo):
+            continue
         state = _run_state(Path(entry["root"]))
         if state["state"] == "none" and entry.get("state") == "open":
             # The claim was written under the lock and the status file is
@@ -357,32 +370,37 @@ def ticket_owners(numbers: set[int], *, exclude_root: Path | None = None, path: 
         if not shared:
             continue
         owner = _owner_view(Path(entry["root"])) or {}
-        owners.append({"root": entry["root"], "numbers": shared, "phase": state.get("phase"),
+        owners.append({"root": entry["root"], "repo": entry_repo, "numbers": shared, "phase": state.get("phase"),
                        "port": owner.get("port") if owner.get("health") == "live" else None,
                        "last_event": state.get("updated_at"), "age": _age_text(state.get("updated_at")),
                        "alive": owner_alive(Path(entry["root"]), state), "feature": state.get("feature")})
     return owners
 
 
-def claim_tickets(root: Path, numbers: set[int], *, adopt: bool = False, path: Path | None = None) -> dict:
+def claim_tickets(root: Path, numbers: set[int], *, adopt: bool = False, path: Path | None = None,
+                  repo: str | None = None) -> dict:
     """#166: refuse when a live registered run owns any of `numbers`; with
     `adopt`, take over only from a dead owner (closed and complete owners
     never hold a ticket). On success the run is registered in the same
-    locked transaction. Returns {'adopted_from': [...]} for the ledger."""
+    locked transaction. Returns {'adopted_from': [...]} for the ledger.
+    #400: `repo` is the run's owner/name (its origin remote when omitted)."""
     root = Path(root).expanduser().resolve()
+    repo = repo if repo is not None else signals_module.origin_repo(root)
     with registry_lock(path):
-        owners = ticket_owners(numbers, exclude_root=root, path=path)
+        owners = ticket_owners(numbers, exclude_root=root, path=path, repo=repo)
         live = [o for o in owners if o["alive"] or not adopt]
         if owners and not adopt:
             o = owners[0]
             port = f", port {o['port']}" if o.get("port") else ""
             raise lib.HandsoffError(
-                f"ticket lock: #{o['numbers'][0]} is owned by {o['root']} (phase {o['phase']}{port}, "
+                f"ticket lock: #{o['numbers'][0]} is owned by {o['root']} (repository "
+                f"{o['repo'] or 'unknown'}, phase {o['phase']}{port}, "
                 f"last event {o['age']}); run-close it first, or init --adopt if it is dead")
         if adopt and live:
             o = live[0]
             raise lib.HandsoffError(
-                f"ticket lock: #{o['numbers'][0]} is owned by a LIVE run at {o['root']} (phase {o['phase']}, "
+                f"ticket lock: #{o['numbers'][0]} is owned by a LIVE run at {o['root']} (repository "
+                f"{o['repo'] or 'unknown'}, phase {o['phase']}, "
                 f"last event {o['age']}); a live owner cannot be adopted, run-close it first")
         note_registry_state(root, numbers, "open", path=path, locked=True)
         return {"adopted_from": [{"root": o["root"], "numbers": o["numbers"], "phase": o["phase"]} for o in owners]}

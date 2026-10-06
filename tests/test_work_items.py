@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import subprocess
 import sys
 import unittest
 import json
@@ -11,6 +12,7 @@ import handsoff_lib as lib  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))
 from test_handsoff_supervisor import HandsoffTestCase, run, approve_design_review  # noqa: E402
 from tests.fixture_state import write_version_pin
+from tests.engine_patch import patch_engine
 
 
 def criterion(cid, requirement, state="not_tested", evidence=None):
@@ -74,6 +76,34 @@ class WorkItemTests(unittest.TestCase):
         new = lib.derive_work_item_registry({"feature": "", "criteria": []}, self.cfg, now=self.now,
                                             explicit_items=["29", "issue 31 docs"])
         self.assertEqual([item["id"] for item in new], ["issue-29", "ask-issue-31-docs"])
+
+    def test_400_qualified_refs_of_the_runs_own_repository_are_its_issue_items(self):
+        """#400: `--item monzta1/sentinel#4` minted ask-monzta1-sentinel-4
+        beside issue-4, an empty item Phase 8 refused until removed."""
+        empty = {"feature": "", "criteria": []}
+        for spelling in ("monzta1/sentinel#31", "Monzta1/Sentinel#31", " monzta1/sentinel#31 ",
+                         "https://github.com/monzta1/sentinel/issues/31",
+                         "https://github.com/Monzta1/sentinel/issues/31/"):
+            items = lib.derive_work_item_registry(empty, self.cfg, now=self.now, explicit_items=[spelling],
+                                                  repo="monzta1/sentinel")
+            self.assertEqual([item["id"] for item in items], ["issue-31"], spelling)
+            self.assertEqual(items[0]["title"], "Review convergence", spelling)
+        titled = lib.derive_work_item_registry(empty, self.cfg, now=self.now,
+                                               explicit_items=["monzta1/sentinel#29 Own title"],
+                                               repo="monzta1/sentinel")
+        self.assertEqual([(i["id"], i["title"]) for i in titled], [("issue-29", "Own title")])
+        # a criterion-free reference in the feature title resolves the same way
+        title = lib.derive_work_item_registry({"feature": "Ship monzta1/sentinel#31; improve docs", "criteria": []},
+                                              self.cfg, now=self.now, repo="monzta1/sentinel")
+        self.assertEqual([item["id"] for item in title], ["issue-31", "ask-improve-docs"])
+        # bare #N and N behave as before
+        bare = lib.derive_work_item_registry(empty, self.cfg, now=self.now, explicit_items=["#31", "29"],
+                                             repo="monzta1/sentinel")
+        self.assertEqual([item["id"] for item in bare], ["issue-29", "issue-31"])
+        self.assertEqual(lib.foreign_issue_refs(["monzta1/sentinel#4", "#5", "5"], "monzta1/sentinel"), [])
+        self.assertEqual(lib.foreign_issue_refs(["monzta1/sentinel-sandbox#4",
+                                                 "https://github.com/other/repo/issues/9"], "monzta1/sentinel"),
+                         ["monzta1/sentinel-sandbox#4", "other/repo#9"])
 
     def test_scope_identity_ignores_display_updates(self):
         acceptance = {"feature": "Ship #31", "criteria": [criterion("REQ-001", "[#31] Track reviews")]}
@@ -161,6 +191,78 @@ class WorkItemCliTests(HandsoffTestCase):
         synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
         self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
         self.assertIn("issue-90", [item["id"] for item in self.read_acceptance()["work_items"]])
+
+    def _origin(self, repo):
+        subprocess.run(["git", "init", "-q"], cwd=self.tmp, check=True)
+        subprocess.run(["git", "remote", "add", "origin", f"git@github.com:{repo}.git"], cwd=self.tmp, check=True)
+
+    def test_400_init_qualified_items_of_the_own_repository_and_refuses_another(self):
+        self._origin("monzta1/sentinel")
+        refused = run(["init", "Feature", "--item", "#4", "--item", "monzta1/sentinel-sandbox#4"], cwd=self.tmp)
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("monzta1/sentinel-sandbox#4 is an issue of monzta1/sentinel-sandbox", refused.stdout)
+        self.assertIn("repository monzta1/sentinel", refused.stdout)
+        self.assertFalse((self.tmp / "handsoff-status.json").exists())
+        url = run(["init", "Feature", "--item", "https://github.com/other/repo/issues/4"], cwd=self.tmp)
+        self.assertEqual(url.returncode, 1, url.stdout)
+        self.assertIn("other/repo#4 is an issue of other/repo", url.stdout)
+        started = run(["init", "Feature", "--item", "MONZTA1/sentinel#4",
+                       "--item", "https://github.com/monzta1/sentinel/issues/5"], cwd=self.tmp)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-4", "issue-5"])
+
+    def test_400_explicit_scope_never_gains_title_asks_and_phase_8_needs_no_removal(self):
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
+        title = "Ticket lock per repository; qualified refs resolve; title asks stop"
+        started = run(["init", title, "--item", "#4", "--item", "#5"], cwd=self.tmp)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        acceptance = self.read_acceptance()
+        self.assertIs(acceptance["work_items_explicit"], True)
+        # the merge itself: with no persisted issue item, the flag alone keeps
+        # the title's asks out, and without it they are minted as before
+        import handsoff_workflow as workflow
+        cfg = lib.load_config(self.tmp)
+        for explicit, expected in ((True, []), (False, ["ask-qualified-refs-resolve", "ask-ticket-lock-per-repository",
+                                                        "ask-title-asks-stop"])):
+            bare = dict(acceptance, work_items=[], work_items_explicit=explicit)
+            workflow.sync_work_item_registry(bare, cfg)
+            self.assertEqual([item["id"] for item in bare["work_items"]], expected, explicit)
+        folder = self.tmp / ".handsoff-fixture"
+        folder.mkdir()
+        tx = folder / "tx.json"
+        tx.write_text(json.dumps({"operations": [
+            {"op": "update", "id": "REQ-001", "fields": {"type": "primary_fix", "requirement": "[#4] lock",
+                                                          "verification": "automated", "tests": ["true"]}},
+            {"op": "add", "criterion": {"id": "REQ-002", "type": "supporting", "requirement": "[#5] refs",
+                                        "verification": "automated", "tests": ["true"]}}]}))
+        applied = run(["criteria-apply", "--file", str(tx), "--by", "architect-1"], cwd=self.tmp)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        acceptance = self.read_acceptance()
+        self.assertEqual([item["id"] for item in acceptance["work_items"]], ["issue-4", "issue-5"])
+        synced = run(["work-items-sync", "--by", "supervisor"], cwd=self.tmp)
+        self.assertEqual(synced.returncode, 0, synced.stdout + synced.stderr)
+        self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-4", "issue-5"])
+        # Phase 8's work items gate, with criterion completion taken as done
+        # so only the scope is judged: nothing to remove by hand.
+        status = dict(self.read_status(), phase_number=8, phase=lib.PHASES[8], work_item_delivery=None)
+
+        real_progress = workflow.item_progress
+
+        def gate(acc):
+            with patch_engine("item_progress", side_effect=lambda *a, **k: dict(real_progress(*a, **k), percent=100)):
+                return [e for e in workflow.compute_errors(status, acc, cfg) if e.startswith("work items gate")]
+        self.assertEqual(gate(acceptance), [])
+        control = dict(acceptance, work_items=acceptance["work_items"] + [dict(
+            acceptance["work_items"][0], id="ask-title-asks-stop", kind="ask", number=None)])
+        self.assertTrue(any("ask-title-asks-stop" in e for e in gate(control)), "the gate still bites")
+
+    def test_400_a_run_without_item_keeps_title_derived_asks(self):
+        started = run(["init", "fix parser; improve copy"], cwd=self.tmp)
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        acceptance = self.read_acceptance()
+        self.assertNotIn("work_items_explicit", acceptance)
+        self.assertEqual([item["id"] for item in acceptance["work_items"]], ["ask-fix-parser", "ask-improve-copy"])
 
     def test_mid_run_item_gets_a_delivery_record_and_phase_8_wants_implemented_by(self):
         # #116: an item added after init can record its implementer, and a

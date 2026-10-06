@@ -420,6 +420,7 @@ from handsoff_ledger import (  # noqa: E402,F401
     event_log_path,
     evidence_drift,
     feature_enabled,
+    foreign_issue_refs,
     item_acceptance_hash,
     item_criteria,
     item_progress,

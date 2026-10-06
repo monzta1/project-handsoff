@@ -491,9 +491,39 @@ def removed_work_item_ids(acceptance: dict) -> set[str]:
     return out
 
 
-def _explicit_issue_ref(text: str) -> tuple[int, str] | None:
-    """An explicit --item naming a ticket: `#N [title]`, a bare `N`, or
-    `issue-N`. #351: a bare `349` was slugged to `ask-349` beside the
+_QUALIFIED_ISSUE_REF = re.compile(
+    r"(?:https?://(?:www\.)?github\.com/(?P<url_repo>[\w.-]+/[\w.-]+)/issues/(?P<url_number>[1-9][0-9]{0,8})/?"
+    r"|(?<![\w/.-])(?P<repo>[\w.-]+/[\w.-]+)#(?P<number>[1-9][0-9]{0,8}))(?![\w/])", re.I)
+
+
+def _qualified_issue_refs(text: str) -> list[tuple[str, int, re.Match]]:
+    """#400: every `owner/name#N` and github.com issue URL in `text`, as
+    (owner/name, N, match)."""
+    out = []
+    for match in _QUALIFIED_ISSUE_REF.finditer(text):
+        repo = match.group("url_repo") or match.group("repo")
+        out.append((repo, int(match.group("url_number") or match.group("number")), match))
+    return out
+
+
+def _same_repo(ref_repo: str, repo: str | None) -> bool:
+    """A qualified ref belongs to the run when its owner/name is the run's
+    own repository, case-insensitively. An unknown own repository cannot
+    tell a ref apart, so it is taken as the run's own."""
+    return repo is None or ref_repo.casefold() == repo.casefold()
+
+
+def foreign_issue_refs(texts: list[str], repo: str | None) -> list[str]:
+    """#400: the qualified refs in `texts` that name a repository other than
+    the run's own, for init's refusal: a run's issue items are its own."""
+    return [f"{ref_repo}#{number}" for text in texts for ref_repo, number, _ in _qualified_issue_refs(text)
+            if not _same_repo(ref_repo, repo)]
+
+
+def _explicit_issue_ref(text: str, repo: str | None = None) -> tuple[int, str] | None:
+    """An explicit --item naming a ticket: `#N [title]`, a bare `N`,
+    `issue-N`, or (#400) `owner/name#N [title]` or an issue URL of the run's
+    own repository. #351: a bare `349` was slugged to `ask-349` beside the
     `issue-349` its criterion tag already derived, a duplicate item with no
     criteria that blocked completion until removed by hand."""
     issue = re.fullmatch(r"\s*#([1-9][0-9]{0,8})(?:\s+(.+?))?\s*", text)
@@ -502,12 +532,19 @@ def _explicit_issue_ref(text: str) -> tuple[int, str] | None:
     bare = re.fullmatch(r"\s*(?:issue-)?([1-9][0-9]{0,8})\s*", text, re.I)
     if bare:
         return int(bare.group(1)), ""
+    refs = _qualified_issue_refs(text)
+    if refs and refs[0][2].start() == len(text) - len(text.lstrip()) and _same_repo(refs[0][0], repo):
+        ref_repo, number, match = refs[0]
+        rest = text[match.end():]
+        if not rest.strip() or rest[:1].isspace():
+            return number, rest.strip()
     return None
 
 
 def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = None,
-                              explicit_items: list[str] | None = None) -> list[dict]:
-    """Derive stable scope from criterion tags, feature issue refs and legacy display metadata."""
+                              explicit_items: list[str] | None = None, repo: str | None = None) -> list[dict]:
+    """Derive stable scope from criterion tags, feature issue refs and legacy display metadata.
+    `repo` is the run's own owner/name (#400): its qualified refs are issues."""
     now = now or datetime.now(timezone.utc).isoformat()
     tickets = {int(item["number"]): item for item in cfg.get("tickets", [])}
     identities: dict[str, tuple[str, int | None, str]] = {}
@@ -526,7 +563,7 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
 
     if explicit_items:
         for item in explicit_items[:MAX_WORK_ITEMS]:
-            ref = _explicit_issue_ref(item)
+            ref = _explicit_issue_ref(item, repo)
             if ref is None:
                 add_text(item)
                 continue
@@ -543,6 +580,8 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
                  if part.strip(" -\t")]
         for part in parts[:MAX_WORK_ITEMS]:
             numbers = re.findall(r"(?<!\w)#([1-9][0-9]{0,8})\b", part)
+            numbers += [str(number) for ref_repo, number, _ in _qualified_issue_refs(part)
+                        if _same_repo(ref_repo, repo)]
             if numbers:
                 for number_text in numbers:
                     number = int(number_text)
@@ -572,7 +611,7 @@ def derive_work_item_registry(acceptance: dict, cfg: dict, *, now: str | None = 
     # caller clears the tombstone in the same commit (clear_work_item_tombstones).
     explicit_ids = set()
     for item in explicit_items or []:
-        ref = _explicit_issue_ref(item)
+        ref = _explicit_issue_ref(item, repo)
         explicit_ids.add(f"issue-{ref[0]}" if ref else f"ask-{_work_item_slug(item)}")
     for item_id in removed_work_item_ids(acceptance):
         if item_id not in tagged and item_id not in explicit_ids:
