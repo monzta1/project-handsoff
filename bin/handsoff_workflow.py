@@ -916,11 +916,13 @@ def sync_work_item_registry(acceptance: dict, cfg: dict) -> bool:
     criterion_ids = {criterion_work_item_id(criterion)
                      for criterion in acceptance.get("criteria", [])}
     criterion_ids.discard(None)
-    has_persisted_issue = any(item.get("kind") == "issue" for item in existing)
+    # #400: a scope init named with --item never gains the title's asks.
+    skip_title_asks = acceptance.get("work_items_explicit") is True \
+        or any(item.get("kind") == "issue" for item in existing)
     changed = False
     for item in derive_work_item_registry(acceptance, cfg):
         if item["id"] not in known:
-            if has_persisted_issue and item.get("kind") == "ask" and item["id"] not in criterion_ids:
+            if skip_title_asks and item.get("kind") == "ask" and item["id"] not in criterion_ids:
                 continue
             existing.append(item)
             known.add(item["id"])

@@ -599,7 +599,33 @@ and commits it. `rules/README.md` has the format.
 closed or complete for `#NN`, and registers the new run with its ticket
 numbers in the same transaction, so two concurrent inits on one ticket end
 with exactly one owner. A refusal names the owner's root, phase, port when
-its dashboard answers, and the age of its last event. `init --adopt` takes
+its dashboard answers, and the age of its last event.
+
+The lock is per repository (#400). A run's repository is its origin
+remote's `owner/name` captured by `init` at claim time and recorded on the
+run's own acceptance registry as `repository` (never on the shared
+register, whose format older engines read), so changing an owner's origin
+after its claim never releases its tickets. Only an owner without that key
+(a run initialised before #400) is read from its root's origin. Two
+runs whose repositories are both known and differ never share a ticket, so
+`#4` in `monzta1/sentinel` and `#4` in `monzta1/sentinel-sandbox` are two
+tickets. When either repository is unknown (no origin remote) the lock compares by number, as
+before. A refusal names the owner's repository, or `unknown`.
+
+`init --item` (and `work-items-sync --item`) takes `#N`, `N`, `issue-N`,
+`owner/name#N` or a `https://github.com/owner/name/issues/N` URL. A
+qualified reference to the run's own repository (case-insensitive) is the
+work item `issue-N`, never an ask slug; a reference to another repository
+is refused, naming it, since a run's issue items belong to its own
+repository. Init checks every qualified reference in the feature title as
+well as in each `--item`. When init names its scope with `--item`, the
+acceptance registry records `work_items_explicit: true`, and derivation
+(at init and in every later criteria transaction and `work-items-sync`)
+never derives any work item from the feature title, neither asks from its
+clauses nor issue items from its references; only a run initialised
+without `--item` derives from its title.
+
+`init --adopt` takes
 a ticket over only from an owner that is dead by the Fleet liveness rules
 (no live session with a fresh beacon or verified PID, no owned dashboard
 answering) and records `work_item_adopted` on the new ledger; a live owner

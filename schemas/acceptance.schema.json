@@ -163,6 +163,16 @@
         }
       }
     },
+    "work_items_explicit": {
+      "type": "boolean"
+    },
+    "repository": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
     "removed_work_items": {
       "type": "array",
       "maxItems": 64,

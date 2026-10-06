@@ -624,6 +624,17 @@ def cmd_init(args) -> int:
         except lib.HandsoffError as exc:
             print(f"SHIP_FEATURE_BLOCKED: {exc}")
             return 1
+    # #400: a qualified owner/name#N (or issue URL) of the run's own
+    # repository is its issue-N; another repository's ticket is refused,
+    # since a run's issue items belong to its own repository. The title is
+    # checked as well as every --item.
+    import handsoff_fleet_signals
+    own_repo = handsoff_fleet_signals.origin_repo(root)
+    foreign = lib.foreign_issue_refs([args.feature, *(args.item or [])], own_repo)
+    if foreign:
+        print(f"SHIP_FEATURE_BLOCKED: {foreign[0]} is an issue of {foreign[0].split('#')[0]}, not of this "
+              f"run's repository {own_repo}; a run's issue items belong to its own repository")
+        return 1
     sp, ap = lib.status_path(root, cfg), lib.acceptance_path(root, cfg)
     now = datetime.now(timezone.utc).isoformat()
     # Locked for the same reason advance/deployment-gate are: init writes
@@ -657,10 +668,17 @@ def cmd_init(args) -> int:
                 acceptance["work_items"] = source_design["items"]
         # A carried review stays valid only while the policy and scope it was bound to still hold;
         # a take-up that changes either earns a new review rather than inheriting the old one.
+        if args.item:
+            # #400: the scope was named; the title never derives items later.
+            acceptance["work_items_explicit"] = True
         if source_design is None or args.item or not acceptance.get("work_items"):
             acceptance["work_items"] = lib.derive_work_item_registry(
-                acceptance, cfg, now=now, explicit_items=args.item,
+                acceptance, cfg, now=now, explicit_items=args.item, repo=own_repo,
             )
+        # #400: the repository the ticket claim below is made in, recorded on
+        # the run's own registry (never the shared register) so a later
+        # origin change cannot release the claim. None when there is no origin.
+        acceptance["repository"] = own_repo
         numbers = {item["number"] for item in acceptance["work_items"]
                    if item.get("kind") == "issue" and isinstance(item.get("number"), int)}
         adopted = {"adopted_from": []}
@@ -670,7 +688,8 @@ def cmd_init(args) -> int:
             # status file behind.
             import handsoff_fleet as fleet
             try:
-                adopted = fleet.claim_tickets(root, numbers, adopt=bool(getattr(args, "adopt", False)))
+                adopted = fleet.claim_tickets(root, numbers, adopt=bool(getattr(args, "adopt", False)),
+                                              repo=own_repo)
             except lib.HandsoffError as exc:
                 print(f"SHIP_FEATURE_BLOCKED: {exc}")
                 return 1
@@ -1871,11 +1890,19 @@ def cmd_work_items_sync(args) -> int:
         before_scope = lib.work_item_scope_hash(before_items, acceptance.get("criteria", []))
         # #141: an explicit --item is the deliberate way back for a removed
         # item; its tombstone goes in this same commit.
+        own_repo = None
         if args.item:
+            import handsoff_fleet_signals
+            own_repo = handsoff_fleet_signals.origin_repo(root)
+            foreign = lib.foreign_issue_refs(args.item, own_repo)
+            if foreign:  # #400: as at init
+                print(f"SHIP_FEATURE_BLOCKED: {foreign[0]} is an issue of {foreign[0].split('#')[0]}, not of this "
+                      f"run's repository {own_repo}; a run's issue items belong to its own repository")
+                return 1
             lib.clear_work_item_tombstones(
                 acceptance, {row["id"] for row in lib.derive_work_item_registry(
-                    {"feature": "", "criteria": []}, cfg, explicit_items=args.item)})
-        derived = lib.derive_work_item_registry(acceptance, cfg, explicit_items=args.item)
+                    {"feature": "", "criteria": []}, cfg, explicit_items=args.item, repo=own_repo)})
+        derived = lib.derive_work_item_registry(acceptance, cfg, explicit_items=args.item, repo=own_repo)
         existing = acceptance.get("work_items")
         if isinstance(existing, list):
             by_id = {item["id"]: item for item in existing}
@@ -1885,7 +1912,8 @@ def cmd_work_items_sync(args) -> int:
             for item in derived:
                 current = by_id.get(item["id"])
                 if current is None:
-                    if not args.item and any(candidate.get("kind") == "issue" for candidate in existing) \
+                    if not args.item and (acceptance.get("work_items_explicit") is True
+                                          or any(candidate.get("kind") == "issue" for candidate in existing)) \
                             and item.get("kind") == "ask" and item["id"] not in criterion_ids:
                         print(f"WORK_ITEM_SYNC_SKIPPED: {item['id']} (feature-title ask not added beside explicit issue items; pass --item to add it deliberately)")
                         continue

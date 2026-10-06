@@ -160,6 +160,99 @@ class TicketLockTests(HandsoffTestCase):
         loser_out = next(out for out, code in zip(outs, codes) if code == 1)[0]
         self.assertIn("ticket lock: #146 is owned by", loser_out)
 
+    def _origin(self, root, repo):
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "remote", "add", "origin", f"https://github.com/{repo}.git"], cwd=root, check=True)
+
+    def _entry(self, root):
+        return next(e for e in fleet.load_registry(self.registry) if e["root"] == str(root.resolve()))
+
+    def test_400_a_ticket_number_in_another_repository_is_admitted(self):
+        """#400: #4 in monzta1/sentinel was refused because a run in
+        monzta1/sentinel-sandbox held #4; they are different tickets."""
+        self._origin(self.first, "monzta1/sentinel-sandbox")
+        r = self._init(self.first, "#4")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("repo", self._entry(self.first), "the register format an older engine reads is unchanged")
+        self._make_alive(self.first)
+        second = self._project("second")
+        self._origin(second, "monzta1/sentinel")
+        r = self._init(second, "#4")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("repo", self._entry(second))
+        self.assertEqual(self._entry(second)["work_items"], [4])
+
+    def test_400_the_same_repository_is_still_refused_naming_the_owners_repository(self):
+        self._origin(self.first, "monzta1/sentinel-sandbox")
+        self.assertEqual(self._init(self.first, "#4").returncode, 0)
+        self._make_alive(self.first)
+        second = self._project("second")
+        self._origin(second, "Monzta1/Sentinel-Sandbox")  # one repository, any case
+        r = self._init(second, "#4")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("ticket lock: #4 is owned by " + str(self.first.resolve()), r.stdout)
+        self.assertIn("repository monzta1/sentinel-sandbox", r.stdout)
+        self.assertFalse((second / "handsoff-status.json").exists())
+
+    def test_400_an_unknown_repository_on_either_side_compares_by_number(self):
+        # the owner has no origin remote; the claimant has one
+        self.assertEqual(self._init(self.first, "#4").returncode, 0)
+        self._make_alive(self.first)
+        second = self._project("second")
+        self._origin(second, "monzta1/sentinel")
+        r = self._init(second, "#4")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("repository unknown", r.stdout)
+        # the owner has one; the claimant has none
+        third, fourth = self._project("third"), self._project("fourth")
+        self._origin(third, "monzta1/sentinel-sandbox")
+        self.assertEqual(self._init(third, "#5").returncode, 0)
+        self._make_alive(third)
+        r = self._init(fourth, "#5")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("repository monzta1/sentinel-sandbox", r.stdout)
+
+    def _acceptance(self, root):
+        return json.loads((root / "handsoff-acceptance.json").read_text())
+
+    def test_400_an_owner_whose_origin_changes_after_its_claim_still_holds_its_ticket(self):
+        """The owner's repository is the one recorded on its own acceptance
+        registry at claim time, not whatever its origin says later."""
+        self._origin(self.first, "monzta1/sentinel")
+        self.assertEqual(self._init(self.first, "#4").returncode, 0)
+        self.assertEqual(self._acceptance(self.first)["repository"], "monzta1/sentinel")
+        self.assertNotIn("repo", self._entry(self.first))
+        self._make_alive(self.first)
+        subprocess.run(["git", "remote", "set-url", "origin", "https://github.com/monzta1/elsewhere.git"],
+                       cwd=self.first, check=True)
+        second = self._project("second")
+        self._origin(second, "monzta1/sentinel")
+        r = self._init(second, "#4")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("repository monzta1/sentinel,", r.stdout)
+        # an owner with no origin at claim stays unknown when one is added later
+        third, fourth = self._project("third"), self._project("fourth")
+        self.assertEqual(self._init(third, "#5").returncode, 0)
+        self.assertIsNone(self._acceptance(third)["repository"])
+        self._make_alive(third)
+        self._origin(third, "monzta1/sentinel-sandbox")
+        self._origin(fourth, "monzta1/sentinel")
+        r = self._init(fourth, "#5")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("repository unknown", r.stdout)
+
+    def test_400_an_owner_initialised_before_400_is_read_from_its_origin(self):
+        self._origin(self.first, "monzta1/sentinel-sandbox")
+        self.assertEqual(self._init(self.first, "#4").returncode, 0)
+        self._make_alive(self.first)
+        acceptance = self._acceptance(self.first)
+        del acceptance["repository"]  # what a pre-#400 engine wrote
+        (self.first / "handsoff-acceptance.json").write_text(json.dumps(acceptance))
+        second = self._project("second")
+        self._origin(second, "monzta1/sentinel")
+        r = self._init(second, "#4")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_claimed_twice_is_shown_on_both_fleet_cards(self):
         self._init(self.first, "#146 x")
         second = self._project("second")
