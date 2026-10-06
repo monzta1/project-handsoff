@@ -338,6 +338,46 @@ class APhaseFiveReviewerLaunch(HandsoffTestCase):
         spec = self._spec(compact_scope=self.SCOPE)
         self.assertEqual(spec.compact_scope, tuple(self.SCOPE))
 
+    def test_a_fallback_launch_over_the_bound_is_refused_with_nothing_reserved(self):
+        """Review attempt 1's first finding: the fallback path skipped the
+        packet cap and the size check, so a failed-over reviewer launched
+        over a diff its budget could never hold."""
+        toml = self.tmp / "handsoff.toml"
+        text = toml.read_text()
+        self.assertIn("reviewer = 200000", text)
+        toml.write_text(text.replace("reviewer = 200000", "reviewer = 30000", 1))
+        (self.tmp / "src" / "large.py").write_text("X" * 999_999 + "\n")
+        before = self._digest("handsoff-status.json", "handsoff-verifications.jsonl", "handsoff-events.jsonl")
+        with mock.patch.object(runtime, "_reviewer_scratch", side_effect=AssertionError("scratch reserved")), \
+                self.assertRaises(lib.HandsoffError) as refused:
+            runtime.build_profile_launch_spec(self.tmp, "reviewer", "Review it.",
+                                              {"adapter": "claude", "model": "default"},
+                                              which=claude_only, skip_preflight=True)
+        message = str(refused.exception)
+        for text in ("fallback launch refused before reservation", "estimated at",
+                     "[agent_budget].reviewer 30000", "a review per implementer lane", "--compact-scope"):
+            self.assertIn(text, message)
+        self.assertEqual(before, self._digest("handsoff-status.json", "handsoff-verifications.jsonl",
+                                              "handsoff-events.jsonl"))
+        self.assertEqual(self.read_status().get("agent_sessions") or {}, {})
+
+    def test_non_ascii_and_spaced_paths_keep_their_hunks_and_bytes(self):
+        """Review attempt 1's second finding: Git quoted café.py as octal, so
+        its tracked change had no hunks and counted 0 bytes."""
+        before = lib.implementation_review_diff(self.tmp)
+        content = "".join(f"value_{n} = {n}\n" for n in range(200))
+        for name in ("café.py", "my file.py"):
+            (self.tmp / "src" / name).write_text(content)
+        self._git("add", "src/café.py", "src/my file.py")
+        self._git("commit", "-q", "-m", "add two awkward names")
+        (self.tmp / "src" / "café.py").write_text(content.replace("value_5 = 5", "value_5 = 55"))
+        diff = lib.implementation_review_diff(self.tmp)
+        files = {entry["path"]: entry["hunks"] for entry in diff["files"]}
+        self.assertEqual(files["src/café.py"], ["-0,0 +1,200"])
+        self.assertEqual(files["src/my file.py"], ["-0,0 +1,200"])
+        self.assertEqual(set(files), {entry["path"] for entry in before["files"]} | {"src/café.py", "src/my file.py"})
+        self.assertGreater(diff["bytes"] - before["bytes"], 2 * len(content))
+
     def test_the_command_prints_the_packet_and_leaves_the_ledger_byte_identical(self):
         names = ("handsoff-verifications.jsonl", "handsoff-events.jsonl", "handsoff-status.json",
                  "handsoff-acceptance.json")

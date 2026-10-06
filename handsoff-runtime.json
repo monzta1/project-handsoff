@@ -1,7 +1,7 @@
 {
   "files": {
     "bin/handsoff_adapters.py": "9761cf16afe4475559c69bd528010454b04f9598d78a92fd48e48a9759fac7ee",
-    "bin/handsoff_agent.py": "8ce920c716fa29324a5bcc127c6459054fba656685ea03e80db335bd71ad9848",
+    "bin/handsoff_agent.py": "59bea814a91eaa9de230b0509bf311866bbd131012a12ba781955889d8ddf3ec",
     "bin/handsoff_agent_runtime.py": "de297458c14f12384aba933dbc1698528eb4574ea0755a637a3b7a482211e28f",
     "bin/handsoff_analyzer.py": "5ff494f22c6675fa23c2a894f6688f8ece47ba8f9d9446ee7bd813e42c4eb89e",
     "bin/handsoff_broker.py": "d6185136700fe5300a17fcea0132931af28f09a112f2f69e7a7e4341e3809cef",
@@ -16,7 +16,7 @@
     "bin/handsoff_fleet.py": "dbc7fb4f4b4d7841f2997dd6fc11ee1ad4f83c5f7823d8e804e596d25cb1fa5e",
     "bin/handsoff_fleet_signals.py": "1e0b0a890ac40288aa586003a87b4f47b710dda944df34f4291f1dee7dd822e3",
     "bin/handsoff_ledger.py": "d0d9a09b788b718b3964a23cb565e9b54177147adf3201d743346aa19c7ba87e",
-    "bin/handsoff_lib.py": "05d6b404524c83f9927497bc1686cddb42090fe5e7c40eff9a19989dbca6b1bb",
+    "bin/handsoff_lib.py": "08783179b644a134b438e21aaee1599265d973653880c105095c5dba5bfbb2e6",
     "bin/handsoff_manifest.py": "3540f9ce45652d408d415764333f876174af6fd33e6a05c88ae2f0c7ea5c1297",
     "bin/handsoff_mutation.py": "e34053e5f474239bf8e267e26f9a081fa985b3d4bf1ef74b7233b9ea97e22d96",
     "bin/handsoff_observability.py": "aee306d90814351bea0df8bd2372a1fe5dd3aa335bcb208b4bf52820a21e1e87",

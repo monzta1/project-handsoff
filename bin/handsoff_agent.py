@@ -828,18 +828,8 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             f"leaving {provider_limit} after the {budget_decision['reserved_protocol_tokens']}-token "
             "protocol reserve"
         )
-    # #397: a Phase-5 review whose diff cannot fit the reviewer budget is
-    # refused here, before the scratch, the session or any reservation. A
-    # compact launch is estimated from its slices, not the diff.
-    if lib.implementation_review_packet_applies(run_status, role):
-        diff = lib.implementation_review_diff(root)
-        review_packet = lib.implementation_review_packet(root, cfg, compact=scope is not None, diff=diff)
-        size_refusal = lib.implementation_review_size_refusal(
-            diff_bytes=lib.compact_scope_bytes(root, scope) if scope else diff["bytes"],
-            packet_bytes=lib.implementation_review_packet_bytes(review_packet),
-            budget=cfg["agent_token_budgets"]["reviewer"], compact=scope is not None)
-        if size_refusal:
-            raise lib.HandsoffError(f"managed launch refused before session creation: {size_refusal}")
+    _refuse_oversized_implementation_review(root, cfg, run_status, role, scope,
+                                            "managed launch refused before session creation")
     executable = _contract_executable(cfg, adapter) if adapter in lib.CONTRACT_AGENT_ADAPTERS \
         else cfg.get("adapters", {}).get(adapter) or which(adapter)
     if not executable:
@@ -924,6 +914,24 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
     )
 
 
+def _refuse_oversized_implementation_review(root: Path, cfg: dict, status: object, role: str,
+                                            scope: list | None, refused: str) -> None:
+    """#397: a Phase-5 review whose packet is over its cap, or whose diff
+    cannot fit the reviewer budget, is refused before the scratch, the session
+    or any reservation, on the primary and the fallback path alike. A compact
+    launch is estimated from its slices, not the diff."""
+    if not lib.implementation_review_packet_applies(status, role):
+        return
+    diff = lib.implementation_review_diff(root)
+    review_packet = lib.implementation_review_packet(root, cfg, compact=scope is not None, diff=diff)
+    size_refusal = lib.implementation_review_size_refusal(
+        diff_bytes=lib.compact_scope_bytes(root, scope) if scope else diff["bytes"],
+        packet_bytes=lib.implementation_review_packet_bytes(review_packet),
+        budget=cfg["agent_token_budgets"]["reviewer"], compact=scope is not None)
+    if size_refusal:
+        raise lib.HandsoffError(f"{refused}: {size_refusal}")
+
+
 def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
                               *, which=shutil.which, skip_preflight: bool = False,
                               owned_paths: tuple[str, ...] | None = None,
@@ -971,6 +979,8 @@ def build_profile_launch_spec(root: Path, role: str, task: str, profile: dict,
             f"reviewer fallback refused before session reservation: {isolation['reason']} "
             f"(adapter={adapter}, decision={isolation['decision']})"
         )
+    _refuse_oversized_implementation_review(root, cfg, status, role, scope,
+                                            "managed fallback launch refused before reservation")
     # #343 REQ-004/REQ-008: before the scratch directory, before the session,
     # before the review attempt. A Claude reviewer that cannot read the project
     # produced a packet-only review that still SPENT one of the two autonomous

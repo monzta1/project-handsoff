@@ -6271,7 +6271,10 @@ def implementation_review_packet_applies(status: object, role: str) -> bool:
 
 def _review_git(root: Path, *args: str) -> "subprocess.CompletedProcess[bytes] | None":
     try:
-        return subprocess.run(["git", *args], cwd=str(root), capture_output=True, check=False, timeout=30)
+        # #397: core.quotepath=false, so a non-ASCII path reaches the names,
+        # the hunk headers and the byte attribution as itself, not as octal.
+        return subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=str(root),
+                              capture_output=True, check=False, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -6295,6 +6298,27 @@ def _review_merge_base(root: Path) -> str | None:
 
 
 _REVIEW_HUNK = re.compile(r"^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@")
+
+
+def _review_header_path(text: str) -> str | None:
+    """The path in a `--- a/x` or `+++ b/x` header (prefix removed), or None
+    for /dev/null. Git still quotes a name with a quote, backslash or control
+    character, and appends a tab to one with a space."""
+    text = text[:-1] if text.endswith("\t") else text
+    if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+        import codecs
+        text = codecs.escape_decode(text[1:-1].encode("utf-8"))[0].decode("utf-8", "replace")
+    return text[2:] if text.startswith(("a/", "b/")) else None
+
+
+def _review_section_path(section: str) -> str:
+    """The path one `git diff` section is about: its `+++` header, else its
+    `---` header (a deletion), else the `diff --git` line (a binary file)."""
+    lines = section.split("\n@@", 1)[0].split("\n")
+    found = {line[:4]: _review_header_path(line[4:]) for line in lines if line.startswith(("--- ", "+++ "))}
+    if found.get("+++ ") or found.get("--- "):
+        return found.get("+++ ") or found["--- "]
+    return lines[0].rsplit(" b/", 1)[-1] if " b/" in lines[0] else ""
 
 
 def implementation_review_diff(root: Path) -> dict:
@@ -6329,8 +6353,8 @@ def implementation_review_diff(root: Path) -> dict:
         for line in (hunks.stdout.decode("utf-8", "replace").splitlines() if hunks and hunks.returncode == 0 else []):
             if line.startswith("diff --git "):
                 current, in_header = None, True
-            elif in_header and line.startswith(("--- a/", "+++ b/")):
-                current = line[6:]
+            elif in_header and line.startswith(("--- ", "+++ ")):
+                current = _review_header_path(line[4:]) or current
             elif current is not None and reviewed(current) and (match := _REVIEW_HUNK.match(line)):
                 in_header = False
                 files.setdefault(current, []).append(f"-{match.group(1)} +{match.group(2)}")
@@ -6338,9 +6362,7 @@ def implementation_review_diff(root: Path) -> dict:
         if full is not None and full.returncode == 0:
             # count only the reviewed files' sections of the diff
             for section in full.stdout.split(b"\ndiff --git "):
-                header = section.split(b"\n", 1)[0].decode("utf-8", "replace")
-                path = header.rsplit(" b/", 1)[-1] if " b/" in header else ""
-                if reviewed(path):
+                if reviewed(_review_section_path(section.decode("utf-8", "replace"))):
                     diff_bytes += len(section)
     untracked = _review_git(root, "ls-files", "--others", "--exclude-standard", "-z")
     for name in (untracked.stdout.decode("utf-8", "replace").split("\0")
