@@ -534,6 +534,7 @@ class SupervisorPauseRuleTests(unittest.TestCase):
     EXPECTED = {
         "status": "inspect", "validate": "inspect", "verify-log": "inspect", "doctor": "inspect",
         "dashboard": "inspect", "design-timing": "inspect", "evidence-refresh-plan": "inspect",
+        "implementation-review-packet": "inspect",
         "performance-status": "inspect", "performance-watch": "inspect",
         "monitor-poll": "reconcile", "performance-resume": "explicit_resume",
         "regression-cancel": "cancel", "run-close": "safe_close",

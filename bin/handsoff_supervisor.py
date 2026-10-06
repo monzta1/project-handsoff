@@ -83,6 +83,8 @@ OPERATION_REGISTRY = {
     "human-pause-start": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "human-pause-end": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "design-timing": {"class": "diagnostic", "surface": "metrics-panel"},
+    # #397: prints what a Phase-5 reviewer will be handed; writes nothing.
+    "implementation-review-packet": {"class": "diagnostic", "surface": "review-attempts-panel"},
     "design-evidence": {"class": "agent-only", "surface": "design-evidence-panel"},
     "criterion-update": {"class": "agent-only", "surface": "criteria-list"},
     "criterion-add": {"class": "agent-only", "surface": "criteria-list"},
@@ -127,7 +129,7 @@ PERFORMANCE_TIMELINE_JOURNAL = "performance-timeline.jsonl"
 EVIDENCE_AUDIT_RECORD = "evidence-audit.json"
 PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
     "status", "validate", "verify-log", "doctor", "dashboard", "design-timing",
-    "monitor-poll", "evidence-refresh-plan", "performance-status",
+    "implementation-review-packet", "monitor-poll", "evidence-refresh-plan", "performance-status",
     # #295: the clock is the thing that detects the pause; refusing it
     # during a pause would make the pause un-observable from its own watcher.
     "performance-watch",
@@ -5465,6 +5467,18 @@ def cmd_design_timing(args) -> int:
     return 0
 
 
+def cmd_implementation_review_packet(args) -> int:
+    """#397: print the packet a reviewer launched at Phase 5 receives, as
+    JSON, so the host sees exactly what the reviewer will get. Read-only:
+    the ledger, status and acceptance files are untouched."""
+    json_module = __import__("json")
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    packet = lib.implementation_review_packet(root, cfg, compact=args.compact)
+    print(json_module.dumps(packet, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_design_evidence(args) -> int:
     """#38: `design-evidence run` executes the configured [[design_evidence]]
     measurements that are missing, stale, or failed (or all of them with
@@ -6690,6 +6704,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="path to a handsoff-events.jsonl to summarize instead of the live project's own "
                         "(e.g. an archived run under .handsoff-archive/<run>/handsoff-events.jsonl)")
 
+    review_packet = sub.add_parser(
+        "implementation-review-packet",
+        help="#397: print, read-only, the packet a Phase-5 reviewer launch receives")
+    review_packet.add_argument("--compact", action="store_true",
+                               help="the compact-scope variant: judge from the recorded results, run no tests")
+
     design_evidence = sub.add_parser(
         "design-evidence",
         help="run or show the cached, hash-bound [[design_evidence]] measurements (#38): a "
@@ -7009,6 +7029,7 @@ def main() -> int:
         "run-reopen": cmd_run_reopen,
         "monitor-poll": cmd_monitor_poll,
         "evidence-refresh-plan": cmd_evidence_refresh_plan,
+        "implementation-review-packet": cmd_implementation_review_packet,
         "performance-status": cmd_performance_status,
         "performance-watch": cmd_performance_watch,
         "performance-resume": cmd_performance_resume,
@@ -7016,7 +7037,7 @@ def main() -> int:
     # #378/#379: pure readers of a record or report never touch the run, so
     # they skip the performance gate, whose clock refresh writes state and
     # which refuses work once a run is paused.
-    pure_reader = args.command == "shadow-route" or (
+    pure_reader = args.command in {"shadow-route", "implementation-review-packet"} or (
         args.command == "release-reconcile" and getattr(args, "inspect", False))
     try:
         if args.command != "init" and not pure_reader:

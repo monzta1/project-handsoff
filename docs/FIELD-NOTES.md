@@ -613,3 +613,10 @@ One run, eleven issues, three concurrent implementer lanes with disjoint owned p
 4. **`ci-watch` demanded the engine's own guards module from every project (#392).** Fix: the record is required only where `tests/guards.py` exists.
 
 Lessons: a managed Architect whose sandbox cannot read the issues designs from the brief alone, and here it rotated three issue tags; paste the issue bodies into its task. A lane plan must give every file the work needs an owner (`bin/handsoff_schema.py` had none, and the session-field writes it gates waited for a later launch). Anything written from refresh_performance_state runs before every command and on every snapshot: the first design put the timeline in the hash-chained event ledger, so read-only commands wrote it and CI failed about twenty tamper, doctor and Fleet tests. The timeline moved to its own journal.
+
+### v0.5.7 field notes: implementation reviews get a bounded packet, and a review that cannot fit is refused (#397, 2026-10-05)
+
+1. **The #381-#393 run's first implementation review ended with no verdict.** It spent 199K of its 200K tokens re-deriving every criterion's results from a 30-file diff and verbose test output, though the ledger already held them. Fix: a Phase-5 reviewer launch now carries `# Implementation review packet`: each criterion's latest result per test command (or `missing`), manual evidence, and the changed files' hunk ranges, at most 64 KiB, trimmed in a fixed recorded order that never drops a criterion or a command result. `handsoff supervisor implementation-review-packet` prints it, read-only.
+2. **Nothing stopped a review too large for its budget from starting.** Fix: before any session or reservation, the launch estimates 1.5 times the diff's tokens plus the packet's and refuses above `[agent_budget] reviewer`, naming the remedies. A compact-scope launch is estimated from its slices.
+
+Lesson: when the engine already holds the evidence, hand it over; a reviewer told to judge from it reads only the hunks it doubts.
