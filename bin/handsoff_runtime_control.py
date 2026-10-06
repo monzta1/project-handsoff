@@ -1017,6 +1017,10 @@ def resume_performance(
         raise SchemaError("new performance episode id is not unique")
     updated = copy.deepcopy(dict(history))
     updated["resume_decisions"].append(copy.deepcopy(dict(decision)))
+    # #383: the resumed episode leaves the paused state, so a result launched
+    # in it is no longer quarantined and can be adopted. Its paused_at,
+    # ended_at and breach stay as the record of the pause.
+    updated["episodes"][-1]["state"] = "completed"
     updated["episodes"].append(
         {
             "episode_id": new_episode_id,
@@ -1048,6 +1052,7 @@ def reconstruct_performance_history(
     bounded = _bounded_list(list(events), where="performance events", maximum=MAX_EVENTS)
     history: dict[str, Any] | None = None
     open_holds: dict[str, tuple[int, dict[str, Any]]] = {}
+    open_sleeps: dict[tuple[int, str], datetime] = {}
     for index, event in enumerate(bounded):
         _closed(
             event,
@@ -1058,7 +1063,9 @@ def reconstruct_performance_history(
         at = _time(event["at"], where=f"performance events[{index}].at")
         episode_id = _identifier(event["episode_id"], where=f"performance events[{index}].episode_id")
         kind = event["kind"]
-        if kind == "episode_started":
+        if kind in {"episode_started", "resumed"}:
+            if history is None and kind == "resumed":
+                raise SchemaError("performance timeline must begin with episode_started")
             if history is None:
                 history = new_performance_history(run_id, episode_id, now=at)
             else:
@@ -1104,6 +1111,20 @@ def reconstruct_performance_history(
             sleep = {"started_at": _iso(started), "ended_at": _iso(at), "measured_seconds": measured}
             _validate_sleep(sleep, where="sleep event")
             episode["sleeps"].append(sleep)
+        elif kind == "sleep_started":
+            sleep_id = _identifier(event.get("hold_id"), where="sleep event.hold_id")
+            if (episode_index, sleep_id) in open_sleeps:
+                raise SchemaError("sleep is already open")
+            open_sleeps[(episode_index, sleep_id)] = at
+        elif kind == "sleep_ended":
+            sleep_id = _identifier(event.get("hold_id"), where="sleep event.hold_id")
+            started = open_sleeps.pop((episode_index, sleep_id), None)
+            if started is None:
+                raise SchemaError("sleep end has no matching start")
+            sleep = {"started_at": _iso(started), "ended_at": _iso(at),
+                     "measured_seconds": (at - started).total_seconds()}
+            _validate_sleep(sleep, where="sleep event")
+            episode["sleeps"].append(sleep)
         elif kind == "deadline_warning":
             episode.update(state="warning", warning_at=_iso(at))
         elif kind == "performance_paused":
@@ -1120,6 +1141,103 @@ def reconstruct_performance_history(
     return history
 
 
+def performance_timeline_key(event: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    """#385: a timeline event is written once per episode, kind and hold id."""
+
+    return (event.get("episode_id"), event.get("kind"), event.get("hold_id"))
+
+
+PERFORMANCE_JOURNAL_SCHEMA = "handsoff.performance_timeline"
+
+
+def _journal_line_hash(line: Mapping[str, Any]) -> str:
+    return content_hash({key: line[key] for key in ("schema", "version", "run_id", "previous", "timeline")})
+
+
+def chain_timeline_entry(run_id: str, previous: str | None, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """#385: one journal line, bound to the hash of the line before it."""
+
+    line = {"schema": PERFORMANCE_JOURNAL_SCHEMA, "version": 1, "run_id": run_id,
+            "previous": previous, "timeline": copy.deepcopy(dict(entry))}
+    line["hash"] = _journal_line_hash(line)
+    return line
+
+
+def accepted_timeline(lines: Iterable[str], run_id: str) -> tuple[list[dict[str, Any]], str | None, int]:
+    """#385: replay the journal and return (this run's entries, chain head, refused count).
+
+    A line is accepted only when it parses, its hash matches its content and
+    its `previous` names the last accepted line. A line failing the chain is
+    refused, not used, and so is every line chained to it; the next append
+    chains to the last accepted line. Each key is kept once, first write wins.
+    """
+
+    head: str | None = None
+    refused = 0
+    seen: set = set()
+    timeline: list[dict[str, Any]] = []
+    for raw in lines:
+        if not raw.strip():
+            continue
+        try:
+            line = json.loads(raw)
+            valid = (isinstance(line, dict)
+                     and set(line) == {"schema", "version", "run_id", "previous", "timeline", "hash"}
+                     and line["schema"] == PERFORMANCE_JOURNAL_SCHEMA and line["version"] == 1
+                     and isinstance(line["timeline"], dict)
+                     and line["previous"] == head and line["hash"] == _journal_line_hash(line))
+        except (ValueError, TypeError):
+            valid = False
+        if not valid:
+            refused += 1
+            continue
+        head = line["hash"]
+        if line["run_id"] != run_id:
+            continue
+        key = performance_timeline_key(line["timeline"])
+        if key not in seen:
+            seen.add(key)
+            timeline.append(line["timeline"])
+    return timeline, head, refused
+
+
+def performance_timeline(history: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """#385: the events reconstruct_performance_history reads, derived from a record.
+
+    The list is deterministic, so a caller appends only the events whose
+    performance_timeline_key it has not written yet: each transition, hold
+    and sleep lands once, and replaying the list rebuilds the same clock.
+    """
+
+    validate_performance_history(history)
+    events: list[dict[str, Any]] = []
+    for index, episode in enumerate(history["episodes"]):
+        episode_id = episode["episode_id"]
+        started: dict[str, Any] = {"kind": "episode_started", "at": episode["started_at"],
+                                   "episode_id": episode_id, "sequence": index + 1}
+        if index:
+            if index > len(history["resume_decisions"]):
+                raise SchemaError("a resumed episode has no recorded decision")
+            started.update(kind="resumed", decision=copy.deepcopy(history["resume_decisions"][index - 1]))
+        events.append(started)
+        for hold in episode["holds"]:
+            events.append({"kind": "hold_started", "at": hold["started_at"], "episode_id": episode_id,
+                           "hold_id": hold["hold_id"], "hold_kind": hold["kind"],
+                           "evidence_hash": hold["evidence_hash"]})
+            if hold["ended_at"] is not None:
+                events.append({"kind": "hold_ended", "at": hold["ended_at"], "episode_id": episode_id,
+                               "hold_id": hold["hold_id"]})
+        for sleep_index, sleep in enumerate(episode["sleeps"]):
+            sleep_id = f"sleep-{sleep_index + 1}"
+            events.append({"kind": "sleep_started", "at": sleep["started_at"], "episode_id": episode_id,
+                           "hold_id": sleep_id})
+            events.append({"kind": "sleep_ended", "at": sleep["ended_at"], "episode_id": episode_id,
+                           "hold_id": sleep_id, "measured_seconds": sleep["measured_seconds"]})
+        if episode["paused_at"] is not None:
+            events.append({"kind": "performance_paused", "at": episode["paused_at"], "episode_id": episode_id})
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Authenticated lazy migration and unknown-version read-only handling
 
@@ -1130,19 +1248,6 @@ class RecordAccess:
     read_only: bool
     migrated: bool
     reason: str | None
-
-
-def sign_legacy_record(record: Mapping[str, Any], *, key_id: str, secret: bytes) -> dict[str, Any]:
-    """Return a copy carrying an HMAC over all legacy fields except ``_auth``."""
-
-    if not isinstance(secret, bytes) or len(secret) < 16:
-        raise SchemaError("legacy authentication secret must be at least 16 bytes")
-    _identifier(key_id, where="key_id")
-    unsigned = copy.deepcopy(dict(record))
-    unsigned.pop("_auth", None)
-    signature = hmac.new(secret, canonical_bytes(unsigned), hashlib.sha256).hexdigest()
-    unsigned["_auth"] = {"algorithm": "hmac-sha256", "key_id": key_id, "signature": signature}
-    return unsigned
 
 
 def _authenticate_legacy(record: Mapping[str, Any], secrets: Mapping[str, bytes]) -> bool:

@@ -4,6 +4,10 @@ records the terminal event once, a red check refuses the Phase 7
 transition, and nothing token-like ever reaches the ledger, the side file
 or the snapshot. No test reaches the real gh: a fake runner answers, and a
 PATH shim marks any real invocation."""
+import argparse
+import contextlib
+import functools
+import io
 import json
 import os
 import shutil
@@ -12,6 +16,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from tests import guards
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
@@ -311,6 +316,41 @@ class CiWatchTests(HandsoffTestCase):
             lib.ci_watch_start(self.tmp, self.cfg, pr=7, by="x", runner=FakeGh([]), which=lambda name: None)
         with self.assertRaisesRegex(lib.HandsoffError, "--pr must be a pull request number"):
             lib.ci_watch_start(self.tmp, self.cfg, pr="seven", by="x", runner=FakeGh([]), which=self.which)
+
+    # -- #392: the guard gate applies only where the guards module exists --
+
+    def _ci_watch_in_process(self):
+        """Run cmd_ci_watch against a FakeGh, so only the guard gate decides."""
+        import handsoff_supervisor as sup
+        start = lib.ci_watch_start
+        gh = FakeGh(shard_checks())
+        out = io.StringIO()
+        with mock.patch.object(sup, "_enforce_refs_only_pr", lambda root, number: None), \
+                mock.patch.object(lib, "ci_watch_start",
+                                  functools.partial(start, runner=gh, which=self.which)), \
+                contextlib.redirect_stdout(out):
+            code = sup.cmd_ci_watch(argparse.Namespace(root=str(self.tmp), pr=7, poll=False, by="claude-host"))
+        return code, out.getvalue(), gh
+
+    def test_with_the_guards_module_and_no_record_the_watch_is_refused(self):
+        (self.tmp / "tests").mkdir(exist_ok=True)
+        (self.tmp / "tests" / "guards.py").write_text("# the project's guard runner\n")
+        self.assertFalse((self.tmp / guards.RECORD).exists())
+        code, output, gh = self._ci_watch_in_process()
+        self.assertEqual(code, 1, output)
+        self.assertIn("CI_WATCH_BLOCKED: no passing guard run is recorded for this tree", output)
+        self.assertEqual(gh.calls, [], "the guard gate must refuse before gh is asked")
+        self.assertEqual(self._events("ci_watch_started"), [])
+
+    def test_without_the_guards_module_the_watch_starts_and_says_so(self):
+        self.assertFalse((self.tmp / "tests" / "guards.py").exists())
+        self.assertFalse((self.tmp / guards.RECORD).exists())
+        code, output, _gh = self._ci_watch_in_process()
+        self.assertEqual(code, 0, output)
+        self.assertIn("CI_WATCH_STARTED: PR #7 head abc123def456", output)
+        self.assertIn("guards not configured (no tests/guards.py)", output)
+        self.assertNotIn("CI_WATCH_BLOCKED", output)
+        self.assertEqual(self.read_status()["ci"]["pr"], 7)
 
 
 if __name__ == "__main__":

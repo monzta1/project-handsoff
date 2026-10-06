@@ -58,7 +58,9 @@ class IssueStateTests(unittest.TestCase):
         attributable = self.snapshot(kind="pull_request", pr_number=88, merged=True, merged_commit="abc123")
         wrong_commit = self.snapshot(kind="pull_request", pr_number=88, merged=True, merged_commit="different")
         human = self.snapshot(kind="human", actor="maintainer")
-        self.assertEqual(close.issue_state_decision(attributable, self.RUN_PRS, run_token="run-a"), "reopen")
+        # #381: a closure by the run's own merged PR is the run's, never reopened
+        self.assertEqual(close.issue_state_decision(attributable, self.RUN_PRS, run_token="run-a"),
+                         "already_closed")
         self.assertEqual(close.issue_state_decision(wrong_commit, self.RUN_PRS, run_token="run-a"), "pause")
         self.assertEqual(close.issue_state_decision(human, self.RUN_PRS, run_token="run-a"), "pause")
         self.assertEqual(close.issue_state_decision(self.snapshot(state="open"), self.RUN_PRS,
@@ -293,6 +295,53 @@ class MigrationTests(unittest.TestCase):
             close.migrate_transaction({"archived": True}, root=".", run_token="run-a", authenticated=False)
         with self.assertRaisesRegex(close.ReadOnlyTransactionError, "unsupported.*99"):
             close.migrate_transaction({"version": 99}, root=".", run_token="run-a", authenticated=True)
+
+    def completed_flat_record(self):
+        record = close.new_transaction(".", "run-a")
+        record["items"] = {"271": {"commented": True, "closed": True, "ticked": True, "state": "complete"}}
+        record["steps"] = {name: {**close._pending_operation(), "state": "complete", "completed_at": "t0"}
+                           for name in close.TEARDOWN_STEPS}
+        record.update(state="complete", completed_at="t0")
+        return record
+
+    def rerun(self, record, remote, actions):
+        """Run teardown on a migrated record; the report step reconciles items."""
+        transaction = close.CloseTransaction(record, persist=lambda _state: None, clock=lambda: "t1")
+        items = {name: operation(remote, name, actions=actions) for name in close.ITEM_OPERATIONS[1:]}
+
+        def items_complete():
+            return all(item.get("state") == "complete" for item in transaction.record["items"].values())
+
+        steps = {name: operation(remote, name, actions=actions) for name in close.TEARDOWN_STEPS}
+        steps["final_report_post"] = close.Operation(
+            items_complete, bool, lambda: transaction.reconcile_item("271", items))
+        return transaction.run(steps)
+
+    def test_completed_v1_flat_record_reopens_the_report_gate(self):
+        record = self.completed_flat_record()
+        migrated = close.migrate_transaction(record, root=".", run_token="run-a", authenticated=True)
+        self.assertEqual((migrated["state"], migrated["completed_at"]), ("open", None))
+        self.assertEqual(migrated["steps"]["final_report_post"]["state"], "pending")
+        self.assertEqual(migrated["legacy"]["final_report_post"]["state"], "complete")
+        self.assertEqual(migrated["steps"]["archive"]["state"], "complete")
+        self.assertEqual(migrated["items"]["271"]["state"], "open")
+
+        # GitHub already holds every item: read-back settles it, no duplicate comment.
+        remote = {name: True for name in close.ITEM_OPERATIONS}
+        actions = []
+        result = self.rerun(migrated, remote, actions)
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual(actions, [])
+        self.assertEqual(result["items"]["271"]["operations"]["commented"]["completion"], "adopted")
+
+    def test_completed_v1_flat_record_posts_what_github_lacks(self):
+        migrated = close.migrate_transaction(self.completed_flat_record(), root=".", run_token="run-a",
+                                             authenticated=True)
+        remote = {"commented": False, "closed": True, "ticked": False}
+        actions = []
+        result = self.rerun(migrated, remote, actions)
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual(actions, ["commented", "ticked"])
 
     def test_v1_identity_mismatch_refuses_mutation(self):
         record = close.new_transaction(".", "run-a")

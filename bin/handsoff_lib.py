@@ -81,6 +81,7 @@ except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None
 
 from handsoff_schema import (  # noqa: E402,F401
+    MAX_CONFIG_OVERRIDES,
     AGENT_REPLACEMENT_STATES,
     AGENT_REPLACEMENT_TRIGGERS,
     AGENT_SESSION_FIELDS,
@@ -343,6 +344,7 @@ from handsoff_config import (  # noqa: E402,F401
     DESIGN_EVIDENCE_ID_PATTERN,
     EXPLICIT_PROFILE_SOURCE,
     FEATURES,
+    CONFIG_OVERRIDE_SCHEMA,
     FOLLOWUP_REVIEWER_KEY,
     HOST_AGENT_ADAPTER,
     HOST_CAPABLE_ROLES,
@@ -791,7 +793,11 @@ def turn_bound_refusal(*, adapter: str, role: str, ceiling: int, compact_scope: 
         f"by the {PROTOCOL_RESERVE_TOKENS}-token protocol reserve: a single turn can exceed the "
         f"whole {ceiling}-token ceiling, and this ceiling cannot absorb one such turn on top of "
         f"the {safe_minimum} tokens a viable session needs. Raise [agent_budget].{role} to at "
-        f"least {needed} to cover the worst measured turn ({basis})."
+        f"least {needed} to cover the worst measured turn ({basis})"
+        # #388: the compact scope is wired again, for reviewer launches only.
+        + (", or relaunch the reviewer with a compact review scope: "
+           "`handsoff agent launch reviewer --compact-scope PATH:START-END`."
+           if role == "reviewer" else ".")
     )
 
 
@@ -2184,11 +2190,13 @@ def provider_status() -> dict:
 
 
 def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
-                           assignments: dict[str, str], *, booleans: bool = False) -> list[str]:
+                           assignments: dict[str, object], *, booleans: bool = False,
+                           scalars: bool = False) -> list[str]:
     """Rewrite `key = value` lines of one table in place, keeping comments
     and order, adding the table or missing keys at the end. String values by
     default; `booleans=True` matches and writes bare true/false (#165 #167
-    #166, the [features] switches)."""
+    #166, the [features] switches); `scalars=True` matches any string,
+    boolean or number (#382, config-override)."""
     section_pattern = re.compile(rf"^\s*\[{re.escape(table)}\]\s*(?:#.*)?(?:\r?\n)?$")
     section_starts = [i for i, line in enumerate(lines)
                       if re.match(r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?(?:\r?\n)?$", line)]
@@ -2209,7 +2217,8 @@ def _patch_toml_role_table(lines: list[str], parsed: dict, table: str,
         lines.append(f"[{table}]\n")
         end = len(lines)
 
-    value_pattern = r"(?:true|false)" if booleans else r"(?:\"(?:[^\"\\]|\\.)*\"|'[^']*')"
+    value_pattern = (_TOML_SCALAR if scalars else r"(?:true|false)" if booleans
+                     else r"(?:\"(?:[^\"\\]|\\.)*\"|'[^']*')")
     patterns = {
         role: re.compile(
             rf"^(\s*{role}\s*=\s*){value_pattern}(\s*(?:#.*)?)(\r?\n)?$"
@@ -2536,6 +2545,136 @@ def update_feature_settings(root: Path, payload: object) -> dict:
             raise HandsoffError("refusing ambiguous feature settings update")
         _atomic_write_text(path, proposed)
     return {"features": dict(payload)}
+
+
+# --------------------------------------------------------------------------
+# #382: run-scoped handsoff.toml overrides. config-override is the only
+# writer; run-close's config_restore step puts each value back.
+# --------------------------------------------------------------------------
+
+
+_TOML_SCALAR = (r"(?:\"(?:[^\"\\]|\\.)*\"|'[^']*'|true|false|"
+                r"[+-]?[0-9][0-9_]*(?:\.[0-9_]+)?(?:[eE][+-]?[0-9]+)?)")
+
+
+def parse_config_override(key: object, text: object) -> object:
+    """The value `--value` names, typed the way load_config reads `key`."""
+    kind = CONFIG_OVERRIDE_SCHEMA.get(key) if isinstance(key, str) else None
+    if kind is None:
+        raise HandsoffError(f"config-override: handsoff.toml key {key!r} is not one the config schema knows")
+    if not isinstance(text, str):
+        raise HandsoffError("config-override: --value must be a string")
+    try:
+        if kind is bool:
+            if text not in {"true", "false"}:
+                raise ValueError
+            return text == "true"
+        if kind is int:
+            return int(text)
+        if kind is float:
+            value = float(text)
+            if not math.isfinite(value):
+                raise ValueError
+            return value
+    except ValueError:
+        raise HandsoffError(f"config-override: {key} takes {kind.__name__} values, not {text!r}") from None
+    return text
+
+
+def read_config_value(root: Path, key: str) -> object:
+    """The current raw handsoff.toml value at `table.key`, or None when absent."""
+    if tomllib is None:
+        raise HandsoffError("config overrides require Python 3.11+ TOML support")
+    path = Path(root) / "handsoff.toml"
+    try:
+        parsed = tomllib.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError) as exc:
+        raise HandsoffError(f"cannot read {path}: {exc}") from exc
+    table, name = key.split(".", 1)
+    section = parsed.get(table)
+    return section.get(name) if isinstance(section, dict) else None
+
+
+def write_config_value(root: Path, key: str, value: object) -> None:
+    """Set one handsoff.toml scalar in its table, or remove it when `value`
+    is None, keeping every other line. The caller holds project_lock; the
+    proposed file must parse, hold exactly `value` and load as a config."""
+    if key not in CONFIG_OVERRIDE_SCHEMA:
+        raise HandsoffError(f"config-override: handsoff.toml key {key!r} is not one the config schema knows")
+    root = Path(root).resolve()
+    path = root / "handsoff.toml"
+    try:
+        original = path.read_text(encoding="utf-8") if path.is_file() else ""
+        parsed = tomllib.loads(original)
+    except (OSError, ValueError) as exc:
+        raise HandsoffError(f"cannot update {path}: {exc}") from exc
+    table, name = key.split(".", 1)
+    lines = original.splitlines(keepends=True)
+    if value is None:
+        lines = _remove_toml_key(lines, table, name)
+    else:
+        lines = _patch_toml_role_table(lines, parsed, table, {name: value}, scalars=True)
+    proposed = "".join(lines)
+    try:
+        proposed_raw = tomllib.loads(proposed)
+    except ValueError as exc:
+        raise HandsoffError(f"refusing invalid proposed handsoff.toml: {exc}") from exc
+    section = proposed_raw.get(table) if isinstance(proposed_raw.get(table), dict) else {}
+    if section.get(name) != value or (value is not None and type(section.get(name)) is not type(value)):
+        raise HandsoffError(f"refusing ambiguous handsoff.toml update of {key}")
+    _atomic_write_text(path, proposed)
+    try:
+        load_config(root)
+    except HandsoffError as exc:
+        _atomic_write_text(path, original)
+        raise HandsoffError(f"config-override: {key} = {value!r} does not load: {exc}") from exc
+
+
+def _remove_toml_key(lines: list[str], table: str, key: str) -> list[str]:
+    section_starts = [i for i, line in enumerate(lines)
+                      if re.match(r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?(?:\r?\n)?$", line)]
+    header = re.compile(rf"^\s*\[{re.escape(table)}\]\s*(?:#.*)?(?:\r?\n)?$")
+    assignment = re.compile(rf"^\s*{re.escape(key)}\s*=\s*{_TOML_SCALAR}\s*(?:#.*)?(?:\r?\n)?$")
+    for start in (i for i in section_starts if header.match(lines[i])):
+        end = next((i for i in section_starts if i > start), len(lines))
+        found = [i for i in range(start + 1, end) if assignment.match(lines[i])]
+        if len(found) == 1:
+            return lines[:found[0]] + lines[found[0] + 1:]
+    raise HandsoffError(f"handsoff.toml: cannot find one {table}.{key} assignment to remove")
+
+
+def record_config_override(root: Path, *, key: object, value: object, by: object) -> dict:
+    """#382: write one handsoff.toml value for this run only and record
+    {path, key, original, run_written, at, by} on status.config_overrides.
+    A second override of the same key updates run_written and keeps the
+    first original, so close restores what the run found."""
+    if not isinstance(by, str) or not by.strip() or len(by.strip()) > 128:
+        raise HandsoffError("config-override: --by must be 1 to 128 characters")
+    written = parse_config_override(key, value)
+    root = Path(root).resolve()
+    with project_lock(root):
+        cfg = load_config(root)
+        if not status_path(root, cfg).exists():
+            raise HandsoffError("config-override: no current run (run init first)")
+        status = load_unique_json(status_path(root, cfg))
+        if isinstance(status.get("run_closed"), dict):
+            raise HandsoffError("config-override: the run is closed")
+        overrides = [dict(entry) for entry in status.get("config_overrides") or []]
+        entry = next((item for item in overrides if item.get("key") == key), None)
+        if entry is None and len(overrides) >= MAX_CONFIG_OVERRIDES:
+            raise HandsoffError(f"config-override: a run holds at most {MAX_CONFIG_OVERRIDES} overrides")
+        original = read_config_value(root, key) if entry is None else entry["original"]
+        write_config_value(root, key, written)
+        at = datetime.now(timezone.utc).isoformat()
+        if entry is None:
+            entry = {"path": "handsoff.toml", "key": key, "original": original}
+            overrides.append(entry)
+        entry.update(run_written=written, at=at, by=by.strip())
+        status["config_overrides"] = overrides
+        commit(root, cfg, status=status, event_kind="config_override",
+               event_message=f"handsoff.toml {key} set to {written!r} for this run by {by.strip()}",
+               key=key, original=original, run_written=written, by=by.strip())
+    return dict(entry)
 
 
 # --------------------------------------------------------------------------
@@ -8080,14 +8219,20 @@ def _issues_closed_by_run_pull_requests(root: Path, *, runner=subprocess.run) ->
     """#374: the issues a merged pull request whose head is the run's branch
     closed. Such a closure is the run's own (a `Closes #N` body), not a
     human's. Empty when the branch or the pull requests cannot be read."""
+    return set(run_pull_request_closures(root, runner=runner))
+
+
+def run_pull_request_closures(root: Path, *, runner=subprocess.run) -> dict[int, int]:
+    """#381: issue number to the number of the run's merged pull request
+    that closed it, attributed as in #374."""
     try:
         proc = runner(["git", "-C", str(root), "symbolic-ref", "--short", "HEAD"],
                       capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        return set()
+        return {}
     branch = proc.stdout.strip() if proc.returncode == 0 else ""
     if not branch:
-        return set()
+        return {}
     # Implementation review attempt 1: a closing reference names a number in
     # SOME repository; only one in this run's own repository is the run's.
     # When the repository cannot be read, nothing is attributed.
@@ -8097,16 +8242,17 @@ def _issues_closed_by_run_pull_requests(root: Path, *, runner=subprocess.run) ->
     except (ValueError, AttributeError):
         repository = None
     if not isinstance(repository, str) or "/" not in repository:
-        return set()
+        return {}
     listed = _gh(["pr", "list", "--state", "merged", "--head", branch, "--limit", "20",
                   "--json", "number,headRefName,closingIssuesReferences"], runner=runner, cwd=root)
     try:
         prs = json.loads(listed.stdout) if listed.returncode == 0 else []
     except ValueError:
-        return set()
-    closed = set()
+        return {}
+    closed: dict[int, int] = {}
     for pr in prs if isinstance(prs, list) else []:
-        if not isinstance(pr, dict) or pr.get("headRefName") != branch:
+        if not isinstance(pr, dict) or pr.get("headRefName") != branch \
+                or isinstance(pr.get("number"), bool) or not isinstance(pr.get("number"), int):
             continue
         for ref in pr.get("closingIssuesReferences") or []:
             if not isinstance(ref, dict) or not isinstance(ref.get("number"), int):
@@ -8114,8 +8260,89 @@ def _issues_closed_by_run_pull_requests(root: Path, *, runner=subprocess.run) ->
             repo = ref.get("repository") if isinstance(ref.get("repository"), dict) else {}
             owner = repo.get("owner") if isinstance(repo.get("owner"), dict) else {}
             if f"{owner.get('login')}/{repo.get('name')}".lower() == repository.lower():
-                closed.add(ref["number"])
+                closed.setdefault(ref["number"], pr["number"])
     return closed
+
+
+def prepare_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
+                         verifications: list[dict], validate_lines: list[str], *,
+                         runner=subprocess.run) -> dict:
+    """The marked comment body every item receives, or the reason nothing
+    may leave: a credential shape that survived redaction, or no gh login."""
+    head = _last_hash(event_log_path(root, cfg))
+    text = render_final_report(root, cfg, status, acceptance, events, verifications, validate_lines, runner=runner)
+    leaked = report_credential_lines(text)
+    if leaked:
+        return {"reason": "redaction", "detail": f"{len(leaked)} line(s) still credential-shaped; nothing posted"}
+    auth = _gh(["auth", "status"], runner=runner, cwd=root)
+    if auth.returncode != 0:
+        return {"reason": "gh_auth", "detail": "gh is not authenticated; nothing posted"}
+    return {"reason": None, "head": head, "text": text, "body": REPORT_MARKER.format(head=head) + "\n" + text}
+
+
+def report_issue_items(status: dict, acceptance: dict, cfg: dict) -> list[dict]:
+    return [item for item in derive_work_items(status, acceptance, cfg).get("items", [])
+            if item.get("kind") == "issue" and isinstance(item.get("number"), int)]
+
+
+def read_report_issue(root: Path, number: int, *, fields: str = "body,url,state,comments",
+                      runner=subprocess.run) -> dict | None:
+    """One `gh issue view`; None when it fails or answers no usable state."""
+    view = _gh(["issue", "view", str(number), "--json", fields], runner=runner, cwd=root)
+    try:
+        issue = json.loads(view.stdout) if view.returncode == 0 else None
+    except ValueError:
+        return None
+    if not isinstance(issue, dict):
+        return None
+    if "state" in fields.split(",") and str(issue.get("state") or "").upper() not in {"OPEN", "CLOSED"}:
+        return None
+    return issue
+
+
+def _issue_comments(issue: dict) -> list:
+    return [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
+
+
+def issue_has_report(issue: dict) -> bool:
+    """Any earlier report on the ticket counts: the head moves with every
+    event, the marker's prefix does not."""
+    prefix = REPORT_MARKER.split("{head}")[0]
+    return any(isinstance(c, str) and c.lstrip().startswith(prefix) for c in _issue_comments(issue))
+
+
+def issue_closed_by_report(issue: dict) -> bool:
+    """The issue carries a Handsoff close comment whose head prefixes one of
+    its own report markers."""
+    existing = _issue_comments(issue)
+    report_heads = {
+        match.group(1) for comment in existing if isinstance(comment, str)
+        for match in re.finditer(r"<!--\s*handsoff-report\s+([0-9a-f]{64})\s*-->", comment)
+    }
+    closure_heads = {
+        match.group(1) for comment in existing if isinstance(comment, str)
+        for match in re.finditer(r"Closed by the Handsoff run report \(([0-9a-f]{12})\)", comment)
+    }
+    return any(any(report_head.startswith(close_head) for report_head in report_heads)
+               for close_head in closure_heads)
+
+
+def report_issue_parent(issue: dict) -> int | None:
+    match = re.search(r"(?im)^\s*parent:\s*#([1-9][0-9]{0,8})\b", str(issue.get("body") or ""))
+    return int(match.group(1)) if match else None
+
+
+def parent_box_ticked(parent_body: str, number: int) -> bool:
+    return bool(re.search(rf"^\s*- \[x\] #{number}\b", parent_body, re.MULTILINE | re.IGNORECASE))
+
+
+def tick_parent_box(parent_body: str, number: int) -> str | None:
+    """The parent body with #number's box ticked; None when it has no
+    unticked box for it."""
+    unticked = re.compile(rf"^(\s*- \[) (\] #{number}\b)", re.MULTILINE)
+    if not unticked.search(parent_body):
+        return None
+    return unticked.sub(r"\1x\2", parent_body, count=1)
 
 
 def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, events: list[dict],
@@ -8129,18 +8356,12 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
     survives redaction or when gh cannot authenticate. An item that cannot
     be posted is skipped with its reason and never blocks the others (#374);
     one marked `unpostable` is settled, the rest are retried."""
-    head = _last_hash(event_log_path(root, cfg))
-    text = render_final_report(root, cfg, status, acceptance, events, verifications, validate_lines, runner=runner)
-    marker = REPORT_MARKER.format(head=head)
-    leaked = report_credential_lines(text)
-    if leaked:
-        return {"posted": [], "skipped": [], "reason": "redaction",
-                "detail": f"{len(leaked)} line(s) still credential-shaped; nothing posted"}
-    auth = _gh(["auth", "status"], runner=runner, cwd=root)
-    if auth.returncode != 0:
-        return {"posted": [], "skipped": [], "reason": "gh_auth", "detail": "gh is not authenticated; nothing posted"}
-    items = [item for item in derive_work_items(status, acceptance, cfg).get("items", [])
-             if item.get("kind") == "issue" and isinstance(item.get("number"), int)]
+    prepared = prepare_final_report(root, cfg, status, acceptance, events, verifications, validate_lines,
+                                    runner=runner)
+    if prepared["reason"]:
+        return {"posted": [], "skipped": [], "reason": prepared["reason"], "detail": prepared["detail"]}
+    head = prepared["head"]
+    items = report_issue_items(status, acceptance, cfg)
     known_handsoff_closed = set(known_handsoff_closed or ())
     # Read every issue before the first mutation.  A pre-existing closure is
     # the run's own when this close transaction already persisted that
@@ -8152,33 +8373,14 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
     run_pr_closed: set[int] | None = None
     for item in items:
         number = item["number"]
-        view = _gh(["issue", "view", str(number), "--json", "body,url,state,comments"],
-                   runner=runner, cwd=root)
-        try:
-            issue = json.loads(view.stdout) if view.returncode == 0 else None
-        except ValueError:
-            issue = None
-        if not isinstance(issue, dict) or str(issue.get("state") or "").upper() not in {"OPEN", "CLOSED"}:
+        issue = read_report_issue(root, number, runner=runner)
+        if issue is None:
             # Not unpostable: a read can succeed on the next post.
             skipped.append({"number": number, "reason": "state could not be read"})
             continue
-        existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
-        has_report = any(isinstance(c, str) and c.lstrip().startswith(
-            REPORT_MARKER.split("{head}")[0]) for c in existing)
-        report_heads = {
-            match.group(1) for comment in existing if isinstance(comment, str)
-            for match in re.finditer(r"<!--\s*handsoff-report\s+([0-9a-f]{64})\s*-->", comment)
-        }
-        closure_heads = {
-            match.group(1) for comment in existing if isinstance(comment, str)
-            for match in re.finditer(r"Closed by the Handsoff run report \(([0-9a-f]{12})\)", comment)
-        }
-        canonically_attributed = any(
-            any(report_head.startswith(close_head) for report_head in report_heads)
-            for close_head in closure_heads
-        )
         if str(issue.get("state")).upper() == "CLOSED" \
-                and not ((number in known_handsoff_closed and has_report) or canonically_attributed):
+                and not ((number in known_handsoff_closed and issue_has_report(issue))
+                         or issue_closed_by_report(issue)):
             if run_pr_closed is None:
                 run_pr_closed = _issues_closed_by_run_pull_requests(root, runner=runner)
             if number not in run_pr_closed:
@@ -8188,7 +8390,7 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
         issue_views[number] = issue
     items = [item for item in items if item["number"] in issue_views]
     posted = []
-    body = marker + "\n" + text
+    body = prepared["body"]
     def save(number: int, operation: str, state: str) -> None:
         if checkpoint is not None:
             checkpoint(number, operation, state)
@@ -8196,12 +8398,10 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
     for item in items:
         number = item["number"]
         issue = issue_views[number]
-        existing = [c.get("body") if isinstance(c, dict) else c for c in (issue.get("comments") or [])]
-        # any earlier report on this ticket counts: the head moves with every
-        # event, the marker's prefix does not. The comment is the only
-        # part that is never repeated; close and tick are retried below
-        # until each has actually happened (review F1, tranche 2).
-        already = any(isinstance(c, str) and c.lstrip().startswith(REPORT_MARKER.split("{head}")[0]) for c in existing)
+        # The comment is the only part that is never repeated; close and
+        # tick are retried below until each has actually happened (review
+        # F1, tranche 2).
+        already = issue_has_report(issue)
         url = None
         if already:
             skipped.append({"number": number, "reason": "already posted"})
@@ -8235,8 +8435,7 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
                 closed = False
         if closed:
             save(number, "closed", "complete")
-        parent_match = re.search(r"(?im)^\s*parent:\s*#([1-9][0-9]{0,8})\b", str(issue.get("body") or ""))
-        parent = int(parent_match.group(1)) if parent_match else None
+        parent = report_issue_parent(issue)
         ticked = False
         if parent:
             parent_view = _gh(["issue", "view", str(parent), "--json", "body"], runner=runner, cwd=root)
@@ -8244,9 +8443,8 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
                 parent_body = json.loads(parent_view.stdout).get("body") or "" if parent_view.returncode == 0 else ""
             except ValueError:
                 parent_body = ""
-            unticked = re.compile(rf"^(\s*- \[) (\] #{number}\b)", re.MULTILINE)
-            if unticked.search(parent_body):
-                new_body = unticked.sub(r"\1x\2", parent_body, count=1)
+            new_body = tick_parent_box(parent_body, number)
+            if new_body is not None:
                 save(number, "ticked", "intent")
                 _gh(["issue", "edit", str(parent), "--body", new_body], runner=runner, cwd=root)
                 parent_readback = _gh(["issue", "view", str(parent), "--json", "body"],
@@ -8256,9 +8454,8 @@ def post_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, eve
                         if parent_readback.returncode == 0 else ""
                 except ValueError:
                     observed_parent = ""
-                ticked = bool(re.search(rf"^\s*- \[x\] #{number}\b", observed_parent,
-                                        re.MULTILINE | re.IGNORECASE))
-            elif re.search(rf"^\s*- \[x\] #{number}\b", parent_body, re.MULTILINE | re.IGNORECASE):
+                ticked = parent_box_ticked(observed_parent, number)
+            elif parent_box_ticked(parent_body, number):
                 ticked = True
         if ticked or not parent:
             save(number, "ticked", "complete")

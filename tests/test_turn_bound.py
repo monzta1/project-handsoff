@@ -88,14 +88,23 @@ class ATurnThatCouldExceedTheCeilingIsRefusedAtLaunch(unittest.TestCase):
         self.assertIsNotNone(refusal)
         self.assertIn("reports usage only at exit", refusal)
 
-    def test_the_refusal_names_only_the_remedy_a_caller_can_take(self):
-        # No launch path accepts a compact review scope (#290 was never
-        # wired), so the refusal must not offer one.
+    def test_the_refusal_names_both_remedies(self):
+        # #388: `handsoff agent launch reviewer --compact-scope` exists, so
+        # the reviewer refusal offers it beside the budget raise again.
         refusal = self.refusal(
             adapter="codex", role="reviewer", ceiling=80_000, compact_scope=False,
             safe_minimum=75_000)
-        self.assertNotIn("compact review scope", refusal)
-        self.assertIn("[agent_budget].reviewer", refusal)
+        self.assertIn("Raise [agent_budget].reviewer to at least 85535", refusal)
+        self.assertIn("compact review scope", refusal)
+        self.assertIn("handsoff agent launch reviewer --compact-scope", refusal)
+
+    def test_an_implementer_refusal_offers_no_compact_scope(self):
+        # --compact-scope applies to reviewer launches only.
+        refusal = self.refusal(
+            adapter="codex", role="implementer", ceiling=40_000, compact_scope=False,
+            safe_minimum=75_000)
+        self.assertIn("[agent_budget].implementer", refusal)
+        self.assertNotIn("--compact-scope", refusal)
 
     def test_the_refusal_carries_the_number_and_its_basis(self):
         """A bound resting on one observation must not present itself as a

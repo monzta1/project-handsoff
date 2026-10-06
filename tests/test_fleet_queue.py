@@ -383,6 +383,100 @@ class LocalOnlyTest(QueueCase):
         self.assertIn("cross-host execution fails closed", prerequisites)
 
 
+class QueueCliTest(_FleetFixture):
+    """#386 (REQ-010): `handsoff fleet queue` over the Queue at its default
+    directory (the Fleet registry's), and GET /api/queue behind the token."""
+
+    TOKEN = "queue-token"
+
+    def setUp(self):
+        super().setUp()
+        self.env = dict(os.environ, HANDSOFF_FLEET_REGISTRY=str(self.registry), PYTHONDONTWRITEBYTECODE="1")
+
+    def cli(self, *args, ok=True):
+        """`handsoff fleet queue ...` through the real dispatcher."""
+        result = subprocess.run([sys.executable, str(BIN / "handsoff_cli.py"), "fleet", "queue", *args],
+                                env=self.env, capture_output=True, text=True, timeout=60)
+        if ok:
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result.stderr
+
+    def test_every_operation_on_the_default_queue(self):
+        self.assertEqual(self.cli("list"), {"last_seq": 0, "jobs": []})
+        self.assertFalse((self.base / hq.STORE_FILE).exists(), "list on an empty queue creates nothing")
+        self.assertIsNone(self.cli("claim", "--worker", "w1"))
+        first = self.cli("submit", "--key", "build-1", "--payload", '{"task": "build"}')["job_id"]
+        self.assertEqual(self.cli("submit", "--key", "build-1", "--payload", '{"task": "other"}')["job_id"], first,
+                         "submit is idempotent per key")
+        listed = self.cli("list")
+        self.assertEqual([(job["id"], job["state"], job["payload"]) for job in listed["jobs"]],
+                         [(first, "queued", {"task": "build"})])
+        self.assertTrue((self.base / hq.STORE_FILE).is_file(), "the queue lives beside the registry")
+        self.assertEqual(self.cli("show", first), listed["jobs"][0])
+        self.assertIn(f"unknown job job-{'0' * 16}", self.cli("show", f"job-{'0' * 16}", ok=False))
+
+        lease = self.cli("claim", "--worker", "w1", "--lease-seconds", "300")
+        self.assertEqual((lease["id"], lease["state"], lease["epoch"], lease["lease"]["worker"]), (first, "leased", 1, "w1"))
+        beat = self.cli("heartbeat", first, "--worker", "w1", "--epoch", "1")
+        self.assertEqual(beat["epoch"], 1)
+        refused = self.cli("succeed", first, "--worker", "w1", "--epoch", "0", ok=False)
+        self.assertIn("HANDSOFF_FLEET_BLOCKED", refused)
+        self.assertIn("leased to w1 at epoch 1", refused)
+        self.assertIn("leased to w1 at epoch 1", self.cli("fail", first, "--worker", "w1", "--epoch", "2", ok=False))
+        self.assertEqual(self.cli("show", first)["state"], "leased", "a stale epoch changes nothing")
+        self.assertEqual(self.cli("succeed", first, "--worker", "w1", "--epoch", "1")["state"], "succeeded")
+
+        second = self.cli("submit", "--key", "build-2", "--max-attempts", "2")["job_id"]
+        self.assertEqual(self.cli("claim", "--worker", "w2")["id"], second)
+        failed = self.cli("fail", second, "--worker", "w2", "--epoch", "1")
+        self.assertEqual((failed["state"], failed["attempts"]), ("queued", 1), "a failure with attempts left requeues")
+        third = self.cli("submit", "--key", "build-3")["job_id"]
+        self.assertEqual(self.cli("cancel", third)["state"], "cancelled")
+        self.assertIn("cannot be cancelled", self.cli("cancel", third, ok=False))
+
+        listed = self.cli("list")
+        self.assertEqual([job["state"] for job in listed["jobs"]], ["succeeded", "queued", "cancelled"])
+        self.assertEqual(self.cli("replay"), listed, "replay matches list")
+        self.assertEqual(self.cli("replay", "--from-start"), listed)
+
+    def test_api_queue_serves_the_queue_read_only_behind_the_token(self):
+        job = self.cli("submit", "--key", "served")["job_id"]
+        listed = self.cli("list")
+        journal = sorted((path.name, path.read_bytes()) for path in (self.base / hq.JOURNAL_DIR).iterdir())
+        server = fleet.FleetServer(("127.0.0.1", 0), self.registry, signals_interval=3600,
+                                   issues_interval=3600, token=self.TOKEN)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05}, daemon=True)
+        thread.start()
+
+        def get(authorization=None):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request("GET", "/api/queue", headers={"Authorization": authorization} if authorization else {})
+            response = connection.getresponse()
+            try:
+                return response.status, json.loads(response.read())
+            finally:
+                connection.close()
+        try:
+            for authorization in (None, "Bearer wrong", self.TOKEN):
+                with self.subTest(authorization=authorization):
+                    self.assertEqual(get(authorization), (401, {"error": "Fleet access token required"}))
+            status, body = get(f"Bearer {self.TOKEN}")
+        finally:
+            server.stopping = True
+            server.signals_thread.stop_event.set()
+            server.issues_thread.stop_event.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, listed)
+        self.assertEqual([item["id"] for item in body["jobs"]], [job])
+        self.assertEqual(sorted((path.name, path.read_bytes()) for path in (self.base / hq.JOURNAL_DIR).iterdir()),
+                         journal, "reading the queue appends nothing")
+
+
 class FleetTokenTest(_FleetFixture):
     """REQ-004: the Bearer token on fleet serve, tested against a live server."""
 

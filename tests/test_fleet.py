@@ -3,8 +3,10 @@ import json
 import multiprocessing
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -101,7 +103,7 @@ class FleetMissionControlTests(_FleetFixture):
         fleet.register_project(second, self.registry)
         fleet.register_project(first, self.registry)
         snapshot = fleet.build_fleet(self.registry)
-        self.assertEqual([item["name"] for item in snapshot["projects"]], ["alpha", "beta"])
+        self.assertEqual([item["folder"] for item in snapshot["projects"]], ["alpha", "beta"])
         self.assertEqual(len(fleet.load_registry(self.registry)), 2)
         self.assertNotEqual(snapshot["projects"][0]["binding"], snapshot["projects"][1]["binding"])
         self.assertEqual(snapshot["projects"][0]["engine_version"], CURRENT_VERSION)
@@ -356,7 +358,7 @@ class ProjectLogoTests(_FleetFixture):
         fleet.register_project(root, self.registry)
         fleet.register_project(plain, self.registry)
         snapshot = fleet.build_fleet(self.registry)
-        by_name = {item["name"]: item for item in snapshot["projects"]}
+        by_name = {item["folder"]: item for item in snapshot["projects"]}
         self.assertEqual(by_name["delta"]["logo_url"], f"/project-logo/{fleet.logo_key(root)}")
         self.assertIsNone(by_name["epsilon"]["logo_url"])
         self.assertNotIn(str(root), by_name["delta"]["logo_url"])
@@ -420,11 +422,90 @@ class IdleProjectTests(_FleetFixture):
         fleet.register_project(quiet_root, self.registry)
         fleet.register_project(gone, self.registry)
         shutil.rmtree(gone)
+        _age_ledger(quiet_root, 3600)  # #389: a ledger written just now is a host working, not quiet
         payload = fleet.build_fleet(self.registry)
-        states = {item["name"]: item["state"] for item in payload["projects"]}
+        states = {item["folder"]: item["state"] for item in payload["projects"]}
         self.assertEqual(states, {"idle": "idle", "quiet": "quiet", "gone": "orphaned"})
         self.assertEqual((payload["counts"]["idle"], payload["counts"]["quiet"], payload["counts"]["orphaned"]), (1, 1, 1))
-        self.assertFalse(next(item for item in payload["projects"] if item["name"] == "idle")["initialized"])
+        self.assertFalse(next(item for item in payload["projects"] if item["folder"] == "idle")["initialized"])
+
+
+def _age_ledger(root, seconds):
+    """Move the run's status file and event log `seconds` into the past."""
+    cfg = lib.load_config(root)
+    stamp = time.time() - seconds
+    for path in (lib.status_path(root, cfg), lib.event_log_path(root, cfg)):
+        os.utime(path, (stamp, stamp))
+
+
+class CardNameAndHostWorkingTests(_FleetFixture):
+    """#389 (REQ-011): a card is named by the project's configured [project]
+    name, else its origin repository's name, else its folder, with the
+    folder carried separately; a run with no live managed session whose
+    ledger was written within [recovery] live_session_silence_minutes reads
+    host_working with that write's age, and quiet once the window passes."""
+
+    def _card(self, root):
+        fleet.register_project(root, self.registry)
+        return next(item for item in fleet.build_fleet(self.registry)["projects"] if item["root"] == str(root.resolve()))
+
+    def _set_name(self, root, line):
+        """Replace (or with None drop) the [project] table's name line."""
+        toml = root / "handsoff.toml"
+        lines = toml.read_text().splitlines()
+        start = lines.index("[project]")
+        index = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("name = "))
+        self.assertFalse(any(item.startswith("[") for item in lines[start + 1:index]), "the name is in [project]")
+        lines[index:index + 1] = [] if line is None else [line]
+        toml.write_text("\n".join(lines) + "\n")
+
+    def test_the_configured_project_name_wins_and_the_folder_rides_beside_it(self):
+        root = self.project("issue-3")
+        self._set_name(root, 'name = "sentinel-sandbox"')
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/monzta1/other-repo.git"], cwd=root, check=True)
+        card = self._card(root)
+        self.assertEqual((card["name"], card["folder"]), ("sentinel-sandbox", "issue-3"))
+
+    def test_without_a_configured_name_the_origin_repository_names_the_card(self):
+        root = self.project("issue-4")
+        self._set_name(root, None)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "git@github.com:monzta1/sentinel-sandbox.git"], cwd=root, check=True)
+        card = self._card(root)
+        self.assertEqual((card["name"], card["folder"]), ("sentinel-sandbox", "issue-4"))
+
+    def test_without_a_name_or_an_origin_the_folder_names_the_card(self):
+        root = self.project("issue-5")
+        self._set_name(root, None)
+        card = self._card(root)
+        self.assertEqual((card["name"], card["folder"]), ("issue-5", "issue-5"))
+
+    def test_a_ledger_written_within_the_window_reads_host_working_with_its_age(self):
+        root = self.project("hosted")
+        _age_ledger(root, 120)
+        card = self._card(root)
+        self.assertEqual(card["state"], "host_working")
+        self.assertGreaterEqual(card["host_working_age_seconds"], 120)
+        self.assertLess(card["host_working_age_seconds"], 180)
+        self.assertEqual(fleet.build_fleet(self.registry)["counts"]["host_working"], 1)
+
+    def test_after_the_silence_window_the_run_reads_quiet(self):
+        root = self.project("silent")
+        window = lib.load_config(root)["recovery"]["live_session_silence_minutes"] * 60
+        _age_ledger(root, window + 60)
+        card = self._card(root)
+        self.assertEqual(card["state"], "quiet")
+        self.assertIsNone(card["host_working_age_seconds"])
+
+    def test_a_live_managed_session_is_never_host_working(self):
+        root = self.project("managed")
+        session = lib.create_agent_session(root, role="implementer", actor="claude-implementer", adapter="claude",
+                                           requested_model="default", resolution_source="configured")
+        lib.transition_agent_session(root, session["session_id"], "running")
+        card = self._card(root)
+        self.assertNotEqual(card["state"], "host_working")
+        self.assertIsNone(card["host_working_age_seconds"])
 
 
 class EngineBadgeTests(_FleetFixture):

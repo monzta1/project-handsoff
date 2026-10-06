@@ -100,6 +100,7 @@ OPERATION_REGISTRY = {
     "ci-watch": {"class": "agent-only", "surface": "ci-status"},
     "design-decline": {"class": "agent-only", "surface": "phase-rail"},
     "run-close": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    "config-override": {"class": "agent-only", "surface": "flight-log"},
     "run-reopen": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "advance": {"class": "agent-only", "surface": "phase-rail"},
     "deployment-gate": {"class": "operator-facing", "surface": "operator-actions-panel"},
@@ -121,6 +122,8 @@ OPERATION_REGISTRY = {
 RUNTIME_CONTROL_DIR = ".handsoff-runtime-control"
 MONITOR_RECORD = "monitor.json"
 PERFORMANCE_RECORD = "performance.json"
+#: #385: the append-only, hash-chained performance timeline journal.
+PERFORMANCE_TIMELINE_JOURNAL = "performance-timeline.jsonl"
 EVIDENCE_AUDIT_RECORD = "evidence-audit.json"
 PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
     "status", "validate", "verify-log", "doctor", "dashboard", "design-timing",
@@ -129,9 +132,22 @@ PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
     # during a pause would make the pause un-observable from its own watcher.
     "performance-watch",
 })
-PERFORMANCE_PAUSE_COMMANDS = frozenset({
-    "performance-resume", "regression-cancel", "run-close",
-})
+#: #383: every supervisor command decides a pause through
+#: runtime_control.require_performance_operation, under the operation it
+#: performs. A command not named here is mutating and is judged under its own
+#: name, which no pause allows.
+PERFORMANCE_COMMAND_OPERATIONS = {
+    **{command: "inspect" for command in PERFORMANCE_READ_ONLY_COMMANDS},
+    "monitor-poll": "reconcile",
+    "performance-resume": "explicit_resume",
+    "regression-cancel": "cancel",
+    "run-close": "safe_close",
+}
+
+
+def performance_operation(command: str) -> str:
+    """The runtime-control operation a supervisor command or dashboard action performs."""
+    return PERFORMANCE_COMMAND_OPERATIONS.get(command, command)
 
 
 def _load(root: Path, cfg: dict):
@@ -161,6 +177,16 @@ def _runtime_write(root: Path, name: str, payload: dict) -> None:
     path = _runtime_path(root, name)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lib.atomic_write_json(path, payload)
+
+
+def _runtime_append_line(root: Path, name: str, payload: dict) -> None:
+    """Durably append one JSON line to a runtime-control journal."""
+    path = _runtime_path(root, name)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _runtime_read(root: Path, name: str, schema: str) -> dict | None:
@@ -230,6 +256,90 @@ def _sync_performance_holds(history: dict, events: list[dict]) -> dict:
     return updated
 
 
+def _performance_journal(root: Path, run_id: str) -> tuple[list[dict], str | None]:
+    """#385: this run's timeline entries and the chain head, from the journal.
+
+    The timeline lives in its own append-only, hash-chained journal, never
+    in the run's event ledger, so refreshing the clock (which every command
+    and every dashboard snapshot does) leaves the ledger untouched.
+    """
+    path = _runtime_path(root, PERFORMANCE_TIMELINE_JOURNAL)
+    if not path.exists():
+        return [], None
+    lines = path.read_text(encoding="utf-8").splitlines()
+    timeline, head, _refused = runtime_control.accepted_timeline(lines, run_id)
+    return timeline, head
+
+
+def _read_performance_record(root: Path) -> dict | None:
+    """The durable clock, or None when it is missing or fails its integrity check.
+
+    #385: an unparsable or invalid record, or a legacy record carrying a
+    signature that does not verify, is rebuilt from the timeline journal. An
+    unsigned legacy record and an unknown version keep their read-only
+    refusal and are never overwritten.
+    """
+    path = _runtime_path(root, PERFORMANCE_RECORD)
+    if not path.exists():
+        return None
+    try:
+        raw = lib.load_unique_json(path)
+    except lib.HandsoffError:
+        return None
+    try:
+        access = runtime_control.load_versioned_record(
+            raw, expected_schema="handsoff.performance_history", for_mutation=True,
+        )
+    except runtime_control.MutationRefused:
+        if isinstance(raw, dict) and raw.get("schema") is None and raw.get("version") is None and "_auth" in raw:
+            return None
+        raise
+    except runtime_control.SchemaError:
+        return None
+    if access.migrated:
+        _runtime_write(root, PERFORMANCE_RECORD, access.record)
+    return access.record
+
+
+def _rebuild_performance_history(root: Path, run_id: str, events: list[dict], status: dict,
+                                 now: datetime) -> dict:
+    """#385: replay the timeline journal, so a lost record keeps its elapsed time."""
+    timeline, _head = _performance_journal(root, run_id)
+    if timeline:
+        try:
+            return runtime_control.reconstruct_performance_history(run_id, timeline, now=now)
+        except runtime_control.SchemaError:
+            pass
+    started = _event_datetime(events[0].get("at") if events else status.get("updated_at"), now)
+    return runtime_control.new_performance_history(run_id, "episode-1", now=min(started, now))
+
+
+def _append_performance_timeline(root: Path, history: dict, *, lock_held: bool) -> None:
+    """#385: journal each transition, hold and sleep once, keyed by episode, kind and hold id."""
+    key = runtime_control.performance_timeline_key
+    run_id = history["run_id"]
+    entries = runtime_control.performance_timeline(history)
+    timeline, _head = _performance_journal(root, run_id)
+    if {key(entry) for entry in entries} <= {key(entry) for entry in timeline}:
+        return
+
+    def write() -> None:
+        current, head = _performance_journal(root, run_id)
+        recorded = {key(entry) for entry in current}
+        for entry in entries:
+            if key(entry) not in recorded:
+                recorded.add(key(entry))
+                line = runtime_control.chain_timeline_entry(run_id, head, entry)
+                _runtime_append_line(root, PERFORMANCE_TIMELINE_JOURNAL, line)
+                head = line["hash"]
+
+    if lock_held:
+        write()
+    else:
+        with lib.project_lock(root):
+            write()
+
+
 def refresh_performance_state(
     root: Path,
     *,
@@ -238,18 +348,23 @@ def refresh_performance_state(
     metrics: dict | None = None,
     now: datetime | None = None,
     persist: bool = True,
+    lock_held: bool = False,
+    cfg: dict | None = None,
 ) -> dict:
-    """Refresh durable 90/120-minute state and return content-free telemetry."""
+    """Refresh durable 90/120-minute state and return content-free telemetry.
+
+    `lock_held` says the caller already holds project_lock, which the
+    timeline append otherwise takes for itself.
+    """
     root = Path(root)
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    cfg = lib.load_config(root)
+    cfg = cfg if cfg is not None else lib.load_config(root)  # #393: Fleet passes the config it parsed
     status = status or lib.load_unique_json(lib.status_path(root, cfg))
     events = events if events is not None else lib.read_events(root, cfg)
     run_id = _runtime_run_id(root, events)
-    history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
+    history = _read_performance_record(root)
     if history is None or history.get("run_id") != run_id:
-        started = _event_datetime(events[0].get("at") if events else status.get("updated_at"), now)
-        history = runtime_control.new_performance_history(run_id, "episode-1", now=min(started, now))
+        history = _rebuild_performance_history(root, run_id, events, status, now)
     history = _sync_performance_holds(history, events)
     live_sessions = [
         {"operation_id": session_id, "kind": "agent", "location": "local",
@@ -260,6 +375,7 @@ def refresh_performance_state(
     history, decision = runtime_control.transition_performance(history, now=now, in_flight=live_sessions)
     if persist:
         _runtime_write(root, PERFORMANCE_RECORD, history)
+        _append_performance_timeline(root, history, lock_held=lock_held)
     episode = history["episodes"][-1]
     active_seconds = runtime_control.episode_active_seconds(episode, now=now)
     progress = max(0, min(100, int(float(status.get("progress", 0) or 0))))
@@ -291,10 +407,17 @@ def performance_mutation_refusal(root: Path, operation: str) -> str | None:
         return None
     if not view["block_new_work"]:
         return None
-    if operation in PERFORMANCE_READ_ONLY_COMMANDS or operation in PERFORMANCE_PAUSE_COMMANDS:
+    try:
+        history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
+        if history is None:
+            return None
+        runtime_control.require_performance_operation(history, performance_operation(operation))
+    except runtime_control.MutationRefused:
+        return (f"{operation} is blocked: active run time reached 120 minutes and the run is "
+                "paused_for_performance_review; record an explicit performance-resume decision")
+    except (runtime_control.RuntimeControlError, lib.HandsoffError, OSError):
         return None
-    return (f"{operation} is blocked: active run time reached 120 minutes and the run is "
-            "paused_for_performance_review; record an explicit performance-resume decision")
+    return None
 
 
 def _runtime_snapshot(status: dict, events: list[dict], performance: dict) -> dict:
@@ -1387,6 +1510,7 @@ def cmd_design_decline(args) -> int:
 
 GUARDS_RECORD = Path(".handsoff") / "guards-record.json"
 GUARDS_COMMAND = "python3 -m tests.guards"
+GUARDS_MODULE = Path("tests") / "guards.py"
 _GUARDS_RECORD_KEYS = {"schema", "repository_digest", "executed", "guard_ids_sha256", "duration_ms", "passed_at"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _UTC_SECOND = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -1434,7 +1558,9 @@ def cmd_ci_watch(args) -> int:
     (--pr), or refresh and print the CI view (--poll). The host runs
     `ci-watch --pr N` right after `gh pr create`; Mission Control then
     shows the CI row until every check has completed. #371: starting a
-    watch needs a guard record bound to the current tree."""
+    watch needs a guard record bound to the current tree. #392: only where
+    the project has the module GUARDS_COMMAND runs; elsewhere nothing can
+    write the record, so the watch starts and says guards are not configured."""
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     if args.pr is None and not args.poll:
@@ -1442,11 +1568,14 @@ def cmd_ci_watch(args) -> int:
         return 1
     try:
         if args.pr is not None:
-            _require_guards_record(root, cfg)
+            guards_configured = (root / GUARDS_MODULE).is_file()
+            if guards_configured:
+                _require_guards_record(root, cfg)
             _enforce_refs_only_pr(root, args.pr)
             watch = lib.ci_watch_start(root, cfg, pr=args.pr, by=args.by)
             expected = f"{watch['expected_seconds']:.0f} s expected" if watch.get("expected_seconds") else lib.CI_NO_HISTORY_NOTE
-            print(f"CI_WATCH_STARTED: PR #{watch['pr']} head {watch['head'][:12]}; {expected}")
+            note = "" if guards_configured else f"; guards not configured (no {GUARDS_MODULE.as_posix()})"
+            print(f"CI_WATCH_STARTED: PR #{watch['pr']} head {watch['head'][:12]}; {expected}{note}")
         if args.poll:
             with lib.project_lock(root):
                 status = lib.load_unique_json(lib.status_path(root, cfg))
@@ -3503,6 +3632,81 @@ def cmd_review_attempt_start(args) -> int:
     return 0
 
 
+ADAPTIVE_RECORD_EVIDENCE_LIMIT = 7
+
+
+def _adaptive_review_records(root: Path, cfg: dict, status: dict, acceptance: dict,
+                             records: list[dict], *, attempt: dict, reviewer: str,
+                             disposition: str, findings: list[dict] | None = None) -> list[dict] | None:
+    """#387: the audit records a closed review attempt carries on a run with a
+    risk_class. The deterministic check plan is every criterion's test
+    command, validated (at most 32 checks) before anything is recorded; each
+    check's outcome is the latest verification-ledger run of that command,
+    or not_run for a manual criterion or a command never executed. The
+    records ride on the review_attempt_closed event because
+    status.adaptive_escalation is a closed schema. None without a risk_class;
+    a plan over the bound raises HandsoffError naming it."""
+    if not status.get("risk_class"):
+        return None
+    criteria = acceptance.get("criteria") or []
+    acceptance_hash = lib.acceptance_hash(criteria)
+    mission_id = _runtime_run_id(root, lib.read_events(root, cfg))
+    plan = []
+    for criterion in criteria:
+        for index, command in enumerate(criterion.get("tests") or []):
+            plan.append({"check_id": f"{criterion.get('id')}:{index + 1}", "command": command,
+                         "applies_to": str(criterion.get("id")), "order": len(plan)})
+    if len(plan) > 32:
+        raise lib.HandsoffError(f"the deterministic check plan has {len(plan)} checks; "
+                                "the bound is 32 checks per review attempt")
+    checks = lib.validate_adaptive_check_plan(plan, mission_id=mission_id, acceptance_hash=acceptance_hash)
+    manual = {str(c.get("id")) for c in criteria if c.get("verification") != "automated"}
+    result, runs = [], []
+    for check in checks:
+        latest = None
+        if check["applies_to"] not in manual:
+            for record in reversed(records):
+                item = next((r for r in record.get("results") or []
+                             if isinstance(r, dict) and r.get("command") == check["command"]), None)
+                if item is not None and isinstance(record.get("run_id"), str):
+                    latest = (record, item)
+                    break
+        if latest is None:
+            reason = "manual criterion" if check["applies_to"] in manual else "never executed"
+            result.append(lib.record_adaptive_check(check, outcome="not_run", detail=reason))
+            continue
+        record, item = latest
+        code = item.get("exit_code")
+        outcome = "error" if item.get("timed_out") or not isinstance(code, int) \
+            else ("pass" if code == 0 else "fail")
+        result.append(lib.record_adaptive_check(check, outcome=outcome, evidence=[record["run_id"]],
+                                                detail=f"exit {code}, run {record['run_id']}"))
+        if record["run_id"] not in runs:
+            runs.append(record["run_id"])
+    if disposition == "approved":
+        reviewer_claim = {"decision": "accept", "summary": "Review approved the current acceptance"}
+    else:
+        summary = "; ".join(f"{f['code']}: {f['summary']}" for f in findings or [])
+        reviewer_claim = {"decision": "repair",
+                          "summary": (summary[:509] + "...") if len(summary) > 512 else summary}
+    question = next(iter(lib.open_questions(status)), None)
+    result += lib.adaptive_escalation_records(
+        mission_id=mission_id, acceptance_hash=acceptance_hash,
+        implementer={"claim_id": f"{attempt['attempt_id']}:implementer",
+                     "actor": str(status.get("implemented_by") or "unrecorded")[:128],
+                     "decision": "accept",
+                     "summary": f"Implementation submitted for review attempt {attempt['attempt']}"},
+        reviewer={"claim_id": f"{attempt['attempt_id']}:reviewer", "actor": reviewer, **reviewer_claim},
+        supporting_evidence=[{"evidence_id": run_id, "kind": "verification_run",
+                              "detail": f"verification ledger run {run_id}"}
+                             for run_id in runs[-ADAPTIVE_RECORD_EVIDENCE_LIMIT:]],
+        unresolved_question=None if question is None else {
+            "question_id": question["question_id"],
+            "question": str(question.get("text") or "")[:512].strip() or "(empty question)"},
+    )
+    return result
+
+
 def _parse_review_findings(values: list[str]) -> list[dict]:
     if not values or len(values) > 16:
         raise lib.HandsoffError("record-review-findings requires 1 to 16 findings")
@@ -3578,6 +3782,13 @@ def cmd_record_review_findings(args) -> int:
             proposed["adaptive_escalation"] = lib.bound_adaptive_escalation(
                 disagreement_rounds=repairs, repair_rounds=repairs,
             )
+        try:
+            adaptive = _adaptive_review_records(root, cfg, proposed, acceptance, records, attempt=attempt,
+                                                reviewer=reviewer, disposition="changes_requested",
+                                                findings=findings)
+        except lib.HandsoffError as exc:
+            print(f"SHIP_FEATURE_BLOCKED: {exc}")
+            return 1
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=records,
                                     verification_problems=problems)
         if errors:
@@ -3591,7 +3802,8 @@ def cmd_record_review_findings(args) -> int:
                    reviewer_session_id=getattr(args, "session", None),
                    reviewed_acceptance_hash=attempt.get("acceptance_hash"),
                    current_acceptance_hash=current_acceptance_hash,
-                   acceptance_changed=acceptance_changed)
+                   acceptance_changed=acceptance_changed,
+                   **({} if adaptive is None else {"adaptive_records": adaptive}))
     print("REVIEW_CHANGES_RECORDED")
     return 0
 
@@ -3794,6 +4006,12 @@ def cmd_record_review(args) -> int:
             print("SHIP_FEATURE_BLOCKED")
             print("\n".join(f"- {x}" for x in errors))
             return 1
+        try:
+            adaptive = _adaptive_review_records(root, cfg, status, acceptance, records, attempt=attempt,
+                                                reviewer=reviewer_id, disposition="approved")
+        except lib.HandsoffError as exc:
+            print(f"SHIP_FEATURE_BLOCKED: {exc}")
+            return 1
         status["review"] = preflight["review"]
         status["reviewed_by"] = reviewer_id
         status["reviewer_checklist"] = preflight["review"]["checklist"]
@@ -3816,6 +4034,7 @@ def cmd_record_review(args) -> int:
                       "message": f"Review attempt {attempt['attempt']} approved",
                       "attempt_id": attempt["attempt_id"], "attempt": attempt["attempt"],
                       "disposition": "approved", "reviewer": reviewer_id,
+                      **({} if adaptive is None else {"adaptive_records": adaptive}),
                   }],
                   event_kind="review_approved", event_message="Independent review approved current acceptance",
                   by=reviewer_id, acceptance_hash=status["review"]["acceptance_hash"],
@@ -3940,8 +4159,20 @@ def adopt_session_result(root, session_id: str, actor: str, *,
     status re-read after the replay, so the replayed decision is not
     overwritten by a stale copy. #345: the launcher calls this with
     automatic=True for a failed reviewer's one valid verdict, so the CLI
-    and the launcher share every refusal by sharing this path."""
+    and the launcher share every refusal by sharing this path. #383: a
+    quarantined late result is adopted once, only after its launch episode
+    was resumed: a verdict through this same replay, a workspace through the
+    normal workspace application."""
     cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        session = (status.get("agent_sessions") or {}).get(session_id)
+        held = session.get("quarantined_result") if isinstance(session, dict) else None
+        refusal = _quarantine_adoption_refusal(root, session_id, held) if isinstance(held, dict) else None
+    if refusal:
+        return False, f"SESSION_RESULT_ADOPT_REFUSED: {refusal}"
+    if isinstance(held, dict) and held["kind"] == "implementer_workspace":
+        return _adopt_quarantined_workspace(root, cfg, session_id, actor)
     with lib.project_lock(root):
         status, acceptance, records, problems = _load_all(root, cfg)
         session = (status.get("agent_sessions") or {}).get(session_id)
@@ -4021,6 +4252,9 @@ def adopt_session_result(root, session_id: str, actor: str, *,
             adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
             adopted["adopted_by"] = actor
             adopted["adopted_automatically"] = automatic
+            held = status["agent_sessions"][session_id].get("quarantined_result")
+            if isinstance(held, dict):
+                held["adopted_at"], held["adopted_by"] = adopted["adopted_at"], actor
         failure = (status.get("agent_failures") or {}).get(session_id)
         if isinstance(failure, dict):
             # The replacement pause is derived from this record's category;
@@ -4030,6 +4264,49 @@ def adopt_session_result(root, session_id: str, actor: str, *,
                    event_message="Persisted session result adopted", session_id=session_id, by=actor,
                    automatic=automatic)
         lib.mark_beacon_adopted(root, session_id)  # #172
+    return True, "SESSION_RESULT_ADOPTED"
+
+
+def _quarantine_adoption_refusal(root: Path, session_id: str, held: dict) -> str | None:
+    """#383: why a quarantined result may not be adopted yet, or None."""
+    if held.get("adopted_at") is not None:
+        return "the quarantined result is already adopted"
+    try:
+        history = _runtime_read(root, PERFORMANCE_RECORD, "handsoff.performance_history")
+        if history is None:
+            return "no performance record holds the quarantining episode"
+        disposition = runtime_control.late_result_disposition(history, held["episode_id"], session_id)
+    except (runtime_control.RuntimeControlError, lib.HandsoffError, OSError) as exc:
+        return f"the quarantining episode cannot be read: {exc}"
+    if disposition == "quarantine":
+        return (f"its launch episode {held['episode_id']} is still paused_for_performance_review; "
+                "record performance-resume first")
+    return None
+
+
+def _adopt_quarantined_workspace(root: Path, cfg: dict, session_id: str, actor: str) -> tuple[bool, str]:
+    """#383: apply a quarantined implementer workspace through the normal
+    #359 application, ownership and host-edit checks included, then mark it
+    adopted. The apply takes the project lock itself, so it runs outside it."""
+    try:
+        applied = lib.apply_implementer_workspace(root, session_id)
+    except (lib.HandsoffError, OSError, subprocess.SubprocessError) as exc:
+        return False, f"SESSION_RESULT_ADOPT_REFUSED: workspace apply failed: {str(exc)[:160]}"
+    if applied["state"] != "applied":
+        return False, (f"SESSION_RESULT_ADOPT_REFUSED: workspace apply refused ({applied['reason']}): "
+                       f"{', '.join(applied['paths'])[:200]}")
+    with lib.project_lock(root):
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        session = status["agent_sessions"][session_id]
+        held = session["quarantined_result"]
+        if held.get("adopted_at") is not None:
+            return False, "SESSION_RESULT_ADOPT_REFUSED: the quarantined result is already adopted"
+        session["apply"] = {"state": "applied", "paths": applied["paths"]}
+        held["adopted_at"], held["adopted_by"] = datetime.now(timezone.utc).isoformat(), actor
+        lib.commit(root, cfg, status=status, event_kind="session_result_adopted",
+                   event_message="Quarantined implementer workspace adopted", session_id=session_id, by=actor,
+                   automatic=False)
+    lib.remove_implementer_workspace(root, session)
     return True, "SESSION_RESULT_ADOPTED"
 
 
@@ -5426,6 +5703,246 @@ def _fleet_run_state(root: Path) -> str | None:
     return entry.get("state") if isinstance(entry, dict) else None
 
 
+REPORT_ITEM_OPERATIONS = ("commented", "closed", "ticked")
+UNATTRIBUTED_CLOSURE = "closed without attributable Handsoff ownership; left alone"
+
+
+def _report_item_complete(row: dict) -> bool:
+    operations = row.get("operations") if isinstance(row.get("operations"), dict) else {}
+    return all(isinstance(operations.get(name), dict)
+               and operations[name].get("state") in close_transaction.TERMINAL_OPERATION_STATES
+               for name in REPORT_ITEM_OPERATIONS)
+
+
+def _handsoff_closed_issues(root: Path, cfg: dict) -> set[int]:
+    """Issues an earlier close episode of this run closed, from the
+    authenticated ledger. A deliberate run-reopen may reconcile them
+    without treating an arbitrary pre-existing closed issue as ours."""
+    closed = set()
+    for event in lib.read_events(root, cfg):
+        if event.get("kind") != "report_posted":
+            continue
+        for posted in event.get("posted") or []:
+            if isinstance(posted, dict) and isinstance(posted.get("number"), int) \
+                    and posted.get("closed") is True:
+                closed.add(posted["number"])
+    return closed
+
+
+def _issue_closure_snapshot(root: Path, row: dict, number: int, issue: dict, *, run_token: str,
+                            known_closed: set[int], run_closures: dict) -> tuple[dict, list[dict]]:
+    """The checkpoint_issue_state snapshot of one read issue, and the run's
+    merged pull requests it may be attributed to."""
+    state = str(issue.get("state") or "").lower()
+    if state != "closed":
+        return {"state": state}, []
+    closed_row = (row.get("operations") or {}).get("closed") or {}
+    legacy = row.get("legacy") or {}
+    # Handsoff dispatched this close (a lost read-back), finished it, or an
+    # earlier episode or a pre-#381 row says so and the report is there.
+    ours = (bool(closed_row.get("acted_at")) or closed_row.get("state") == "complete"
+            or lib.issue_closed_by_report(issue)
+            or ((number in known_closed or legacy.get("closed") is True
+                 or legacy.get("closed_dispatched") is True) and lib.issue_has_report(issue)))
+    if ours:
+        return {"state": "closed", "closure": {"kind": "handsoff_run", "run_token": run_token}}, []
+    if "map" not in run_closures:
+        run_closures["map"] = lib.run_pull_request_closures(root)
+    pr_number = run_closures["map"].get(number)
+    if pr_number is None:
+        return {"state": "closed", "closure": {"kind": "unknown"}}, []
+    return ({"state": "closed", "closure": {"kind": "pull_request", "pr_number": pr_number, "merged": True}},
+            [{"number": pr_number, "merged": True}])
+
+
+def _report_item_operations(root: Path, number: int, issue: dict, *, body: str, head: str,
+                            seen: dict) -> dict:
+    """#381: the commented, closed and ticked Operations of one issue. The
+    first observation of each is the read just checkpointed; read-back asks
+    GitHub again."""
+    def read(fields: str) -> dict:
+        found = lib.read_report_issue(root, number, fields=fields)
+        if found is None:
+            raise lib.HandsoffError(f"issue #{number} could not be read")
+        return found
+
+    def first_then(fields: str):
+        cached = [issue]
+        return lambda: cached.pop() if cached else read(fields)
+
+    comment_view = first_then("comments")
+    state_view = first_then("state")
+
+    def comment() -> None:
+        posted = lib._gh(["issue", "comment", str(number), "--body", body], cwd=root)
+        if posted.returncode != 0:
+            raise lib.HandsoffError("comment failed")
+        seen["commented_now"] = True
+        seen["url"] = posted.stdout.strip().splitlines()[-1] if posted.stdout.strip() else None
+
+    def close() -> None:
+        closed = lib._gh(["issue", "close", str(number), "-c",
+                          f"Closed by the Handsoff run report ({head[:12]})."], cwd=root)
+        if closed.returncode != 0:
+            raise lib.HandsoffError("close failed")
+
+    parent = lib.report_issue_parent(issue)
+    seen["parent"] = parent
+
+    def parent_body() -> str:
+        view = lib._gh(["issue", "view", str(parent), "--json", "body"], cwd=root)
+        try:
+            found = json.loads(view.stdout) if view.returncode == 0 else None
+        except ValueError:
+            found = None
+        if not isinstance(found, dict):
+            raise lib.HandsoffError(f"parent #{parent} could not be read")
+        return str(found.get("body") or "")
+
+    def tick_state() -> dict:
+        if parent is None:
+            return {"parent": None, "ticked": True}
+        return {"parent": parent, "ticked": lib.parent_box_ticked(parent_body(), number)}
+
+    def tick() -> None:
+        new_body = lib.tick_parent_box(parent_body(), number)
+        if new_body is None:
+            raise lib.HandsoffError(f"parent #{parent} has no box for #{number}")
+        edited = lib._gh(["issue", "edit", str(parent), "--body", new_body], cwd=root)
+        if edited.returncode != 0:
+            raise lib.HandsoffError("tick failed")
+
+    return {
+        "commented": close_transaction.Operation(
+            lambda: {"reported": lib.issue_has_report(comment_view())},
+            lambda value: value["reported"], comment),
+        "closed": close_transaction.Operation(
+            lambda: {"state": str(state_view().get("state") or "").upper()},
+            lambda value: value["state"] == "CLOSED", close),
+        "ticked": close_transaction.Operation(tick_state, lambda value: value["ticked"], tick),
+    }
+
+
+def _reconcile_report_items(root: Path, cfg: dict, transaction, *, by: str, revalidate) -> dict:
+    """#381: post the final report one issue at a time through
+    CloseTransaction.reconcile_item. Each issue's state is checkpointed
+    first; a closure that is not the run's is recorded unpostable and the
+    rest still post."""
+    with lib.project_lock(root):
+        status, acceptance, verifications, _problems = _load_all(root, cfg)
+        events = lib.read_events(root, cfg)
+    prepared = lib.prepare_final_report(root, cfg, status, acceptance, events, verifications,
+                                        _validate_lines(root, cfg))
+    if prepared["reason"]:
+        return _record_report(root, cfg, {"posted": [], "skipped": [], "reason": prepared["reason"],
+                                          "detail": prepared["detail"]}, by=by)
+    token = transaction.record["run_token"]
+    rows = transaction.record.setdefault("items", {})
+    known_closed = _handsoff_closed_issues(root, cfg)
+    run_closures: dict = {}
+    posted, skipped = [], []
+    for item in lib.report_issue_items(status, acceptance, cfg):
+        number = item["number"]
+        row = rows.setdefault(str(number), {"operations": {}})
+        issue = lib.read_report_issue(root, number)
+        if issue is None:
+            # Not unpostable: a read can succeed on the next post.
+            skipped.append({"number": number, "reason": "state could not be read"})
+            continue
+        snapshot, run_prs = _issue_closure_snapshot(root, row, number, issue, run_token=token,
+                                                    known_closed=known_closed, run_closures=run_closures)
+        try:
+            close_transaction.checkpoint_issue_state(row, "pre_report", snapshot, run_prs,
+                                                     run_token=token, persist=transaction._persist)
+        except close_transaction.IssueClosureBlocked:
+            row["unpostable"] = UNATTRIBUTED_CLOSURE
+            transaction._persist()
+            skipped.append({"number": number, "unpostable": True, "reason": UNATTRIBUTED_CLOSURE})
+            continue
+        if row.pop("unpostable", None) is not None:
+            transaction._persist()
+        seen: dict = {"commented_now": False, "url": None}
+        operations = _report_item_operations(root, number, issue, body=prepared["body"],
+                                             head=prepared["head"], seen=seen)
+        try:
+            transaction.reconcile_item(str(number), operations, revalidate=revalidate)
+        except close_transaction.ReconciliationError:
+            pass  # the row keeps its error; the other items still post
+        state = {name: (row.get("operations") or {}).get(name, {}).get("state")
+                 for name in REPORT_ITEM_OPERATIONS}
+        if state["commented"] != "complete":
+            skipped.append({"number": number, "reason": "comment failed"})
+            continue
+        if not seen["commented_now"]:
+            skipped.append({"number": number, "reason": "already posted"})
+        posted.append({"number": number, "url": seen["url"], "closed": state["closed"] == "complete",
+                       "parent": seen["parent"],
+                       "ticked": seen["parent"] is not None and state["ticked"] == "complete",
+                       "comment": "posted" if seen["commented_now"] else "skipped"})
+    return _record_report(root, cfg, {"posted": posted, "skipped": skipped, "reason": None,
+                                      "detail": None, "head": prepared["head"]}, by=by)
+
+
+def _owner_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _dashboard_ownership(root: Path) -> dict:
+    """#381: who owns the run's dashboard, decided by
+    close_transaction.resource_ownership. The owner record binds its root
+    only as root_sha256, so this root stands in for a matching hash and no
+    root for any other; the live endpoint is asked only for this root."""
+    path = lib.dashboard_owner_path(root)
+    expected_sha = lib.dashboard_root_sha256(root)
+    metadata = endpoint = None
+    record: dict = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = None
+        record = loaded if isinstance(loaded, dict) else {}
+        own_root = record.get("root_sha256") == expected_sha
+        metadata = {"root": str(root) if own_root else None,
+                    "run_token": record.get("run_token"), "pid": record.get("pid")}
+        port = record.get("port")
+        if own_root and isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
+            host = record.get("host") if record.get("host") in lib.DASHBOARD_LOOPBACK_HOSTS else "127.0.0.1"
+            try:
+                answer = lib._dashboard_json_request(
+                    f"{lib._dashboard_base_url(host, port)}/api/ownership", timeout=2.0)
+            except (OSError, ValueError):
+                answer = None
+            if isinstance(answer, dict) and answer.get("owned") is True:
+                endpoint = {"root": str(root) if answer.get("root_sha256") == expected_sha else None,
+                            "run_token": answer.get("run_token"), "pid": record.get("pid")}
+    expected = {"root": str(root), "run_token": record.get("run_token"), "pid": record.get("pid")}
+    return close_transaction.resource_ownership(expected, metadata, endpoint, pid_alive=_owner_pid_alive)
+
+
+def _release_owned_dashboard(root: Path, cfg: dict) -> None:
+    """Release only what _dashboard_ownership proves is this run's: an owned
+    server is shut down, a stale pointer file is removed, nothing else."""
+    ownership = _dashboard_ownership(root)
+    if ownership["state"] == "owned":
+        _release_run_dashboard(root, cfg)
+    elif ownership["state"] == "stale":
+        lib.dashboard_owner_path(root).unlink(missing_ok=True)
+        with lib.project_lock(root):
+            lib.commit(root, cfg, event_kind="dashboard_release_skipped",
+                       event_message=f"Run-owned dashboard release skipped: {ownership['reason']}",
+                       reason=ownership["reason"])
+        print(f"HANDSOFF_DASHBOARD_RELEASE_SKIPPED: stale ownership metadata removed: {ownership['reason']}")
+
+
 def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
     """Execute the product close path as an ordered, resumable transaction."""
     transaction, transaction_path = _load_close_transaction(root, cfg)
@@ -5492,12 +6009,11 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
                     and str(event.get("at") or "") >= started_at]
         rows = transaction.record.get("items") or {}
         # #374: an item skipped as unpostable (closed by someone else) is
-        # settled and left alone; it does not hold the close open.
+        # settled and left alone; it does not hold the close open. #381:
+        # every other item is complete only on its operations rows.
         complete = all(
             bool(rows.get(str(number), {}).get("unpostable"))
-            or (bool(rows.get(str(number), {}).get("commented"))
-                and bool(rows.get(str(number), {}).get("closed"))
-                and bool(rows.get(str(number), {}).get("ticked")))
+            or _report_item_complete(rows.get(str(number), {}))
             for number in expected_issue_numbers
         )
         kind = matching[-1].get("kind") if matching else None
@@ -5505,52 +6021,57 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
                 "items_complete": complete and kind == "report_posted"}
 
     def report_action() -> None:
-        rows = transaction.record.setdefault("items", {})
-        known_closed = {int(number) for number, row in rows.items()
-                        if str(number).isdigit()
-                        and (row.get("closed") is True or row.get("closed_dispatched") is True)}
-        # Prior close episodes remain attributable through the authenticated
-        # event ledger.  This permits a deliberate run-reopen to reconcile a
-        # previously completed Handsoff closure without treating an arbitrary
-        # pre-existing closed issue as ours.
-        for event in lib.read_events(root, cfg):
-            if event.get("kind") != "report_posted":
-                continue
-            for posted in event.get("posted") or []:
-                if isinstance(posted, dict) and isinstance(posted.get("number"), int) \
-                        and posted.get("closed") is True:
-                    known_closed.add(posted["number"])
-        def checkpoint(number: int, operation: str, state: str) -> None:
-            row = rows.setdefault(str(number), {})
-            if state == "intent":
-                row[f"{operation}_intent"] = True
-            elif state == "dispatched":
-                row[f"{operation}_dispatched"] = True
-            elif state == "complete":
-                row[operation] = True
-            transaction._persist()
-
-        outcome = _post_report(
-            root, cfg, by=args.by, known_handsoff_closed=known_closed,
-            checkpoint=checkpoint,
-        )
-        for posted in outcome.get("posted") or []:
-            number = posted.get("number")
-            if not isinstance(number, int):
-                continue
-            row = rows.setdefault(str(number), {})
-            row["commented"] = posted.get("comment") in {"posted", "skipped"}
-            row["closed"] = posted.get("closed") is True
-            row["ticked"] = posted.get("parent") is None or posted.get("ticked") is True
-            row.pop("unpostable", None)
-        for skipped in outcome.get("skipped") or []:
-            if isinstance(skipped.get("number"), int) and skipped.get("unpostable") is True:
-                rows.setdefault(str(skipped["number"]), {})["unpostable"] = str(skipped.get("reason") or "")
-        transaction._persist()
+        _reconcile_report_items(root, cfg, transaction, by=args.by, revalidate=revalidate)
 
     def fleet_action() -> None:
         import handsoff_fleet as fleet
         fleet.note_registry_state(root, None, "closed")
+
+    # #381: the close archive is written once; a resumed close adopts it only
+    # when it is byte-identical, and a differing file is a conflict.
+    archive_path = (root / ".handsoff-archive" / "close-archives"
+                    / f"{transaction.record['run_token']}.json")
+    archive_intended: list[bytes] = []
+
+    def archive_bytes() -> bytes:
+        if not archive_intended:
+            archive_intended.append(close_transaction.archive_bytes({
+                "schema": 1, "root": transaction.record.get("root"),
+                "run_token": transaction.record.get("run_token"),
+                "run_closed": current_status().get("run_closed"),
+                "items": transaction.record.get("items") or {},
+            }))
+        return archive_intended[0]
+
+    def archive_state() -> dict:
+        intended = hashlib.sha256(archive_bytes()).hexdigest()
+        exists = archive_path.is_file()
+        actual = hashlib.sha256(archive_path.read_bytes()).hexdigest() if exists else None
+        return {"path": str(archive_path), "exists": exists, "matches": actual == intended}
+
+    def config_overrides() -> list[dict]:
+        return [entry for entry in current_status().get("config_overrides") or [] if isinstance(entry, dict)]
+
+    def config_restore_state() -> dict:
+        decided = transaction.record.get("config_restore") or {}
+        return {"pending": [entry["key"] for entry in config_overrides() if entry["key"] not in decided],
+                "decisions": deepcopy(decided)}
+
+    def config_restore_action() -> None:
+        decisions = transaction.record.setdefault("config_restore", {})
+        for entry in config_overrides():
+            key = entry["key"]
+            if key in decisions:
+                continue
+            with lib.project_lock(root):
+                outcome = close_transaction.compare_and_restore_config(
+                    read=lambda: lib.read_config_value(root, key),
+                    write=lambda value: lib.write_config_value(root, key, value),
+                    original=entry["original"], run_written=entry["run_written"],
+                )
+            decisions[key] = {**outcome, "original": entry["original"], "run_written": entry["run_written"]}
+            transaction._persist()
+            print(f"HANDSOFF_CONFIG_RESTORE: {key} {outcome['decision']}: {outcome['reason']}")
 
     operations = {
         "prepare": close_transaction.Operation(close_state, lambda value: value["closed"], close_action),
@@ -5560,23 +6081,25 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
             unavailable_reason=(unverified_reason if delivery_unverified
                                 else (None if posting_requested else "--post was not requested")),
         ),
-        # This transaction file is the durable local close archive. The
-        # existing retire_finished_run path moves the full ledgers at init.
+        # The existing retire_finished_run path moves the full ledgers at init.
         "archive": close_transaction.Operation(
-            lambda: {"path": str(transaction_path), "exists": transaction_path.is_file()},
-            lambda value: value["exists"], lambda: None,
+            archive_state, lambda value: value["matches"],
+            lambda: close_transaction.write_archive_once(archive_path, archive_bytes()),
         ),
         "fleet_unregister": close_transaction.Operation(
             lambda: {"state": _fleet_run_state(root)},
             lambda value: value["state"] == "closed", fleet_action,
         ),
+        # #381: a dashboard another run owns is left alone, not released.
         "dashboard_shutdown": close_transaction.Operation(
-            lambda: {"owner_present": lib.dashboard_owner_path(root).exists()},
-            lambda value: not value["owner_present"], lambda: _release_run_dashboard(root, cfg),
+            lambda: _dashboard_ownership(root),
+            lambda value: value["state"] in {"absent", "foreign"},
+            lambda: _release_owned_dashboard(root, cfg),
         ),
+        # #382: each override config-override recorded is restored, adopted
+        # or preserved once, and the decision is kept on the transaction.
         "config_restore": close_transaction.Operation(
-            lambda: {"owned_override": False},
-            lambda value: value["owned_override"] is False, lambda: None,
+            config_restore_state, lambda value: not value["pending"], config_restore_action,
         ),
         "optional_analysis": close_transaction.Operation(
             lambda: {"applicable": False}, lambda _value: False, lambda: None,
@@ -5592,7 +6115,21 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
         result = {"closed": True, "already_closed": True, "run_closed": closed,
                   "dashboard": {"released": False, "reason": "closure transaction resumed"}}
     result["transaction"] = {"state": transaction.record["state"], "path": str(transaction_path)}
+    result["archive"] = {"path": str(archive_path)}
     return result
+
+
+def cmd_config_override(args) -> int:
+    """#382: the only run-scoped writer of handsoff.toml."""
+    root = lib.resolve_root(args.root)
+    try:
+        entry = lib.record_config_override(root, key=args.key, value=args.value, by=args.by)
+    except lib.HandsoffError as exc:
+        print(f"CONFIG_OVERRIDE_BLOCKED: {exc}")
+        return 1
+    print(f"CONFIG_OVERRIDE_RECORDED: {entry['key']} = {json.dumps(entry['run_written'])} "
+          f"(original {json.dumps(entry['original'])}); run-close restores it")
+    return 0
 
 
 def cmd_run_close(args) -> int:
@@ -5627,6 +6164,10 @@ def _post_report(root, cfg, *, by: str, known_handsoff_closed: set[int] | None =
         known_handsoff_closed=known_handsoff_closed,
         checkpoint=checkpoint,
     )
+    return _record_report(root, cfg, outcome, by=by)
+
+
+def _record_report(root, cfg, outcome: dict, *, by: str) -> dict:
     with lib.project_lock(root):
         lib.record_report_outcome(root, cfg, outcome, by=by)
     if outcome.get("reason"):
@@ -5661,7 +6202,7 @@ def cmd_run_reopen(args) -> int:
 def cmd_performance_status(args) -> int:
     root = lib.resolve_root(args.root)
     with lib.project_lock(root):
-        print(json.dumps(refresh_performance_state(root), indent=2, sort_keys=True))
+        print(json.dumps(refresh_performance_state(root, lock_held=True), indent=2, sort_keys=True))
     return 0
 
 
@@ -5683,7 +6224,7 @@ def performance_tick(root: Path, *, now: datetime | None = None) -> dict:
     that does not depend on anyone typing a command.
     """
     with lib.project_lock(root):
-        return refresh_performance_state(root, now=now)
+        return refresh_performance_state(root, now=now, lock_held=True)
 
 
 def cmd_performance_watch(args) -> int:
@@ -5747,6 +6288,7 @@ def cmd_performance_resume(args) -> int:
             history, decision, f"episode-{len(history['episodes']) + 1}",
         )
         _runtime_write(root, PERFORMANCE_RECORD, resumed)
+        _append_performance_timeline(root, resumed, lock_held=True)
     print(f"PERFORMANCE_RESUMED: bound to paused episode hash {expected}")
     return 0
 
@@ -5758,7 +6300,8 @@ def cmd_monitor_poll(args) -> int:
     with lib.project_lock(root):
         status = lib.load_unique_json(lib.status_path(root, cfg))
         events = lib.read_events(root, cfg)
-        performance = refresh_performance_state(root, status=status, events=events, now=now)
+        performance = refresh_performance_state(root, status=status, events=events, now=now,
+                                                lock_held=True)
         record = _runtime_read(root, MONITOR_RECORD, "handsoff.monitor")
         if record is None or record.get("run_id") != performance["run_id"]:
             record = runtime_control.new_monitor(performance["run_id"], args.owner, now=now,
@@ -6311,6 +6854,12 @@ def build_parser() -> argparse.ArgumentParser:
     ci_watch.add_argument("--by", default="host", help="who started the watch")
     ci_watch.add_argument("--poll", action="store_true", help="refresh now and print the CI view as JSON")
 
+    config_override = sub.add_parser("config-override", help="#382: set one handsoff.toml value for this run "
+                                     "only; run-close restores it unless a human edited it since")
+    config_override.add_argument("--key", required=True, help="dotted table.key the config schema knows")
+    config_override.add_argument("--value", required=True)
+    config_override.add_argument("--by", required=True)
+
     run_close = sub.add_parser("run-close", help="cleanly close a run and release owned resources")
     run_close.add_argument("--by", required=True)
     run_close.add_argument("--reason", required=True)
@@ -6456,6 +7005,7 @@ def main() -> int:
         "ci-watch": cmd_ci_watch,
         "design-decline": cmd_design_decline,
         "run-close": cmd_run_close,
+        "config-override": cmd_config_override,
         "run-reopen": cmd_run_reopen,
         "monitor-poll": cmd_monitor_poll,
         "evidence-refresh-plan": cmd_evidence_refresh_plan,

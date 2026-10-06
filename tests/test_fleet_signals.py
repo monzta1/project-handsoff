@@ -181,6 +181,154 @@ class FleetSnapshotTests(_FleetFixture, _SignalsEnv):
             server.server_close()
 
 
+    # --- #393 (REQ-013): config once per build, the signature cache, ------
+    # --- concurrent owner probes, single-flight builds. -------------------
+
+    def _committed_project(self, name):
+        root = self.project(name)
+        git = ["git", "-c", "user.email=fleet@test", "-c", "user.name=fleet", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run([*git, "add", "handsoff.toml"], cwd=root, check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "first"], cwd=root, check=True)
+        self._settle(root)
+        fleet.register_project(root, self.registry)
+        return root, git
+
+    @staticmethod
+    def _settle(root):
+        """Backdate the tracked files and refresh the index once. A file
+        written in the same second as the index is racily clean, and every
+        `git status` (the snapshot runs one) rewrites the index until it is
+        not; a real repository settles after one refresh, a fixture must too."""
+        import time
+        stamp = time.time() - 10
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True, text=True)
+        for name in filter(None, listed.stdout.split("\0")):
+            os.utime(root / name, (stamp, stamp))
+        subprocess.run(["git", "update-index", "-q", "--really-refresh"], cwd=root, check=False)
+
+    def _rebuilt(self, reads=None):
+        """The roots whose snapshot one build_fleet call rebuilt. With
+        `reads`, every actual open of a project's handsoff.toml during the
+        build is appended to it (its directory), however the open is reached.
+        The engine's own handsoff.toml (the installed-engine check) is not
+        a project's and is not counted."""
+        import builtins
+        import io
+        import handsoff_dashboard
+        rebuilt = []
+        real_snapshot, real_open = handsoff_dashboard.build_snapshot, io.open
+
+        def snapshot(root, *args, **kwargs):
+            rebuilt.append(str(root))
+            return real_snapshot(root, *args, **kwargs)
+
+        def counting_open(file, *args, **kwargs):
+            if reads is not None and isinstance(file, (str, os.PathLike)) and Path(file).name == "handsoff.toml" \
+                    and Path(file).resolve().is_relative_to(self.base.resolve()):
+                reads.append(str(Path(file).parent.resolve()))
+            return real_open(file, *args, **kwargs)
+        with mock.patch.object(handsoff_dashboard, "build_snapshot", snapshot), \
+                mock.patch.object(io, "open", counting_open), mock.patch.object(builtins, "open", counting_open):
+            fleet.build_fleet(self.registry)
+        return sorted(rebuilt)
+
+    def test_a_build_reads_each_handsoff_toml_once_cold_and_never_warm(self):
+        alpha, _git = self._committed_project("alpha")
+        beta, _git = self._committed_project("beta")
+        roots = sorted([str(alpha.resolve()), str(beta.resolve())])
+        cold_reads, warm_reads = [], []
+        self.assertEqual(self._rebuilt(cold_reads), roots)
+        self.assertEqual(sorted(cold_reads), roots, "a cold build reads each project's handsoff.toml once")
+        self.assertEqual(self._rebuilt(warm_reads), [], "nothing changed, nothing is rebuilt")
+        self.assertEqual(warm_reads, [], "a warm build reads no unchanged handsoff.toml")
+        (alpha / "handsoff.toml").write_text((alpha / "handsoff.toml").read_text() + "\n")
+        edited_reads = []
+        self._rebuilt(edited_reads)
+        self.assertEqual(edited_reads, [str(alpha.resolve())], "an edited handsoff.toml is read again, once")
+
+    def test_a_ledger_write_or_a_commit_invalidates_only_that_project(self):
+        alpha, _git = self._committed_project("alpha")
+        beta, git = self._committed_project("beta")
+        self._rebuilt()
+        with (alpha / "handsoff-events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write("\n")
+        self.assertEqual(self._rebuilt(), [str(alpha.resolve())], "a ledger write rebuilds only its project")
+        (beta / "notes.txt").write_text("a change\n")
+        subprocess.run([*git, "add", "notes.txt"], cwd=beta, check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "second"], cwd=beta, check=True)
+        self._settle(beta)
+        self.assertEqual(self._rebuilt(), [str(beta.resolve())], "a commit rebuilds only its project")
+        subprocess.run(["git", "checkout", "-q", "-b", "elsewhere"], cwd=beta, check=True)
+        self.assertEqual(self._rebuilt(), [str(beta.resolve())], "a checkout rebuilds only its project")
+        self.assertEqual(self._rebuilt(), [])
+
+    def test_owner_probes_run_concurrently(self):
+        roots = [self.base / f"root-{index}" for index in range(3)]
+        barrier = threading.Barrier(len(roots), timeout=5)
+
+        def probe(root):
+            barrier.wait()  # passes only when every probe is in flight at once
+            return {"health": "stale", "reason": str(root)}
+        with mock.patch.object(fleet, "_owner_view", probe):
+            owners = fleet._probe_owners(roots)
+        self.assertEqual([owner["reason"] for owner in owners], [str(root) for root in roots])
+
+    def test_two_concurrent_api_fleet_requests_share_one_build(self):
+        alpha = self.project("alpha")
+        fleet.register_project(alpha, self.registry)
+        real_build = fleet._build_fleet
+        started, release, builds = threading.Event(), threading.Event(), []
+
+        def slow_build(*args, **kwargs):
+            builds.append(args)
+            started.set()
+            release.wait(10)
+            return real_build(*args, **kwargs)
+        patches = (mock.patch.object(fleet, "_build_fleet", slow_build),
+                   mock.patch.object(signals, "github_client", return_value=None),
+                   mock.patch.object(signals, "beakon_work_root", return_value=None))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        server = fleet.FleetServer(("127.0.0.1", 0), self.registry, signals_interval=3600, issues_interval=3600)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05}, daemon=True)
+        thread.start()
+        answers = []
+
+        def get():
+            import http.client
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=20)
+            connection.request("GET", "/api/fleet")
+            response = connection.getresponse()
+            answers.append((response.status, json.loads(response.read())))
+            connection.close()
+        try:
+            first = threading.Thread(target=get)
+            first.start()
+            self.assertTrue(started.wait(10))
+            second = threading.Thread(target=get)
+            second.start()
+            for _ in range(200):  # until the second request is waiting on the first's build
+                with fleet.FLEET_BUILDS.lock:
+                    if sum(call["waiting"] for call in fleet.FLEET_BUILDS.calls.values()) == 1:
+                        break
+                threading.Event().wait(.025)
+            release.set()
+            first.join(20)
+            second.join(20)
+        finally:
+            release.set()
+            server.stopping = True
+            server.signals_thread.stop_event.set()
+            server.issues_thread.stop_event.set()
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(len(builds), 1, "two concurrent requests, one build")
+        self.assertEqual([status for status, _body in answers], [200, 200])
+        self.assertEqual(answers[0][1]["generated_at"], answers[1][1]["generated_at"])
+
+
 def _ready(tag):
     def github_fetch(root, client):
         return {"repo": "o/r", "open_issues": 1, "open_prs": 0,

@@ -987,13 +987,16 @@ def _supervisor_briefing(status: dict, criteria: list[dict], errors: list[str],
     }
 
 
-def build_snapshot(root: Path) -> dict:
-    """Build one coherent dashboard snapshot while holding the project lock."""
+def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
+    """Build one coherent dashboard snapshot while holding the project lock.
+    #393: a caller that already loaded the project's config passes it as
+    `cfg`; without one the snapshot loads it itself."""
     generated_at = datetime.now(timezone.utc).isoformat()
-    try:
-        cfg = lib.load_config(root)
-    except lib.HandsoffError as exc:
-        return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
+    if cfg is None:
+        try:
+            cfg = lib.load_config(root)
+        except lib.HandsoffError as exc:
+            return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
 
     status_file = lib.status_path(root, cfg)
     acceptance_file = lib.acceptance_path(root, cfg)
@@ -1193,7 +1196,7 @@ def build_snapshot(root: Path) -> dict:
     metrics = lib.build_run_metrics(status, events, verifications)
     try:
         performance = supervisor.refresh_performance_state(
-            root, status=status, events=events, metrics=metrics,
+            root, status=status, events=events, metrics=metrics, cfg=cfg,
         )
     except (lib.HandsoffError, OSError, ValueError) as exc:
         performance = {"state": "unavailable", "block_new_work": False, "error": str(exc)}

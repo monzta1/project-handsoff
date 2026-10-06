@@ -101,9 +101,24 @@ Fleet Mission Control shows every registered run's feature, phase, progress, sta
 
 `fleet serve` binds loopback (`127.0.0.1`, `localhost`, `::1`) by default and refuses any other `--host` unless an access token is configured, either in `HANDSOFF_FLEET_TOKEN` or in a file named by `--token-file` (the file wins; an empty or unreadable file is refused). With a token, every `/api` request (`GET /api/fleet`, `/api/metrics`, `/api/events`, any unknown `/api` path, and `POST /api/release-port`, `/api/close-run`, `/api/reopen-run`, `/api/forget`) must carry `Authorization: Bearer <token>`. A missing or wrong value is answered `401` before the Origin check, before the body is read and before any state changes; the comparison is constant time (`hmac.compare_digest`). The right value reaches the normal handling, including the same-origin rule for POSTs. Static pages and assets load without the token, and the Fleet page does not send one, so a token-protected Fleet is read through a client that adds the header (a tunnel or proxy that injects it, or a script). Loopback without a token behaves exactly as before.
 
+#### Fleet cards and the snapshot cache (#389 #393)
+
+A card is named by the project's configured `[project] name`, else its
+origin repository's name, else its folder, and shows the folder beside
+it. A run with no live managed session whose ledger was written within
+`[recovery] live_session_silence_minutes` reads `host_working` with the
+age of the last write, so a host doing the work itself is not shown as
+idle; with no write in that window it reads `quiet`. `build_fleet` loads
+each project's configuration once per build, reuses a project's view
+until its ledger, runtime records or repository HEAD and index change,
+probes dashboard owners concurrently, and lets concurrent `/api/fleet`
+requests share one build.
+
 #### Fleet durable job queue (#285)
 
-`bin/handsoff_queue.py` is a durable job queue kept beside the Fleet registry: the store `fleet-queue.json`, the journal `fleet-queue.journal/NNNNNN.jsonl`, and the lock `fleet-queue.lock`. A submission survives the process that made it, and a repeated idempotency key returns the existing job id. Claiming a job grants a lease (worker, expiry, epoch; 60 s by default) that the owner renews with heartbeats; every heartbeat, succeed and fail checks the worker, the epoch and the expiry under the same lock as the change, so an expired owner is refused even before anyone reclaims, and a reclaim raises the epoch so the old owner's late calls are fenced off. A failed or abandoned job is retried until 3 attempts, then ends `failed`; a cancelled job refuses a later completion. Every transition and heartbeat is one hash-chained journal line written and fsynced before the store, so a crash between the two is healed from the journal on the next load. Only a torn tail (a final line with no newline whose seq is past the store's last committed seq) is set aside as `torn-<seq>.bin`; any other line that fails its hash is refused by name, never truncated. The journal is never pruned: it grows with every heartbeat and rotates into numbered segments past 1 MiB, each closed with a `checkpoint-NNNNNN.json` snapshot that replay starts from. This run adds no queue CLI and no Fleet page for it.
+`bin/handsoff_queue.py` is a durable job queue kept beside the Fleet registry: the store `fleet-queue.json`, the journal `fleet-queue.journal/NNNNNN.jsonl`, and the lock `fleet-queue.lock`. A submission survives the process that made it, and a repeated idempotency key returns the existing job id. Claiming a job grants a lease (worker, expiry, epoch; 60 s by default) that the owner renews with heartbeats; every heartbeat, succeed and fail checks the worker, the epoch and the expiry under the same lock as the change, so an expired owner is refused even before anyone reclaims, and a reclaim raises the epoch so the old owner's late calls are fenced off. A failed or abandoned job is retried until 3 attempts, then ends `failed`; a cancelled job refuses a later completion. Every transition and heartbeat is one hash-chained journal line written and fsynced before the store, so a crash between the two is healed from the journal on the next load. Only a torn tail (a final line with no newline whose seq is past the store's last committed seq) is set aside as `torn-<seq>.bin`; any other line that fails its hash is refused by name, never truncated. The journal is never pruned: it grows with every heartbeat and rotates into numbered segments past 1 MiB, each closed with a `checkpoint-NNNNNN.json` snapshot that replay starts from. Since v0.5.6 (#386) `handsoff fleet queue submit|list|show|claim|heartbeat|succeed|fail|cancel|replay` operates on it at its default directory beside the registry (submit is idempotent per key; claim prints a lease with its epoch; a succeed or fail with a stale epoch is refused; replay rebuilds the store from the journal and matches list), and `GET /api/queue` on `fleet serve` returns the same listing read-only, behind the Fleet API's existing token check.
+
+`handsoff fleet rediscover` (#384) prints, read-only, the runs whose monitoring must resume after a restart: it merges the registry, each root's ledger and its `.handsoff-runtime-control/monitor.json` through the runtime control rediscovery, and `fleet serve` runs the same pass when it starts.
 
 #### Local-only capabilities (#285)
 
@@ -460,6 +475,10 @@ edit during the run writes nothing and removes any old record.
 `ci-watch --pr N` refuses to start unless that record's digest equals the
 current repository digest, naming the command, so any later edit (docs
 included) asks for another guard run.
+Since v0.5.6 (#392) the record is required only when the project has
+`tests/guards.py`; in a project without it the watch starts and
+`CI_WATCH_STARTED` notes `guards not configured`. A configurable
+`[checks]` guards command is not supported; the module alone decides.
 
 #### Landing a lane in this repository, in order
 
@@ -617,6 +636,21 @@ before the field existed carries no hash and stays valid. `doctor` reports
 `rules-set-changed: <files>`. With `review_binds_rules` off the hash is
 still recorded, nothing is refused. A hook the adapter reads from outside
 the project (a global `~/.claude/settings.json`) is not in the set.
+
+### Per-item close and run-scoped config (#381 #382)
+
+`run-close --post` reconciles each issue through the close transaction's
+per-item state machine (comment, close, tick the parent box), writing the
+intent before each action and reading it back after. An issue closed by
+the run's own merged pull request counts as the run's and is never
+reopened; an issue a person closed is recorded unpostable and the rest
+still post. The close archive is written once
+(`.handsoff-archive/close-archives/<token>.json`), and the run's dashboard
+is released only when its owner record names this run.
+`config-override --key K --value V --by ACTOR` changes one
+`handsoff.toml` value for this run only and records the original;
+`run-close` restores it when the file still holds the run's value, and
+leaves a person's later edit alone.
 
 ### The final report posts itself (#171)
 
@@ -843,7 +877,7 @@ The `[recovery]` policy drives a lease-protected watchdog. It selects an exact c
 
 ## Performance tracking
 
-`performance-status` refreshes and prints the 90/120-minute run state. `performance-watch --interval SECONDS` runs the clock that evaluates the 90/120-minute deadline without a CLI call. `performance-resume --by ACTOR --reason TEXT` opens a new episode after explicit reevaluation.
+`performance-status` refreshes and prints the 90/120-minute run state. `performance-watch --interval SECONDS` runs the clock that evaluates the 90/120-minute deadline without a CLI call. `performance-resume --by ACTOR --reason TEXT` opens a new episode after explicit reevaluation. While a run is paused for performance review, the supervisor decides each command through the runtime control's operation classes (read-only commands inspect, `monitor-poll` reconciles, `performance-resume` resumes, `regression-cancel` cancels, `run-close` closes safely; everything else is refused) (#383). A managed reviewer or implementer result whose launch episode was paused is quarantined, not applied: it is ledgered as `late_result_quarantined` and kept on the session, and after `performance-resume`, `session-result-adopt --session ID` applies it exactly once through the normal record or workspace checks. The clock records each transition once in its own hash-chained journal, `.handsoff-runtime-control/performance-timeline.jsonl`, never in the event ledger, so no command changes the ledger for timing; a missing or corrupt `.handsoff-runtime-control/performance.json` is rebuilt from that journal with the same elapsed active time, a journal line that fails its chain is refused, and an unsigned legacy record is left read-only (#385).
 
 ## Focused checks versus full regressions
 
@@ -897,6 +931,8 @@ The dry-run plan lists every operation with its `previous_hash` (spec hash befor
 ### Concurrent implementers with owned paths (#359)
 
 `handsoff agent launch implementer --owns PATH` (repeatable) declares the project-relative paths a session may write; a directory covers everything beneath it. Two implementers may be live at once only when both declare ownership and no path overlaps (equal, or one a directory prefix of the other); an overlapping launch is refused before any session id, reservation or event exists, naming every overlapping path and the live session it collides with. Every launch with `--owns` runs in its own git worktree outside the project root, seeded with the project's uncommitted and untracked content, so it cannot write another session's files; a Claude implementer's Edit and Write tools are also scoped to its paths. When the session ends the engine diffs its worktree against what it was seeded with and applies back only changes inside its owned paths. A change outside them, or an owned path the host changed since launch, fails the session as `ownership_violation`, naming the paths, and applies nothing. Handsoff's own state files written in the worktree are neither attributed nor applied. An implementer launched without `--owns` keeps the single-live-session rule and works in the project tree as before. Lifecycle readers (state transitions, recovery, `run-close`, questions, `status` and the dashboard) key every live implementer by session id.
+
+`handsoff agent launch reviewer --compact-scope PATH:START-END` (repeatable, #388) gives a reviewer only those line ranges: they are copied with `SCOPE.json` into its scratch directory, which is its working directory; the project is not granted (`--add-dir` is dropped and the read probe skipped), stdin names only the slices, and a Claude reviewer (which runs only where `[reviewer_isolation] compatibility_mode` and `compatibility_approved` are set; Codex is the native reviewer) is denied Bash and reads under the project path. A compact session cannot run tests, so its verdict records `tests_executed: no` and counts only where a review without tests already does. The turn-bound refusal names this as a remedy beside raising `[agent_budget].reviewer`.
 
 ### Advisory item review in the full lane (#360)
 
@@ -1098,7 +1134,7 @@ Recovery replaces only a managed role with authenticated `agent_session_*` histo
 
 ## Adaptive model routing
 
-Adaptive routing is the default for every new run. `init "Mission"` records `risk_class: routine`; pass `--risk-class elevated|security_sensitive|persistence_migration|shared_infrastructure|irreversible` to request a stronger policy. A normal managed launch on a historical active status with no risk class safely defaults and persists `routine` in the same commit as its first adaptive session. The launch selects the lowest qualified tier and records its risk class, tier, adapter, model, documented profile, selection reason, and review/deployment obligations before the process starts. Phase-2 reviewer selection and a reserved recovery launch take precedence and are never rerouted.
+Adaptive routing is the default for every new run. `init "Mission"` records `risk_class: routine`; pass `--risk-class elevated|security_sensitive|persistence_migration|shared_infrastructure|irreversible` to request a stronger policy. A normal managed launch on a historical active status with no risk class safely defaults and persists `routine` in the same commit as its first adaptive session. The launch selects the lowest qualified tier and records its risk class, tier, adapter, model, documented profile, selection reason, and review/deployment obligations before the process starts. Phase-2 reviewer selection and a reserved recovery launch take precedence and are never rerouted. Closing a review attempt attaches `adaptive_records` to the `review_attempt_closed` event (#387): the deterministic check plan from the criteria's test commands (validated first; a plan above 32 checks is refused) with each check's latest ledger outcome or `not_run`, and the implementer and reviewer claims, bound to the acceptance hash.
 
 The built-in FAST, STANDARD, and PREMIUM catalog uses Claude Haiku 4.5, Sonnet 5, and Opus 5 metadata from the [Anthropic model overview](https://platform.claude.com/docs/en/models/overview). Profiles are closed, validated, and cost-bound: each named tier must retain its documented model, so an Opus model cannot hide behind a FAST budget label. A `default` deferral may name only its adapter and model and cannot claim limits, capabilities, or pricing. A project may configure the complete `[routing_profiles]`, `[routing_budgets.per_mission]`, `[routing_budgets.fleet]`, and six-row `[risk_policy]` tables; malformed, undocumented, or tier-swapped profile metadata is refused when configuration loads.
 

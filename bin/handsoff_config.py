@@ -1023,7 +1023,30 @@ FEATURES = {
 }
 
 
-PLAIN_COMMAND_MESSAGE = "test commands may not contain shell expansion or control operators"
+#: #382: the handsoff.toml scalars `config-override` may write for one run,
+#: dotted key -> the type load_config reads it as. A key absent here is one
+#: the config schema does not know, and is refused.
+CONFIG_OVERRIDE_SCHEMA: dict[str, type] = {
+    **{f"workflow.{key}": int for key in (
+        "max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews",
+        "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files")},
+    **{f"workflow.{key}": bool for key in (
+        "auto_handoff", "require_live_verification", "deployment_requires_explicit_approval",
+        "require_design_approval")},
+    "checks.timeout_seconds": int,
+    "execution.profile": str,
+    "fallback_policy.max_failovers_per_role": int,
+    **{f"agents.{role}": str for role in AGENT_ROLES},
+    **{f"models.{role}": str for role in AGENT_ROLES},
+    **{f"agent_budget.{role}": int for role in SELECTABLE_AGENT_ROLES},
+    **{f"features.{name}": bool for name in FEATURES},
+    **{f"{table}.{key}": (str if value is None else type(value))
+       for table in ("recovery", "regression_gate", "analysis")
+       for key, value in DEFAULT_CONFIG[table].items() if not isinstance(value, dict)},
+}
+
+
+PLAIN_COMMAND_MESSAGE ="test commands may not contain shell expansion or control operators"
 
 
 def assert_plain_command(command: str) -> list[str]:

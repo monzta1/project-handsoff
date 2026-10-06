@@ -166,7 +166,11 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  # #359: a concurrent implementer's declared paths, its isolated
                                  # worktree and the outcome of applying it back. Absent on a sole
                                  # implementer, so its session is exactly what it always was.
-                                 "owned_paths", "workspace", "apply"}
+                                 "owned_paths", "workspace", "apply",
+                                 # #388: a compact reviewer, which cannot run tests.
+                                 # #383: a late result held while its launch episode was
+                                 # paused, until session-result-adopt applies it once.
+                                 "compact", "quarantined_result"}
 
 
 #: #359: bounds on an implementer's declared ownership.
@@ -195,6 +199,47 @@ def _validate_session_workspace(value: object) -> None:
             or not isinstance(value["launch_commit"], str) \
             or not re.fullmatch(r"[0-9a-f]{40}", value["launch_commit"]):
         raise HandsoffError("workspace must be {path, launch_commit}")
+
+
+#: #383: what a quarantined late result may be, and who produced it.
+QUARANTINED_RESULT_ROLES = {"review": "reviewer", "implementer_workspace": "implementer"}
+
+
+MAX_QUARANTINED_RESULT_BYTES = 65536
+
+
+def _validate_quarantined_result(value: object, role: object) -> None:
+    fields = {"kind", "role", "episode_id", "quarantined_at", "result", "adopted_at", "adopted_by"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise HandsoffError(f"must be an object with exactly {', '.join(sorted(fields))}")
+    if QUARANTINED_RESULT_ROLES.get(value["kind"]) is None or value["role"] != QUARANTINED_RESULT_ROLES[value["kind"]] \
+            or value["role"] != role:
+        raise HandsoffError("kind must be review (reviewer) or implementer_workspace (implementer), "
+                            "matching the session role")
+    if not isinstance(value["episode_id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}",
+                                                                      value["episode_id"]):
+        raise HandsoffError("episode_id must be a runtime-control identifier")
+    for field in ("quarantined_at", "adopted_at"):
+        stamp = value[field]
+        if stamp is None and field == "adopted_at":
+            continue
+        try:
+            if not isinstance(stamp, str) or len(stamp) > 64:
+                raise ValueError
+            datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            raise HandsoffError(f"{field} must be an ISO timestamp") from None
+    adopted_by = value["adopted_by"]
+    if (value["adopted_at"] is None) != (adopted_by is None) or (
+            adopted_by is not None and (not isinstance(adopted_by, str) or not adopted_by.strip()
+                                        or len(adopted_by) > 128)):
+        raise HandsoffError("adopted_at and adopted_by are set together, adopted_by at most 128 characters")
+    result = value["result"]
+    if result is not None and (not isinstance(result, dict)
+                               or len(_canonical(result)) > MAX_QUARANTINED_RESULT_BYTES):
+        raise HandsoffError(f"result must be null or an object of at most {MAX_QUARANTINED_RESULT_BYTES} bytes")
+    if value["kind"] == "review" and result is None:
+        raise HandsoffError("a quarantined review keeps its result")
 
 
 def _validate_session_apply(value: object) -> None:
@@ -1406,6 +1451,18 @@ def validate_status_schema(status: dict) -> list[str]:
                         if session.get("role") != "implementer":
                             errors.append(f"{label}.{optional_field} applies only to implementer sessions")
                     continue
+                if optional_field == "compact":
+                    # #388: only a reviewer is launched compact
+                    if value is not None and (not isinstance(value, bool) or session.get("role") != "reviewer"):
+                        errors.append(f"{label}.compact must be a boolean on a reviewer session")
+                    continue
+                if optional_field == "quarantined_result":
+                    if value is not None:
+                        try:
+                            _validate_quarantined_result(value, session.get("role"))
+                        except HandsoffError as exc:
+                            errors.append(f"{label}.quarantined_result {exc}")
+                    continue
                 if optional_field == "progress":
                     # #215: the Implementer's per-criterion claims, validated one by one
                     if value is not None and (not isinstance(value, list) or len(value) > MAX_PROGRESS_RECORDS or not all(
@@ -1642,6 +1699,49 @@ def validate_status_schema(status: dict) -> list[str]:
     # trail on the design decisions it rewrote.
     errors.extend(amendment_status_errors(status))
     errors.extend(question_status_errors(status))
+    if "config_overrides" in status:
+        errors.extend(config_override_errors(status["config_overrides"]))
+    return errors
+
+
+#: #382: the handsoff.toml values config-override wrote for this run only,
+#: which run-close's config_restore step puts back.
+MAX_CONFIG_OVERRIDES = 16
+CONFIG_OVERRIDE_KEY = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*){1,3}")
+_CONFIG_OVERRIDE_FIELDS = {"path", "key", "original", "run_written", "at", "by"}
+
+
+def _is_toml_scalar(value: object) -> bool:
+    return isinstance(value, (str, bool, int)) or (isinstance(value, float) and math.isfinite(value))
+
+
+def config_override_errors(overrides: object) -> list[str]:
+    if not isinstance(overrides, list) or len(overrides) > MAX_CONFIG_OVERRIDES:
+        return [f"status: 'config_overrides' must be a list of at most {MAX_CONFIG_OVERRIDES} entries"]
+    errors = []
+    keys = []
+    for index, entry in enumerate(overrides):
+        where = f"status: config_overrides[{index}]"
+        if not isinstance(entry, dict) or set(entry) != _CONFIG_OVERRIDE_FIELDS:
+            errors.append(f"{where} must have exactly {', '.join(sorted(_CONFIG_OVERRIDE_FIELDS))}")
+            continue
+        keys.append(entry["key"])
+        if entry["path"] != "handsoff.toml":
+            errors.append(f"{where}.path must be handsoff.toml")
+        if not isinstance(entry["key"], str) or not CONFIG_OVERRIDE_KEY.fullmatch(entry["key"]):
+            errors.append(f"{where}.key must be a dotted handsoff.toml key")
+        if entry["original"] is not None and not _is_toml_scalar(entry["original"]):
+            errors.append(f"{where}.original must be a TOML scalar or null")
+        if not _is_toml_scalar(entry["run_written"]):
+            errors.append(f"{where}.run_written must be a TOML scalar")
+        if not isinstance(entry["by"], str) or not entry["by"].strip() or len(entry["by"]) > 128:
+            errors.append(f"{where}.by must be 1 to 128 characters")
+        try:
+            datetime.fromisoformat(str(entry["at"]).replace("Z", "+00:00"))
+        except ValueError:
+            errors.append(f"{where}.at must be an ISO timestamp")
+    if len(keys) != len(set(map(str, keys))):
+        errors.append("status: config_overrides keys must be unique")
     return errors
 
 

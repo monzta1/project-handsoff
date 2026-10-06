@@ -442,7 +442,13 @@ class PerformanceEpisodeTests(unittest.TestCase):
         resumed = control.resume_performance(paused, decision, "episode-2")
         self.assertEqual(resumed["episodes"][-1]["state"], "active")
         self.assertEqual(resumed["breaches"], 1)
-        self.assertEqual(resumed["episodes"][0]["state"], "paused_for_performance_review")
+        # #383: the resumed episode leaves the pause, so its late results are adoptable.
+        self.assertEqual(resumed["episodes"][0]["state"], "completed")
+        self.assertEqual(resumed["episodes"][0]["paused_at"], paused["episodes"][0]["paused_at"])
+        self.assertEqual(
+            control.late_result_disposition(resumed, "episode-1", "late-agent"),
+            "eligible_for_normal_validation",
+        )
         with self.assertRaises(control.SchemaError):
             control.resume_performance(paused, {**decision, "action": "acknowledge"}, "episode-2")
 
@@ -481,54 +487,148 @@ class PerformanceEpisodeTests(unittest.TestCase):
         self.assertEqual(decision["action"], "deadline_warning")
         self.assertEqual(control.total_active_seconds(warned, now=NOW + timedelta(minutes=105)), 90 * 60)
 
+    def test_the_timeline_replays_to_the_same_clock(self):
+        """#385: performance_timeline emits exactly the kinds the rebuild reads."""
+        history = control.new_performance_history("run-385", "episode-1", now=NOW)
+        episode = history["episodes"][0]
+        episode["holds"].append({"hold_id": "hold-1", "kind": "pilot",
+                                 "started_at": (NOW + timedelta(minutes=10)).isoformat(),
+                                 "ended_at": (NOW + timedelta(minutes=20)).isoformat(),
+                                 "evidence_hash": digest("pilot")})
+        episode["sleeps"].append({"started_at": (NOW + timedelta(minutes=30)).isoformat(),
+                                  "ended_at": (NOW + timedelta(minutes=35)).isoformat(),
+                                  "measured_seconds": 300.0})
+        paused, _ = control.transition_performance(history, now=NOW + timedelta(minutes=140))
+        decision = {"decision_id": "resume-1", "action": "resume", "actor": "pilot",
+                    "reason": "reevaluated", "evidence_hash": digest("resume"),
+                    "at": (NOW + timedelta(minutes=150)).isoformat()}
+        resumed = control.resume_performance(paused, decision, "episode-2")
+        resumed["episodes"][1]["holds"].append({"hold_id": "hold-2", "kind": "pilot",
+                                                "started_at": (NOW + timedelta(minutes=160)).isoformat(),
+                                                "ended_at": None, "evidence_hash": digest("open")})
+        timeline = control.performance_timeline(resumed)
+        self.assertEqual([event["kind"] for event in timeline], [
+            "episode_started", "hold_started", "hold_ended", "sleep_started", "sleep_ended",
+            "performance_paused", "resumed", "hold_started",
+        ])
+        keys = [control.performance_timeline_key(event) for event in timeline]
+        self.assertEqual(len(keys), len(set(keys)))
+        later = NOW + timedelta(minutes=170)
+        rebuilt = control.reconstruct_performance_history("run-385", timeline, now=later)
+        self.assertEqual(control.total_active_seconds(rebuilt, now=later),
+                         control.total_active_seconds(resumed, now=later))
+        self.assertEqual([item["state"] for item in rebuilt["episodes"]], ["completed", "active"])
+        self.assertEqual(rebuilt["resume_decisions"], [decision])
+        self.assertEqual(rebuilt["breaches"], 1)
+
+    def test_a_resumed_event_cannot_open_the_timeline(self):
+        with self.assertRaisesRegex(control.SchemaError, "begin with episode_started"):
+            control.reconstruct_performance_history(
+                "run-385", [{"kind": "resumed", "at": NOW.isoformat(), "episode_id": "episode-2"}], now=NOW)
+
+
+class SupervisorPauseRuleTests(unittest.TestCase):
+    """#383/REQ-003: every supervisor command decides a pause through
+    require_performance_operation, under the operation it performs."""
+
+    EXPECTED = {
+        "status": "inspect", "validate": "inspect", "verify-log": "inspect", "doctor": "inspect",
+        "dashboard": "inspect", "design-timing": "inspect", "evidence-refresh-plan": "inspect",
+        "performance-status": "inspect", "performance-watch": "inspect",
+        "monitor-poll": "reconcile", "performance-resume": "explicit_resume",
+        "regression-cancel": "cancel", "run-close": "safe_close",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        import handsoff_supervisor
+        cls.supervisor = handsoff_supervisor
+        parser = handsoff_supervisor.build_parser()
+        action = next(item for item in parser._actions if item.dest == "command")
+        cls.commands = sorted(action.choices)
+        history = control.new_performance_history("run-383", "episode-1", now=NOW)
+        cls.paused, _ = control.transition_performance(history, now=NOW + timedelta(minutes=120))
+        cls.healthy = history
+
+    def test_every_supervisor_command_maps_to_one_operation(self):
+        self.assertGreater(len(self.commands), 50)
+        for command in self.commands:
+            operation = self.supervisor.performance_operation(command)
+            with self.subTest(command=command):
+                if command in self.EXPECTED:
+                    self.assertEqual(operation, self.EXPECTED[command])
+                else:
+                    # mutating: judged under its own name, which no pause allows
+                    self.assertEqual(operation, command)
+                    self.assertNotIn(operation, control.PERFORMANCE_PAUSE_ALLOWED_OPERATIONS)
+
+    def test_the_map_names_only_real_commands(self):
+        self.assertLessEqual(set(self.supervisor.PERFORMANCE_COMMAND_OPERATIONS), set(self.commands))
+        self.assertEqual(self.supervisor.PERFORMANCE_COMMAND_OPERATIONS, self.EXPECTED)
+
+    def test_while_paused_only_the_allowed_operations_pass(self):
+        for command in self.commands:
+            operation = self.supervisor.performance_operation(command)
+            with self.subTest(command=command):
+                if command in self.EXPECTED:
+                    control.require_performance_operation(self.paused, operation)
+                else:
+                    with self.assertRaises(control.MutationRefused):
+                        control.require_performance_operation(self.paused, operation)
+                control.require_performance_operation(self.healthy, operation)
+
+    def test_dashboard_and_launcher_operations_are_mutating(self):
+        for operation in ("launch_agent", "launch_reviewer", "launch_implementer"):
+            with self.assertRaises(control.MutationRefused):
+                control.require_performance_operation(self.paused, self.supervisor.performance_operation(operation))
+
+    def test_the_duplicate_command_set_is_gone(self):
+        self.assertFalse(hasattr(self.supervisor, "PERFORMANCE_PAUSE_COMMANDS"))
+
+    def test_the_refusal_decides_through_require_performance_operation(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            view = {"block_new_work": True}
+            with mock.patch.object(self.supervisor, "refresh_performance_state", return_value=view), \
+                    mock.patch.object(self.supervisor, "_runtime_read", return_value=self.paused), \
+                    mock.patch.object(control, "require_performance_operation",
+                                      wraps=control.require_performance_operation) as rule:
+                self.assertIn("paused_for_performance_review",
+                              self.supervisor.performance_mutation_refusal(root, "advance"))
+                self.assertIsNone(self.supervisor.performance_mutation_refusal(root, "run-close"))
+                self.assertIsNone(self.supervisor.performance_mutation_refusal(root, "monitor-poll"))
+            self.assertEqual([call.args[1] for call in rule.call_args_list],
+                             ["advance", "safe_close", "reconcile"])
+
 
 class LegacyVersionTests(unittest.TestCase):
     def setUp(self):
         self.secret = b"0123456789abcdef-runtime-control"
 
-    def test_authenticated_legacy_monitor_migrates_without_synthesizing_completion(self):
-        legacy = control.sign_legacy_record(
-            {
-                "run_id": "run-legacy",
-                "cursor": 12,
-                "state": "completed",
-                "updated_at": NOW.isoformat(),
-            },
-            key_id="migration-key",
-            secret=self.secret,
-        )
-        access = control.load_versioned_record(
-            legacy,
-            expected_schema="handsoff.monitor",
-            secrets={"migration-key": self.secret},
-            for_mutation=True,
-        )
-        self.assertTrue(access.migrated)
-        self.assertFalse(access.read_only)
-        self.assertEqual(access.record["state"], "migration_pending")
-        self.assertEqual(access.record["migration"]["legacy_state"], "completed")
-        self.assertEqual(access.record["migration"]["pending"], ["lease", "rediscovery"])
+    def test_the_legacy_signer_is_gone(self):
+        """#385 (Pilot): no shipped version wrote signed legacy records."""
+        self.assertFalse(hasattr(control, "sign_legacy_record"))
 
     def test_tampered_or_unauthenticated_legacy_is_read_only_and_refuses_mutation(self):
-        legacy = control.sign_legacy_record(
-            {"run_id": "run-legacy", "cursor": 1, "state": "active", "updated_at": NOW.isoformat()},
-            key_id="migration-key",
-            secret=self.secret,
-        )
-        legacy["cursor"] = 2
-        access = control.load_versioned_record(
-            legacy,
-            expected_schema="handsoff.monitor",
-            secrets={"migration-key": self.secret},
-        )
-        self.assertTrue(access.read_only)
-        with self.assertRaisesRegex(control.MutationRefused, "not authenticated"):
-            control.load_versioned_record(
+        unsigned = {"run_id": "run-legacy", "cursor": 1, "state": "active", "updated_at": NOW.isoformat()}
+        forged = {**unsigned, "_auth": {"algorithm": "hmac-sha256", "key_id": "migration-key",
+                                        "signature": "0" * 64}}
+        for legacy in (unsigned, forged):
+            access = control.load_versioned_record(
                 legacy,
                 expected_schema="handsoff.monitor",
                 secrets={"migration-key": self.secret},
-                for_mutation=True,
             )
+            self.assertTrue(access.read_only)
+            with self.assertRaisesRegex(control.MutationRefused, "not authenticated"):
+                control.load_versioned_record(
+                    legacy,
+                    expected_schema="handsoff.monitor",
+                    secrets={"migration-key": self.secret},
+                    for_mutation=True,
+                )
 
     def test_unknown_version_is_inspectable_but_never_mutable(self):
         future = {"schema": "handsoff.monitor", "version": 2, "opaque": {"future": True}}
@@ -539,27 +639,6 @@ class LegacyVersionTests(unittest.TestCase):
             control.load_versioned_record(
                 future, expected_schema="handsoff.monitor", for_mutation=True
             )
-
-    def test_authenticated_legacy_performance_remains_migration_pending(self):
-        legacy = control.sign_legacy_record(
-            {
-                "run_id": "run-legacy",
-                "episode_id": "legacy-episode",
-                "started_at": NOW.isoformat(),
-                "state": "complete",
-            },
-            key_id="migration-key",
-            secret=self.secret,
-        )
-        access = control.load_versioned_record(
-            legacy,
-            expected_schema="handsoff.performance_history",
-            secrets={"migration-key": self.secret},
-            for_mutation=True,
-        )
-        self.assertEqual(access.record["episodes"][0]["state"], "migration_pending")
-        self.assertFalse(access.record["episodes"][0]["breach"])
-        self.assertIsNone(access.record["episodes"][0]["ended_at"])
 
 
 if __name__ == "__main__":

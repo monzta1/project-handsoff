@@ -102,6 +102,23 @@
         "complete"
       ]
     },
+    "config_overrides": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "key", "original", "run_written", "at", "by"],
+        "properties": {
+          "path": {"const": "handsoff.toml"},
+          "key": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*([.][a-z_][a-z0-9_]*){1,3}$"},
+          "original": {"type": ["string", "boolean", "integer", "number", "null"]},
+          "run_written": {"type": ["string", "boolean", "integer", "number"]},
+          "at": {"type": "string", "format": "date-time"},
+          "by": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
     "run_closed": {
       "type": "object",
       "additionalProperties": false,
@@ -1110,6 +1127,23 @@
                     "source": {"type": ["string", "null"]}
                   }
                 }
+              }
+            },
+            "compact": {
+              "type": "boolean"
+            },
+            "quarantined_result": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "role", "episode_id", "quarantined_at", "result", "adopted_at", "adopted_by"],
+              "properties": {
+                "kind": {"enum": ["review", "implementer_workspace"]},
+                "role": {"enum": ["reviewer", "implementer"]},
+                "episode_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+                "quarantined_at": {"type": "string", "format": "date-time"},
+                "result": {"type": ["object", "null"]},
+                "adopted_at": {"type": ["string", "null"], "format": "date-time"},
+                "adopted_by": {"type": ["string", "null"], "minLength": 1, "maxLength": 128}
               }
             }
           }

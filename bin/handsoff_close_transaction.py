@@ -196,11 +196,12 @@ def attributable_auto_close(snapshot: Mapping[str, Any], run_pull_requests: Iter
 
 def issue_state_decision(snapshot: Mapping[str, Any], run_pull_requests: Iterable[Mapping[str, Any]],
                          *, run_token: str) -> str:
-    """Return ``continue``, ``reopen``, ``already_closed``, or ``pause``.
+    """Return ``continue``, ``already_closed``, or ``pause``.
 
-    A close attributed to this transaction's token is the only closed state
-    that can satisfy final read-back.  A merged run PR is safe to reopen.
-    Every other closure is treated as human/unknown and is never mutated.
+    A close attributed to this transaction's token, or to a merged pull
+    request of this run (#381), is the run's own: it is adopted and never
+    reopened.  Every other closure is treated as human/unknown and is never
+    mutated.
     """
     issue = _normalise_issue_snapshot(snapshot)
     if issue["state"] == "open":
@@ -211,7 +212,7 @@ def issue_state_decision(snapshot: Mapping[str, Any], run_pull_requests: Iterabl
     if closure["kind"] == "handsoff_run" and closure["run_token"] == run_token:
         return "already_closed"
     if attributable_auto_close(issue, run_pull_requests):
-        return "reopen"
+        return "already_closed"
     return "pause"
 
 
@@ -242,6 +243,59 @@ class Operation:
     act: Callable[[], Any]
     optional: bool = False
     unavailable_reason: str | Callable[[], str] | None = None
+
+
+def _pending_operation() -> dict[str, Any]:
+    return {"state": "pending", "attempts": 0, "intent_at": None,
+            "completed_at": None, "last_observed": None, "last_error": None}
+
+
+# The flat per-item keys run-close wrote before #381 moved items onto
+# operations rows.
+LEGACY_ITEM_KEYS = tuple(
+    f"{name}{suffix}" for name in ITEM_OPERATIONS[1:] for suffix in ("", "_intent", "_dispatched")
+)
+
+
+def _migrate_flat_items(items: MutableMapping[str, Any]) -> bool:
+    """#381: lift flat ``commented``/``closed``/``ticked`` rows into pending
+    operations rows. The flat values stay under ``legacy`` as evidence and
+    are never completion proof; read-back decides. Returns whether any item
+    was migrated."""
+    migrated = False
+    for item_id, item in items.items():
+        if not isinstance(item, MutableMapping):
+            raise ReadOnlyTransactionError(f"close transaction item {item_id} is malformed")
+        flat = {key: item.pop(key) for key in list(item) if key in LEGACY_ITEM_KEYS}
+        if not flat:
+            continue
+        migrated = True
+        legacy = item.setdefault("legacy", {})
+        legacy.update(flat)
+        if "state" in item:
+            legacy["state"] = item["state"]
+        item["state"] = "open"
+        operations = item.setdefault("operations", {})
+        for name in ITEM_OPERATIONS[1:]:
+            operations.setdefault(name, _pending_operation())
+    return migrated
+
+
+def _reopen_report_gates(record: MutableMapping[str, Any]) -> None:
+    """#381: a migrated item is pending, so the report step and the
+    transaction completion that rested on it are pending too; otherwise
+    ``run`` returns early and nothing is ever observed. The prior values
+    stay under ``legacy`` as evidence."""
+    legacy = record.setdefault("legacy", {})
+    step = record["steps"].get("final_report_post")
+    if isinstance(step, MutableMapping) and step.get("state") != "pending":
+        legacy["final_report_post"] = deepcopy(dict(step))
+        record["steps"]["final_report_post"] = _pending_operation()
+    if record.get("state") == "complete":
+        legacy["state"] = "complete"
+        legacy["completed_at"] = record.get("completed_at")
+        record["state"] = "open"
+        record["completed_at"] = None
 
 
 def new_transaction(root: str | os.PathLike[str], run_token: str) -> dict[str, Any]:
@@ -287,6 +341,8 @@ def migrate_transaction(raw: Mapping[str, Any] | None, *, root: str | os.PathLik
         raise ReadOnlyTransactionError("close transaction steps/items are malformed")
     if record.get("state") not in {"open", "complete"}:
         raise ReadOnlyTransactionError("close transaction state is malformed")
+    if _migrate_flat_items(record["items"]):
+        _reopen_report_gates(record)
     return record
 
 
@@ -309,10 +365,7 @@ class CloseTransaction:
 
     def _operation_record(self, container: MutableMapping[str, Any], name: str) -> MutableMapping[str, Any]:
         operations = container.setdefault("operations", {})
-        row = operations.setdefault(name, {
-            "state": "pending", "attempts": 0, "intent_at": None,
-            "completed_at": None, "last_observed": None, "last_error": None,
-        })
+        row = operations.setdefault(name, _pending_operation())
         if not isinstance(row, MutableMapping) or row.get("state") not in {
                 "pending", "intent", "complete", "skipped"}:
             raise ReadOnlyTransactionError(f"operation {name} has malformed state")
@@ -482,15 +535,19 @@ def resource_ownership(expected: Mapping[str, Any], metadata: Mapping[str, Any] 
     return {"state": "owned", "reason": "root/run_token/PID/endpoint identity match"}
 
 
+def archive_bytes(payload: bytes | str | Mapping[str, Any]) -> bytes:
+    """The exact bytes ``write_archive_once`` writes for ``payload``."""
+    if isinstance(payload, Mapping):
+        return _canonical_json(payload)
+    if isinstance(payload, str):
+        return payload.encode("utf-8")
+    return bytes(payload)
+
+
 def write_archive_once(path: str | os.PathLike[str], payload: bytes | str | Mapping[str, Any]) -> dict[str, str]:
     """Create one archive without overwrite; adopt only byte-identical collision."""
     target = Path(path)
-    if isinstance(payload, Mapping):
-        intended = _canonical_json(payload)
-    elif isinstance(payload, str):
-        intended = payload.encode("utf-8")
-    else:
-        intended = bytes(payload)
+    intended = archive_bytes(payload)
     digest = hashlib.sha256(intended).hexdigest()
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
