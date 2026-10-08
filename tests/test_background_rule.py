@@ -141,7 +141,11 @@ class BackgroundRuleTests(HandsoffTestCase):
                 ("a & b & wait %1 %2", False),
                 ("sleep 90 & disown %1\nwait", True),
                 ("sleep 90 &\nwait", False),
-                ("nohup sleep 90 & wait", True),
+                ("nohup sleep 90 & wait", False),  # nohup's child is still the shell's; wait collects it
+                ("nohup sleep 0 & wait", False),
+                ("nohup sleep 90 &", True),
+                ("sleep 90 & wait '$!'; true", True),  # a quoted '$!' is literal: wait fails, sleep runs on
+                ('sleep 90 & wait "$!"', False),  # double quotes still expand $!
                 ("echo \"#x\" &", True),
                 ("echo a#b", False),
                 ("echo 'unbalanced &", False),  # unparseable: never background

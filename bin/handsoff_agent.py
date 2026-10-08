@@ -1258,16 +1258,22 @@ def _outstanding(script: str) -> int:
     Each simple command ended by `&` is a job and `$!` names the latest.
     `wait` collects every job not disowned, `wait $!` the latest, `wait %N`
     job N, any other operand nothing; `disown` keeps a job running but out
-    of the wait set. `nohup`/`setsid` with `&`, `setsid -f`, and a nested
-    `bash -c` that leaves work running are outstanding whatever waits."""
+    of the wait set. `nohup` and `setsid` jobs are waitable like any other;
+    `setsid -f` and a nested `bash -c` that leaves work running are
+    outstanding whatever waits. A single-quoted `'$!'` collects nothing."""
     jobs: list[dict] = []
     pinned = 0
+    # A single-quoted '$!' is literal text, not the latest job; POSIX shlex
+    # drops the quotes, so mark it before tokenizing (it collects nothing).
+    script = script.replace("'$!'", "__literal_dollar_bang__")
     for words, separator in _simple_commands(script):
         if not words:
             continue
         name, operands = Path(words[0]).name, words[1:]
         if separator == "&":
-            jobs.append({"waitable": name not in ("nohup", "setsid"), "collected": False})
+            # nohup and setsid (without -f) still run as the shell's child,
+            # so a later wait collects them like any other job
+            jobs.append({"waitable": True, "collected": False})
             continue
         if name == "setsid" and any(word == "--fork" or (word.startswith("-") and not word.startswith("--")
                                                           and "f" in word) for word in operands):
