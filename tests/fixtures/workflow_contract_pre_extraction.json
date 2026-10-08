@@ -292,7 +292,7 @@
   "rules_binding_errors_current": [],
   "rules_binding_errors_no_decision": [],
   "rules_binding_errors_stale": [
-    "design: the rules set changed since it was recorded (.claude/settings.json, .claude/settings.local.json, .codex/config.toml, AGENTS.md, CLAUDE.md, engine:prompts/reviewer.md, engine:reviewer-launch-phase-1.json, engine:reviewer-packet-finding-length.json (+3 more)); record it again"
+    "design: the rules set changed since it was recorded (.claude/settings.json, .claude/settings.local.json, .codex/config.toml, AGENTS.md, CLAUDE.md, engine:prompts/reviewer.md, engine:reviewer-launch-phase-1.json, engine:reviewer-packet-finding-length.json (+2 more)); record it again"
   ],
   "rules_set_diff_none": [
     ".claude/settings.json",
@@ -304,16 +304,15 @@
     "engine:reviewer-launch-phase-1.json",
     "engine:reviewer-packet-finding-length.json",
     "engine:reviewer-packet-tests-executed.json",
-    "engine:version",
-    "handsoff.toml"
+    "handsoff.toml#mechanics",
+    "handsoff.toml#policy"
   ],
   "rules_set_diff_stale": [
     "engine:prompts/reviewer.md",
     "engine:reviewer-launch-phase-1.json",
     "engine:reviewer-packet-finding-length.json",
     "engine:reviewer-packet-tests-executed.json",
-    "engine:version",
-    "handsoff.toml",
+    "handsoff.toml#policy",
     "rules/a.md"
   ],
   "rules_set_entries": {
@@ -326,8 +325,8 @@
     "engine:reviewer-launch-phase-1.json": "898c159000349a535f17d5f4225ece36b3b6c958f61b106984af1f3777564fec",
     "engine:reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "engine:reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
-    "engine:version": "v0.3.87",
-    "handsoff.toml": "539fe8b56cb892f40e5af0fa0228c75b522beede5de9a88460373988fcf72aa6"
+    "handsoff.toml#mechanics": "539fe8b56cb892f40e5af0fa0228c75b522beede5de9a88460373988fcf72aa6",
+    "handsoff.toml#policy": "539fe8b56cb892f40e5af0fa0228c75b522beede5de9a88460373988fcf72aa6"
   },
   "rules_set_hash": "01b41ebae01d075a8d1038f8f5a05355c78557e9fdc6fd288c7fcb2dc46a49ca",
   "sync_work_item_registry_appends": {

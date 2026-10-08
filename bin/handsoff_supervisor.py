@@ -653,9 +653,12 @@ def cmd_init(args) -> int:
                 return 1
             print(f"HANDSOFF_RETIRED: {retired}")
         pin_written = _write_missing_pin(root)  # #185
+        # #418: --item names the scope, so the registry starts empty and
+        # design-propose / advance 2 refuse until criteria are added; without
+        # --item the placeholder still marks where the first one goes.
         acceptance = (deepcopy(existing_acceptance) if review_adoption else {
             "feature": args.feature,
-            "criteria": [{
+            "criteria": [] if args.item else [{
                 "id": "REQ-001", "type": "primary_fix", "requirement": lib.PLACEHOLDER_REQUIREMENT,
                 "verification": "automated", "tests": list(lib.PLACEHOLDER_TESTS), "evidence": [], "state": "failing",
             }],
@@ -720,7 +723,7 @@ def cmd_init(args) -> int:
             "amendment": None, "amendments": [], "pending_questions": [],
             "review": None, "live_verification_id": None, "original_symptom_evidence_id": None,
             "verification_head": "GENESIS",
-            "requirement_coverage": {"passing": 0, "failing": 1, "not_tested": 0, "blocked": 0,
+            "requirement_coverage": {"passing": 0, "failing": len(acceptance["criteria"]), "not_tested": 0, "blocked": 0,
                                       "original_symptom_resolved": False},
             "reviewer_checklist": {"symptom_reproduced": "not_verifiable", "symptom_resolved": "not_verifiable",
                                    "all_criteria_verified": "no", "evidence_attached": "no"},
@@ -805,7 +808,19 @@ def cmd_init(args) -> int:
     print(f"HANDSOFF_INITIALIZED: {sp} and {ap}")
     for previous in adopted["adopted_from"]:
         print(f"WORK_ITEM_ADOPTED: #{', #'.join(str(n) for n in previous['numbers'])} from {previous['root']}")
+    _warn_live_commands_empty(cfg)
     return 0
+
+
+LIVE_COMMANDS_EMPTY_WARNING = (
+    "HANDSOFF_WARNING: require_live_verification is on and [checks].live_commands is empty; "
+    "add the live checks now (a run-mechanics setting, so adding it later never revokes a review)")
+
+
+def _warn_live_commands_empty(cfg: dict) -> None:
+    """#406: say early that verify-live will have nothing to run."""
+    if cfg.get("require_live_verification", True) and not cfg.get("live_check_commands"):
+        print(LIVE_COMMANDS_EMPTY_WARNING)
 
 
 def _read_design_take_up(path: Path) -> dict:
@@ -926,8 +941,19 @@ def cmd_status(args) -> int:
         "requirement_coverage": status.get("requirement_coverage"),
         "verification_head": status.get("verification_head"),
         "work_item_delivery": status.get("work_item_delivery"),
+        # #422: an open human pause names itself; a caller that polls status
+        # (Sentinel's resume) must not conclude that none is open.
+        "human_pause": human_pause_view(status),
     }, indent=2))
     return 1 if errors or log_problems else 0
+
+
+def human_pause_view(status: dict) -> dict | None:
+    """#422: who opened the human pause, when, and why; None when none is open."""
+    pause = status.get("human_pause")
+    if not isinstance(pause, dict):
+        return None
+    return {"by": pause.get("by"), "at": pause.get("since"), "note": pause.get("note")}
 
 
 def cmd_validate(args) -> int:
@@ -1004,6 +1030,9 @@ def cmd_advance(args) -> int:
         )
         if args.phase < current or (args.phase > current + 1 and not small_fix_jump):
             print(f"phase transition blocked: current={current}, requested={args.phase} (one step at a time)")
+            return 1
+        if args.phase >= 2 and not acceptance.get("criteria"):
+            print(f"SHIP_FEATURE_BLOCKED: {lib.EMPTY_REGISTRY_REFUSAL}")  # #418
             return 1
         current_progress = status.get("progress", 0)
         if args.progress is None:
@@ -2747,12 +2776,25 @@ def cmd_verify(args) -> int:
                                                   "executed": executed, "reused_from": reused_from,
                                                   **({"attempts": len(attempts), "repeat": int(criterion["repeat"])}
                                                      if attempts is not None else {})}
+            symptom_run = _automatic_symptom_run(status, acceptance, per_criterion, existing_records)
+            symptom_events = []
+            if symptom_run:
+                # #419: every primary_fix passes on automated evidence, so the
+                # symptom is recorded here, bound to this run and this actor.
+                status["requirement_coverage"]["original_symptom_resolved"] = True
+                status["original_symptom_evidence_id"] = symptom_run
+                symptom_events = [{"kind": "symptom_resolved", "message": "Original symptom marked resolved by verify",
+                                   "evidence": symptom_run, "by": args.by, "automatic": True}]
             lib.sync_coverage(status, acceptance)
             _invalidate_decisions(status)
+            _name_symptom_step(status, acceptance, existing_records + [
+                {"run_id": v["run_id"], "ok": v["ok"], "criteria": [cid],
+                 "criterion_hashes": {cid: before[cid]}} for cid, v in per_criterion.items()])
             review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
             status["updated_at"] = datetime.now(timezone.utc).isoformat()
             lib.commit(root, cfg, status=status, acceptance=acceptance,
                       event_kind="checks_run", event_message="Ran and attached configured checks",
+                      extra_events=symptom_events or None,
                       criteria=per_criterion,
                       review_attempt_refreshed=review_refresh,
                       launched_count=len(launched), reused_count=len(reused),
@@ -2762,8 +2804,48 @@ def cmd_verify(args) -> int:
     print(__import__("json").dumps({
         "ok": overall_ok, "criteria": per_criterion, "results": results,
         "launched": launched, "reused": {cmd: source["run_id"] for cmd, source in reused.items()},
+        **({"original_symptom_resolved": symptom_run} if symptom_run else {}),
     }, indent=2))
+    if symptom_run:
+        # #419: stdout stays one JSON document; the marker is on stderr
+        print(f"ORIGINAL_SYMPTOM_RESOLVED: {symptom_run}", file=sys.stderr)
     return 0 if overall_ok else 1
+
+
+AUTOMATED_EVIDENCE_KINDS = {"checks", "mutation"}
+
+
+def _automatic_symptom_run(status: dict, acceptance: dict, per_criterion: dict, records: list[dict]) -> str | None:
+    """#419: the run id verify records the original symptom against, or None.
+    Only when every primary_fix criterion is passing on automated evidence
+    (a manual primary still needs record-symptom-resolved), this run
+    verified one of them green, and no valid symptom record already stands."""
+    primary = [c for c in acceptance.get("criteria", []) if c.get("type") == "primary_fix"]
+    if not primary or status.get("lane") == "review":
+        return None
+    for criterion in primary:
+        kinds = lib.VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        if not kinds or not kinds <= AUTOMATED_EVIDENCE_KINDS or criterion.get("state") != "passing":
+            return None
+    if (status.get("requirement_coverage") or {}).get("original_symptom_resolved") is True \
+            and lib._valid_symptom_record(status, primary, records):
+        return None
+    return next((per_criterion[c["id"]]["run_id"] for c in primary
+                 if (per_criterion.get(c["id"]) or {}).get("ok")), None)
+
+
+def _name_symptom_step(status: dict, acceptance: dict, records: list[dict]) -> None:
+    """#419: when every primary_fix passes but the symptom still waits on
+    record-symptom-resolved (manual primary evidence), next_action names
+    the exact command with the candidate run id."""
+    if (status.get("requirement_coverage") or {}).get("original_symptom_resolved") is True:
+        return
+    primary = [c for c in acceptance.get("criteria", []) if c.get("type") == "primary_fix"]
+    if not primary or any(c.get("state") != "passing" for c in primary):
+        return
+    step = lib.symptom_resolution_step(acceptance, records)
+    if step:
+        status["next_action"] = f"Record the original symptom resolved: {step}"
 
 
 def cmd_record_evidence(args) -> int:
@@ -2797,6 +2879,7 @@ def cmd_record_evidence(args) -> int:
                               else "not_tested")
         lib.sync_coverage(status, acceptance)
         _invalidate_decisions(status)
+        _name_symptom_step(status, acceptance, records + [record])  # #419
         review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, acceptance=acceptance,
@@ -3104,6 +3187,7 @@ def cmd_design_approve(args) -> int:
                   redesigns_settled_work=args.redesigns_settled_work)
     print("DESIGN_APPROVAL_RECORDED")
     _print_unverifiable_test_warnings(acceptance, cfg)
+    _warn_live_commands_empty(cfg)  # #406
     return 0
 
 
@@ -4224,13 +4308,32 @@ def adopt_session_result(root, session_id: str, actor: str, *,
             except lib.HandsoffError as exc:
                 return False, f"SESSION_RESULT_ADOPT_REFUSED: the preserved packet is invalid: {exc}"
         readopt = False
-        if result.get("adopted_at") is not None:
+        approval = kind == "review" and payload.get("kind") != "design" and payload.get("decision") == "approved" \
+            and not (isinstance(session, dict) and session.get("amendment_id"))
+        if approval:
+            # #405 #406 fix round 1: the verdict judged the rules in force
+            # when its reviewer session ran; a later policy edit needs a fresh
+            # review, whatever the recorded review says (verify clears it).
+            refusal = _session_rules_refusal(root, session)
+            if refusal:
+                return False, refusal
+        if approval and isinstance(status.get("review"), dict):
+            # #405 #406: a review is already recorded (the run sits past
+            # Phase 5), so this approval reaffirms it; the re-bind decides.
+            rebind = True
+        elif result.get("adopted_at") is not None:
             # Field-note defect 3: an evidence-only refresh revoked the review
             # this verdict already backs; replay it as a reaffirmation.
             if kind == "review" and payload.get("decision") == "approved" and status.get("review") is None:
                 readopt = True
+                rebind = False
             else:
                 return False, "SESSION_RESULT_ADOPT_REFUSED: result is already adopted"
+        else:
+            rebind = False
+        if rebind:
+            return _rebind_review(root, cfg, status, acceptance, records, problems, session_id, actor,
+                                  automatic=automatic)
         architect = (status.get("design_proposal") or {}).get("architect")
         session_actor = str(session.get("actor") or "").strip()
     import handsoff_broker as broker
@@ -4295,6 +4398,84 @@ def adopt_session_result(root, session_id: str, actor: str, *,
                    automatic=automatic)
         lib.mark_beacon_adopted(root, session_id)  # #172
     return True, "SESSION_RESULT_ADOPTED"
+
+
+def _session_rules_refusal(root: Path, session: dict) -> str | None:
+    """#405 #406: why a stored approval may not be adopted under the current
+    rules set, or None. Compared with the entries recorded when the reviewer
+    session launched; only policy entries count (rules_set_diff). A session
+    with none recorded fails closed: what it judged cannot be known."""
+    entries = session.get("rules_entries")
+    if not isinstance(entries, dict):
+        return ("SESSION_RESULT_ADOPT_REFUSED: the reviewer session recorded no rules set at launch, "
+                "so the rules its verdict judged are unknown; a fresh review is required")
+    policy = lib.rules_set_diff(root, entries)
+    if not policy:
+        return None
+    shown = ", ".join(policy[:8]) + (f" (+{len(policy) - 8} more)" if len(policy) > 8 else "")
+    return (f"SESSION_RESULT_ADOPT_REFUSED: the rules set changed in policy entries ({shown}) "
+            "since the reviewer session ran; a fresh review is required")
+
+
+def _rebind_review(root: Path, cfg: dict, status: dict, acceptance: dict, records, problems,
+                   session_id: str, actor: str, *, automatic: bool) -> tuple[bool, str]:
+    """#405 #406: an approval delivered while a review is already recorded
+    reaffirms that review, re-binding it to the current rules set. Allowed
+    only when no policy entry changed (rules_set_diff: the engine version
+    and the RULES_MECHANICS settings never count), the acceptance is the
+    one reviewed, and every gate still passes on the current tree; any
+    policy change refuses, naming the entries, and needs a fresh review.
+    An already adopted result whose review is bound to the current set has
+    nothing to re-bind, so a second adoption changes nothing. The caller
+    holds the project lock."""
+    review = status["review"]
+    result = status["agent_sessions"][session_id]["result"]
+    first = result.get("adopted_at") is None
+    current_hash = lib.rules_set_hash(root, cfg)
+    if not first and review.get("rules_hash") == current_hash:
+        return False, "SESSION_RESULT_ADOPT_REFUSED: result is already adopted"
+    policy = lib.rules_set_diff(root, review.get("rules_entries")) \
+        if review.get("rules_hash") and review.get("rules_hash") != current_hash else []
+    if policy:
+        shown = ", ".join(policy[:8]) + (f" (+{len(policy) - 8} more)" if len(policy) > 8 else "")
+        return False, (f"SESSION_RESULT_ADOPT_REFUSED: the rules set changed in policy entries ({shown}) "
+                       "since the review; a fresh review is required")
+    if review.get("acceptance_hash") != lib.acceptance_hash(acceptance.get("criteria", [])):
+        return False, ("SESSION_RESULT_ADOPT_REFUSED: the acceptance criteria changed since the review; "
+                       "a fresh review is required")
+    changed = lib.rules_set_drift(root, review.get("rules_entries")) \
+        if review.get("rules_hash") != current_hash else []
+    now = datetime.now(timezone.utc).isoformat()
+    preflight = dict(status)
+    preflight["review"] = {**review, **lib.rules_binding(root, cfg),
+                           "rules_rebound": {"at": now, "by": actor, "session_id": session_id,
+                                             "from_rules_hash": review.get("rules_hash"), "changed": changed}}
+    errors = lib.compute_errors(preflight, acceptance, cfg, verifications=records,
+                                verification_problems=problems, root=root)
+    if errors:
+        return False, ("SESSION_RESULT_ADOPT_REFUSED: the review cannot be reaffirmed on the current tree: "
+                       + "; ".join(errors[:3]))
+    status["review"] = preflight["review"]
+    status["updated_at"] = now
+    if first:
+        result["adopted_at"], result["adopted_by"], result["adopted_automatically"] = now, actor, automatic
+    else:
+        result.setdefault("readoptions", []).append({"at": now, "by": actor})
+    failure = (status.get("agent_failures") or {}).get(session_id)
+    if isinstance(failure, dict):
+        failure["adopted"] = True
+    reason = f"only engine or run-mechanics entries changed ({', '.join(changed)})" if changed else \
+        "the rules set was re-recorded" if review.get("rules_hash") != current_hash else \
+        "a further approval of the recorded review"
+    lib.commit(root, cfg, status=status, extra_events=[{
+                   "kind": "session_result_adopted", "message": "Persisted session result adopted as a reaffirmation",
+                   "session_id": session_id, "by": actor, "automatic": automatic}],
+               event_kind="review_reaffirmed",
+               event_message=f"Review re-bound to the current rules set after {reason}",
+               by=actor, session_id=session_id, rules_changed=changed,
+               previous_rules_hash=review.get("rules_hash"), rules_hash=current_hash)
+    lib.mark_beacon_adopted(root, session_id)  # #172
+    return True, "SESSION_RESULT_ADOPTED: review reaffirmed and re-bound to the current rules set"
 
 
 def _quarantine_adoption_refusal(root: Path, session_id: str, held: dict) -> str | None:

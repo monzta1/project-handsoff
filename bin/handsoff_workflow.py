@@ -30,6 +30,11 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    tomllib = None
+
 from handsoff_core import (
     HandsoffError, _canonical, acceptance_hash, criterion_spec_hash, design_hash,
 )
@@ -42,7 +47,7 @@ from handsoff_ledger import (
     overall_item_progress, scope_hash_matches, verification_log_path, work_item_delivery,
     work_item_scope_hash,
 )
-from handsoff_resources import RUNTIME_MANIFEST_FILE, engine_resource_path, engine_root
+from handsoff_resources import engine_resource_path
 from handsoff_agent_runtime import (
     CRITERIA_TRANSACTION_OPS, VERIFICATION_KINDS, active_regression_request,
     current_review_attempt, effective_review_cap, validate_acceptance_schema,
@@ -177,18 +182,71 @@ def load_launch_rules(root: Path | None = None) -> list[dict]:
 RULES_SET_PROJECT_FILES = ("handsoff.toml", ".claude/settings.json", ".claude/settings.local.json",
                            ".codex/config.toml", "AGENTS.md", "CLAUDE.md")
 
+#: #406: handsoff.toml tables and [table].key entries that are run
+#: mechanics (who runs, how long, what it costs, how the run is shown),
+#: never review policy. They are left out of the handsoff.toml#policy hash,
+#: so editing one never revokes a review, design or deployment approval.
+RULES_MECHANICS = ("models", "agent_budget", "adapters", "fallback_policy", "dashboard", "performance",
+                   "routing_profiles", "routing_budgets", "checks.live_commands", "checks.timeout_seconds")
+
+#: #406: the policy-subset entry that replaced the whole-file handsoff.toml
+#: hash; the mechanics-subset entry, recorded so a re-bind can name a
+#: mechanics edit; and the entries a decision may differ in and stay bound
+#: (the mechanics entry, and engine:version on a decision recorded before).
+RULES_POLICY_ENTRY = "handsoff.toml#policy"
+RULES_MECHANICS_ENTRY = "handsoff.toml#mechanics"
+RULES_IGNORED_ENTRIES = ("engine:version", RULES_MECHANICS_ENTRY)
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    except OSError:
+        return None
+
+
+def handsoff_toml_hashes(path: Path) -> tuple[str | None, str | None]:
+    """#406: (policy, mechanics) sha256 of handsoff.toml, split by
+    RULES_MECHANICS, each over a canonical form so formatting and key order
+    do not count. A file that does not parse is policy whole: an edit that
+    cannot be read cannot be classified as mechanics."""
+    whole = _file_sha256(path)
+    if whole is None:
+        return None, None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8")) if tomllib is not None else None
+    except (OSError, ValueError):
+        data = None
+    if data is None:
+        return whole, None
+    mechanics: dict = {}
+    for key in RULES_MECHANICS:
+        table, _, field = key.partition(".")
+        if not field:
+            if table in data:
+                mechanics[table] = data.pop(table)
+        elif isinstance(data.get(table), dict) and field in data[table]:
+            mechanics[key] = data[table].pop(field)
+
+    def digest(value: dict) -> str:
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+                              .encode("utf-8")).hexdigest()
+    return digest(data), digest(mechanics)
+
 
 def rules_set_entries(root: Path) -> dict[str, str | None]:
-    """Path -> sha256 of contents, or None when absent. Engine entries
-    (reviewer prompt, rules/*.json, manifest version) are keyed 'engine:'."""
+    """Path -> sha256 of contents, or None when absent. handsoff.toml is
+    hashed over its policy subset (#406, handsoff.toml#policy) with the
+    mechanics subset beside it (handsoff.toml#mechanics, never binding);
+    the engine version is not an entry. Engine entries (reviewer prompt,
+    rules/*.json) are keyed 'engine:'."""
     root = Path(root).resolve()
     entries: dict[str, str | None] = {}
     for relative in RULES_SET_PROJECT_FILES:
-        path = root / relative
-        try:
-            entries[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-        except OSError:
-            entries[relative] = None
+        if relative == "handsoff.toml":
+            entries[RULES_POLICY_ENTRY], entries[RULES_MECHANICS_ENTRY] = handsoff_toml_hashes(root / relative)
+        else:
+            entries[relative] = _file_sha256(root / relative)
     prompt = engine_resource_path("prompts/reviewer.md")
     try:
         entries["engine:prompts/reviewer.md"] = hashlib.sha256(prompt.read_bytes()).hexdigest() if prompt.is_file() else None
@@ -200,10 +258,6 @@ def rules_set_entries(root: Path) -> dict[str, str | None]:
                     else f"project:{Path(rule['source']).name}"] = hashlib.sha256(Path(rule["source"]).read_bytes()).hexdigest()
         except OSError:
             continue
-    try:
-        entries["engine:version"] = json.loads((engine_root() / RUNTIME_MANIFEST_FILE).read_text(encoding="utf-8")).get("version")
-    except (OSError, ValueError):
-        entries["engine:version"] = None
     return entries
 
 
@@ -212,20 +266,37 @@ def rules_set_hash(root: Path, cfg: dict | None = None) -> str:
 
 
 def rules_set_diff(root: Path, recorded_entries: dict | None) -> list[str]:
-    """Which entries differ from a recorded snapshot; every entry when no
-    snapshot was recorded (an older decision carries the hash only)."""
-    current = rules_set_entries(root)
+    """Which policy entries differ from a recorded snapshot; every entry
+    when no snapshot was recorded (an older decision carries the hash only).
+    RULES_IGNORED_ENTRIES never count. #406: a legacy snapshot (the whole
+    handsoff.toml hash, no handsoff.toml#policy) is compared whole, so any
+    edit to the file is stale: it cannot be classified after the fact."""
+    current = {key: value for key, value in rules_set_entries(root).items() if key not in RULES_IGNORED_ENTRIES}
     if not isinstance(recorded_entries, dict):
         return sorted(current)
-    changed = [key for key in sorted(set(current) | set(recorded_entries))
-               if current.get(key) != recorded_entries.get(key)]
+    recorded = {key: value for key, value in recorded_entries.items() if key not in RULES_IGNORED_ENTRIES}
+    if "handsoff.toml" in recorded and RULES_POLICY_ENTRY not in recorded:
+        current.pop(RULES_POLICY_ENTRY, None)
+        current["handsoff.toml"] = _file_sha256(Path(root).resolve() / "handsoff.toml")
+    changed = [key for key in sorted(set(current) | set(recorded))
+               if current.get(key) != recorded.get(key)]
     return changed
+
+
+def rules_set_drift(root: Path, recorded_entries: dict | None) -> list[str]:
+    """#406: the non-binding entries (RULES_IGNORED_ENTRIES) that differ
+    from a recorded snapshot: what a re-bind names in the ledger."""
+    current = rules_set_entries(root)
+    recorded = recorded_entries if isinstance(recorded_entries, dict) else {}
+    return [key for key in RULES_IGNORED_ENTRIES if key in recorded and current.get(key) != recorded.get(key)]
 
 
 def rules_binding_errors(root: Path | None, cfg: dict, decision: dict | None, label: str) -> list[str]:
     """#170: refuse when the rules set changed since `decision` was recorded.
     A decision without rules_hash (recorded before the field existed) is
-    accepted as it stands. With the switch off nothing is checked."""
+    accepted as it stands. With the switch off nothing is checked. #406:
+    only policy entries count (rules_set_diff), so a mechanics edit or an
+    engine upgrade never revokes a decision."""
     if root is None or not isinstance(decision, dict) or not feature_enabled(cfg, "review_binds_rules"):
         return []
     recorded = decision.get("rules_hash")
@@ -234,6 +305,8 @@ def rules_binding_errors(root: Path | None, cfg: dict, decision: dict | None, la
     if recorded == rules_set_hash(root, cfg):
         return []
     changed = rules_set_diff(root, decision.get("rules_entries"))
+    if not changed:
+        return []
     shown = ", ".join(changed[:8]) + (f" (+{len(changed) - 8} more)" if len(changed) > 8 else "")
     return [f"{label}: the rules set changed since it was recorded ({shown}); record it again"]
 

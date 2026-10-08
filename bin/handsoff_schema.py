@@ -170,7 +170,10 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  # #388: a compact reviewer, which cannot run tests.
                                  # #383: a late result held while its launch episode was
                                  # paused, until session-result-adopt applies it once.
-                                 "compact", "quarantined_result"}
+                                 "compact", "quarantined_result",
+                                 # #405 #406: the rules set a reviewer launched under; adoption
+                                 # compares it with the current one. Absent on older sessions.
+                                 "rules_entries"}
 
 
 #: #359: bounds on an implementer's declared ownership.
@@ -592,7 +595,9 @@ def validate_acceptance_schema(acceptance: dict) -> list[str]:
     elif not isinstance(acceptance["feature"], str) or not acceptance["feature"].strip():
         errors.append("acceptance: 'feature' must be a non-empty string")
     criteria = acceptance.get("criteria")
-    if not isinstance(criteria, list) or not criteria:
+    # #418: a run whose scope was named by --item starts with an empty
+    # registry; design-propose and advance 2 refuse it until criteria exist.
+    if not isinstance(criteria, list) or (not criteria and acceptance.get("work_items_explicit") is not True):
         errors.append("acceptance: 'criteria' must be a non-empty array")
         return errors
     seen_ids = set()
@@ -627,7 +632,7 @@ def validate_acceptance_schema(acceptance: dict) -> list[str]:
         if "authored_by" in c and c["authored_by"] is not None:
             if not isinstance(c["authored_by"], str) or not c["authored_by"].strip():
                 errors.append(f"acceptance: criterion {cid} 'authored_by' must be a non-empty string or null")
-    if not any(isinstance(c, dict) and c.get("type") == "primary_fix" for c in criteria):
+    if criteria and not any(isinstance(c, dict) and c.get("type") == "primary_fix" for c in criteria):
         errors.append("acceptance: at least one primary_fix criterion is required")
     work_items = acceptance.get("work_items")
     if work_items is not None:
@@ -1455,6 +1460,12 @@ def validate_status_schema(status: dict) -> list[str]:
                     # #388: only a reviewer is launched compact
                     if value is not None and (not isinstance(value, bool) or session.get("role") != "reviewer"):
                         errors.append(f"{label}.compact must be a boolean on a reviewer session")
+                    continue
+                if optional_field == "rules_entries":
+                    if value is not None and (session.get("role") != "reviewer" or not isinstance(value, dict)
+                                              or not all(isinstance(k, str) and (v is None or isinstance(v, str))
+                                                         for k, v in value.items())):
+                        errors.append(f"{label}.rules_entries must be a map of rules entries on a reviewer session")
                     continue
                 if optional_field == "quarantined_result":
                     if value is not None:

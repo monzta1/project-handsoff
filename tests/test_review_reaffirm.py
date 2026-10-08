@@ -114,6 +114,8 @@ class ReviewReaffirmTests(HandsoffTestCase):
             "started_at": "2026-09-18T00:00:00+00:00", "running_at": "2026-09-18T00:00:00+00:00",
             "ended_at": "2026-09-18T00:01:00+00:00", "exit_code": 0, "phase_number": 5, "packet_id": None,
             "design_hash": None, "tier": None,
+            # #405 #406: the rules set the launch path records for a reviewer.
+            "rules_entries": self._launch_rules_entries(),
             "result": {"kind": "review", "recorded_at": "2026-09-18T00:01:00+00:00", "adopted_at": None, "adopted_by": None,
                        "payload": {"decision": "approved", "summary": "ok", "findings": [], "symptom_reproduced": "not_applicable", "tests_executed": "yes"}},
         }
@@ -137,6 +139,13 @@ class ReviewReaffirmTests(HandsoffTestCase):
         self.assertEqual(result["readoptions"][0]["by"], "test-supervisor")
         events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
         self.assertEqual(sum(1 for e in events if e.get("kind") == "review_reaffirmed"), 1)
+
+    def _launch_rules_entries(self):
+        """Fixture only: the entries execute_launch records on a reviewer session."""
+        import sys
+        sys.path.insert(0, str(BIN))
+        from handsoff_workflow import rules_set_entries
+        return rules_set_entries(self.tmp)
 
     def _write_status_unaudited(self, status):
         """Fixture only: plant a managed session record the way the launcher would,

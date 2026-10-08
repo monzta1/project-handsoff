@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
-from tests.test_session_artifacts import APPROVED, _FakeProcess
+from tests.test_session_artifacts import APPROVED, _both_refuse, _FakeProcess
 
 sys.path.insert(0, str(BIN))
 import handsoff_agent as runtime  # noqa: E402
@@ -123,7 +123,10 @@ class UsageOnSessionTests(HandsoffTestCase):
             def __init__(self, stdout="", **kw):
                 super().__init__(stdout, **kw)
                 self.stderr = io.StringIO("tokens used\n1,500\n")
-        with mock.patch.object(broker, "dispatch_reviewer_result", side_effect=lib.HandsoffError("gate says no")):
+        # #405: a failed dispatch is replayed through adoption; the session
+        # genuinely fails only when that refuses too.
+        with mock.patch.object(broker, "dispatch_reviewer_result", side_effect=lib.HandsoffError("gate says no")), \
+                _both_refuse():
             with self.assertRaises(runtime.AgentLaunchError):
                 runtime.execute_launch(self._spec(), popen_factory=mock.Mock(return_value=Stderr(APPROVED)), beacon_interval=0.01)
         sid, session = self._session()

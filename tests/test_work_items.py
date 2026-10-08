@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "bin"))
 import handsoff_lib as lib  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))
 from test_handsoff_supervisor import HandsoffTestCase, run, approve_design_review  # noqa: E402
-from tests.fixture_state import write_version_pin
+from tests.fixture_state import seed_placeholder, write_version_pin
 from tests.engine_patch import patch_engine
 
 
@@ -158,6 +158,7 @@ class WorkItemCliTests(HandsoffTestCase):
         # REQ-006: metadata edits do not invalidate decisions or scope.
         initialized = run(["init", "Ship issue work", "--item", "#70", "--item", "#71"], cwd=self.tmp)
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        seed_placeholder(self.tmp)  # #418
         criterion = run(["criterion-update", "REQ-001", "--requirement", "[#70] Keep issue work"], cwd=self.tmp)
         self.assertEqual(criterion.returncode, 0, criterion.stdout + criterion.stderr)
         optional = run(["work-item-update", "issue-71", "--optional", "--by", "supervisor"], cwd=self.tmp)
@@ -219,6 +220,7 @@ class WorkItemCliTests(HandsoffTestCase):
         title = "Ticket lock per repository; qualified refs resolve; title asks stop"
         started = run(["init", title, "--item", "#4", "--item", "#5"], cwd=self.tmp)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        seed_placeholder(self.tmp)  # #418
         acceptance = self.read_acceptance()
         self.assertIs(acceptance["work_items_explicit"], True)
         # the merge itself: with no persisted issue item, the flag alone keeps
@@ -269,6 +271,7 @@ class WorkItemCliTests(HandsoffTestCase):
         toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
         started = run(["init", "Fix #4", "--item", "#5"], cwd=self.tmp)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        seed_placeholder(self.tmp)  # #418
         self.assertEqual([item["id"] for item in self.read_acceptance()["work_items"]], ["issue-5"])
         folder = self.tmp / ".handsoff-fixture"
         folder.mkdir()
@@ -295,6 +298,7 @@ class WorkItemCliTests(HandsoffTestCase):
         # required item without one refuses completion.
         initialized = run(["init", "Feature", "--item", "#70"], cwd=self.tmp)
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        seed_placeholder(self.tmp)  # #418
         # Tag both items so neither is unscoped (unscoped has its own gate).
         self.assertEqual(run(["criterion-update", "REQ-001", "--requirement", "[#70] [#90] Primary work"], cwd=self.tmp).returncode, 0)
         synced = run(["work-items-sync", "--by", "supervisor", "--item", "#90"], cwd=self.tmp)
@@ -319,6 +323,7 @@ class WorkItemCliTests(HandsoffTestCase):
         # and status prints one line per item.
         initialized = run(["init", "Two items", "--item", "#70", "--item", "#90"], cwd=self.tmp)
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        seed_placeholder(self.tmp)  # #418
         toml = self.tmp / "handsoff.toml"
         toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
         write_version_pin(self.tmp)
@@ -362,6 +367,7 @@ class WorkItemCliTests(HandsoffTestCase):
         # REQ-006: deployment approval freezes scope-changing syncs.
         initialized = run(["init", "Feature without issue refs", "--item", "#70"], cwd=self.tmp)
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        seed_placeholder(self.tmp)  # #418
         cfg = lib.load_config(self.tmp)
         status = self.read_status()
         status["deployment_approved"] = {"by": "pilot", "at": datetime.now(timezone.utc).isoformat(),
@@ -379,6 +385,7 @@ class WorkItemCliTests(HandsoffTestCase):
     def _init_with_issue(self, feature="Feature without issue refs"):
         initialized = run(["init", feature, "--item", "#70"], cwd=self.tmp)
         self.assertEqual(initialized.returncode, 0, initialized.stdout + initialized.stderr)
+        seed_placeholder(self.tmp)  # #418
 
     def test_criterion_transaction_never_appends_title_ask_but_registers_tags(self):
         self._init_with_issue()
@@ -499,6 +506,7 @@ class RemovedWorkItemsStayRemoved(HandsoffTestCase):
                       cwd=self.tmp)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
         self.assertEqual(self._ids(), ["issue-5", "issue-7"])
+        seed_placeholder(self.tmp)  # #418
         tagged = run(["criterion-update", "REQ-001", "--requirement", "[#7] the outcome", "--test", "true"],
                      cwd=self.tmp)
         self.assertEqual(tagged.returncode, 0, tagged.stdout + tagged.stderr)

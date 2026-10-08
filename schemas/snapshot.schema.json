@@ -543,6 +543,7 @@
             "amendment_approval",
             "amendment_review",
             "amendment_revision",
+            "approval_blocked_by_pause",
             "blocked",
             "decision",
             "deployment_approval",

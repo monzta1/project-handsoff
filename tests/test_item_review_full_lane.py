@@ -7,6 +7,7 @@ import unittest
 
 import tests.test_handsoff_supervisor as base
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
+from tests.fixture_state import seed_placeholder
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib
@@ -18,6 +19,7 @@ class ItemReviewFullLaneTests(HandsoffTestCase):
         super().setUp()
         r = run(["init", "Full lane item review", "--item", "#47"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        seed_placeholder(self.tmp)  # #418
         self.set_criterion_state("passing", resolved=True)
         reached = self.advance_to(4, implemented_by="impl-1")
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)

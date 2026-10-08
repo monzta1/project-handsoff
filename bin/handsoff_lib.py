@@ -265,6 +265,10 @@ from handsoff_workflow import (  # noqa: E402,F401
     MAX_RULE_BYTES,
     PROJECT_RULES_DIR,
     RULES_DIR,
+    RULES_IGNORED_ENTRIES,
+    RULES_MECHANICS,
+    RULES_MECHANICS_ENTRY,
+    RULES_POLICY_ENTRY,
     RULES_SET_PROJECT_FILES,
     RULE_COMMANDS,
     RULE_WHEN_KEYS,
@@ -291,12 +295,14 @@ from handsoff_workflow import (  # noqa: E402,F401
     feature_hash,
     full_design_required,
     gate_progress,
+    handsoff_toml_hashes,
     lane_gate_refusal,
     load_launch_rules,
     pending_design_decline,
     plan_criteria_transaction,
     rules_binding_errors,
     rules_set_diff,
+    rules_set_drift,
     rules_set_entries,
     rules_set_hash,
     sync_work_item_registry,
@@ -325,6 +331,25 @@ NEXT_ACTION_DEFAULTS = {
 #: drift apart into checking different text.
 PLACEHOLDER_REQUIREMENT = "State the exact observable outcome."
 PLACEHOLDER_TESTS = ["name_or_path_of_test"]
+
+
+def symptom_resolution_step(acceptance: dict, records: list[dict]) -> str | None:
+    """#419: the exact record-symptom-resolved command, naming the newest
+    successful run that verified a current primary_fix spec (what --evidence
+    accepts), or None when there is no such run."""
+    primary = {c["id"]: c for c in acceptance.get("criteria", []) if c.get("type") == "primary_fix"}
+    for record in reversed(records):
+        if record.get("ok") is not True:
+            continue
+        if any(record.get("criterion_hashes", {}).get(cid) == criterion_spec_hash(criterion)
+               for cid, criterion in primary.items() if cid in record.get("criteria", [])):
+            return f"handsoff_supervisor.py record-symptom-resolved --evidence {record.get('run_id')} --by ACTOR"
+    return None
+
+
+#: #418: init with --item starts with no criteria; what refuses until it has some.
+EMPTY_REGISTRY_REFUSAL = ("the acceptance registry has no criteria; add them with criterion-add "
+                          "or criteria-apply first")
 from handsoff_config import (  # noqa: E402,F401
     AGENT_ROLES,
     AGENT_SETTING_ADAPTERS,
@@ -3761,6 +3786,8 @@ def record_design_proposal(root: Path, session_id: str | None, value: object,
         actor = session.get("actor") if session is not None else validate_agent_actor(architect_actor)
         if int(status.get("phase_number", 1) or 1) not in {1, 2}:
             raise HandsoffError("design proposal can only be recorded in Phase 1 or Phase 2")
+        if not acceptance.get("criteria"):
+            raise HandsoffError(f"design proposal: {EMPTY_REGISTRY_REFUSAL}")  # #418
         now = datetime.now(timezone.utc).isoformat()
         bound = {
             **proposal,

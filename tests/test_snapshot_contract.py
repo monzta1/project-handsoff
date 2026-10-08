@@ -77,6 +77,12 @@ class SnapshotContractTests(HandsoffTestCase):
     def _init(self):
         r = run(["init", "Snapshot contract", "--item", "#218"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # #418: --item seeds no placeholder; the fixture adds the one criterion it drives
+        r = run(["criterion-add", "REQ-001", "--type", "primary_fix", "--requirement", "A snapshot fixture criterion",
+                 "--verification", "automated", "--test", "name_or_path_of_test"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run(["criterion-update", "REQ-001", "--state", "failing"], cwd=self.tmp)  # as the placeholder was
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def _to_phase_7(self):
         self.set_criterion_state("passing", resolved=True)

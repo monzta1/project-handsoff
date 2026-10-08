@@ -483,6 +483,7 @@ def _active_role(status: dict, input_request: dict) -> str | None:
 #: turn is the only one that may interrupt them.
 DECISION_TURNS = {
     "design_approval": "pilot", "deployment_approval": "pilot", "amendment_approval": "pilot",
+    "approval_blocked_by_pause": "pilot",
     "regression_approval": "pilot", "design_review_budget": "pilot", "question": "pilot",
     "escalation": "pilot",
     "amendment_review": "reviewer",
@@ -491,6 +492,12 @@ DECISION_TURNS = {
 }
 PREAUTHORIZATION_PATTERN = re.compile(r"pre-?authori[sz]", re.IGNORECASE)
 PREAUTHORIZATION_EXCERPT_CHARS = 160
+
+
+def approval_blocked_by_pause_message(pause: dict) -> str:
+    """#422: why deployment approval cannot be taken, and how to clear it."""
+    return (f"Approval blocked: human pause open by {pause.get('by')} since {pause.get('since')}. "
+            "End it with handsoff_supervisor.py human-pause-end --by ACTOR, then authorize deployment.")
 
 
 def _decision_turn(kind: str | None) -> str | None:
@@ -573,12 +580,15 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
                        if item.get("state") == "awaiting_approval"), None)
     phase = int(status.get("phase_number", 1) or 1)
     next_action = str(status.get("next_action") or "Pilot authorization is required before the mission can continue.")
-    approval_missing = (
+    awaiting_approval = (
         lib.adaptive_deployment_approval_required(status, cfg)
         and phase == 7
         and not status.get("deployment_approved")
-        and not isinstance(status.get("human_pause"), dict)
     )
+    approval_missing = awaiting_approval and not isinstance(status.get("human_pause"), dict)
+    # #422: the same wait behind an open human pause names the pause and the
+    # command that ends it, instead of a control the gate would refuse.
+    approval_blocked_by_pause = awaiting_approval and isinstance(status.get("human_pause"), dict)
     drift = (lib.evidence_drift(root, cfg, acceptance, verifications)
              if root is not None and acceptance is not None and verifications is not None
              else {"stale": [], "refresh_commands": []})
@@ -616,7 +626,7 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     # refusing because it checks `input_required.kind`. The run genuinely
     # cannot proceed without the Pilot, so it is input required.
     required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
-        or older_signal or bool(amendment) or bool(questions) or budget_exhausted
+        or older_signal or bool(amendment) or bool(questions) or budget_exhausted or approval_blocked_by_pause
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
     blockers: list[str] = []
     if regression:
@@ -653,6 +663,9 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
                              f"question{'' if card['count'] == 1 else 's'} waiting" for card in cards)
         if len(questions) == 1:
             message = f"{message}: {questions[0].get('text')}"
+    elif approval_blocked_by_pause:
+        kind = "approval_blocked_by_pause"
+        message = approval_blocked_by_pause_message(status["human_pause"])
     elif approval_missing and evidence_stale:
         kind = "evidence_drift"
         message = (f"Automated evidence for {', '.join(drift['stale'])} is stale; run "
@@ -2116,9 +2129,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 snapshot = build_snapshot(self.server.project_root)
                 input_request = snapshot.get("input_required") or {}
                 if input_request.get("kind") != "deployment_approval":
+                    # #422: a pause that blocks the approval says so.
+                    blocked = input_request.get("kind") == "approval_blocked_by_pause"
                     self._json_response(
                         HTTPStatus.CONFLICT,
-                        {"ok": False, "error": "The current mission is not awaiting deployment authorization"},
+                        {"ok": False, "error": input_request.get("message") if blocked
+                         else "The current mission is not awaiting deployment authorization"},
                     )
                     return
                 command = argparse.Namespace(

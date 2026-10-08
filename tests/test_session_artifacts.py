@@ -59,6 +59,14 @@ from unittest import mock  # noqa: E402
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run  # noqa: E402
 import handsoff_agent as runtime  # noqa: E402
 import handsoff_broker as broker  # noqa: E402
+import handsoff_supervisor as supervisor  # noqa: E402
+
+
+def _both_refuse():
+    """#405: a failed dispatch is followed by the adoption replay; the
+    result is kept on the session only when both refuse."""
+    return mock.patch.object(supervisor, "adopt_session_result",
+                             return_value=(False, "SESSION_RESULT_ADOPT_REFUSED: adoption says no"))
 
 
 class _InputPipe:
@@ -124,13 +132,15 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
 
     def test_result_is_persisted_before_dispatch_and_kept_on_dispatch_failure(self):
         self._phase5()
-        with mock.patch.object(broker, "dispatch_reviewer_result", side_effect=lib.HandsoffError("gate says no")):
+        with mock.patch.object(broker, "dispatch_reviewer_result", side_effect=lib.HandsoffError("gate says no")), \
+                _both_refuse():
             with self.assertRaisesRegex(runtime.AgentLaunchError, "gate says no"):
                 runtime.execute_launch(self._spec(), popen_factory=mock.Mock(return_value=_FakeProcess(APPROVED)),
                                        beacon_interval=0.01)
         sid, session, failure = self._session("reviewer")
         self.assertEqual(session["state"], "failed")
         self.assertEqual(failure["category"], "dispatch_failed")
+        self.assertIn("adoption says no", failure["reason"])
         self.assertTrue(failure.get("result_available"))
         self.assertEqual(session["result"]["kind"], "review")
         self.assertEqual(session["result"]["payload"]["decision"], "approved")
@@ -138,7 +148,8 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
 
     def test_persisted_result_can_be_adopted_exactly_once(self):
         self._phase5()
-        with mock.patch.object(broker, "dispatch_reviewer_result", side_effect=lib.HandsoffError("gate says no")):
+        with mock.patch.object(broker, "dispatch_reviewer_result", side_effect=lib.HandsoffError("gate says no")), \
+                _both_refuse():
             with self.assertRaises(runtime.AgentLaunchError):
                 runtime.execute_launch(self._spec(), popen_factory=mock.Mock(return_value=_FakeProcess(APPROVED)),
                                        beacon_interval=0.01)
@@ -203,18 +214,16 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
         self.assertIsNotNone(change["mtime"])
         self.assertGreaterEqual(change["seconds_after_session_start"], -1.0)
 
-    def test_phase5_launch_refused_until_symptom_and_evidence_exist(self):
+    def test_phase5_launch_needs_no_manual_symptom_step_after_an_automated_verify(self):
+        # #419: the passing automated primary_fix verify recorded the symptom
+        # itself; the manual-evidence refusal is covered in test_symptom_auto
         self.init("Launch refusal fixture")
         self.set_criterion_state("passing", resolved=False)
+        records = [json.loads(line) for line in (self.tmp / "handsoff-verifications.jsonl").read_text().splitlines()]
+        self.assertEqual(self.read_status()["original_symptom_evidence_id"], records[-1]["run_id"])
         reached = self.advance_to(5, implemented_by="test-implementer")
         self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
         which = lambda name: f"/usr/local/bin/{name}" if name in {"codex", "claude"} else None
-        with self.assertRaisesRegex(lib.HandsoffError, "record-symptom-resolved --evidence"):
-            runtime.build_launch_spec(self.tmp, "reviewer", "review", which=which)
-        records = [json.loads(line) for line in (self.tmp / "handsoff-verifications.jsonl").read_text().splitlines()]
-        resolved = run(["record-symptom-resolved", "--evidence", records[-1]["run_id"], "--by", "test-implementer"],
-                       cwd=self.tmp)
-        self.assertEqual(resolved.returncode, 0, resolved.stdout + resolved.stderr)
         spec = runtime.build_launch_spec(self.tmp, "reviewer", "review", which=which)
         self.assertEqual(spec.role, "reviewer")
 

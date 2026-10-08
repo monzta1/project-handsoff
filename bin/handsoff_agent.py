@@ -676,10 +676,13 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             if status.get("phase_number") == 2 and not status.get("design_proposal"):
                 raise lib.HandsoffError("reviewer launch refused: no design proposal is recorded; run design-propose or an Architect session first")
             if status.get("phase_number") == 5:
-                if not status.get("original_symptom_evidence_id"):
-                    raise lib.HandsoffError("reviewer launch refused: run handsoff_supervisor.py record-symptom-resolved --evidence <run_id> --by ACTOR first")
                 acceptance = lib.load_unique_json(lib.acceptance_path(root, lib.load_config(root)))
                 records, _problems = lib.load_verifications(root, cfg)
+                if not status.get("original_symptom_evidence_id"):
+                    # #419: name the exact run id the command accepts
+                    step = lib.symptom_resolution_step(acceptance, records) \
+                        or "handsoff_supervisor.py record-symptom-resolved --evidence <run_id> --by ACTOR"
+                    raise lib.HandsoffError(f"reviewer launch refused: run {step} first")
                 gaps = lib.reviewer_launch_evidence_gaps(acceptance.get("criteria", []), records)
                 if gaps:
                     raise lib.HandsoffError("reviewer launch refused, evidence still missing: " + "; ".join(gaps))
@@ -1795,6 +1798,25 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX):
             stderr_review_lines.append(line)
 
+    def collect_stderr_verdicts() -> None:
+        # #345: the last unterminated stderr line, and a reviewer's stderr
+        # verdicts, are read before EITHER failure path (a non-zero exit, or a
+        # protocol error on a clean exit), so a #167 refused packet on stderr
+        # blocks adoption and a valid stderr verdict can be adopted. #405:
+        # the timeout path reads them too. Runs once.
+        if stderr_pending[0]:
+            stderr_protocol_line(stderr_pending[0])
+            stderr_pending[0] = ""
+        if spec.role == "reviewer":
+            while stderr_review_lines:
+                line = stderr_review_lines.pop(0)
+                # #114: Codex can repeat its final message on stderr; an
+                # identical verdict there is the same verdict, not a second.
+                parsed: list[dict] = []
+                _parse_reviewer_line(line, parsed, protocol_errors, recovered_results, root)
+                reviewer_results.extend(item for item in parsed if item not in reviewer_results)
+                persist_new(reviewer_results, "review")
+
     if getattr(process, "stderr", None) is not None:
         def stream_stderr() -> None:
             try:
@@ -1852,6 +1874,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         else:
             process.communicate(input=spec.stdin, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        deliver = False
         try:
             _stop_process_group(process)
         finally:
@@ -1860,11 +1883,20 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     reader.join(timeout=5)
                 if stderr_reader:
                     stderr_reader.join(timeout=5)
+                # #405: a verdict printed before the timeout is delivered,
+                # not discarded with the session (the tree check first).
+                if spec.role == "reviewer" and not reader_errors:
+                    collect_stderr_verdicts()
+                    deliver = _one_valid_verdict(spec, reviewer_results, recovered_results) \
+                        and _reviewer_tree_failure(spec, root, session_id, repository_digest_before) is None
             finally:
-                end_session(
-                    "timed_out", exit_code=124,
-                    failure=lib.classify_runtime_failure(timed_out=True),
-                )
+                if not deliver:
+                    end_session(
+                        "timed_out", exit_code=124,
+                        failure=lib.classify_runtime_failure(timed_out=True),
+                    )
+        if deliver:
+            return _deliver_reviewer_result(root, session_id, spec, reviewer_results[0], end_session, 124)
         raise AgentLaunchError(f"agent launch timed out after {timeout} seconds", session_id) from exc
     except KeyboardInterrupt as exc:
         try:
@@ -1959,21 +1991,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             end_session("failed", exit_code=1, failure=failure)
             raise AgentLaunchError("Reviewer modified the project tree: " + ", ".join(
                 f"{c['path']} {c['kind']}" for c in failure["changes"][:4]) or "Reviewer modified the project tree", session_id)
-    # #345: the last unterminated stderr line, and a reviewer's stderr
-    # verdicts, are read before EITHER failure path (a non-zero exit, or a
-    # protocol error on a clean exit), so a #167 refused packet on stderr
-    # blocks adoption and a valid stderr verdict can be adopted.
-    if stderr_pending[0]:
-        stderr_protocol_line(stderr_pending[0])
-        stderr_pending[0] = ""
-    if spec.role == "reviewer":
-        for line in stderr_review_lines:
-            # #114: Codex can repeat its final message on stderr; an
-            # identical verdict there is the same verdict, not a second.
-            parsed: list[dict] = []
-            _parse_reviewer_line(line, parsed, protocol_errors, recovered_results, root)
-            reviewer_results.extend(item for item in parsed if item not in reviewer_results)
-            persist_new(reviewer_results, "review")
+    collect_stderr_verdicts()
     if process.returncode:
         # #345: stderr questions were recorded as read; the tail rescan is a
         # fallback, and the launch's de-duplication keeps a question seen
@@ -2043,21 +2061,22 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 "HANDSOFF_AGENT_WARNING: accepted complete structured result "
                 "before trailing token-budget exhaustion\n"
             )
+        elif _one_valid_verdict(spec, reviewer_results, recovered_results):
+            # #405: a valid verdict is never lost to the exit status.
+            return _deliver_reviewer_result(root, session_id, spec, reviewer_results[0], end_session,
+                                            process.returncode)
         else:
             end_session(
                 "failed", exit_code=process.returncode, failure=failure,
             )
-            if _autoadopt_reviewer_result(root, session_id, spec, reviewer_results, recovered_results):
-                return 0
             raise AgentLaunchError(f"{spec.adapter} exited with status {process.returncode}", session_id)
     if protocol_errors:
-        if spec.role == "reviewer" and len(reviewer_results) == 1 and not recovered_results:
+        if _one_valid_verdict(spec, reviewer_results, recovered_results):
             # #345: one valid verdict beside a malformed line is the
-            # launcher's failure to finish cleanly, not a no-op.
-            end_session("failed", exit_code=1, failure=lib.classify_runtime_failure(exit_code=1))
-            if _autoadopt_reviewer_result(root, session_id, spec, reviewer_results, recovered_results):
-                return 0
-            raise AgentLaunchError(protocol_errors[0], session_id)
+            # launcher's failure to finish cleanly, not a no-op; the
+            # malformed line is kept on the transcript and never adopted.
+            return _deliver_reviewer_result(root, session_id, spec, reviewer_results[0], end_session,
+                                            process.returncode or 0)
         if recovered_results and not reviewer_results:
             # #167: keep the refused verdict on the session so
             # session-result-adopt can re-record it; the session still fails.
@@ -2142,22 +2161,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(exit_code=1),
         )
         raise AgentLaunchError("Reviewer emitted more than one structured result", session_id)
-    if reviewer_results and _quarantine_late_result(root, session_id, spec.role, "review", reviewer_results[0]):
-        end_session("completed", exit_code=0)
-        return 0
     if reviewer_results:
-        try:
-            import handsoff_broker as broker
-            broker.dispatch_reviewer_result(root, session_id, reviewer_results[0])
-        except Exception as exc:
-            end_session(
-                "failed", exit_code=1,
-                failure={"category": "dispatch_failed", "reason": str(exc)[:200], "result_available": True,
-                         "tail_sha256": hashlib.sha256(b"").hexdigest()},
-            )
-            raise AgentLaunchError(
-                f"Reviewer result dispatch failed: {str(exc)[:200]}", session_id,
-            ) from exc
+        # #405: dispatch, then the session-result-adopt replay, before the end.
+        return _deliver_reviewer_result(root, session_id, spec, reviewer_results[0], end_session, 0)
     if supervisor_requests:
         try:
             import handsoff_broker as broker
@@ -2290,7 +2296,8 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
             pre_reservation_check=preflight_replacement,
         )
         if replacement["action"] != "launch":
-            raise lib.HandsoffError(f"agent replacement paused: {replacement['reason']}")
+            raise lib.HandsoffError(f"agent replacement paused: {replacement['reason']}"
+                                    + _kept_result_hint(root, source_id))
         if prepared_spec is None:
             raise lib.HandsoffError("replacement reservation completed without an exact launch preflight")
         current_spec = prepared_spec
@@ -2337,38 +2344,83 @@ def _reviewer_tree_failure(spec: LaunchSpec, root: Path, session_id: str,
 AUTOADOPT_ACTOR = "handsoff-launcher"
 
 
-def _autoadopt_reviewer_result(root: Path, session_id: str, spec: LaunchSpec,
-                               reviewer_results: list[dict], recovered_results: list[dict]) -> bool:
-    """#345: a failed reviewer session's one schema-valid verdict is
-    replayed through the same path session-result-adopt uses, so every gate
-    that refuses a recorded review refuses it here too. The session has
-    already ended failed; True means the verdict is recorded and marked
-    adopted, False leaves that failed session exactly as it is."""
-    if spec.role != "reviewer" or len(reviewer_results) != 1 or recovered_results:
-        return False
-    if _quarantine_late_result(root, session_id, spec.role, "review", reviewer_results[0]):
-        return True  # #383: held for adoption after performance-resume
+def session_result_adopt_command(session_id: str) -> str:
+    """#405: the exact command a Pilot runs to adopt a kept result."""
+    return f"handsoff_supervisor.py session-result-adopt --session {session_id} --by ACTOR"
+
+
+def _kept_result_hint(root: Path, session_id: str | None) -> str:
+    """#405: a pause on a dispatch_failed session whose result is kept
+    names the adoption command; any other pause says nothing more."""
+    try:
+        status = lib.load_unique_json(lib.status_path(root, lib.load_config(root)))
+    except (lib.HandsoffError, OSError, ValueError):
+        return ""
+    failure = (status.get("agent_failures") or {}).get(session_id) if session_id else None
+    if not isinstance(failure, dict) or failure.get("category") != "dispatch_failed" \
+            or not failure.get("result_available") or failure.get("adopted"):
+        return ""
+    return f"; the result is kept: run {session_result_adopt_command(session_id)}"
+
+
+def _one_valid_verdict(spec: LaunchSpec, reviewer_results: list[dict], recovered_results: list[dict]) -> bool:
+    """#405: exactly one schema-valid reviewer verdict (implementation or
+    design review) and no #167 refused packet beside it."""
+    return spec.role == "reviewer" and len(reviewer_results) == 1 and not recovered_results
+
+
+def _deliver_reviewer_result(root: Path, session_id: str, spec: LaunchSpec, result: dict,
+                             end_session, process_exit: int) -> int:
+    """#405 (#345): a reviewer's one schema-valid verdict is delivered
+    whatever the process exit (0, non-zero, or a timeout as 124). The
+    direct dispatch runs first, while the session is still live; when it
+    raises, the same adoption session-result-adopt performs runs before
+    the session ends, so every gate that refuses a recorded review refuses
+    it here too. Either success ends the session completed. Only when both
+    fail does it end failed as dispatch_failed with the result kept
+    (result_available) and both reasons named; dispatch_failed is never
+    replaced automatically, and the pause names the adoption command."""
+    if _quarantine_late_result(root, session_id, spec.role, "review", result):
+        end_session("completed", exit_code=process_exit)
+        return 0  # #383: held for adoption after performance-resume
+    try:
+        import handsoff_broker as broker
+        broker.dispatch_reviewer_result(root, session_id, result)
+    except Exception as exc:
+        dispatch_error = str(exc).strip() or type(exc).__name__
+    else:
+        end_session("completed", exit_code=process_exit)
+        return 0
     supervisor = __import__("handsoff_supervisor")
     try:
         adopted, message = supervisor.adopt_session_result(root, session_id, AUTOADOPT_ACTOR, automatic=True)
     except lib.HandsoffError as exc:
         adopted, message = False, f"SESSION_RESULT_ADOPT_REFUSED: {exc}"
-    if not adopted:
-        reason = message.split(":", 1)[-1].strip()[:200] or "refused"
-        sys.stdout.write(f"SESSION_RESULT_AUTOADOPT_REFUSED: {reason}\n")
+    if adopted:
+        end_session("completed", exit_code=process_exit)
+        sys.stdout.write(
+            f"HANDSOFF_AGENT_WARNING: reviewer session {session_id} exited {process_exit} and its dispatch "
+            f"failed ({dispatch_error[:120]}); the verdict was adopted automatically\n"
+        )
         sys.stdout.flush()
-        try:
-            lib.append_event(root, lib.load_config(root), "session_result_autoadopt_refused",
-                             "Failed reviewer verdict was not adopted", session_id=session_id, reason=reason)
-        except (lib.HandsoffError, OSError):
-            pass
-        return False
-    sys.stdout.write(
-        f"HANDSOFF_AGENT_WARNING: reviewer session {session_id} failed after one valid verdict; "
-        "the verdict was adopted automatically\n"
-    )
+        return 0
+    adoption_error = message.split(":", 1)[-1].strip() or "refused"
+    sys.stdout.write(f"SESSION_RESULT_AUTOADOPT_REFUSED: {adoption_error[:200]}\n")
     sys.stdout.flush()
-    return True
+    reason = f"dispatch: {dispatch_error[:90]}; adoption: {adoption_error[:90]}"[:200]
+    try:
+        lib.append_event(root, lib.load_config(root), "session_result_autoadopt_refused",
+                         "Reviewer verdict was neither dispatched nor adopted", session_id=session_id,
+                         reason=adoption_error[:200], dispatch_error=dispatch_error[:200],
+                         process_exit=process_exit)
+    except (lib.HandsoffError, OSError):
+        pass
+    end_session("failed", exit_code=process_exit,
+                failure={"category": "dispatch_failed", "reason": reason, "result_available": True,
+                         "tail_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest()})
+    sys.stderr.write(f"HANDSOFF_AGENT_REFUSED: {reason}; the verdict is kept: run "
+                     f"{session_result_adopt_command(session_id)}\n")
+    raise AgentLaunchError(f"Reviewer result dispatch failed: {reason}", session_id)
 
 
 _QUESTION_SEEN_LOCK = threading.Lock()

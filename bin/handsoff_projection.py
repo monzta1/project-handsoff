@@ -144,8 +144,10 @@ def operation_inventory(status: dict, acceptance: dict, cfg: dict, root: Path,
     review = status.get("design_review") or {}
     review_ready = review.get("decision") == "approved"
     design_pending = bool(status.get("requires_design_approval")) and review_ready and not status.get("design_approved")
+    # #422: behind an open human pause the approval cannot be taken; no control offers it
     deployment_pending = (phase == 7 and adaptive_deployment_approval_required(status, cfg)
-                          and not status.get("deployment_approved"))
+                          and not status.get("deployment_approved")
+                          and not isinstance(status.get("human_pause"), dict))
     deployment_revoke = phase in {7, 8} and isinstance(status.get("deployment_approved"), dict) and not status.get("live_verification_id")
     budget = design_review_budget(status, cfg)
     regression = active_regression_request(status)
