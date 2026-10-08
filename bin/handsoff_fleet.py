@@ -478,11 +478,48 @@ def register_project(root: Path, path: Path | None = None, *, locked: bool = Fal
         with registry_lock(path):
             return register_project(root, path, locked=True)
     projects = load_registry(path)
+    changed = False
     if not any(item["root"] == str(root) for item in projects):
         projects.append({"root": str(root), "registered_at": datetime.now(timezone.utc).isoformat()})
         projects.sort(key=lambda item: item["root"])
+        changed = True
+    entry = next(item for item in projects if item["root"] == str(root))
+    # #432: the record's state is the run's, so a reopened run reads open.
+    changed = _derive_entry_state(entry, _run_state(root)) or changed
+    if changed:
         save_registry(projects, path)
-    return next(item for item in projects if item["root"] == str(root))
+    return entry
+
+
+#: #432: run states a register entry records; 'none' and 'unreadable' leave it alone.
+REGISTRY_DERIVED_STATES = ("open", "closed", "complete")
+
+
+def _derive_entry_state(entry: dict, run_state: dict | None) -> bool:
+    """#432: set `entry['state']` to the run's own state when the run's
+    status says open, closed or complete and the stored value differs, so a
+    stored closed never outlives a reopen. True when the entry changed."""
+    derived = (run_state or {}).get("state")
+    if derived not in REGISTRY_DERIVED_STATES or entry.get("state") == derived:
+        return False
+    entry["state"] = derived
+    entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return True
+
+
+def sync_registry_states(states: dict[str, dict], path: Path | None = None) -> list[str]:
+    """#432: every register entry whose stored state differs from its run's
+    (`states` is root -> _run_state) is rewritten under the lock. Returns the
+    roots changed; writes nothing when none did."""
+    if not any((states.get(entry["root"]) or {}).get("state") in REGISTRY_DERIVED_STATES
+               and entry.get("state") != states[entry["root"]]["state"] for entry in load_registry(path)):
+        return []
+    with registry_lock(path):
+        projects = load_registry(path)
+        changed = [entry["root"] for entry in projects if _derive_entry_state(entry, states.get(entry["root"]))]
+        if changed:
+            save_registry(projects, path)
+        return changed
 
 
 def unregister_project(root: Path, path: Path | None = None, *, locked: bool = False) -> bool:
@@ -1039,6 +1076,10 @@ def _build_fleet(path: Path | None = None, public_base: str | None = None,
     projects = [_public_dashboard_url(project_view(entry, signals, facts=fact, owner=owner), public_base)
                 for entry, fact, owner in zip(entries, facts, owners)]
     states = {entry["root"]: fact["state"] for entry, fact in zip(entries, facts)}
+    try:
+        sync_registry_states(states, path)  # #432: a reopened run reads open on the next refresh
+    except (lib.HandsoffError, OSError):
+        pass  # the cards read status directly; the stored record catches up next build
     # #166: a ticket two live open runs both list is shown in red on both cards.
     try:
         twice = claimed_twice(path, states)
@@ -1145,7 +1186,8 @@ def rediscovery_inputs(path: Path | None = None) -> dict:
             continue
         events = lib.read_events(root, cfg)
         run_id = supervisor._runtime_run_id(root, events)
-        registry_state = REGISTRY_REDISCOVERY_STATES.get(entry.get("state"))
+        stored = state["state"] if state["state"] in REGISTRY_DERIVED_STATES else entry.get("state")  # #432
+        registry_state = REGISTRY_REDISCOVERY_STATES.get(stored)
         if registry_state:
             fleet_runs.append({"run_id": run_id, "root": entry["root"], "state": registry_state, "cursor": 0,
                                "updated_at": _rediscovery_time(entry.get("updated_at"), entry.get("registered_at"))})

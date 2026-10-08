@@ -9,6 +9,12 @@
       "topics": []
     },
     {
+      "file": "crews.md",
+      "topics": [
+        "crews"
+      ]
+    },
+    {
       "file": "landing.md",
       "topics": [
         "landing"
@@ -64,6 +70,7 @@
     }
   ],
   "topics": {
+    "crews": "recommended role combinations and the rules behind them",
     "landing": "landing and releasing",
     "lanes": "running a lane",
     "lessons-agents": "lessons: managed sessions",

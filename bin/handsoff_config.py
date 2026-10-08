@@ -179,6 +179,7 @@ DEFAULT_CONFIG = {
     "check_commands": [],
     "briefing": None,
     "digest_ignore": [],
+    "workspace_local_paths": [],  # #429: [workspace].local_paths
     "implementer_commands": [],
     "documentation": {"files": [], "exclude": []},
     # #124: exact browser origins (scheme://host[:port]) that may drive the
@@ -426,6 +427,31 @@ def validate_check_env(table: object) -> dict[str, str]:
     return env
 
 
+def validate_workspace_local_paths(workspace: object) -> list[str]:
+    """#429: [workspace] local_paths, project-relative gitignored paths an
+    owning implementer's worktree gets as symlinks (never applied back)."""
+    if not isinstance(workspace, dict):
+        raise HandsoffError("handsoff.toml: workspace must be a table")
+    unknown = set(workspace) - {"local_paths"}
+    if unknown:
+        raise HandsoffError("handsoff.toml: workspace has unknown keys: " + ", ".join(sorted(unknown)))
+    values = workspace.get("local_paths", [])
+    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+        raise HandsoffError("handsoff.toml: workspace.local_paths must be a list of strings")
+    result = []
+    for item in values:
+        cleaned = item.strip().rstrip("/")
+        parts = Path(cleaned).parts
+        if not cleaned or Path(cleaned).is_absolute() or ".." in parts or "." in parts \
+                or any(part.startswith(".handsoff") or part == ".git" for part in parts):
+            raise HandsoffError(f"handsoff.toml: workspace.local_paths entry {item!r} must be a safe "
+                                "project-relative path")
+        cleaned = Path(cleaned).as_posix()
+        if cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
 def load_config(root: Path) -> dict:
     """handsoff.toml, actually read this time. Missing keys fall back to
     DEFAULT_CONFIG rather than erroring, since a fresh project may not have
@@ -543,6 +569,7 @@ def load_config(root: Path) -> dict:
     if not isinstance(ignore, list) or not all(isinstance(item, str) for item in ignore):
         raise HandsoffError("handsoff.toml: digest.ignore must be a list of strings")
     cfg["digest_ignore"] = list(ignore)
+    cfg["workspace_local_paths"] = validate_workspace_local_paths(raw.get("workspace", {}))
     if set(adapters) - set(SELECTABLE_AGENT_ADAPTERS):
         raise HandsoffError("handsoff.toml: adapters may only contain codex and claude")
     for adapter, value in adapters.items():

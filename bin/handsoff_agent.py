@@ -235,16 +235,12 @@ class AgentLaunchError(lib.HandsoffError):
 
 
 def _role_prompt(root: Path, role: str) -> str:
-    path = lib.project_resource_path(root, f"prompts/{role}.md")
-    if not path.is_file():
-        raise lib.HandsoffError(f"role prompt is missing: {path}")
-    try:
-        prompt = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise lib.HandsoffError(f"cannot read role prompt {path}: {exc}") from exc
-    if not prompt.strip():
-        raise lib.HandsoffError(f"role prompt is empty: {path}")
-    return prompt.rstrip()
+    """P0.4: the prompt preflight resolves the effective prompt and refuses,
+    naming the file and a repair, before any launch."""
+    item = lib.prompt_preflight(root, role)
+    if item["verdict"] != "ok":
+        raise lib.HandsoffError(lib.prompt_preflight_refusal(item))
+    return item["text"].rstrip()
 
 
 DESIGN_EVIDENCE_ROLES = ("architect", "reviewer")
@@ -1695,6 +1691,10 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
         # the project root, so it cannot write another session's files.
         try:
             cwd = str(lib.create_implementer_workspace(root, session))
+            # #429: name each [workspace].local_paths entry the launch could not link
+            for item in lib.workspace_local_path_report(session)["skipped"]:
+                print(f"HANDSOFF_WORKSPACE_LOCAL_PATH_SKIPPED: {item['path']} ({item['reason']})",
+                      file=sys.stderr, flush=True)
         except (lib.HandsoffError, OSError, subprocess.SubprocessError) as exc:
             lib.remove_implementer_workspace(root, session)
             lib.transition_agent_session(root, session_id, "failed_to_start",

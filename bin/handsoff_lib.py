@@ -218,6 +218,7 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     apply_implementer_workspace,
     implementer_workspace_changes,
     workspace_kept_on_stop,
+    workspace_local_path_report,
     claim_precreated_agent_session,
     create_agent_session,
     create_implementer_workspace,
@@ -1138,6 +1139,12 @@ def project_resource_path(root: Path, relative: str) -> Path:
     drop_in = _looks_like_runtime_drop_in(root)
     if drop_in:
         return candidate
+    if not candidate.is_file():
+        # P0.4: a declared override whose file is gone is refused, never
+        # silently replaced by the engine's prompt
+        if relative in _declared_overrides(root):
+            raise HandsoffError(f"project override {relative} is declared in {OVERRIDES_FILE} but the file is "
+                                f"missing; restore it, or remove its entry to use the engine prompt")
     if candidate.is_file():
         try:
             overrides = json.loads((root / OVERRIDES_FILE).read_text(encoding="utf-8"))
@@ -1194,6 +1201,101 @@ def playbook_section(topic: str | None = None) -> str:
         raise HandsoffError(f"the playbook section for a launch is {size} bytes, over {MAX_PLAYBOOK_SECTION_BYTES}"
                             f" (files: {', '.join(unique)}); shorten the playbook")
     return text
+
+
+def _declared_overrides(root: Path) -> dict:
+    try:
+        value = json.loads((Path(root) / OVERRIDES_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    files = value.get("files") if isinstance(value, dict) else None
+    return files if isinstance(files, dict) else {}
+
+
+#: P0.4: the protocol line the runtime parses from each role; a prompt
+#: must mention at least one of its role's markers (a floor, not a
+#: semantic check of the prompt)
+ROLE_REQUIRED_MARKERS = {"reviewer": ("HANDSOFF_REVIEW_RESULT",),
+                         "architect": ("HANDSOFF_DESIGN_PROPOSAL", "HANDSOFF_DESIGN_DECLINE"),
+                         "implementer": ("HANDSOFF_PROGRESS",),
+                         "supervisor": ("HANDSOFF_BROKER_REQUEST",)}
+
+
+def prompt_preflight(root: Path, role: str) -> dict:
+    """P0.4: resolve a role's effective prompt (engine-owned or a declared
+    project override) and judge it before any launch. Returns {role,
+    source, path, verdict, missing, detail, repair, text}; verdict is "ok"
+    or the reason the launch is refused."""
+    root = Path(root).resolve()
+    relative = f"prompts/{role}.md"
+    markers = list(ROLE_REQUIRED_MARKERS.get(role, ()))
+    result = {"role": role, "source": "engine", "path": None, "verdict": "ok",
+              "missing": [], "detail": "", "repair": None, "text": None}
+    stale = stale_manifest_refusal(root)
+    if stale:
+        return {**result, "verdict": "stale_engine", "detail": stale, "repair": "reinstall the Handsoff engine"}
+    drop_in = _looks_like_runtime_drop_in(root)
+    candidate = root / relative
+    engine_repair = (f"git checkout -- {relative}" if drop_in else "reinstall the Handsoff engine")
+    if drop_in:
+        path = candidate
+    else:
+        declared = _declared_overrides(root)
+        if candidate.is_file() or relative in declared:
+            result["source"] = "override"
+            path = candidate
+            if not candidate.is_file():
+                return {**result, "path": str(path), "verdict": "declared_missing",
+                        "detail": f"{relative} is declared in {OVERRIDES_FILE} but the file is missing",
+                        "repair": f"restore {relative}, or remove its entry from {OVERRIDES_FILE} "
+                                  f"to use the engine prompt"}
+            actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            if relative not in declared:
+                return {**result, "path": str(path), "verdict": "undeclared",
+                        "detail": f"{relative} is not declared in {OVERRIDES_FILE}",
+                        "repair": f'declare it: add "{relative}": "{actual}" to the files of '
+                                  f"{OVERRIDES_FILE}, or delete {relative}"}
+            if declared[relative] != actual:
+                return {**result, "path": str(path), "verdict": "hash_mismatch",
+                        "detail": f"{relative} differs from its declared hash",
+                        "repair": f'set "{relative}": "{actual}" in {OVERRIDES_FILE} after reviewing the edit'}
+        else:
+            path = engine_resource_path(relative)
+    result["path"] = str(path)
+    if result["source"] == "override":
+        protocol_repair = (f"add the {' or '.join(markers)} line to {relative} (handsoff playbook protocol), "
+                           f"then update its hash in {OVERRIDES_FILE}")
+    else:
+        protocol_repair = engine_repair
+    if not Path(path).is_file():
+        return {**result, "verdict": "missing", "detail": f"role prompt is missing: {path}",
+                "repair": engine_repair}
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return {**result, "verdict": "unreadable", "detail": f"cannot read role prompt {path}: {exc}",
+                "repair": protocol_repair}
+    if not text.strip():
+        return {**result, "verdict": "empty", "detail": f"role prompt is empty: {path}",
+                "repair": protocol_repair if result["source"] == "override" else engine_repair}
+    if markers and not any(marker in text for marker in markers):
+        return {**result, "verdict": "protocol_missing", "missing": markers,
+                "detail": f"role prompt {path} lacks the {' or '.join(markers)} line the runtime parses",
+                "repair": protocol_repair}
+    return {**result, "text": text}
+
+
+def prompt_preflight_refusal(item: dict) -> str:
+    return f"prompt preflight refused {item['role']} ({item['verdict']}): {item['detail']}; repair: {item['repair']}"
+
+
+def prompt_preflight_report(root: Path) -> dict:
+    """P0.4: `doctor --prompts`, every role's source and verdict, no launch."""
+    roles = {}
+    for role in SELECTABLE_AGENT_ROLES:
+        item = prompt_preflight(root, role)
+        roles[role] = {key: item[key] for key in ("source", "path", "verdict", "missing", "detail", "repair")}
+    return {"ok": all(item["verdict"] == "ok" for item in roles.values()), "roles": roles}
 
 
 def prompt_override_diagnosis(root: Path) -> list[dict]:
@@ -1985,6 +2087,160 @@ def _probe_adapter_model(adapter: str, executable: str, model: str, root: Path,
         return _preflight_outcome(completed)
     except subprocess.TimeoutExpired:
         return {"state": "unreachable", "reason": "timeout"}
+
+
+#: P1.9: `doctor --probe`, a minimal real protocol exchange per adapter and
+#: model. Classes in precedence order; the first that holds wins.
+PROBE_CLASSES = ("executable_missing", "credentials_missing", "sandbox_refused", "provider_unreachable",
+                 "timeout", "available", "budget_too_small", "protocol_invalid", "unknown_error")
+PROBE_PREFIX = "HANDSOFF_PROBE_RESULT:"
+PROBE_TOKEN_BUDGET = PREFLIGHT_TOKEN_BUDGET
+PROBE_TIMEOUT_SECONDS = 90
+MAX_PROBE_DETAIL = 300
+_PROBE_PATTERNS = (
+    ("credentials_missing", re.compile(
+        r"not logged in|log ?in required|please (?:run \S+ )?log ?in|unauthori[sz]ed|authentication (?:failed|required)|"
+        r"invalid api key|missing api key|no api key|credentials? (?:missing|not found|expired)|\b401\b", re.I)),
+    ("sandbox_refused", re.compile(
+        r"sandbox(?:ed)? (?:denied|refused|violation|error|blocked)|denied by (?:the )?sandbox|"
+        r"operation not permitted|permission denied", re.I)),
+    ("provider_unreachable", re.compile(
+        r"could not resolve host|name or service not known|nodename nor servname|getaddrinfo|"
+        r"connection (?:refused|reset|timed out|error)|network (?:is )?unreachable|failed to connect|"
+        r"error sending request|stream disconnected|ENOTFOUND|ECONNREFUSED|ECONNRESET|"
+        r"service unavailable|\b50[234]\b", re.I)),
+)
+_PROBE_BUDGET = re.compile(r"token budget exhausted|budget (?:exhausted|exceeded)|max[_ ]tokens|maximum tokens|"
+                           r"max[_ -]turns", re.I)
+
+
+def _probe_text_lines(stdout: str) -> list[str]:
+    """Plain lines, plus the assistant text inside a stream-json event."""
+    lines = []
+    for raw in (stdout or "").splitlines():
+        try:
+            event = json.loads(raw)
+        except (ValueError, TypeError):
+            lines.append(raw)
+            continue
+        texts = []
+
+        def collect(value):
+            if isinstance(value, dict):
+                for key in ("text", "result"):
+                    if isinstance(value.get(key), str):
+                        texts.append(value[key])
+                for child in value.values():
+                    if isinstance(child, (dict, list)):
+                        collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+        collect(event)
+        for text in texts:
+            lines.extend(text.splitlines())
+    return lines
+
+
+def probe_line_valid(stdout: str, nonce: int) -> bool:
+    for line in _probe_text_lines(stdout):
+        line = line.strip().strip("`").strip()
+        if not line.startswith(PROBE_PREFIX):
+            continue
+        try:
+            value = json.loads(line[len(PROBE_PREFIX):].strip())
+        except ValueError:
+            continue
+        if isinstance(value, dict) and value.get("ok") is True and value.get("nonce") == nonce \
+                and not isinstance(value.get("nonce"), bool):
+            return True
+    return False
+
+
+def classify_probe(*, executable_missing: bool = False, timed_out: bool = False, exit_code: int | None = None,
+                   stdout: str = "", stderr: str = "", nonce: int = 0) -> str:
+    """P1.9: one probe outcome to exactly one PROBE_CLASSES value."""
+    if executable_missing:
+        return "executable_missing"
+    text = (stderr or "") + "\n" + (stdout or "")
+    for name, pattern in _PROBE_PATTERNS:
+        if pattern.search(text):
+            return name
+    if timed_out:
+        return "timeout"
+    if probe_line_valid(stdout, nonce):
+        return "available"
+    if _PROBE_BUDGET.search(text):
+        return "budget_too_small"
+    if any(line.strip() for line in _probe_text_lines(stdout)):
+        return "protocol_invalid"
+    return "unknown_error"
+
+
+def probe_prompt(nonce: int) -> str:
+    return ("This is a Handsoff adapter health probe. Do not use any tool and do not read any file. "
+            f"Print exactly one line and nothing else: {PROBE_PREFIX} "
+            + json.dumps({"ok": True, "nonce": nonce}))
+
+
+def _probe_argv(adapter: str, executable: str, model: str, scratch: Path) -> list[str]:
+    if adapter == "codex":
+        return codex_argv(executable, "reviewer", model, PROBE_TOKEN_BUDGET, reviewer_sandbox=True)
+    return claude_argv(executable, "reviewer", [], model)
+
+
+def _probe_one(adapter: str, executable: str | None, model: str, scratch: Path, runner, timeout: int,
+               nonce: int) -> dict:
+    if not executable:
+        return {"class": "executable_missing", "detail": f"{adapter} is not on PATH and not set in [adapters]",
+                "tokens": PROBE_TOKEN_BUDGET}
+    argv = _probe_argv(adapter, executable, model, scratch)
+    try:
+        completed = runner(argv, input=probe_prompt(nonce), text=True, capture_output=True,
+                           timeout=timeout, cwd=str(scratch))
+    except FileNotFoundError:
+        return {"class": "executable_missing", "detail": f"cannot execute {executable}", "tokens": PROBE_TOKEN_BUDGET}
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        kind = classify_probe(timed_out=True, stdout=stdout, stderr=stderr, nonce=nonce)
+        return {"class": kind, "detail": f"no answer within {timeout} seconds", "tokens": PROBE_TOKEN_BUDGET}
+    stdout, stderr = completed.stdout or "", completed.stderr or ""
+    kind = classify_probe(exit_code=completed.returncode, stdout=stdout, stderr=stderr, nonce=nonce)
+    detail = "" if kind == "available" and completed.returncode == 0 else \
+        f"exit code {completed.returncode}: " + (stderr.strip() or stdout.strip())[-MAX_PROBE_DETAIL:]
+    detail = re.sub(r"(?i)(api[_ -]?key|token|password)\s*[:=]\s*\S+", r"\1=[redacted]", detail)
+    return {"class": kind, "detail": redact_output_text(detail).replace("\n", " ")[:MAX_PROBE_DETAIL],
+            "tokens": PROBE_TOKEN_BUDGET}
+
+
+def probe_summary(probes: dict) -> str:
+    classes = [item["class"] for models in probes.values() for item in models.values()]
+    if classes and all(value == "available" for value in classes):
+        return "available"
+    return "partial" if "available" in classes else "unavailable"
+
+
+def probe_adapters(cfg: dict, adapter: str = "all", *, which=shutil.which, runner=subprocess.run,
+                   timeout: int = PROBE_TIMEOUT_SECONDS, nonce_source=None) -> dict:
+    """P1.9: run only when asked (it spends tokens), from a clean scratch
+    directory, and record nothing in any run's ledger or the project."""
+    names = list(SELECTABLE_AGENT_ADAPTERS) if adapter == "all" else [adapter]
+    unknown = [name for name in names if name not in SELECTABLE_AGENT_ADAPTERS]
+    if unknown:
+        raise HandsoffError(f"--probe takes {', '.join(SELECTABLE_AGENT_ADAPTERS)} or all, not {unknown[0]}")
+    nonce_source = nonce_source or (lambda: secrets.randbelow(10 ** 9) + 1)
+    probes = {}
+    scratch = Path(tempfile.mkdtemp(prefix="handsoff-probe-")).resolve()
+    try:
+        for name in names:
+            found = (cfg.get("adapters") or {}).get(name) or which(name)
+            executable = str(Path(found).resolve()) if found else None
+            probes[name] = {model: _probe_one(name, executable, model, scratch, runner, timeout, nonce_source())
+                            for model in _preflight_models(cfg, name)}
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return {"probes": probes, "probe_summary": probe_summary(probes)}
 
 
 PREFLIGHT_OK_BEFORE_BUDGET_REASON = "OK before trailing token-budget exhaustion"
@@ -8094,9 +8350,42 @@ def _terminate_owned_session_process(root: Path, session: dict, *, wait: float =
 #: "aborted": stopped before the release was published.
 #: "released_unverified": published, but the installed artifact was never
 #: verified, so the release exists and the claim about it does not.
-RUN_OUTCOMES = ("closed", "not_planned", "aborted", "released_unverified")
+#: P2.4: "verified_with_known_risk": live verified, with a risk the Pilot
+#: names (--known-risk). "qa_pending": delivered, waiting on QA.
+#: "blocked_environment": stopped by an environment outside the run.
+RUN_OUTCOMES = ("closed", "not_planned", "aborted", "released_unverified",
+                "verified_with_known_risk", "qa_pending", "blocked_environment")
 #: The outcomes that describe a run which did NOT reach verified Phase 8.
-UNVERIFIED_RUN_OUTCOMES = ("aborted", "released_unverified")
+UNVERIFIED_RUN_OUTCOMES = ("aborted", "released_unverified", "qa_pending", "blocked_environment")
+#: P2.4: outcomes whose --reason must say why, not merely be present
+REASON_REQUIRED_OUTCOMES = ("qa_pending", "blocked_environment")
+MAX_KNOWN_RISK_CHARS = 2000
+
+
+def validate_close_outcome(status: dict, cfg: dict | None, outcome: str, reason: str | None,
+                           known_risk: str | None) -> str | None:
+    """P2.4: refuse an outcome without what it needs; return the normalized
+    known risk (None unless the outcome is verified_with_known_risk)."""
+    if outcome not in RUN_OUTCOMES:
+        raise HandsoffError(f"run outcome must be one of {', '.join(RUN_OUTCOMES)}")
+    risk = " ".join(str(known_risk or "").split())
+    if outcome == "verified_with_known_risk":
+        if not risk:
+            raise HandsoffError("--outcome verified_with_known_risk requires --known-risk TEXT")
+        if len(risk) > MAX_KNOWN_RISK_CHARS:
+            raise HandsoffError(f"--known-risk must be at most {MAX_KNOWN_RISK_CHARS} characters")
+        if not run_is_live_verified(status, cfg):
+            raise HandsoffError(
+                "--outcome verified_with_known_risk requires a live-verified run (Phase 8, progress 100 and a "
+                f"recorded live verification); this run is at phase {(status or {}).get('phase_number')}, "
+                f"progress {(status or {}).get('progress')}, live verification "
+                f"{'recorded' if (status or {}).get('live_verification_id') else 'absent'}")
+        return risk
+    if known_risk is not None:
+        raise HandsoffError("--known-risk applies only to --outcome verified_with_known_risk")
+    if outcome in REASON_REQUIRED_OUTCOMES and not " ".join(str(reason or "").split()):
+        raise HandsoffError(f"--outcome {outcome} requires --reason TEXT")
+    return None
 
 
 def run_is_live_verified(status: dict, cfg: dict | None = None) -> bool:
@@ -8129,7 +8418,8 @@ def unverified_close_outcome(status: dict) -> str:
 def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | None = None,
               cancel_active: bool = False, terminate_process=_terminate_owned_session_process,
               release_dashboard: bool = True, outcome: str = "closed",
-              status_patch: dict | None = None, extra_events: list[dict] | None = None) -> dict:
+              status_patch: dict | None = None, extra_events: list[dict] | None = None,
+              known_risk: str | None = None) -> dict:
     """Audit and resource-close one run without deleting any durable artifact.
 
     Live processes are cancelled only when a fresh beacon, the current
@@ -8153,6 +8443,8 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
                     "dashboard": {"released": False, "reason": "closure was already recorded"}}
         if expected_updated_at is not None and status.get("updated_at") != expected_updated_at:
             raise HandsoffError("run closure is stale; mission state changed")
+        # P2.4: refused before any session is stopped
+        risk = validate_close_outcome(status, cfg, outcome, why, known_risk)
         # #359: every live session, concurrent implementers included
         live = live_agent_sessions(status)
         if live and not cancel_active:
@@ -8189,8 +8481,6 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
         proposed["background_wait"] = None
         proposed["human_pause"] = None
         proposed["recovery_lease"] = None
-        if outcome not in RUN_OUTCOMES:
-            raise HandsoffError(f"run outcome must be one of {', '.join(RUN_OUTCOMES)}")
         # #177: a decline's record and its closure are one write-ahead unit
         for key, value in (status_patch or {}).items():
             proposed[key] = value
@@ -8198,6 +8488,8 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
             "by": actor, "at": now, "reason": why, "outcome": outcome,
             "cancelled_active": bool(live), "session_ids": [item["session_id"] for item in live],
         }
+        if risk:
+            proposed["run_closed"]["known_risk"] = risk
         proposed["next_action"] = ("Not planned: the Architect declined this change; the reason is on the ledger and the issue."
                                    if outcome == "not_planned" else
                                    "Run closed by the Pilot. Reopen it from Mission Control to continue.")
@@ -8780,6 +9072,12 @@ def render_final_report(root: Path, cfg: dict, status: dict, acceptance: dict, e
     lines = [f"## Handsoff report: {str(status.get('feature') or 'run')[:200]}", ""]
     lines.append(f"Phase {status.get('phase_number')} ({status.get('phase')}), status {status.get('status')}, "
                  f"progress {status.get('progress')}.")
+    closed = status.get("run_closed") if isinstance(status.get("run_closed"), dict) else None
+    if closed:
+        # P2.4: the close outcome and its text, as recorded
+        lines += ["", "### Outcome", f"- {closed.get('outcome') or 'closed'}: {str(closed.get('reason') or '')[:512]}"]
+        if closed.get("known_risk"):
+            lines.append(f"- known risk: {str(closed['known_risk'])[:MAX_KNOWN_RISK_CHARS]}")
     commits = report_commits(root, events, runner=runner)
     lines += ["", "### Commits"]
     if commits:
