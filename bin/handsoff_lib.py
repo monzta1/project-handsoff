@@ -302,6 +302,7 @@ from handsoff_workflow import (  # noqa: E402,F401
     gate_progress,
     handsoff_toml_hashes,
     lane_gate_refusal,
+    live_record_specs_current,
     load_launch_rules,
     pending_design_decline,
     plan_criteria_transaction,

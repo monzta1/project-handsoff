@@ -584,6 +584,19 @@ def _review_retention_refusal(root: Path, cfg: dict, status: dict, acceptance: d
     return None
 
 
+def _live_binding_holds(root: Path, cfg: dict, live_id: str, acceptance: dict, digest: str) -> bool:
+    """#411: the recorded live run still stands for this tree: it carries
+    the completion digest it ran on, equal to `digest`, its criterion
+    specifications, configuration and [checks].env are current."""
+    records, _problems = lib.load_verifications(root, cfg)
+    record = next((r for r in records if isinstance(r, dict) and r.get("run_id") == live_id), None)
+    return (isinstance(record, dict) and record.get("kind") == "live" and record.get("ok") is True
+            and bool(record.get("repository_digest")) and record.get("repository_digest") == digest
+            and lib.live_record_specs_current(record, acceptance.get("criteria", []))
+            and record.get("config_hash") == lib.config_hash(cfg)
+            and (record.get("env") or {}) == lib.recorded_check_env(cfg))
+
+
 def _retain_or_invalidate(root: Path, cfg: dict, status: dict, acceptance: dict, *,
                           digest_before: str, digest_after: str, rechecked: list[dict]) -> dict | None:
     """#411: after verify or record-evidence, keep the review, the phase,
@@ -612,11 +625,14 @@ def _retain_or_invalidate(root: Path, cfg: dict, status: dict, acceptance: dict,
     closed = [a for a in status.get("review_attempts") or [] if isinstance(a, dict) and a.get("closed_at")]
     if closed and closed[-1].get("disposition") == "approved" and closed[-1].get("acceptance_hash") == previous:
         closed[-1]["acceptance_hash"] = current
-    # A live verification is evidence with its own binding (the acceptance it
-    # ran against), never part of the review: when that acceptance moved, the
-    # live run alone is stale and is re-run with verify-live.
+    # A live verification is evidence with its own binding (the criterion
+    # specifications, the tree digest and the [checks].env it ran under),
+    # never the evidence-bearing acceptance hash: re-verifying the same tree
+    # keeps it; when that binding moved, the live run alone is stale and is
+    # re-run with verify-live.
     live_cleared = None
-    if status.get("live_verification_id") and previous != current:
+    if status.get("live_verification_id") and not _live_binding_holds(
+            root, cfg, status["live_verification_id"], acceptance, digest_after):
         live_cleared = status["live_verification_id"]
         status["live_verification_id"] = None
         if int(status.get("phase_number") or 0) >= 8:
@@ -4902,6 +4918,9 @@ def cmd_verify_live(args) -> int:
                                              criteria=acceptance["criteria"], results=_durable_results(results),
                                              commands=commands,
                                              acceptance_digest=digest, config_digest=config_digest,
+                                             # #411: taken when the commands completed, so a
+                                             # later re-verify of the same tree keeps the run
+                                             repository_digest=lib.repository_digest(root, cfg),
                                              rules=lib.rules_binding(root, cfg), env=ran_env)
             status["verification_head"] = record["hash"]
             if ok:

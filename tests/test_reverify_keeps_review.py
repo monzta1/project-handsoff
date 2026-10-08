@@ -118,7 +118,7 @@ class ReverifyKeepsReviewTests(HandsoffTestCase):
         self.assertIn("REVIEW_RETAINED", result.stdout)
         self._assert_retained(before)
 
-    def test_verify_after_verify_live_keeps_review_phase_and_deployment_approval(self):
+    def _reach_live(self):
         toml = self.tmp / "handsoff.toml"
         self._reach_phase_6()
         toml.write_text(re.sub(r"(?m)^live_commands = \[\]", 'live_commands = ["true"]', toml.read_text()))
@@ -128,9 +128,21 @@ class ReverifyKeepsReviewTests(HandsoffTestCase):
         self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
         live = run(["verify-live", "--by", "test-monitor"], cwd=self.tmp)
         self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
-        before = self.read_status()
+        status = self.read_status()
+        self.assertTrue(status["live_verification_id"])
+        return status
+
+    def _reach_phase_8(self):
+        self._reach_live()
+        completed = run(["advance", "8", "100"], cwd=self.tmp)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        status = self.read_status()
+        self.assertEqual((status["phase_number"], status["progress"], status["status"]), (8, 100, "complete"))
+        return status
+
+    def test_verify_after_verify_live_keeps_review_phase_approval_and_live_run(self):
+        before = self._reach_live()
         live_id = before["live_verification_id"]
-        self.assertTrue(live_id)
         result = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer", "--no-cache"], cwd=self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(json.loads(result.stdout)["review"]["retained"])
@@ -140,14 +152,50 @@ class ReverifyKeepsReviewTests(HandsoffTestCase):
         self.assertEqual(after["review"]["reviewed_binding"], before["review"]["reviewed_binding"])
         self.assertIsNotNone(after["deployment_approved"])
         self.assertEqual(after["deployment_approved"]["acceptance_hash"], after["review"]["acceptance_hash"])
-        # the live run was bound to the previous acceptance: it alone is stale
-        self.assertIsNone(after["live_verification_id"])
+        # the live run is bound to the specs, the tree and the env, none of
+        # which moved: it stands, and Phase 8 needs no second live run
+        self.assertEqual(after["live_verification_id"], live_id)
         retained = [e for e in self._events() if e.get("kind") == "review_retained"]
-        self.assertEqual(retained[-1]["live_verification_cleared"], live_id)
-        # and re-running it is enough to reach Phase 8; no re-review, no re-approval
-        again = run(["verify-live", "--by", "test-monitor"], cwd=self.tmp)
-        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
-        self.assertTrue(self.read_status()["live_verification_id"])
+        self.assertIsNone(retained[-1]["live_verification_cleared"])
+        completed = run(["advance", "8", "100"], cwd=self.tmp)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_phase_8_recheck_on_identical_tree_keeps_phase_8(self):
+        before = self._reach_phase_8()
+        result = run(["verify", "--all", "--by", "test-implementer", "--no-cache"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        after = self.read_status()
+        self.assertEqual((after["phase_number"], after["progress"], after["status"]), (8, 100, "complete"))
+        self.assertEqual(after["live_verification_id"], before["live_verification_id"])
+        self.assertEqual(after["reviewed_by"], "test-reviewer")
+        self.assertNotEqual(after["review"]["acceptance_hash"], before["review"]["acceptance_hash"])
+        validated = run(["validate"], cwd=self.tmp)
+        self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+
+    def test_phase_8_tracked_edit_rolls_back(self):
+        self._reach_phase_8()
+        (self.tmp / "changed.py").write_text("x = 1\n")
+        result = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        status = self._assert_rolled_back(naming="changed.py")
+        self.assertIsNone(status["live_verification_id"])
+
+    def test_live_record_from_another_tree_is_cleared_on_retention(self):
+        before = self._reach_live()
+        sys.path.insert(0, str(BIN))
+        import handsoff_supervisor as supervisor
+        import handsoff_lib as lib
+        cfg = lib.load_config(self.tmp)
+        acceptance = self.read_acceptance()
+        digest = before["review"]["reviewed_binding"]["digest"]
+        live_id = before["live_verification_id"]
+        self.assertTrue(supervisor._live_binding_holds(self.tmp, cfg, live_id, acceptance, digest))
+        self.assertFalse(supervisor._live_binding_holds(self.tmp, cfg, live_id, acceptance, "0" * 64))
+        acceptance["criteria"][0]["requirement"] = "A respecified requirement"
+        self.assertFalse(supervisor._live_binding_holds(self.tmp, cfg, live_id, acceptance, digest))
+        self.assertFalse(lib.live_record_specs_current(
+            next(r for r in lib.load_verifications(self.tmp, cfg)[0] if r.get("run_id") == live_id),
+            acceptance["criteria"]))
 
     def test_failed_recheck_rolls_back(self):
         self._reach_phase_6(command=self.flaky)

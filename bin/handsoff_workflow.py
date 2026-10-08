@@ -394,6 +394,19 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
     return record
 
 
+def live_record_specs_current(record: dict, criteria: list[dict]) -> bool:
+    """#411: a live record carrying the tree digest it ran on is bound to
+    the criterion specifications (its criterion_hashes), never to the
+    evidence-bearing acceptance hash, so re-verifying an unchanged tree
+    does not stale it; the tree half is checked where a digest is taken
+    (the re-verification that would rebind it). A legacy record without a
+    digest keeps the acceptance-hash binding."""
+    if not record.get("repository_digest"):
+        return record.get("acceptance_hash") == acceptance_hash(criteria)
+    current = {c.get("id"): criterion_spec_hash(c) for c in criteria if isinstance(c, dict)}
+    return record.get("criterion_hashes") == current
+
+
 def _is_green(criteria: list[dict]) -> bool:
     return bool(criteria) and all(c.get("state") == "passing" for c in criteria)
 
@@ -750,7 +763,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
             approval = status.get("deployment_approved") or {}
             if not record or record.get("kind") != "live" or record.get("ok") is not True:
                 errors.append("live gate: Phase 8 requires a successful live verification run")
-            elif record.get("acceptance_hash") != acceptance_hash(criteria):
+            elif not live_record_specs_current(record, criteria):
                 errors.append("live gate: acceptance changed since live verification")
             elif record.get("config_hash") != config_hash(cfg):
                 errors.append("live gate: workflow policy changed since live verification; run it again")
