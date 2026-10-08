@@ -61,6 +61,8 @@ OPERATION_REGISTRY = {
     "tranche-approve": {"class": "operator-facing", "surface": "tranche-panel"},
     "record-evidence": {"class": "agent-only", "surface": "verification-list"},
     "mutation-proof": {"class": "agent-only", "surface": "verification-list"},
+    "workflow-check": {"class": "agent-only", "surface": "verification-list"},  # P1.4
+    "qa-report": {"class": "agent-only", "surface": "verification-list"},  # P1.5
     "record-symptom-resolved": {"class": "agent-only", "surface": "acceptance-score"},
     "design-approve": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "design-reject": {"class": "operator-facing", "surface": "operator-actions-panel"},
@@ -1225,6 +1227,8 @@ def cmd_status(args) -> int:
         "stall_warning": warning, "activity_note": activity, "activity": liveness, "live": live,
         "process_signal": liveness["process_signal"],
         "questions": lib.questions_view(status),
+        # P1.5: untrusted QA reports no reviewer has mapped; they count for nothing
+        "qa_reports_pending": pending_qa_reports(status),
         # #359: every live session by its own id; two implementers may be live
         "live_sessions": [{field: session.get(field) for field in
                            ("session_id", "role", "actor", "state", "started_at", "owned_paths")}
@@ -1330,7 +1334,16 @@ _SUPERVISOR_CMD = "handsoff_supervisor.py"
 _EMBEDDED_COMMAND = re.compile(r"handsoff_supervisor\.py (.+?)(?= on the tree| or |;|,|$)")
 
 
-def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None:
+def _workflow_check_command(cid: str, cfg: dict | None) -> str:
+    """P1.4: workflow-check for `cid`, or, with no [checks].workflow_commands
+    configured, the key to configure first."""
+    command = f"{_SUPERVISOR_CMD} workflow-check --criterion {cid} --by ACTOR"
+    if cfg is not None and not cfg.get("workflow_commands"):
+        return f"set [checks].workflow_commands in handsoff.toml, then {command}"
+    return command
+
+
+def _gate_clearing_command(message: str, phase: int, status: dict, cfg: dict | None = None) -> str | None:
     """#421: the command that clears one unmet gate line. Every gate
     compute_errors emits maps to one (None only for a line no gate wrote).
     The gate text itself is never changed."""
@@ -1338,6 +1351,9 @@ def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None
     drift = re.match(r"evidence drift: (\S+) was verified", message)
     if drift:
         return cmd + f"verify --criterion {drift.group(1)} --by ACTOR"
+    workflow_drift = re.match(r"evidence drift: (\S+) workflow evidence", message)
+    if workflow_drift:
+        return _workflow_check_command(workflow_drift.group(1), cfg)
     evidence = re.match(r"evidence gate: passing criterion (\S+) lacks valid (.+) evidence", message)
     if evidence:
         cid, kinds = evidence.group(1), evidence.group(2)
@@ -1345,6 +1361,8 @@ def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None
             return cmd + f"verify --criterion {cid} --by ACTOR"
         if "mutation" in kinds:
             return cmd + f"mutation-proof {cid} --by ACTOR"
+        if "workflow" in kinds:
+            return _workflow_check_command(cid, cfg)
         kind = "browser" if "browser" in kinds else "manual"
         return cmd + f"record-evidence {cid} --kind {kind} --description TEXT --by ACTOR"
     unreasoned = re.match(r"baseline gate: (\S+) says baseline not_applicable without a reason", message)
@@ -1410,14 +1428,15 @@ def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None
     return None
 
 
-def advance_gates(errors: list[str], phase: int, status: dict) -> list[tuple[str, str, str | None]]:
+def advance_gates(errors: list[str], phase: int, status: dict,
+                  cfg: dict | None = None) -> list[tuple[str, str, str | None]]:
     """#421: every unmet gate of an advance to `phase`, as (gate, message,
     clearing command), in the order compute_errors found them. Aggregation
     only: which gates exist and what they say is compute_errors' alone."""
     gates = []
     for message in errors:
         gate = message.split(":", 1)[0].strip() if ":" in message else "gate"
-        gates.append((gate, message, _gate_clearing_command(message, phase, status)))
+        gates.append((gate, message, _gate_clearing_command(message, phase, status, cfg)))
     return gates
 
 
@@ -1475,13 +1494,13 @@ def _multi_step_refusal(root: Path, cfg: dict, status: dict, acceptance: dict,
         return "\n".join(lines)
     if held:
         lines.append(f"Phase {nxt} is held by {len(held)} unmet gate(s):")
-        lines.append(_gate_lines(advance_gates(held, nxt, status)))
+        lines.append(_gate_lines(advance_gates(held, nxt, status, cfg)))
     else:
         lines.append(f"Phase {nxt} has no unmet gate; clears with: {_SUPERVISOR_CMD} advance {nxt}")
     extra = [e for e in target if e not in held]
     if extra and requested != nxt:
         lines.append(f"Phase {requested} also needs:")
-        lines.append(_gate_lines(advance_gates(extra, requested, status)))
+        lines.append(_gate_lines(advance_gates(extra, requested, status, cfg)))
     return "\n".join(lines)
 
 
@@ -1695,7 +1714,7 @@ def cmd_advance(args) -> int:
                     lib.commit(root, cfg, event_kind="design_approval_requested",
                               event_message="Design approval requested (advance to Phase 3 blocked pending it)")
             print("SHIP_FEATURE_BLOCKED")
-            print(_gate_lines(advance_gates(errors, args.phase, proposed)))  # #421: every gate, each with its command
+            print(_gate_lines(advance_gates(errors, args.phase, proposed, cfg)))  # #421: every gate, each with its command
             return 1
         if args.phase == 3 and status.get("lane") == "design":
             design_document = lib.render_design_document(root, cfg, proposed, acceptance)
@@ -3486,6 +3505,230 @@ def cmd_record_evidence(args) -> int:
     if retention:
         print("REVIEW_RETAINED" if retention["retained"] else f"REVIEW_REVOKED: {retention['reason']}")
     return 0
+
+
+def _attach_evidence(root: Path, cfg: dict, status: dict, acceptance: dict, records: list[dict],
+                     criterion: dict, record: dict) -> tuple[dict | None, bool]:
+    """Bind one appended record to its criterion as record-evidence does:
+    the head, the evidence list, the state, coverage, review retention.
+    Returns (retention, review refreshed). The caller holds the lock and commits."""
+    status["verification_head"] = record["hash"]
+    if record["run_id"] not in criterion["evidence"]:
+        criterion["evidence"].append(record["run_id"])
+    if not record["ok"]:
+        criterion["state"] = "failing"
+    else:
+        criterion["state"] = ("passing" if lib.criterion_fully_evidenced(criterion, records + [record])
+                              else "not_tested")
+    lib.sync_coverage(status, acceptance)
+    digest = lib.repository_digest(root, cfg)
+    retention = _retain_or_invalidate(root, cfg, status, acceptance, digest_before=digest,
+                                      digest_after=digest, rechecked=[criterion])
+    _name_symptom_step(status, acceptance, records + [record])  # #419
+    review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
+    status["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return retention, review_refresh
+
+
+def cmd_workflow_check(args) -> int:
+    """P1.4: run [checks].workflow_commands (a disposable-repository
+    harness) and record kind workflow for one criterion, bound to the digest
+    of its workflow files. The only writer of workflow evidence: checks
+    never satisfy a criterion that changes .github/workflows/."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    commands = list(cfg.get("workflow_commands") or [])
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        criterion = _criterion(acceptance, args.criterion)
+        if criterion is None:
+            print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
+            return 1
+        if "workflow" not in lib.required_evidence_kinds(criterion):
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} needs no workflow evidence: its paths "
+                  "name no .github/workflows/ file and it declares no evidence_classes workflow")
+            return 1
+        if not commands:
+            print("SHIP_FEATURE_NO_WORKFLOW_COMMANDS_CONFIGURED: set [checks].workflow_commands in handsoff.toml")
+            return 1
+        spec_before = lib.criterion_spec_hash(criterion)
+        files_before = lib.workflow_digest(criterion, lib.repository_digest_entries(root, cfg))
+        repo_digest = lib.repository_digest(root, cfg)
+        _write_digest_snapshot(root, cfg, repo_digest)  # names the files a later change staled
+    ran_env = lib.recorded_check_env(cfg)
+    results = lib.run_checks(cfg, root, commands, progress_source="workflow-check")
+    ok = all(r["exit_code"] == 0 for r in results)
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        criterion = _criterion(acceptance, args.criterion)
+        if criterion is None or lib.criterion_spec_hash(criterion) != spec_before:
+            print("SHIP_FEATURE_BLOCKED: criterion changed while the workflow harness ran; run workflow-check again")
+            return 1
+        if lib.workflow_digest(criterion, lib.repository_digest_entries(root, cfg)) != files_before:
+            print("SHIP_FEATURE_BLOCKED: the workflow files changed while the harness ran; run workflow-check again")
+            return 1
+        record = lib.append_verification(
+            root, cfg, kind="workflow", ok=ok, by=args.by, criteria=[criterion],
+            results=_durable_results(results), commands=commands,
+            config_digest=lib.verification_config_hash(cfg), repository_digest=repo_digest,
+            env=ran_env, scope_digests={criterion["id"]: files_before},
+            description="workflow harness on " + ", ".join(lib.criterion_workflow_paths(criterion)))
+        retention, review_refresh = _attach_evidence(root, cfg, status, acceptance, records, criterion, record)
+        lib.commit(root, cfg, status=status, acceptance=acceptance,
+                   event_kind="workflow_checked", event_message="Ran the workflow harness for a criterion",
+                   extra_events=_retention_events(retention) or None, review_retention=retention,
+                   run_id=record["run_id"], criterion=args.criterion, by=args.by, ok=ok,
+                   review_attempt_refreshed=review_refresh)
+    print(json.dumps({"ok": ok, "run_id": record["run_id"], "criterion_state": criterion["state"],
+                      "workflow_digest": files_before, "results": results}, indent=2))
+    return 0 if ok else 1
+
+
+QA_DIR = ".handsoff-qa"
+QA_LIST_FIELDS = ("steps", "findings", "artifacts", "generated_tests")
+MAX_QA_LIST_ENTRIES = 256
+
+
+def _qa_origin(target: str) -> str | None:
+    """P1.5: the canonical scheme://host[:port] of a QA target URL."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(target.strip())
+        return lib.normalize_public_origins([f"{parts.scheme}://{parts.netloc}"], "target")[0]
+    except (lib.HandsoffError, ValueError):
+        return None
+
+
+def _qa_report_view(entry: dict) -> dict:
+    return {key: entry.get(key) for key in ("id", "author", "target", "added_at", "findings", "mapped")}
+
+
+def pending_qa_reports(status: dict) -> list[dict]:
+    """P1.5: QA reports no reviewer has mapped to a criterion yet. They
+    count toward no gate."""
+    return [_qa_report_view(entry) for entry in status.get("qa_reports") or []
+            if isinstance(entry, dict) and not entry.get("mapped")]
+
+
+def cmd_qa_report_add(args) -> int:
+    """P1.5: store a QA agent's report as an untrusted side record. It is
+    never evidence; only qa-report map by another actor makes it so."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    origin = _qa_origin(args.target)
+    if origin is None or origin not in cfg.get("qa_targets", []):
+        allowed = ", ".join(cfg.get("qa_targets", [])) or "none configured"
+        print(f"SHIP_FEATURE_BLOCKED: QA target {args.target} is not an allowlisted [qa].targets origin "
+              f"({allowed})")
+        return 1
+    try:
+        report = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"SHIP_FEATURE_BLOCKED: cannot read QA report {args.file}: {exc}")
+        return 1
+    if not isinstance(report, dict):
+        print("SHIP_FEATURE_BLOCKED: a QA report must be a JSON object")
+        return 1
+    for field in QA_LIST_FIELDS:
+        value = report.get(field, [])
+        if not isinstance(value, list) or len(value) > MAX_QA_LIST_ENTRIES:
+            print(f"SHIP_FEATURE_BLOCKED: QA report '{field}' must be a list of at most {MAX_QA_LIST_ENTRIES} entries")
+            return 1
+    with lib.project_lock(root):
+        status, _acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        report_id = f"qa-{uuid.uuid4().hex[:12]}"
+        stored = {"id": report_id, "author": args.by.strip(), "target": args.target.strip(), "origin": origin,
+                  "trusted": False, "added_at": datetime.now(timezone.utc).isoformat(),
+                  **{field: report.get(field, []) for field in QA_LIST_FIELDS}}
+        body = json.dumps(stored, indent=2, sort_keys=True)
+        (root / QA_DIR).mkdir(exist_ok=True)
+        # created once, never rewritten: map re-hashes it against report_sha256
+        with (root / QA_DIR / f"{report_id}.json").open("x", encoding="utf-8") as fh:
+            fh.write(body)
+        status.setdefault("qa_reports", []).append({
+            "id": report_id, "author": stored["author"], "target": stored["target"],
+            "added_at": stored["added_at"], "findings": len(stored["findings"]),
+            "report_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(), "mapped": []})
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        lib.commit(root, cfg, status=status, event_kind="qa_report_added",
+                   event_message="Stored an untrusted QA report", report=report_id,
+                   target=stored["target"], by=stored["author"])
+    print(f"QA_REPORT_STORED: {report_id} (untrusted; map it to a criterion with qa-report map)")
+    return 0
+
+
+def cmd_qa_report_map(args) -> int:
+    """P1.5: a reviewer other than the report's author records browser
+    evidence for one criterion, citing the report."""
+    if not args.by or not args.by.strip():
+        print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        entry = next((item for item in status.get("qa_reports") or []
+                      if isinstance(item, dict) and item.get("id") == args.report), None)
+        if entry is None:
+            print(f"SHIP_FEATURE_BLOCKED: unknown QA report {args.report}")
+            return 1
+        if args.by.strip().casefold() == str(entry.get("author", "")).strip().casefold():
+            print(f"SHIP_FEATURE_BLOCKED: {args.by} wrote QA report {args.report}; "
+                  "a different actor must map it to a criterion")
+            return 1
+        try:
+            body = (root / QA_DIR / f"{args.report}.json").read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"SHIP_FEATURE_BLOCKED: cannot read QA report {args.report}: {exc}")
+            return 1
+        if hashlib.sha256(body.encode("utf-8")).hexdigest() != entry.get("report_sha256"):
+            print(f"SHIP_FEATURE_BLOCKED: QA report {args.report} changed since it was stored")
+            return 1
+        criterion = _criterion(acceptance, args.criterion)
+        if criterion is None:
+            print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
+            return 1
+        if "browser" not in lib.required_evidence_kinds(criterion):
+            print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} policy does not accept browser evidence")
+            return 1
+        record = lib.append_verification(
+            root, cfg, kind="browser", ok=True, by=args.by.strip(), criteria=[criterion],
+            results=[{"qa_report": args.report, "report_sha256": entry["report_sha256"],
+                      "target": entry.get("target"), "author": entry.get("author")}],
+            description=f"QA report {args.report} on {entry.get('target')} by {entry.get('author')}, "
+                        f"mapped by {args.by.strip()}")
+        retention, review_refresh = _attach_evidence(root, cfg, status, acceptance, records, criterion, record)
+        entry["mapped"].append({"criterion": args.criterion, "by": args.by.strip(), "run_id": record["run_id"],
+                                "at": record["at"]})
+        lib.commit(root, cfg, status=status, acceptance=acceptance,
+                   event_kind="qa_report_mapped", event_message="Mapped a QA report to criterion evidence",
+                   extra_events=_retention_events(retention) or None, review_retention=retention,
+                   report=args.report, run_id=record["run_id"], criterion=args.criterion, by=args.by.strip(),
+                   review_attempt_refreshed=review_refresh)
+    print(f"EVIDENCE_RECORDED: {record['run_id']}")
+    return 0
+
+
+def cmd_qa_report(args) -> int:
+    return cmd_qa_report_add(args) if args.action == "add" else cmd_qa_report_map(args)
 
 
 def cmd_mutation_proof(args) -> int:
@@ -7574,6 +7817,25 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--description", required=True)
     evidence.add_argument("--by", required=True)
 
+    workflow_check = sub.add_parser(
+        "workflow-check",
+        help="P1.4: run [checks].workflow_commands and record workflow evidence for a criterion")
+    workflow_check.add_argument("--criterion", required=True)
+    workflow_check.add_argument("--by", required=True)
+
+    qa_report = sub.add_parser("qa-report", help="P1.5: untrusted browser QA reports")
+    qa_report_actions = qa_report.add_subparsers(dest="action", required=True)
+    qa_report_add = qa_report_actions.add_parser(
+        "add", help="store a QA report for an allowlisted [qa].targets origin; never evidence by itself")
+    qa_report_add.add_argument("--file", required=True)
+    qa_report_add.add_argument("--target", required=True)
+    qa_report_add.add_argument("--by", required=True)
+    qa_report_map = qa_report_actions.add_parser(
+        "map", help="record browser evidence citing a QA report; refused for the report's author")
+    qa_report_map.add_argument("--report", required=True)
+    qa_report_map.add_argument("--criterion", required=True)
+    qa_report_map.add_argument("--by", required=True)
+
     mutation_proof = sub.add_parser(
         "mutation-proof",
         help="prove the criterion's configured test fails when a named function is neutralised")
@@ -7799,7 +8061,7 @@ def build_parser() -> argparse.ArgumentParser:
     criterion.add_argument("--outcome", help="P1.1: the observable outcome (at most 512 characters; '' clears)")
     criterion.add_argument("--evidence-class", action="append", dest="evidence_class",
                            help="P1.1: an evidence class required on top of the policy "
-                                "(checks, manual, browser); repeatable, replaces the list")
+                                "(checks, manual, browser, workflow); repeatable, replaces the list")
     criterion.add_argument("--no-evidence-classes", action="store_true",
                            help="P1.1: clear the declared evidence classes")
     criterion.add_argument("--path", action="append", dest="path",
@@ -7826,7 +8088,7 @@ def build_parser() -> argparse.ArgumentParser:
     criterion_add.add_argument("--outcome", help="P1.1: the observable outcome (at most 512 characters)")
     criterion_add.add_argument("--evidence-class", action="append", dest="evidence_class",
                                help="P1.1: an evidence class required on top of the policy "
-                                    "(checks, manual, browser); repeatable")
+                                    "(checks, manual, browser, workflow); repeatable")
     criterion_add.add_argument("--path", action="append", dest="path",
                                help="P1.2: a project-relative glob the evidence depends on; repeatable")
     criterion_add.add_argument("--revoke-approval", action="store_true")
@@ -8061,6 +8323,8 @@ def main() -> int:
         "dashboard": cmd_dashboard,
         "record-evidence": cmd_record_evidence,
         "mutation-proof": cmd_mutation_proof,
+        "workflow-check": cmd_workflow_check,
+        "qa-report": cmd_qa_report,
         "record-symptom-resolved": cmd_record_symptom,
         "design-approve": cmd_design_approve,
         "design-reject": cmd_design_reject,

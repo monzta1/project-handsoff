@@ -370,7 +370,7 @@ def stale_manifest_refusal(root: Path) -> str | None:
 # #349: "mutation" is evidence that the criterion's own test FAILS when the
 # behaviour it names is removed. Every other kind proves something happened;
 # this one proves the test would notice if it stopped happening.
-VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline", "mutation"}
+VERIFICATION_KINDS = {"checks", "manual", "browser", "live", "baseline", "mutation", "workflow"}
 
 
 def agent_profiles(cfg: dict) -> dict:
@@ -1264,6 +1264,11 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session["owned_paths"] = list(owned_paths)
         if work_items:
             session["work_items"] = list(work_items)  # #415: the explicit binding
+        if role == "implementer":
+            # P1.6: the launch checkpoint names what this session was given
+            from handsoff_checkpoint import launch_checkpoint, push_checkpoint
+            launch_record = push_checkpoint(session, launch_checkpoint(acceptance, owned_paths, work_items),
+                                            "launch", now)
         if launch_commit is not None:
             session["workspace"] = {"path": str(implementer_workspace_dir(root) / session_id),
                                     "launch_commit": launch_commit}
@@ -1328,6 +1333,9 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                 "adapter": adapter, "requested_model": requested_model,
                 "design_review_attempt": budget["next_attempt"] if budget else None,
             })
+        if role == "implementer":
+            from handsoff_checkpoint import checkpoint_event
+            extra_events.append(checkpoint_event(session_id, launch_record))
         if opened_attempt:
             extra_events.append({
                 "kind": "review_attempt_opened",
@@ -1432,6 +1440,7 @@ def transition_agent_session(root: Path, session_id: str, state: str,
                 "claimed" if state == "running" else "running" if old_state == "running" else "claimed"):
             raise HandsoffError("replacement lifecycle does not match its claimed session")
         now = datetime.now(timezone.utc).isoformat()
+        failure_record = None
         updated["state"] = state
         if state == "running":
             updated["running_at"] = now
@@ -1474,6 +1483,12 @@ def transition_agent_session(root: Path, session_id: str, state: str,
                         acceptance = {}
                     failure = {**failure, "progress_summary": progress_summary(updated.get("progress"), acceptance)}
                 failures[session_id] = {"session_id": session_id, **failure, "at": now}
+                if role == "implementer" and state != "cancelled":
+                    # P1.6: a budget, timeout or runtime failure leaves its account
+                    from handsoff_checkpoint import failure_checkpoint, push_checkpoint
+                    failure_record = push_checkpoint(
+                        updated, failure_checkpoint(updated, failure, failure.get("progress_summary")),
+                        "failure", now)
             if role == "reviewer":
                 warnings = proposed.setdefault("warnings", [])
                 warnings[:] = [item for item in warnings
@@ -1491,9 +1506,12 @@ def transition_agent_session(root: Path, session_id: str, state: str,
             if not credited:
                 credited_acceptance = None
         event_kind = f"agent_session_{state}"
+        if failure_record:
+            from handsoff_checkpoint import checkpoint_event
         commit(
             root, cfg, status=proposed, acceptance=credited_acceptance,
             **({"work_items_implemented": credited} if credited else {}),
+            extra_events=[checkpoint_event(session_id, failure_record)] if failure_record else None,
             event_kind=event_kind,
             event_message=f"Managed {role} agent session is {state.replace('_', ' ')}",
             session_id=session_id, role=role, state=state, exit_code=exit_code,

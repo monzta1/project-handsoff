@@ -1305,6 +1305,21 @@ function renderDesignEvidence(artifacts) {
     </div>`).join("");
 }
 
+// P1.5: pendingQaReports and qaReportDetail live in lib/dashboard-logic.js
+function renderQaReports(status) {
+  const pending = pendingQaReports(status);
+  $("qa-reports-panel").classList.toggle("hidden", !pending.length);
+  $("qa-reports-total").textContent = `${pending.length} PENDING`;
+  $("qa-reports-list").innerHTML = pending.map((report) => `
+    <div class="design-evidence-item">
+      <span class="evidence-pill pending">untrusted</span>
+      <div>
+        <strong>${escapeHtml(report.id)}</strong>
+        <p>${escapeHtml(qaReportDetail(report))}</p>
+      </div>
+    </div>`).join("");
+}
+
 function renderAmendment(amendment) {
   const panel = $("amendment-panel");
   const visible = showAmendmentPanel(amendment);
@@ -1956,6 +1971,7 @@ function render(snapshot) {
   renderWorkItems(snapshot.work_items || { items: [], multi: false });
   renderTranche(snapshot.tranche || null);
   renderDesignEvidence(snapshot.design_evidence || []);
+  renderQaReports(status);
   renderAmendment(snapshot.amendment || null);
   renderQuestions(snapshot.questions || null);
   renderAttention(supervisor.attention);

@@ -40,3 +40,19 @@ your budget runs out, the ledger says what you finished and a relaunch
 continues from there instead of re-reading your diff. A criterion you
 never report is `untouched` in that account. Print the line as soon as
 the state is true, not at the end.
+
+## Handover checkpoint (P1.6)
+
+After a meaningful step (a criterion done, a file group written, before a
+long test run), print one line on standard output, the whole object on one line:
+
+```
+HANDSOFF_CHECKPOINT: {"files_changed": ["bin/x.py"], "completed_criteria": ["REQ-001"], "commands_run": [{"command": "python3 -m unittest tests.test_x -v", "exit_code": 0}], "remaining": ["REQ-002 tests"], "blockers": [], "provider_state": ""}
+```
+
+Every key is optional and no other key is allowed: `files_changed` up to 64
+paths, `commands_run` up to 32, `remaining` and `blockers` up to 8 entries,
+`provider_state` up to 200 characters. A malformed line is refused and
+never stored. If your session ends early, the replacement starts from your
+latest checkpoint; its unfinished criteria come from the ledger, so your
+`completed_criteria` is shown to it only as your claim.

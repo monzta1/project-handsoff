@@ -667,7 +667,7 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     if root is not None and phase >= 5:
         drift = evidence_drift(root, cfg, acceptance, records)
         scoped = {entry["criterion"]: entry.get("changed_paths") or []
-                  for entry in drift.get("invalidated") or []}
+                  for entry in drift.get("invalidated") or [] if entry.get("reason") != "workflow files changed"}
         for cid in drift["stale"]:
             # P1.2: the paths that staled THIS criterion
             paths = ", ".join(scoped.get(cid) or drift.get("changed_paths") or [])
@@ -680,6 +680,13 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                            " (untracked scratch, already removed; it was present when verified)")
             errors.append(f"evidence drift: {cid} was verified on a different repository digest{suffix}; "
                           f"re-run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
+        for cid in drift.get("workflow_stale") or []:
+            # P1.4: the workflow files changed after the harness ran on them
+            paths = ", ".join(next((entry.get("changed_paths") or [] for entry in drift.get("invalidated") or []
+                                    if entry["criterion"] == cid and entry.get("reason") == "workflow files changed"), []))
+            suffix = f"; changed paths: {paths}" if paths else ""
+            errors.append(f"evidence drift: {cid} workflow evidence was recorded on different workflow files{suffix}; "
+                          f"re-run handsoff_supervisor.py workflow-check --criterion {cid} --by ACTOR")
     expected_coverage = coverage_for(criteria, resolved)
     review_lane = status.get("lane") == "review"
     symptom_record = _valid_symptom_record(status, gate_criteria, verifications or [])

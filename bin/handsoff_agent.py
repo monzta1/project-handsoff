@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_adapters as adapters  # noqa: E402
+import handsoff_checkpoint as checkpoints  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -1930,6 +1931,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         progress = _parse_progress_line(line, root, session_id, spec.role)
                         if progress and progress.get("state") == "done":
                             progress_done[0] += 1
+                        _parse_checkpoint_line(line, root, session_id, spec.role)  # P1.6
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                             persist_new(supervisor_requests, "supervisor_request")
@@ -2494,6 +2496,11 @@ def execute_with_recovery(spec: LaunchSpec | None, *, timeout: int = 3600,
             fallback_input = original_input + "\n\n# Trusted replacement handoff\n\n" + safe_handoff
             if completed:
                 fallback_input += "\n\n" + completed
+            if proposed["role"] == "implementer":
+                # P1.6: unfinished criteria from the current acceptance, never the checkpoint
+                resume = checkpoints.replacement_resume_section(root, proposed["handoff"])
+                if resume:
+                    fallback_input += "\n\n" + resume
             prepared_spec = build_profile_launch_spec(
                 root, proposed["role"], fallback_input,
                 proposed["selected_profile"], which=which,
@@ -2761,6 +2768,23 @@ def _parse_progress_line(line: str, root: Path, session_id: str, role: str) -> d
     except Exception:
         pass  # telemetry never turns a child outcome into a failure
     return record
+
+
+def _parse_checkpoint_line(line: str, root: Path, session_id: str, role: str) -> dict | None:
+    """P1.6: store a valid HANDSOFF_CHECKPOINT from the Implementer on its
+    session; a malformed line is refused, logged as a protocol warning and
+    on stderr, and never stored; another role's line is ignored."""
+    if role != "implementer" or not line.startswith(checkpoints.CHECKPOINT_PREFIX):
+        return None
+    record = checkpoints.parse_checkpoint_line(line)
+    if record is None:
+        lib.count_operation_warning(root, session_id, role, "protocol_warnings")
+        sys.stderr.write("HANDSOFF_CHECKPOINT_WARNING: malformed checkpoint line refused\n")
+        return None
+    try:
+        return checkpoints.record_session_checkpoint(root, session_id, record)
+    except Exception:
+        return None  # telemetry never turns a child outcome into a failure
 
 
 def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> None:

@@ -181,7 +181,9 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  "workspace_disposition",
                                  # #415: the work items an implementer was launched for
                                  # (launch --item); absent on an unbound session
-                                 "work_items"}
+                                 "work_items",
+                                 # P1.6: an implementer's handover checkpoints, latest first
+                                 "checkpoints"}
 
 #: #413
 WORKSPACE_DISPOSITIONS = ("pending", "applied", "discarded")
@@ -277,6 +279,21 @@ MAX_PROGRESS_RECORDS = 64
 
 
 MAX_PROGRESS_NOTE = 200
+
+
+#: P1.6: bounds on a handover checkpoint and on a session's history of them.
+CHECKPOINT_SOURCES = ("launch", "agent", "failure")
+MAX_CHECKPOINT_HISTORY = 16
+MAX_CHECKPOINT_FILES = 64
+MAX_CHECKPOINT_COMMANDS = 32
+MAX_CHECKPOINT_NOTES = 8
+MAX_CHECKPOINT_TEXT = 200
+MAX_CHECKPOINT_CRITERIA = 128
+MAX_CHECKPOINT_PATH = 512
+CHECKPOINT_LINE_FIELDS = ("files_changed", "completed_criteria", "commands_run",
+                          "remaining", "blockers", "provider_state")
+#: written by the runtime at launch only
+CHECKPOINT_LAUNCH_FIELDS = ("owned_paths", "work_items", "criteria")
 
 
 AGENT_SESSION_FIELDS = {
@@ -1547,6 +1564,14 @@ def validate_status_schema(status: dict) -> list[str]:
                             and isinstance(item["at"], str) for item in value)):
                         errors.append(f"{label}.progress must be a list of validated progress records")
                     continue
+                if optional_field == "checkpoints":
+                    # P1.6: latest first, bounded, implementer only
+                    if value is not None and (session.get("role") != "implementer" or not isinstance(value, list)
+                                              or len(value) > MAX_CHECKPOINT_HISTORY
+                                              or not all(validate_checkpoint_record(item) for item in value)):
+                        errors.append(f"{label}.checkpoints must be a list of at most {MAX_CHECKPOINT_HISTORY} "
+                                      "validated checkpoints on an implementer session")
+                    continue
                 if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 64):
                     errors.append(f"{label}.{optional_field} must be null or a non-empty string")
                 elif optional_field == "tier" and value is not None and value not in DESIGN_REVIEWER_TIERS:
@@ -2060,6 +2085,64 @@ def validate_progress_line(payload: object) -> dict | None:
     if not isinstance(test, str) or not isinstance(note, str) or len(test) > 512 or len(note) > MAX_PROGRESS_NOTE:
         return None
     return {"criterion": criterion, "state": payload["state"], "test": test, "note": note}
+
+
+def _checkpoint_strings(value: object, limit: int, length: int, pattern=None) -> list[str] | None:
+    if not isinstance(value, list) or len(value) > limit:
+        return None
+    if not all(isinstance(item, str) and 0 < len(item) <= length and "\x00" not in item
+               and (pattern is None or pattern.fullmatch(item)) for item in value):
+        return None
+    return list(value)
+
+
+def validate_checkpoint_line(payload: object) -> dict | None:
+    """P1.6: one HANDSOFF_CHECKPOINT object, every field optional and
+    bounded (files_changed <= 64 paths, completed_criteria ids,
+    commands_run <= 32 {command, exit_code}, remaining and blockers <= 8,
+    provider_state <= 200 characters); anything else is None. Returns every
+    field, defaults filled."""
+    if not isinstance(payload, dict) or not payload or set(payload) - set(CHECKPOINT_LINE_FIELDS):
+        return None
+    files = _checkpoint_strings(payload.get("files_changed", []), MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_PATH)
+    completed = _checkpoint_strings(payload.get("completed_criteria", []), MAX_CHECKPOINT_CRITERIA, 64,
+                                    PROGRESS_CRITERION_PATTERN)
+    remaining = _checkpoint_strings(payload.get("remaining", []), MAX_CHECKPOINT_NOTES, MAX_CHECKPOINT_TEXT)
+    blockers = _checkpoint_strings(payload.get("blockers", []), MAX_CHECKPOINT_NOTES, MAX_CHECKPOINT_TEXT)
+    if files is None or completed is None or remaining is None or blockers is None:
+        return None
+    commands = payload.get("commands_run", [])
+    if not isinstance(commands, list) or len(commands) > MAX_CHECKPOINT_COMMANDS or not all(
+            isinstance(item, dict) and set(item) == {"command", "exit_code"}
+            and isinstance(item["command"], str) and 0 < len(item["command"]) <= MAX_CHECKPOINT_PATH
+            and isinstance(item["exit_code"], int) and not isinstance(item["exit_code"], bool)
+            for item in commands):
+        return None
+    provider_state = payload.get("provider_state", "")
+    if not isinstance(provider_state, str) or len(provider_state) > MAX_CHECKPOINT_TEXT:
+        return None
+    return {"files_changed": files, "completed_criteria": completed,
+            "commands_run": [{"command": item["command"], "exit_code": item["exit_code"]} for item in commands],
+            "remaining": remaining, "blockers": blockers, "provider_state": provider_state}
+
+
+def validate_checkpoint_record(record: object) -> bool:
+    """P1.6: a stored checkpoint: the line fields, its source and time, and
+    at launch the owned paths, work items and criteria."""
+    if not isinstance(record, dict) or record.get("source") not in CHECKPOINT_SOURCES \
+            or not isinstance(record.get("at"), str):
+        return False
+    extra = set(record) - set(CHECKPOINT_LINE_FIELDS) - {"source", "at"}
+    if extra - set(CHECKPOINT_LAUNCH_FIELDS) or (extra and record["source"] != "launch"):
+        return False
+    if set(CHECKPOINT_LINE_FIELDS) - set(record):
+        return False
+    if validate_checkpoint_line({k: record[k] for k in CHECKPOINT_LINE_FIELDS}) is None:
+        return False
+    bounds = {"owned_paths": (MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_PATH, None),
+              "work_items": (MAX_WORK_ITEMS, 64, WORK_ITEM_ID_PATTERN),
+              "criteria": (MAX_CHECKPOINT_CRITERIA, 64, PROGRESS_CRITERION_PATTERN)}
+    return all(_checkpoint_strings(record[key], *bounds[key]) is not None for key in extra)
 
 
 FAILURE_CATEGORIES = (

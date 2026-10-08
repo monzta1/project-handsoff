@@ -445,9 +445,11 @@ from handsoff_config import (  # noqa: E402,F401
     MAX_CHECK_CONCURRENCY,
     RUN_KINDS,
     classify_archive_record,
+    criterion_workflow_paths,
     required_evidence_kinds,
     validate_check_env,
 )
+from handsoff_ledger import workflow_digest  # noqa: E402,F401  P1.4
 from handsoff_ledger import (  # noqa: E402,F401
     ANALYSIS_DIR,
     DESIGN_EVIDENCE_FILE,
@@ -3509,7 +3511,16 @@ def _derive_replacement_handoff(status: dict, acceptance: dict, repository: dict
             if evidence_id not in evidence and len(evidence) < 256:
                 evidence.append(evidence_id)
     source = (status.get("agent_sessions") or {}).get(from_session_id, {})
+    try:
+        import handsoff_checkpoint  # P1.6, written beside this release by the checkpoint lane
+    except ImportError:
+        handsoff_checkpoint = None
+    # P1.6: the source session's latest durable checkpoint, or None (the
+    # handoff is then exactly what it was before checkpoints existed)
+    checkpoint = (handsoff_checkpoint.latest_checkpoint(status, from_session_id)
+                  if handsoff_checkpoint is not None else None)
     return {
+        "checkpoint": checkpoint,
         "role": role, "from_session_id": from_session_id, "to_session_id": to_session_id,
         "trigger": trigger, "category": category, "reason": reason,
         "attempt": attempt, "cap": cap, "phase_number": status["phase_number"],
@@ -3834,6 +3845,9 @@ def reviewer_launch_evidence_gaps(criteria: list[dict], verifications: list[dict
                     f"{cid}: declare the claim with handsoff_supervisor.py criterion-update {cid} "
                     f"--mutation-target FILE --mutation-symbol FUNCTION, then run "
                     f"handsoff_supervisor.py mutation-proof {cid} --by ACTOR")
+            elif kind == "workflow":
+                # P1.4: only workflow-check writes it; record-evidence refuses the kind
+                gaps.append(f"{cid}: run handsoff_supervisor.py workflow-check --criterion {cid} --by ACTOR")
             else:
                 gaps.append(f"{cid}: run handsoff_supervisor.py record-evidence {cid} --kind {kind} --description ... --by ACTOR")
     return gaps

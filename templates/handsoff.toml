@@ -88,6 +88,10 @@ reviewer = 0
 commands = []
 live_commands = []
 timeout_seconds = 600
+# P1.4: a criterion whose paths include a .github/workflows/ file needs
+# workflow evidence, written only by `workflow-check`, which runs the plain
+# argv commands listed in a workflow_commands array here (for example a
+# disposable-repository harness that exercises the workflow).
 
 [digest]
 # Optional glob patterns excluded from repository evidence digests. A match
@@ -109,3 +113,10 @@ full_regression_major_only = true
 # Control through a tunnel or private network (#124). Loopback is always
 # allowed. See docs/REMOTE-ACCESS.md; the app itself has no login.
 public_origins = []
+
+[qa]
+# P1.5: exact origins (scheme://host[:port]) a browser QA report may target.
+# Empty means `qa-report add` refuses every report until one is configured.
+# A stored report is untrusted; only `qa-report map` by another actor turns
+# it into browser evidence for a criterion.
+targets = []
