@@ -415,22 +415,47 @@ def _display_phase_name(status: dict, verification_live: dict | None = None) -> 
     return status.get("phase") or lib.PHASES.get(phase_number, "Unknown phase")
 
 
-_PHASE_PROGRESS_FLOORS = {1: 0, 2: 20, 3: 30, 4: 40, 5: 50, 6: 75, 7: 90, 8: 95}
+_PHASE_PROGRESS_FLOORS = lib.PHASE_DEFAULT_PROGRESS
 
 
-def _display_progress(status: dict) -> int:
+def _display_progress(status: dict, acceptance: dict | None = None, cfg: dict | None = None) -> int:
     """Show mission advancement without mislabeling it as evidence coverage.
 
     The persisted ``progress`` value is a delivery/evidence score and can
     correctly remain zero during design. Mission Control's primary gauge is
-    phase progress, so it receives a phase floor while the raw score remains
-    available as ``verification_progress``.
+    the #415 progress view status and the first HTML share
+    (lib.progress_view), while the raw score remains available as
+    ``verification_progress``.
     """
-    if status.get("status") == "complete":
-        return 100
-    phase_number = int(status.get("phase_number", 1) or 1)
-    raw = int(float(status.get("progress", 0) or 0))
-    return min(100, max(raw, _PHASE_PROGRESS_FLOORS.get(phase_number, 0)))
+    return lib.progress_view(status, acceptance, cfg or lib.DEFAULT_CONFIG)["progress"]
+
+
+def first_html_progress(root: Path) -> int | None:
+    """#415: the progress the first HTML renders before its JavaScript
+    loads, the same value as status and the board; None when unreadable."""
+    try:
+        cfg = lib.load_config(root)
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+        acceptance_file = lib.acceptance_path(root, cfg)
+        acceptance = lib.load_unique_json(acceptance_file) if acceptance_file.is_file() else {}
+        return int(lib.progress_view(status, acceptance, cfg)["progress"])
+    except (lib.HandsoffError, OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def render_first_html(payload: bytes, progress: int | None) -> bytes:
+    """#415: put the real percentage into the page's progress placeholders."""
+    if progress is None:
+        return payload
+    value = str(int(progress)).encode("ascii")
+    for old, new in (
+            (b'<strong id="topbar-overall">0%</strong>', b'<strong id="topbar-overall">' + value + b'%</strong>'),
+            (b'<strong id="progress-value">0</strong>', b'<strong id="progress-value">' + value + b'</strong>'),
+            (b'aria-label="Overall mission progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"',
+             b'aria-label="Overall mission progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'
+             + value + b'"')):
+        payload = payload.replace(old, new, 1)
+    return payload
 
 
 #: Which crew role is doing the work during each phase, for the dashboard's
@@ -1108,7 +1133,10 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
                                                     _operation_binding(status, input_request))
     display_status = dict(status)
     display_status["verification_progress"] = status.get("progress", 0)
-    display_status["progress"] = _display_progress(status)
+    shown_progress = lib.progress_view(status, acceptance, cfg)  # #415: as status shows it
+    display_status["progress"] = shown_progress["progress"]
+    display_status["progress_source"] = shown_progress["source"]
+    display_status["work_item_done_condition"] = lib.WORK_ITEM_DONE_CONDITION
     if isinstance(status.get("run_closed"), dict):
         display_status["status"] = "closed"
         display_status["phase"] = "Run closed"
@@ -1437,6 +1465,23 @@ class DashboardServer(ThreadingHTTPServer):
                 supervisor.performance_tick(self.project_root)
             except (lib.HandsoffError, OSError):
                 continue  # a closed or archived run simply has no clock
+            if self.owned_by_run:
+                self._poll_ci()
+
+    def _poll_ci(self) -> dict | None:
+        """#414: the run-owned dashboard keeps polling a running CI watch on
+        its own, paused or not and whether or not a page is open: on
+        2026-10-08 a record stayed 'running' for 20 minutes with every check
+        green until `ci-watch --poll` was run by hand. ci_view only reads gh
+        and commits the terminal event once, so it starts no new work."""
+        try:
+            cfg = lib.load_config(self.project_root)
+            status = lib.load_unique_json(lib.status_path(self.project_root, cfg))
+            if not isinstance(status.get("ci"), dict) or status["ci"].get("state") not in ("running", "failed"):
+                return None
+            return lib.ci_view(status, self.project_root, cfg)
+        except (lib.HandsoffError, OSError, ValueError):
+            return None
 
     def _orphaned_root(self) -> bool:
         """True once the served root has been absent for enough ticks.
@@ -1746,6 +1791,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         b'<meta charset="utf-8">',
                         b'<meta charset="utf-8">\n  <meta name="handsoff-pilot-token" content="'
                         + self.server.pilot_token.encode("ascii") + b'">', 1)
+                    # #415: the first HTML carries the real progress, not 0%
+                    payload = render_first_html(payload, first_html_progress(self.server.project_root))
             except OSError:
                 payload = b"Dashboard assets are missing. Copy the dashboard/ directory beside bin/."
                 self._headers(HTTPStatus.INTERNAL_SERVER_ERROR, "text/plain; charset=utf-8", len(payload))

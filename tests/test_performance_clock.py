@@ -155,12 +155,13 @@ class NothingStartsAfterThePause(HandsoffTestCase):
         supervisor.performance_tick(self.tmp, now=datetime.now(timezone.utc) + timedelta(minutes=121))
 
     def test_a_mutating_supervisor_command_is_refused(self):
+        # #414: advance is bookkeeping and stays allowed; new work does not
         self._pause()
-        self.assertIsNotNone(supervisor.performance_mutation_refusal(self.tmp, "advance"))
+        self.assertIsNotNone(supervisor.performance_mutation_refusal(self.tmp, "release-plan"))
 
     def test_the_refusal_names_the_resume_that_clears_it(self):
         self._pause()
-        self.assertIn("performance-resume", supervisor.performance_mutation_refusal(self.tmp, "advance"))
+        self.assertIn("performance-resume", supervisor.performance_mutation_refusal(self.tmp, "release-plan"))
 
     def test_an_agent_launch_is_refused(self):
         """This entry point had no performance gate at all: the supervisor

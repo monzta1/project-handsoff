@@ -1611,9 +1611,22 @@ function renderClocks() {
   }
 }
 
+// #414: a performance pause is shown up front, not only in the metrics
+// panel: since when, the active time that tripped it, and the resume command.
+function renderPerformancePause(performance) {
+  const banner = $("performance-pause-banner");
+  if (!banner) return;
+  const pause = performance && performance.pause;
+  banner.classList.toggle("hidden", !pause);
+  banner.textContent = pause
+    ? `PAUSED FOR PERFORMANCE REVIEW since ${pause.since || "unknown"} · active ${metricDuration(pause.active_seconds)} · resume: ${pause.resume_command}`
+    : "";
+}
+
 function renderMetrics(metrics) {
   if (!metrics) return;
   const performance = state.performance || null;
+  renderPerformancePause(performance);
   const currentPhase = String(state.phaseNumber ?? "");
   state.clocks = { startedAt: metrics.started_at || null, endedAt: metrics.ended_at || null, phaseStartedAt: metrics.phase_started_at || null,
     asleepSeconds: metrics.asleep_seconds || 0, phaseAsleepSeconds: (metrics.phase_asleep_seconds || {})[currentPhase] || 0 };

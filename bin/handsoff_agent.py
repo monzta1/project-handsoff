@@ -66,6 +66,9 @@ class LaunchSpec:
     # #388: a compact reviewer's validated file ranges. Set, the reviewer runs
     # in a scratch directory holding only those slices and cannot run tests.
     compact_scope: tuple[dict, ...] | None = None
+    # #415: the work items this implementer is bound to (--item); its
+    # completion credits exactly these once its workspace applies.
+    work_items: tuple[str, ...] | None = None
 
 
 SUPERVISOR_REQUEST_PREFIX = "HANDSOFF_BROKER_REQUEST:"
@@ -669,11 +672,21 @@ def _phase2_design_reviewer_selection(root: Path, cfg: dict, role: str, *, which
 def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, skip_preflight: bool = False,
                       inspection: bool = False, amendment: bool = False, topic: str | None = None,
                       owned_paths: list[str] | None = None,
-                      compact_scope: list[dict] | None = None) -> LaunchSpec:
+                      compact_scope: list[dict] | None = None,
+                      work_items: list[str] | None = None) -> LaunchSpec:
     root = root.resolve()
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
         raise lib.HandsoffError("role must be architect, implementer, or reviewer")
+    if work_items:
+        # #415: refused here, before any scratch, session or reservation
+        if role != "implementer":
+            raise lib.HandsoffError("--item applies to implementer launches only")
+        item_cfg = lib.load_config(root)
+        work_items = lib.validate_bound_work_items(
+            lib.load_unique_json(lib.acceptance_path(root, item_cfg)), work_items)
+    else:
+        work_items = None
     scope = None
     if compact_scope:
         if role != "reviewer":
@@ -956,6 +969,7 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         routing_contract=routing_contract,
         owned_paths=tuple(owned_paths) if owned_paths else None,
         compact_scope=tuple(scope) if scope else None,
+        work_items=tuple(work_items) if work_items else None,
     )
 
 
@@ -1654,6 +1668,7 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
             reasoning_effort=spec.reasoning_effort,
             routing_contract=spec.routing_contract,
             owned_paths=list(spec.owned_paths) if spec.owned_paths else None,
+            work_items=list(spec.work_items) if spec.work_items else None,
         )
     else:
         session = lib.claim_precreated_agent_session(
@@ -2869,6 +2884,10 @@ def main() -> int:
                              help="reviewer only, repeatable: review only these line ranges; the "
                                   "reviewer sees nothing else and cannot run tests")
         if name == "launch":
+            command.add_argument("--item", action="append", default=None, metavar="ID",
+                                 help="implementer only, repeatable: an existing work item id this "
+                                      "session implements; when it completes and its workspace "
+                                      "applies, exactly these items are marked implemented")
             command.add_argument("--timeout", type=int, default=3600)
             command.add_argument(
                 "--by", default=None,
@@ -2897,7 +2916,8 @@ def main() -> int:
         spec = build_launch_spec(lib.resolve_root(args.root), args.role, args.task, skip_preflight=getattr(args, "skip_preflight", False),
                                  inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)),
                                  topic=args.topic, owned_paths=args.owns,
-                                 compact_scope=parse_compact_scope(args.compact_scope))
+                                 compact_scope=parse_compact_scope(args.compact_scope),
+                                 work_items=getattr(args, "item", None))
         if getattr(args, "amendment", None):
             spec = dataclasses.replace(spec, amendment_id=args.amendment)
         if args.command == "inspect":

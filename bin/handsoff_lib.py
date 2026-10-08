@@ -226,7 +226,12 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     default_agent_adapter,
     design_review_budget,
     design_review_budget_exhausted_message,
+    design_review_finding_counts,
     design_review_launch_refusal,
+    design_round_auto_authorization,
+    spend_design_review_authorization,
+    DESIGN_ROUNDS_ON_CONVERGENCE_ACTOR,
+    MAX_DESIGN_REVIEW_AUTHORIZED_ROUNDS,
     effective_review_cap,
     ensure_no_launched_regression,
     event_log_chain_errors,
@@ -278,6 +283,11 @@ from handsoff_workflow import (  # noqa: E402,F401
     RULE_COMMANDS,
     RULE_WHEN_KEYS,
     WORK_ITEM_STATES,
+    PHASE_DEFAULT_PROGRESS,
+    WORK_ITEM_DONE_CONDITION,
+    credit_session_work_items,
+    progress_view,
+    validate_bound_work_items,
     _evidence_errors,
     _is_green,
     _review_errors,
@@ -3288,6 +3298,8 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
             "packet_id": None, "design_hash": None, "tier": None,
             "phase_number": int(status.get("phase_number", 1) or 1),
         }
+        if isinstance(source, dict) and isinstance(source.get("work_items"), list) and source["work_items"]:
+            session["work_items"] = list(source["work_items"])  # #415: the binding carries over
         if launch_commit is not None:
             session["owned_paths"] = list(source["owned_paths"])
             session["workspace"] = {"path": str(implementer_workspace_dir(root) / to_session_id),
@@ -4375,8 +4387,9 @@ def work_item_checkpoints(status: dict, acceptance: dict, events: list[dict] | N
         own = [c for c in criteria if criterion_work_item_id(c) == item["id"]
                or (criterion_work_item_id(c) is None and len(registry) == 1)]
         record = delivery.get(item["id"]) if isinstance(delivery, dict) else None
-        implemented = bool(isinstance(record, dict) and record.get("implemented_by")) \
-            or (bool(own) and all(c.get("evidence") for c in own))
+        implemented = bool(item.get("implemented_at")) \
+            or bool(isinstance(record, dict) and record.get("implemented_by")) \
+            or (bool(own) and all(c.get("evidence") for c in own))  # #415: a bound session's credit
         verified = bool(own) and all(c.get("state") == "passing" for c in own)
         newest_evidence = None
         for record_v in verifications or []:

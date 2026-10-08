@@ -126,8 +126,9 @@ class WorkItemTests(unittest.TestCase):
         ]}
         acceptance["work_items"] = lib.derive_work_item_registry(acceptance, self.cfg, now=self.now)
         rows = lib.derive_work_items(self.status(), acceptance, self.cfg)
+        # #415: every criterion tagged to #31 passes, so it is done
         self.assertEqual({item["id"]: item["status"] for item in rows["items"]},
-                         {"issue-29": "not_started", "issue-31": "in_progress"})
+                         {"issue-29": "not_started", "issue-31": "done"})
         status = self.status()
         status["regression_requests"] = [{"state": "awaiting_approval", "group": "full"}]
         waiting = lib.derive_work_items(status, acceptance, self.cfg)
@@ -251,11 +252,10 @@ class WorkItemCliTests(HandsoffTestCase):
         # so only the scope is judged: nothing to remove by hand.
         status = dict(self.read_status(), phase_number=8, phase=lib.PHASES[8], work_item_delivery=None)
 
-        real_progress = workflow.item_progress
-
+        # #415: an item is done when every criterion tagged to it passes
         def gate(acc):
-            with patch_engine("item_progress", side_effect=lambda *a, **k: dict(real_progress(*a, **k), percent=100)):
-                return [e for e in workflow.compute_errors(status, acc, cfg) if e.startswith("work items gate")]
+            acc = dict(acc, criteria=[dict(c, state="passing") for c in acc["criteria"]])
+            return [e for e in workflow.compute_errors(status, acc, cfg) if e.startswith("work items gate")]
         self.assertEqual(gate(acceptance), [])
         control = dict(acceptance, work_items=acceptance["work_items"] + [dict(
             acceptance["work_items"][0], id="ask-title-asks-stop", kind="ask", number=None)])

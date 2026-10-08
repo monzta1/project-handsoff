@@ -39,8 +39,11 @@ DEPENDENCY_CLASSES = (
 BLOCKING_GATES = frozenset(
     {"regression", "deployment", "performance_pause", "new_authority"}
 )
+#: #414: "bookkeeping" writes the ledger and starts no new work (advance,
+#: notes, work items, evidence, symptom, ci-watch); "verify_cached" binds
+#: existing results only, and the verify command refuses a cache miss itself.
 PERFORMANCE_PAUSE_ALLOWED_OPERATIONS = frozenset(
-    {"inspect", "reconcile", "explicit_resume", "cancel", "safe_close"}
+    {"inspect", "reconcile", "explicit_resume", "cancel", "safe_close", "bookkeeping", "verify_cached"}
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
