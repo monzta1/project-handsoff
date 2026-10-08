@@ -301,7 +301,9 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         cwd = Path(seen[0]).resolve()
         self.assertNotEqual(cwd, self.tmp.resolve())
         self.assertNotIn(self.tmp.resolve(), cwd.parents)
-        self.assertFalse(cwd.exists(), "the worktree is removed when the session ends")
+        # #429: a failed owning session keeps its workspace for the Pilot's
+        # implementer-apply / implementer-discard (it used to be removed)
+        self.assertTrue(cwd.exists(), "the failed session's worktree is kept for a disposition")
         # nothing applied: neither B's file nor A's own
         self.assertEqual(self._read("b.txt"), ORIGINAL["b.txt"])
         self.assertEqual(self._read("a.txt"), ORIGINAL["a.txt"])

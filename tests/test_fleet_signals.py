@@ -29,17 +29,16 @@ import handsoff_fleet_signals as signals  # noqa: E402
 
 
 def _fake_client(issues=3, prs=2, release=("v1.2.3", "2026-09-18T12:00:00Z"), calls=None):
-    """A GitHub reader with the three answers `fetch_github` asks for."""
-    def fetch(path):
+    """A GitHub reader answering the one GraphQL query `fetch_github` asks (#433)."""
+    def fetch(path, body=None):
         if calls is not None:
             calls.append(path)
-        if path.startswith("search/issues") and "is:issue" in path:
-            return {"total_count": issues}
-        if path.startswith("search/issues") and "is:pr" in path:
-            return {"total_count": prs}
-        if path.endswith("/releases/latest"):
-            return None if release is None else {"tag_name": release[0], "published_at": release[1]}
-        raise AssertionError(f"unexpected GitHub path {path}")
+        if path != "graphql":
+            raise AssertionError(f"unexpected GitHub path {path}")
+        latest = None if release is None else {"tagName": release[0], "publishedAt": release[1]}
+        return {"data": {"repository": {"issues": {"totalCount": issues},
+                                        "pullRequests": {"totalCount": prs},
+                                        "latestRelease": latest}}}
     return fetch
 
 
@@ -352,13 +351,12 @@ class GitHubSignalTests(_SignalsEnv):
         self.assertIsNone(signals.origin_repo(_git_repo(self.base / "bare", None)))
         self.assertIsNone(signals.origin_repo(self.base / "missing"))
 
-    def test_fetch_asks_the_three_reads_and_shapes_the_signal(self):
+    def test_fetch_asks_one_graphql_read_and_shapes_the_signal(self):
         repo = _git_repo(self.base / "repo", "https://github.com/o/r.git")
         calls = []
         signal = signals.fetch_github(repo, _fake_client(issues=7, prs=2, calls=calls))
-        self.assertEqual(calls, ["search/issues?q=repo:o/r+is:issue+is:open&per_page=1",
-                                 "search/issues?q=repo:o/r+is:pr+is:open&per_page=1",
-                                 "repos/o/r/releases/latest"])
+        # #433: one GraphQL read, never the search API
+        self.assertEqual(calls, ["graphql"])
         self.assertEqual({k: signal[k] for k in ("repo", "open_issues", "open_prs", "latest_release", "error")}, {
             "repo": "o/r", "open_issues": 7, "open_prs": 2,
             "latest_release": {"tag": "v1.2.3", "published_at": "2026-09-18T12:00:00Z"}, "error": None})
@@ -397,23 +395,26 @@ class GitHubSignalTests(_SignalsEnv):
             self.assertIs(signals.github_client(), marker)
 
     def test_gh_client_uses_gh_api_and_treats_404_as_none(self):
+        """#433: the client reads `gh api -i` (status line, headers, body) and
+        sends a GraphQL body on stdin."""
         bindir = self.base / "bin"
         bindir.mkdir()
         gh = bindir / "gh"
         gh.write_text("#!/bin/sh\n"
                       "if [ \"$1\" = auth ]; then echo tok; exit 0; fi\n"
-                      "case \"$2\" in\n"
-                      "  *releases/latest) echo 'gh: Not Found (HTTP 404)' >&2; exit 1;;\n"
-                      "  *is:issue*) echo '{\"total_count\": 5}';;\n"
-                      "  *is:pr*) echo '{\"total_count\": 1}';;\n"
-                      "  *) echo 'gh: boom (HTTP 500)' >&2; exit 1;;\n"
+                      "case \"$3\" in\n"
+                      "  graphql) cat >/dev/null; printf 'HTTP/2.0 200 OK\\nContent-Type: application/json\\n\\n"
+                      "{\"data\": {\"ok\": true}}\\n';;\n"
+                      "  *missing) printf 'HTTP/2.0 404 Not Found\\n\\n{\"message\": \"Not Found\"}\\n';"
+                      " echo 'gh: Not Found (HTTP 404)' >&2; exit 1;;\n"
+                      "  *) printf 'HTTP/2.0 500 Internal Server Error\\n\\n{}\\n'; echo 'gh: boom (HTTP 500)' >&2; exit 1;;\n"
                       "esac\n")
         gh.chmod(0o755)
         with mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"}):
             client = signals._gh_client()
             self.assertIsNotNone(client)
-            self.assertEqual(client("search/issues?q=repo:o/r+is:issue+is:open&per_page=1"), {"total_count": 5})
-            self.assertIsNone(client("repos/o/r/releases/latest"))
+            self.assertEqual(client("graphql", {"query": "q"}), {"data": {"ok": True}})
+            self.assertIsNone(client("repos/o/r/missing"))
             with self.assertRaises(signals.GitHubUnavailable):
                 client("repos/o/r/other")
 
@@ -463,10 +464,9 @@ class GitHubSignalTests(_SignalsEnv):
     def test_a_partial_failure_is_a_whole_failure(self):
         repo = _git_repo(self.base / "repo", "https://github.com/o/r.git")
 
-        def client(path):
-            if path.endswith("/releases/latest"):
-                raise signals.GitHubUnavailable("GitHub HTTP 502")
-            return {"total_count": 1}
+        def client(path, body=None):
+            # a GraphQL answer carrying errors and no repository is a whole failure
+            return {"data": {"repository": None}, "errors": [{"message": "Something went wrong"}]}
         with self.assertRaises(signals.GitHubUnavailable):
             signals.fetch_github(repo, client)
 
