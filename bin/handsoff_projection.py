@@ -50,6 +50,7 @@ from handsoff_agent_runtime import (
     default_agent_adapter,
     design_review_budget,
     live_implementer_sessions,
+    read_session_liveness,
     role_session_ids,
 )
 
@@ -1163,3 +1164,263 @@ def _iso_seconds(start: object, end: object) -> float | None:
         return None
     seconds = (b - a).total_seconds()
     return seconds if seconds >= 0 else None
+
+
+# --------------------------------------------------------------------------
+# P1.10: one session-state projection. status, the run dashboard API and the
+# Fleet cards all read session_projection, so they cannot name a session's
+# state differently.
+# --------------------------------------------------------------------------
+
+#: a live session's states, most severe first; the run's state is the first
+#: of these any live session holds
+LIVE_PROJECTION_STATES = ("transport_disconnected", "stale_heartbeat", "waiting_for_background_work",
+                          "connected_no_output", "active_output")
+
+TERMINAL_PROJECTION_STATES = ("failed_recoverable", "failed", "completed_with_artifact",
+                              "completed_without_artifact")
+
+#: live states a fresh heartbeat or fresh output put a session in, so the
+#: stall warning clears
+FRESH_PROJECTION_STATES = frozenset({"waiting_for_background_work", "connected_no_output", "active_output"})
+
+SESSION_PROJECTION_FIELDS = ("role", "provider", "session_id", "actor", "state", "started_at",
+                             "elapsed_seconds", "last_heartbeat_at", "last_output_at", "owned_paths",
+                             "timeout_seconds", "replacement_count", "next_action")
+
+_SESSION_ID = re.compile(r"hs-[0-9a-f]{32}")
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _newest_stamp(values) -> str | None:
+    stamped = [(parsed, value) for value in values if isinstance(value, str)
+               for parsed in (_parse_stamp(value),) if parsed is not None]
+    return max(stamped)[1] if stamped else None
+
+
+def _session_beacon(root: Path, session_id: str) -> dict | None:
+    """The project beacon or the session's own (#359), when it names this session."""
+    beacon = read_live_beacon(root)
+    if (not isinstance(beacon, dict) or beacon.get("session_id") != session_id) \
+            and _SESSION_ID.fullmatch(str(session_id)):
+        beacon = read_live_beacon(root, session_id)
+    return beacon if isinstance(beacon, dict) and beacon.get("session_id") == session_id else None
+
+
+def _session_process(beacon: dict | None) -> bool | None:
+    """True when the session's beacon names a pid that exists, False when
+    the pid is gone, None when no beacon names a pid (nothing is proven)."""
+    pid = beacon.get("pid") if isinstance(beacon, dict) else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # it exists; it is only not ours to signal
+    return True
+
+
+def _session_output_at(store: dict, record: dict | None, session_id: str) -> str | None:
+    output = (store.get("sessions") or {}).get(session_id)
+    values = []
+    if isinstance(output, dict):
+        entries = output.get("entries") if isinstance(output.get("entries"), list) else []
+        if entries and isinstance(entries[-1], dict):
+            values.append(entries[-1].get("at"))
+        values.append(output.get("updated_at"))
+    if isinstance(record, dict) and record.get("session_id") == session_id:
+        values.append(record.get("output_at"))
+    return _newest_stamp(values)
+
+
+def _awake_seconds(stamp: str | None, now: datetime, sleep: list) -> float | None:
+    """Seconds since `stamp` less the machine's sleep inside them (#193),
+    the measure the stall warning uses."""
+    began = _parse_stamp(stamp)
+    if began is None:
+        return None
+    seconds = (now - began).total_seconds()
+    return max(seconds - asleep_seconds(began, now, sleep), 0.0)
+
+
+def _replacement_count(status: dict, session_id: str) -> int:
+    """How many replacements led to this session: its launch chain back to
+    the session the role first ran."""
+    records = [item for item in (status.get("agent_replacements") or [])
+               if isinstance(item, dict) and item.get("action") == "launch"]
+    count, cursor, seen = 0, session_id, set()
+    while cursor and cursor not in seen:
+        seen.add(cursor)
+        parent = next((item for item in reversed(records) if item.get("to_session_id") == cursor), None)
+        if parent is None:
+            break
+        count += 1
+        cursor = parent.get("from_session_id")
+    return count
+
+
+def _timeout_seconds(session: dict) -> int | None:
+    """The launch timeout: recorded, else twice the gap from running to the
+    #409 halfway mark recorded with it."""
+    recorded = session.get("timeout_seconds")
+    if isinstance(recorded, int) and not isinstance(recorded, bool):
+        return recorded
+    halfway = _parse_stamp(session.get("halfway_at"))
+    began = _parse_stamp(session.get("running_at") or session.get("started_at"))
+    if halfway is None or began is None or halfway <= began:
+        return None
+    return int(round(2 * (halfway - began).total_seconds()))
+
+
+def _has_artifact(session: dict) -> bool:
+    result = session.get("result")
+    if isinstance(result, dict) and (result.get("recorded_at") or result.get("adopted_at")):
+        return True
+    return (session.get("apply") or {}).get("state") == "applied" \
+        or session.get("workspace_disposition") == "applied"
+
+
+def _session_next_action(state: str, session: dict, failure: dict, *, silent: float | None,
+                         limit: float, output_seconds: float | None, wait: dict | None) -> str:
+    role = session.get("role") or "session"
+    category = failure.get("category")
+    if state == "transport_disconnected":
+        return f"the {role} process is gone; the next status read records it failed (process_gone)"
+    if state == "waiting_for_background_work":
+        note = wait.get("note") if isinstance(wait, dict) else None
+        return "waiting on background work" + (f": {note}" if isinstance(note, str) and note else "")
+    if state == "stale_heartbeat":
+        silent_text = f"{int(silent // 60)} minutes" if silent is not None else "an unknown time"
+        return f"no heartbeat or output for {silent_text} (limit {int(limit // 60)}); check the {role} or stop it"
+    if state == "active_output":
+        return f"working; latest output {int(output_seconds or 0)} seconds ago"
+    if state == "connected_no_output":
+        return "connected; no recent output"
+    if state == "failed_recoverable":
+        return f"ended with a replaceable failure ({category}); relaunch or replace the {role}"
+    if state == "failed":
+        how = f"with {category}" if category else str(session.get("state") or "failed")
+        return f"ended {how}; not replaceable, the Pilot decides"
+    if state == "completed_with_artifact":
+        return "result recorded"
+    return f"ended without a result; relaunch the {role} with its task"
+
+
+def session_projection(root: Path, cfg: dict, status: dict, now: datetime | None = None) -> dict:
+    """P1.10: one state per managed session and one for the run, by these
+    rules in this precedence. Terminal: failed_recoverable when the failure
+    category is one the replacement policy may replace, else failed;
+    completed_with_artifact when a protocol result was recorded or adopted
+    or its workspace applied, else completed_without_artifact. Live
+    (launching or running): transport_disconnected when its process is gone;
+    waiting_for_background_work when a background wait bound to it (by its
+    session id or actor) is open; stale_heartbeat when its newest heartbeat
+    or output is older than stall_minutes, sleep-adjusted; active_output
+    when it printed within that; connected_no_output otherwise. The run's
+    state is the most severe live session's (LIVE_PROJECTION_STATES order),
+    else the newest terminal session's, else idle. Pure: it reads files and
+    never writes, so a caller may hold the project lock."""
+    root = Path(root)
+    now = now or datetime.now(timezone.utc)
+    sessions = status.get("agent_sessions") if isinstance(status.get("agent_sessions"), dict) else {}
+    failures = status.get("agent_failures") if isinstance(status.get("agent_failures"), dict) else {}
+    wait = status.get("background_wait") if isinstance(status.get("background_wait"), dict) else None
+    limit = float(cfg.get("stall_minutes", 10) or 10) * 60
+    liveness = read_session_liveness(root)
+    store = _read_agent_output_store(root)
+    output_record = read_output_liveness(root)
+    sleep = None
+    records = []
+    for key, session in sessions.items():
+        if not isinstance(session, dict) or session.get("state") not in (
+                AGENT_SESSION_LIVE_STATES | AGENT_SESSION_TERMINAL_STATES):
+            continue
+        sid = session.get("session_id") or key
+        failure = failures.get(sid) if isinstance(failures.get(sid), dict) else {}
+        beacon = _session_beacon(root, sid)
+        heartbeats = [liveness.get(sid)]
+        if isinstance(beacon, dict) and beacon.get("state") in {"started", "running"}:
+            heartbeats.append(beacon.get("beacon_at"))
+        if status.get("last_heartbeat_owner") == sid:
+            heartbeats.append(status.get("last_heartbeat_at"))
+        heartbeat_at = _newest_stamp(heartbeats)
+        output_at = _session_output_at(store, output_record, sid)
+        silent = output_seconds = bound_wait = None
+        if session.get("state") in AGENT_SESSION_LIVE_STATES:
+            if sleep is None:
+                sleep = machine_sleep_intervals(now=now)
+            newest = _newest_stamp([heartbeat_at, output_at]) \
+                or session.get("running_at") or session.get("started_at")
+            silent = _awake_seconds(newest, now, sleep)
+            output_seconds = _awake_seconds(output_at, now, sleep)
+            if wait is not None and wait.get("by") in {sid, session.get("actor")}:
+                bound_wait = wait
+            if _session_process(beacon) is False:
+                state = "transport_disconnected"
+            elif bound_wait is not None:
+                state = "waiting_for_background_work"
+            elif silent is None or silent > limit:
+                state = "stale_heartbeat"
+            elif output_seconds is not None and output_seconds <= limit:
+                state = "active_output"
+            else:
+                state = "connected_no_output"
+            ended = now
+        else:
+            if session.get("state") != "completed":
+                state = "failed_recoverable" if failure.get("category") in RECOVERABLE_FAILURE_CATEGORIES \
+                    else "failed"
+            else:
+                state = "completed_with_artifact" if _has_artifact(session) else "completed_without_artifact"
+            ended = _parse_stamp(session.get("ended_at")) or now
+        started = _parse_stamp(session.get("started_at"))
+        owned = session.get("owned_paths")
+        records.append({
+            "role": session.get("role"), "provider": session.get("adapter"), "session_id": sid,
+            "actor": session.get("actor"), "state": state, "started_at": session.get("started_at"),
+            "elapsed_seconds": max(int((ended - started).total_seconds()), 0) if started else None,
+            "last_heartbeat_at": heartbeat_at, "last_output_at": output_at,
+            "owned_paths": list(owned) if isinstance(owned, list) else [],
+            "timeout_seconds": _timeout_seconds(session),
+            "replacement_count": _replacement_count(status, sid),
+            "next_action": _session_next_action(state, session, failure, silent=silent, limit=limit,
+                                                output_seconds=output_seconds, wait=bound_wait),
+        })
+    live = [item["state"] for item in records if item["state"] in LIVE_PROJECTION_STATES]
+    if live:
+        top = min(live, key=LIVE_PROJECTION_STATES.index)
+    else:
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+        ended_at = {sid: _parse_stamp(item.get("ended_at") or item.get("started_at")) or floor
+                    for sid, item in ((s.get("session_id") or k, s) for k, s in sessions.items()
+                                      if isinstance(s, dict))}
+        terminal = [item for item in records if item["state"] in TERMINAL_PROJECTION_STATES]
+        top = max(terminal, key=lambda item: ended_at.get(item["session_id"], floor))["state"] \
+            if terminal else "idle"
+    records.sort(key=lambda item: (item["state"] not in LIVE_PROJECTION_STATES, str(item["started_at"] or "")))
+    return {"state": top, "sessions": records}
+
+
+def projected_stall_warning(projection: dict, legacy: str | None) -> str | None:
+    """P1.10: the stall warning, derived from the projection. With no live
+    session the run-level reading stands; with live sessions it warns only
+    while one is stale or disconnected, so a fresh heartbeat clears it."""
+    live = [item for item in projection.get("sessions") or [] if item.get("state") in LIVE_PROJECTION_STATES]
+    if not live:
+        return legacy
+    stalled = [item for item in live if item["state"] not in FRESH_PROJECTION_STATES]
+    if not stalled:
+        return None
+    if legacy:
+        return legacy
+    first = min(stalled, key=lambda item: LIVE_PROJECTION_STATES.index(item["state"]))
+    return f"{first['role']} session {first['session_id']} {first['state']}: {first['next_action']}"

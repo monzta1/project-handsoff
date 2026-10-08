@@ -1169,6 +1169,46 @@ Invalidation is implicit: editing or adding any file the digest covers, changing
 
 **Fleet GitHub signal (#433).** Fleet reads a repository's open issue count, open pull request count and latest release with one GraphQL query per repository per refresh, through the `gh` CLI or a token; the search API (30 requests a minute) is no longer used. Roots whose origin is the same repository share one fetch per refresh. A rate-limit answer is recognised in any form GitHub gives it (HTTP 403 or 429 with no requests left or naming the limit, or a GraphQL `RATE_LIMITED` error even with HTTP 200). The repository is then not fetched again until the reset time GitHub reported (`x-ratelimit-reset` or `retry-after`), or for 60 seconds when none was named. Meanwhile its roots keep their last good values and `rate_limited_until` is recorded (and restored when Fleet restarts, so a restart before the reset never fetches early), and the card shows the plain line `GitHub rate limited; showing values from HH:MM` (local time of those values, or `no values yet`) instead of `gh`'s stderr. Any other failure behaves as before: the last good values are kept and the error text is shown.
 
+### Criterion outcomes, scoped invalidation, one session projection and Fleet freshness (P1.1 P1.2 P1.10 #434)
+
+**Fleet reloads rediscovered roots (#434).** The Fleet server already reloaded the registry when its file changed. It now also recomputes its rediscovered roots (the runs found for monitoring when it starts) whenever the registry file's signature changes (`registry_signature`: inode, mtime, size and a sha256 of the content). A root another process unregistered or removed drops off the next `/api/fleet` without restarting the service. The recompute runs after the build, which may itself forget a vanished root, and a broken record still leaves Fleet serving with `rediscovery_error` set.
+
+**Phase 7 without a deployment approval (#434).** When `adaptive_deployment_approval_required` is false for the project, a run at Phase 7 gets the `next_action` "Deployment approval is not required for this project; land the change, then run `verify-live` before advancing to Phase 8." (`phase_next_action`, used when the phase is entered, frozen, resumed or proposed). Its Fleet card shows the plain line "Deployment approval is not required for this project. Next: land the change, then run verify-live." in place of any older text that asked for approval, and keeps a run's own "approval is not required" line word for word. A run that requires approval keeps its existing text and the AUTHORIZE DEPLOYMENT decision. A closed run or one not in progress keeps its `next_action`.
+
+**Criterion outcomes and evidence classes (P1.1).** A criterion may carry three optional fields, accepted by `criterion-add` (`--outcome`, `--evidence-class`, `--path`), `criterion-update` (the same, plus `--no-evidence-classes` and `--no-paths`; an empty `--outcome` clears) and `criteria-apply`, checked by the shared validator and listed in `schemas/acceptance.schema.json`, which now matches the validator (including `automated_and_mutation` and its fields):
+
+- `outcome`: the observable outcome, a non-empty string of at most 512 characters.
+- `evidence_classes`: a non-empty list of distinct values among `checks`, `manual` and `browser`. Mutation stays policy-only, through the `automated_and_mutation` verification.
+- `paths`: 1 to 32 project-relative globs, no `..`, no repeats (see P1.2).
+
+The kinds a criterion needs are the verification policy's kinds plus its `evidence_classes` (`required_evidence_kinds`). That one function decides `valid_evidence_kinds`, `criterion_fully_evidenced` and the phase gate. Producers differ by kind: a `checks` record comes only from `verify` running the criterion's tests, so declaring `checks` requires tests that are `[checks].commands` entries and the validator refuses otherwise; a `manual` or `browser` record comes from `record-evidence`. So a manual-policy criterion declaring `checks` needs both a passing `verify` and manual evidence, and an automated criterion declaring `browser` stays not passing until browser evidence is recorded. All three fields are part of the criterion spec hash, so changing one means earlier evidence no longer satisfies it. `status` reports each criterion's `outcome`, `evidence_classes`, `paths` and `required_evidence`, and the dashboard shows the outcome and classes. A criterion without the fields behaves as before.
+
+**Scoped digests and dependency-aware invalidation (P1.2).** A criterion with `paths` has a scoped digest: a sha256 over the repository entries (tracked and untracked, non-ignored) whose path matches one of its globs, bound to the globs themselves. A glob matches by `fnmatch` (where `*` crosses `/`) or as a directory prefix. The `checks` record stores each such criterion's digest as `scope_digests`.
+
+- `evidence_drift` judges a criterion with paths on its scoped digest. A change outside its paths keeps its evidence current; a change inside marks it stale. The result lists `invalidated`, one entry per stale criterion with the changed paths under its own paths, and `status` names exactly those criteria and paths. A configuration change still stales every criterion.
+- The verification cache key of a command is the command, the verification config hash and, for every criterion the command covers, that criterion's spec hash and its scoped digest (the whole-repository digest when it has no paths). A command shared by several criteria is reused only when every criterion it covers is unchanged, so a change under any covered criterion's paths re-runs it. When no covered criterion declares paths the key is the legacy one.
+- `paths` are in the spec hash, so editing a criterion's paths after evidence leaves it not passing until it is verified again.
+- A criterion without `paths` keeps whole-repository behavior.
+
+**One session projection (P1.10).** `session_projection(root, cfg, status, now)` gives each managed session one state and the run one state. It reads files and writes nothing. The first rule that applies wins.
+
+Terminal sessions:
+
+- `failed_recoverable`: the session failed and its failure category is one the replacement policy may replace.
+- `failed`: any other failure.
+- `completed_with_artifact`: it completed and a protocol result was recorded or adopted, or its workspace applied.
+- `completed_without_artifact`: it completed with none of those.
+
+Live sessions (`launching` or `running`):
+
+- `transport_disconnected`: its beacon names a pid that is gone, whatever the files say.
+- `waiting_for_background_work`: a background wait bound to its session id or actor is open.
+- `stale_heartbeat`: its newest heartbeat or output is older than `stall_minutes` (sleep-adjusted, the threshold `stall_warning` uses).
+- `active_output`: it printed output within that threshold.
+- `connected_no_output`: otherwise.
+
+The top-level `state` is the most severe live session in the order `transport_disconnected`, `stale_heartbeat`, `waiting_for_background_work`, `connected_no_output`, `active_output`, so one stale session is not hidden by another that is printing. With no live session it is the newest terminal session's state, and with no sessions it is `idle`. Each session record carries `role`, `provider`, `session_id`, `actor`, `state`, `started_at`, `elapsed_seconds`, `last_heartbeat_at`, `last_output_at`, `owned_paths`, `timeout_seconds`, `replacement_count` and `next_action`. `status` (`session_projection`), the run dashboard API (after `reconcile_gone_sessions`) and the Fleet cards (`session_state`, shown as `SESSION <state>`) all read it, so they name the same state. `stall_warning` is derived from it: with live sessions it warns only while one is stale or disconnected, so a fresh heartbeat clears it. The legacy fields stay.
+
 ## Updating the house
 
 `handsoff update` (#219) brings the four tools on this machine to their

@@ -185,6 +185,14 @@ function hostWaitTag(project) {
   return `<span class="host-wait">WAITING ON HOST ${esc(String(wait.family || "unknown").toUpperCase())}${words ? " " + esc(words) : ""}</span>`;
 }
 
+// P1.10: the session state named exactly as status and Mission Control name
+// it (one projection feeds all three), never a card-local word.
+function sessionStateTag(project) {
+  const state = project && project.session_state;
+  if (!state || state === "idle") return "";
+  return `<span class="session-state" data-session-state="${esc(state)}">SESSION ${esc(state)}</span>`;
+}
+
 // #389: a host working without a managed session (it wrote the ledger within
 // the silence window) reads HOST WORKING with the age of that write; the
 // shared vocabulary has no word for it, so the card supplies its own.
@@ -255,7 +263,7 @@ function projectCard(project) {
     ${Array.isArray(project.claimed_twice) && project.claimed_twice.length ? `<p class="claimed-twice">CLAIMED TWICE: ${esc(project.claimed_twice.map((n) => "#" + n).join(", "))} is also listed by another live run</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
     ${signalsStrip(project)}
-    <div class="project-meta"><span>${crew}</span>${hostWaitTag(project)}<span>${ownerLabel}</span><span class="engine-meta">${engine.text}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
+    <div class="project-meta"><span>${crew}</span>${hostWaitTag(project)}${sessionStateTag(project)}<span>${ownerLabel}</span><span class="engine-meta">${engine.text}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
     <p class="root">${esc(project.root)}</p>
     <div class="project-actions">
       ${link}

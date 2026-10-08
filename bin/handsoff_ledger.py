@@ -53,6 +53,7 @@ from handsoff_config import (  # noqa: F401
     DEFAULT_SMALL_FIX_MAX_FILES,
     FEATURES,
     load_config,
+    required_evidence_kinds,
 )
 from handsoff_schema import validate_acceptance_schema, validate_status_schema
 
@@ -252,22 +253,95 @@ def append_event(root: Path, cfg: dict, kind: str, message: str, **extra) -> str
     return body["hash"]
 
 
+def path_in_scope(path: str, patterns: list[str]) -> bool:
+    """P1.2: whether a repository-relative path is under a criterion's
+    paths: a glob match (fnmatch, so `*` crosses `/`) or a directory
+    prefix (`src` and `src/` cover `src/a.py`)."""
+    for pattern in patterns:
+        prefix = _repository_prefix(pattern)
+        if fnmatch.fnmatch(path, pattern) or (prefix and fnmatch.fnmatch(path, prefix)) \
+                or prefix == "" or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def scoped_digest(entries: dict[str, str | None], patterns: list[str]) -> str:
+    """P1.2: sha256 over the repository entries (tracked and untracked
+    non-ignored, as repository_digest_entries lists them) matching
+    `patterns`, bound to the patterns themselves."""
+    pairs = [[path, entries[path]] for path in sorted(entries) if path_in_scope(path, patterns)]
+    return hashlib.sha256(_canonical({"paths": sorted(patterns), "files": pairs}).encode("utf-8")).hexdigest()
+
+
+def criterion_scope_digest(criterion: dict, entries: dict[str, str | None], whole_digest: str) -> str:
+    """P1.2: the digest a criterion's evidence binds to: its scoped digest
+    when it declares paths, the whole-repository digest otherwise."""
+    patterns = criterion.get("paths") if isinstance(criterion, dict) else None
+    if isinstance(patterns, list) and patterns:
+        return scoped_digest(entries, patterns)
+    return whole_digest
+
+
+def criterion_scope_digests(criteria: list[dict], entries: dict[str, str | None]) -> dict[str, str]:
+    """P1.2: {criterion id: scoped digest} for the criteria that declare
+    paths; the field a checks record carries as `scope_digests`."""
+    return {c["id"]: scoped_digest(entries, c["paths"]) for c in criteria
+            if isinstance(c, dict) and c.get("id") and isinstance(c.get("paths"), list) and c["paths"]}
+
+
+def _snapshot_entries(root: Path, digest: str | None) -> dict | None:
+    snapshot_path = root / ".handsoff-digests" / f"{digest}.json"
+    if not digest or not snapshot_path.is_file():
+        return None
+    try:
+        entries = load_unique_json(snapshot_path).get("entries", {})
+    except (OSError, HandsoffError, ValueError):
+        return None
+    return entries if isinstance(entries, dict) else None
+
+
+def _changed_entries(old: dict, new: dict) -> list[str]:
+    return sorted({*old, *new} - {path for path in set(old) & set(new) if old[path] == new[path]})
+
+
+def _scoped_drift(root: Path, criterion: dict, record: dict, current_entries: dict) -> tuple[bool, list[str] | None]:
+    """P1.2: (stale, changed paths under the criterion's paths, or None
+    when no snapshot names them) for a criterion that declares paths."""
+    patterns = criterion["paths"]
+    cid = criterion.get("id")
+    current = scoped_digest(current_entries, patterns)
+    old_entries = _snapshot_entries(root, record.get("repository_digest"))
+    recorded = (record.get("scope_digests") or {}).get(cid)
+    if recorded is None and old_entries is not None:
+        recorded = scoped_digest(old_entries, patterns)
+    if recorded == current:
+        return False, []
+    if old_entries is None:
+        return True, None
+    return True, [path for path in _changed_entries(old_entries, current_entries) if path_in_scope(path, patterns)]
+
+
 def evidence_drift(root: Path, cfg: dict, acceptance: dict,
                    verifications: list[dict]) -> dict:
     """Classify newest valid automated evidence against one cached digest.
 
     Legacy records remain unknown rather than stale, so adding this integrity
     check cannot unexpectedly invalidate an existing run.
+
+    P1.2: a criterion that declares paths is judged on its scoped digest, so
+    a change outside its paths keeps its evidence current; `invalidated`
+    names each stale criterion with the changed paths that staled it.
     """
+    current_entries = repository_digest_entries(root, cfg)
     current_digest = repository_digest(root, cfg)
     current_config = verification_config_hash(cfg)
     result = {"current_digest": current_digest, "current": [], "stale": [],
               "unknown": [], "refresh_commands": [], "changed_paths": [],
-              "changed_paths_truncated": False, "changed_paths_note": None}
-    current_entries = repository_digest_entries(root, cfg)
+              "changed_paths_truncated": False, "changed_paths_note": None,
+              "invalidated": []}
     for criterion in acceptance.get("criteria", []):
         cid = criterion.get("id")
-        if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+        if "checks" not in required_evidence_kinds(criterion):  # P1.1
             continue
         record = next((candidate for candidate in reversed(verifications)
                        if candidate.get("kind") == "checks"
@@ -278,6 +352,24 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
             continue
         digest = record.get("repository_digest")
         recorded_config = record.get("config_hash")
+        if isinstance(criterion.get("paths"), list) and criterion["paths"] and digest is not None:
+            stale, scoped_changed = _scoped_drift(root, criterion, record, current_entries)
+            if not stale and (recorded_config is None or recorded_config == current_config):
+                result["current"].append(cid)
+                continue
+            result["stale"].append(cid)
+            result["invalidated"].append({"criterion": cid, "changed_paths": scoped_changed or [],
+                                          **({"reason": "configuration changed"} if not stale else {})})
+            if scoped_changed is None:
+                result["changed_paths_note"] = "snapshot not recorded"
+            elif isinstance(result["changed_paths"], list):
+                merged = sorted({*result["changed_paths"], *scoped_changed})
+                if len(merged) > 32:
+                    result["changed_paths_truncated"] = True
+                result["changed_paths"] = merged[:32]
+            result["refresh_commands"].append(
+                f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
+            continue
         if digest is None:
             result["unknown"].append(cid)
             result["changed_paths"] = None
@@ -286,21 +378,15 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
             result["current"].append(cid)
         else:
             result["stale"].append(cid)
-            snapshot_path = root / ".handsoff-digests" / f"{digest}.json"
-            if snapshot_path.is_file():
-                try:
-                    old_entries = load_unique_json(snapshot_path).get("entries", {})
-                    changed = sorted({*old_entries, *current_entries} - {
-                        path for path in set(old_entries) & set(current_entries)
-                        if old_entries[path] == current_entries[path]
-                    })
-                    if len(changed) > 32:
-                        result["changed_paths_truncated"] = True
-                    result["changed_paths"] = changed[:32]
-                except (OSError, HandsoffError, ValueError):
-                    result["changed_paths_note"] = "snapshot not recorded"
+            old_entries = _snapshot_entries(root, digest)
+            changed = _changed_entries(old_entries, current_entries) if old_entries is not None else None
+            if changed is not None:
+                if len(changed) > 32:
+                    result["changed_paths_truncated"] = True
+                result["changed_paths"] = changed[:32]
             else:
                 result["changed_paths_note"] = "snapshot not recorded"
+            result["invalidated"].append({"criterion": cid, "changed_paths": (changed or [])[:32]})
             result["refresh_commands"].append(
                 f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
     result.update(untracked_scratch_drift(root, cfg, result["changed_paths"],

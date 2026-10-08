@@ -1226,6 +1226,24 @@ VERIFICATION_REQUIREMENTS = {
     "automated_and_mutation": {"checks", "mutation"},
 }
 
+#: P1.1: the evidence classes a criterion may declare on top of its policy.
+#: Mutation stays policy-only (automated_and_mutation), since its proof
+#: needs the declared target and symbol.
+EVIDENCE_CLASSES = ("checks", "manual", "browser")
+
+
+def required_evidence_kinds(criterion: dict) -> set[str]:
+    """P1.1: every evidence kind a criterion needs before it passes: its
+    verification policy's kinds plus its declared evidence_classes. A
+    criterion without evidence_classes needs exactly its policy's kinds."""
+    if not isinstance(criterion, dict):
+        return set()
+    required = set(VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()))
+    classes = criterion.get("evidence_classes")
+    if required and isinstance(classes, list):
+        required |= {kind for kind in classes if kind in EVIDENCE_CLASSES}
+    return required
+
 # #300: moved down from handsoff_lib so handsoff_evidence can use the ONE
 # rule instead of its own `run_kind == "test"` comparison. That comparison
 # is the exact defect #317 fixed: it misses the 100 archives written before

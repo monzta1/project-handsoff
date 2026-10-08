@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_mutation as mutation  # noqa: E402
+import handsoff_projection as projection  # noqa: E402
 import handsoff_close_transaction as close_transaction  # noqa: E402
 import handsoff_regress as regress  # noqa: E402
 import handsoff_release_runtime as release_runtime  # noqa: E402
@@ -779,7 +780,7 @@ def _retain_or_invalidate(root: Path, cfg: dict, status: dict, acceptance: dict,
             status["phase"] = lib.PHASES[7]
             status["status"] = "in_progress"
             status["progress"] = min(status.get("progress", 0), 90)
-            status["next_action"] = lib.NEXT_ACTION_DEFAULTS[7]
+            status["next_action"] = lib.phase_next_action(7, status, cfg)  # #434
     return {"retained": True, "digest": binding["digest"], "specs_hash": binding["specs_hash"],
             "design_hash": binding.get("design_hash"), "previous_acceptance_hash": previous,
             "acceptance_hash": current, "live_verification_cleared": live_cleared}
@@ -1169,6 +1170,13 @@ def cmd_status(args) -> int:
                                     verification_problems=verification_problems, root=root)
         # #41: the same activity reading the dashboard snapshot carries.
         liveness = lib.liveness_view(status, root, cfg)
+        # P1.10: the stall warning is derived from the one session-state
+        # projection, as the dashboard does, before its transition is recorded,
+        # so a fresh session heartbeat clears it here too.
+        session_states = status_session_projection(root, cfg, status)
+        if session_states is not None:
+            liveness = {**liveness, "stall_warning": projection.projected_stall_warning(
+                session_states, liveness["stall_warning"])}
         warning = liveness["stall_warning"]
         lib.record_stall_transition(root, cfg, warning)
         activity = liveness.get("activity_note")
@@ -1212,6 +1220,8 @@ def cmd_status(args) -> int:
         "verification_runs": len(verifications),
         "validation": "blocked" if errors or log_problems else "valid", "errors": errors,
         "evidence_drift": lib.evidence_drift(root, cfg, acceptance, verifications),
+        "criteria": status_criteria(acceptance),  # P1.1
+        "session_projection": session_states,  # P1.10
         "stall_warning": warning, "activity_note": activity, "activity": liveness, "live": live,
         "process_signal": liveness["process_signal"],
         "questions": lib.questions_view(status),
@@ -1261,6 +1271,29 @@ def cmd_status(args) -> int:
                        for item in lib.derive_work_items(status, acceptance, cfg)["items"]],
     }, indent=2))
     return 1 if errors or log_problems else 0
+
+
+def status_session_projection(root: Path, cfg: dict, status: dict) -> dict | None:
+    """P1.10: the one session-state projection (handsoff_projection.
+    session_projection) status reports, or None when it cannot be built, so
+    a projection fault never takes `status` down with it."""
+    project = getattr(projection, "session_projection", None)
+    if project is None:
+        return None
+    try:
+        return project(root, cfg, status, datetime.now(timezone.utc))
+    except (lib.HandsoffError, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def status_criteria(acceptance: dict) -> list[dict]:
+    """P1.1: each criterion's declared outcome, evidence classes and paths,
+    and the evidence kinds its passing requires (policy plus classes)."""
+    return [{"id": c.get("id"), "state": c.get("state"), "verification": c.get("verification"),
+             "outcome": c.get("outcome"), "evidence_classes": list(c.get("evidence_classes") or []),
+             "paths": list(c.get("paths") or []),
+             "required_evidence": sorted(lib.required_evidence_kinds(c))}
+            for c in acceptance.get("criteria", []) if isinstance(c, dict)]
 
 
 def human_pause_view(status: dict) -> dict | None:
@@ -1537,7 +1570,8 @@ def cmd_advance(args) -> int:
             # phase inherits it as 'derived' (lib.progress_view)
             proposed["progress_set_phase"] = args.phase
         proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
-        proposed["next_action"] = args.next_action or lib.NEXT_ACTION_DEFAULTS.get(args.phase, proposed.get("next_action"))
+        proposed["next_action"] = args.next_action or lib.phase_next_action(  # #434
+            args.phase, proposed, cfg, proposed.get("next_action"))
         if args.status:
             proposed["status"] = args.status
         elif args.phase == 7:
@@ -3086,7 +3120,7 @@ def cmd_verify(args) -> int:
                 print("SHIP_FEATURE_BLOCKED: --all does not apply to --expect-fail; record each baseline with --criterion")
                 return 1
             args.criterion = [c["id"] for c in acceptance.get("criteria", [])
-                              if "checks" in lib.VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+                              if "checks" in lib.required_evidence_kinds(c)]
             if not args.criterion:
                 print("SHIP_FEATURE_BLOCKED: --all found no automated criteria in the registry")
                 return 1
@@ -3096,7 +3130,7 @@ def cmd_verify(args) -> int:
             print(f"SHIP_FEATURE_BLOCKED: unknown criteria: {', '.join(missing)}")
             return 1
         non_automated = [c["id"] for c in criteria
-                         if "checks" not in lib.VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+                         if "checks" not in lib.required_evidence_kinds(c)]
         if non_automated:
             print(f"SHIP_FEATURE_BLOCKED: verify cannot satisfy non-automated criteria: {', '.join(non_automated)}")
             return 1
@@ -3119,9 +3153,20 @@ def cmd_verify(args) -> int:
         # it runs can be named against what it started from
         _write_digest_snapshot(root, cfg, repo_digest)
         config_digest = lib.verification_config_hash(cfg)
+        # P1.2: a criterion that declares paths binds to its scoped digest
+        scope_digests = (lib.criterion_scope_digests(criteria, lib.repository_digest_entries(root, cfg))
+                         if any(c.get("paths") for c in criteria) else {})
+
+        def scoped_pairs(cmd: str) -> list[tuple[str, str]] | None:
+            covered = [c for c in criteria if cmd in c.get("tests", [])]
+            if not any(c["id"] in scope_digests for c in covered):
+                return None
+            return [(before[c["id"]], scope_digests.get(c["id"], repo_digest)) for c in covered]
+
         bindings = {
             cmd: lib.verification_binding(cmd, repo_digest, config_digest,
-                                          [before[c["id"]] for c in criteria if cmd in c.get("tests", [])])
+                                          [before[c["id"]] for c in criteria if cmd in c.get("tests", [])],
+                                          scoped=scoped_pairs(cmd))
             for cmd in needed
         }
     expect_fail = bool(getattr(args, "expect_fail", False))
@@ -3191,6 +3236,8 @@ def cmd_verify(args) -> int:
                 reused_from=reused_from, feature_hash=run_hash,
                 repository_digest=record_digest, config_digest=config_digest,
                 attempts=attempts, env=check_env, concurrency=concurrency,
+                scope_digests={criterion["id"]: scope_digests[criterion["id"]]}
+                if criterion["id"] in scope_digests else None,
                 description=(f"repeat {criterion['repeat']}: failed at attempt {failed_attempt['attempt']}"
                              + (f" (seed {failed_attempt['seed']})" if failed_attempt.get("seed") else "")
                              if failed_attempt else f"repeat {criterion['repeat']}: {len(attempts)}/{criterion['repeat']} passed")
@@ -3370,7 +3417,7 @@ def _automatic_symptom_run(status: dict, acceptance: dict, per_criterion: dict, 
     if not primary or status.get("lane") == "review":
         return None
     for criterion in primary:
-        kinds = lib.VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        kinds = lib.required_evidence_kinds(criterion)
         if not kinds or not kinds <= AUTOMATED_EVIDENCE_KINDS or criterion.get("state") != "passing":
             return None
     if (status.get("requirement_coverage") or {}).get("original_symptom_resolved") is True \
@@ -3413,7 +3460,7 @@ def cmd_record_evidence(args) -> int:
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
-        required_kinds = lib.VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        required_kinds = lib.required_evidence_kinds(criterion)
         if args.kind not in required_kinds:
             print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} policy does not accept {args.kind} evidence")
             return 1
@@ -3493,7 +3540,7 @@ def cmd_mutation_proof(args) -> int:
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
-        required_kinds = lib.VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        required_kinds = lib.required_evidence_kinds(criterion)
         if "mutation" not in required_kinds:
             print(f"SHIP_FEATURE_BLOCKED: criterion {args.criterion} has verification "
                   f"{criterion.get('verification')!r}, which does not require mutation evidence. "
@@ -5336,7 +5383,7 @@ def _print_unverifiable_test_warnings(acceptance: dict, cfg: dict) -> None:
     """Warn when design gates name automated tests verify cannot run."""
     configured = set(cfg.get("check_commands", []))
     for criterion in acceptance.get("criteria", []):
-        if "checks" not in lib.VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+        if "checks" not in lib.required_evidence_kinds(criterion):
             continue
         for test in criterion.get("tests", []):
             if test not in configured:
@@ -5359,9 +5406,25 @@ def cmd_criterion_update(args) -> int:
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
-        if all(getattr(args, field) is None for field in ("requirement", "verification", "type", "test", "state", "baseline", "repeat", "seed_env", "mutation_target", "mutation_symbol")):
+        if all(getattr(args, field, None) is None for field in ("requirement", "verification", "type", "test", "state", "baseline", "repeat", "seed_env", "mutation_target", "mutation_symbol", "outcome", "evidence_class", "path")) \
+                and not getattr(args, "no_evidence_classes", False) and not getattr(args, "no_paths", False):
             print("SHIP_FEATURE_BLOCKED: criterion-update requires at least one change")
             return 1
+        # P1.1: outcome, evidence_classes and paths; an empty outcome or a
+        # --no-* flag clears the field (stored as absent, never null)
+        scope_fields: dict = {}
+        if getattr(args, "outcome", None) is not None:
+            scope_fields["outcome"] = args.outcome or None
+        if getattr(args, "no_evidence_classes", False) and getattr(args, "evidence_class", None):
+            print("SHIP_FEATURE_BLOCKED: pass either --evidence-class or --no-evidence-classes, not both")
+            return 1
+        if getattr(args, "no_paths", False) and getattr(args, "path", None):
+            print("SHIP_FEATURE_BLOCKED: pass either --path or --no-paths, not both")
+            return 1
+        if getattr(args, "evidence_class", None) is not None or getattr(args, "no_evidence_classes", False):
+            scope_fields["evidence_classes"] = getattr(args, "evidence_class", None) or None
+        if getattr(args, "path", None) is not None or getattr(args, "no_paths", False):
+            scope_fields["paths"] = getattr(args, "path", None) or None
         fields = {field: getattr(args, field) for field in ("requirement", "verification", "type", "state")
                   if getattr(args, field) is not None}
         if args.test is not None:
@@ -5387,10 +5450,13 @@ def cmd_criterion_update(args) -> int:
         # it is checked against the merge, not against the fields being changed:
         # switching an existing criterion TO automated_and_mutation without a
         # declared symbol would otherwise be accepted and only fail at proof time.
+        fields.update(scope_fields)
         merged = {**{k: v for k, v in criterion.items() if k not in ("state", "evidence")}, **fields}
         problems = list(lib.validate_criterion_fields(fields))
-        problems += [problem for problem in lib.validate_criterion_fields(merged)
-                     if "automated_and_mutation" in problem and problem not in problems]
+        problems += [problem for problem in lib.validate_criterion_fields(
+                         merged, check_commands=list(cfg.get("check_commands", [])))
+                     if ("automated_and_mutation" in problem or "evidence class checks" in problem)
+                     and problem not in problems]
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
@@ -5441,6 +5507,14 @@ def cmd_criterion_update(args) -> int:
                     criterion[field] = value
                 else:
                     criterion.pop(field, None)
+            spec_changed = True
+        for field, value in scope_fields.items():
+            # P1.1: part of the claim, so the spec hash changes and earlier
+            # evidence stops satisfying the criterion
+            if value:
+                criterion[field] = list(value) if isinstance(value, list) else value
+            else:
+                criterion.pop(field, None)
             spec_changed = True
         if args.state is not None:
             criterion["state"] = args.state
@@ -5503,7 +5577,13 @@ def cmd_criterion_add(args) -> int:
         if args.mutation_target or args.mutation_symbol:
             fields["mutation_target"] = args.mutation_target
             fields["mutation_symbol"] = args.mutation_symbol
-        problems = lib.validate_criterion_fields(fields, require_all=True)
+        # P1.1: only when given, so a legacy criterion's spec hash is unchanged
+        for field, value in (("outcome", args.outcome), ("evidence_classes", args.evidence_class),
+                             ("paths", args.path)):
+            if value is not None:
+                fields[field] = value
+        problems = lib.validate_criterion_fields(fields, require_all=True,
+                                                 check_commands=list(cfg.get("check_commands", [])))
         if problems:
             print("SHIP_FEATURE_BLOCKED: " + "; ".join(problems))
             return 1
@@ -5934,7 +6014,7 @@ def cmd_amendment_approve(args) -> int:
         status["phase_number"] = frozen_phase
         status["phase"] = lib.PHASES[frozen_phase]
         status["progress"] = closed["frozen_progress"]
-        status["next_action"] = lib.NEXT_ACTION_DEFAULTS.get(frozen_phase, status.get("next_action"))
+        status["next_action"] = lib.phase_next_action(frozen_phase, status, cfg, status.get("next_action"))
         status["updated_at"] = now
         errors = lib.compute_errors(status, acceptance, cfg, verifications=records,
                                     verification_problems=verification_problems)
@@ -6150,8 +6230,8 @@ def cmd_recovery_acknowledge(args) -> int:
             escalation = {"source": None}
         status["escalation"] = None
         status["status"] = "in_progress"
-        status["next_action"] = lib.NEXT_ACTION_DEFAULTS.get(
-            int(status.get("phase_number", 1) or 1), "Resume the current mission phase."
+        status["next_action"] = lib.phase_next_action(
+            int(status.get("phase_number", 1) or 1), status, cfg, "Resume the current mission phase."
         )
         source = next((item for item in reversed(status.get("recovery_attempts") or [])
                        if item.get("recovery_id") == escalation.get("source")), None)
@@ -7716,6 +7796,15 @@ def build_parser() -> argparse.ArgumentParser:
                                 "criterion's tests must detect the loss of")
     criterion.add_argument("--mutation-symbol",
                            help="#349: that function's name; required with automated_and_mutation")
+    criterion.add_argument("--outcome", help="P1.1: the observable outcome (at most 512 characters; '' clears)")
+    criterion.add_argument("--evidence-class", action="append", dest="evidence_class",
+                           help="P1.1: an evidence class required on top of the policy "
+                                "(checks, manual, browser); repeatable, replaces the list")
+    criterion.add_argument("--no-evidence-classes", action="store_true",
+                           help="P1.1: clear the declared evidence classes")
+    criterion.add_argument("--path", action="append", dest="path",
+                           help="P1.2: a project-relative glob the evidence depends on; repeatable, replaces the list")
+    criterion.add_argument("--no-paths", action="store_true", help="P1.2: clear the declared paths")
     criterion.add_argument("--revoke-approval", action="store_true")
 
     criterion_add = sub.add_parser("criterion-add")
@@ -7734,6 +7823,12 @@ def build_parser() -> argparse.ArgumentParser:
                                     "criterion's tests must detect the loss of")
     criterion_add.add_argument("--mutation-symbol",
                                help="#349: that function's name; required with automated_and_mutation")
+    criterion_add.add_argument("--outcome", help="P1.1: the observable outcome (at most 512 characters)")
+    criterion_add.add_argument("--evidence-class", action="append", dest="evidence_class",
+                               help="P1.1: an evidence class required on top of the policy "
+                                    "(checks, manual, browser); repeatable")
+    criterion_add.add_argument("--path", action="append", dest="path",
+                               help="P1.2: a project-relative glob the evidence depends on; repeatable")
     criterion_add.add_argument("--revoke-approval", action="store_true")
 
     criterion_remove = sub.add_parser("criterion-remove")
