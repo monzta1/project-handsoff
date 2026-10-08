@@ -184,6 +184,12 @@ DEFAULT_CONFIG = {
     "public_origins": [],
     "live_check_commands": [],
     "check_timeout_seconds": 600,
+    # #410: [checks].env, applied to every verification command and recorded
+    # with its evidence, and [checks].concurrency for verify --all
+    "check_env": {},
+    "check_concurrency": 1,
+    "check_source_paths": [],  # #412: [checks].source_paths
+    "test_wall_clock_minutes": 20,  # #409: [agent_budget].test_wall_clock_minutes
     "tickets": [],
     "design_evidence": [],
     "regressions": [],
@@ -382,6 +388,39 @@ def normalize_public_origins(value, label: str) -> list[str]:
         if canonical not in result:
             result.append(canonical)
     return result
+
+
+DEFAULT_TEST_WALL_CLOCK_MINUTES = 20  # #409
+MAX_CHECK_ENV_ENTRIES = 32
+MAX_CHECK_ENV_VALUE_CHARS = 1024
+MAX_CHECK_CONCURRENCY = 8
+CHECK_ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
+CHECK_ENV_CREDENTIAL_WORDS = ("TOKEN", "SECRET", "PASSWORD", "KEY")
+
+
+def validate_check_env(table: object) -> dict[str, str]:
+    """#410: [checks].env is a table of at most 32 string variables whose
+    names match [A-Z_][A-Z0-9_]* with values of at most 1024 characters. It
+    is recorded with every piece of evidence, so a credential-like name
+    (TOKEN, SECRET, PASSWORD or KEY) is refused here rather than written to
+    the ledger."""
+    if not isinstance(table, dict):
+        raise HandsoffError("handsoff.toml: checks.env must be a table of string variables")
+    if len(table) > MAX_CHECK_ENV_ENTRIES:
+        raise HandsoffError(f"handsoff.toml: checks.env has more than {MAX_CHECK_ENV_ENTRIES} variables")
+    env: dict[str, str] = {}
+    for name, value in table.items():
+        if not isinstance(name, str) or not CHECK_ENV_NAME.fullmatch(name):
+            raise HandsoffError(f"handsoff.toml: checks.env name {name!r} must match [A-Z_][A-Z0-9_]*")
+        word = next((w for w in CHECK_ENV_CREDENTIAL_WORDS if w in name), None)
+        if word:
+            raise HandsoffError(f"handsoff.toml: checks.env.{name} looks like a credential ({word}); "
+                                "the table is recorded with evidence, so pass secrets through the environment")
+        if not isinstance(value, str) or len(value) > MAX_CHECK_ENV_VALUE_CHARS:
+            raise HandsoffError(f"handsoff.toml: checks.env.{name} must be a string of at most "
+                                f"{MAX_CHECK_ENV_VALUE_CHARS} characters")
+        env[name] = value
+    return env
 
 
 def load_config(root: Path) -> dict:
@@ -644,7 +683,8 @@ def load_config(root: Path) -> dict:
     cfg["max_failovers_per_role"] = validate_max_failovers(
         fallback_policy.get("max_failovers_per_role", DEFAULT_MAX_FAILOVERS_PER_ROLE)
     )
-    unknown_budget_roles = set(agent_budget) - {*SELECTABLE_AGENT_ROLES, "followup_design"}
+    unknown_budget_roles = set(agent_budget) - {*SELECTABLE_AGENT_ROLES, "followup_design",
+                                                "test_wall_clock_minutes"}
     if unknown_budget_roles:
         raise HandsoffError(
             "handsoff.toml: agent_budget has unknown keys: "
@@ -673,6 +713,12 @@ def load_config(root: Path) -> dict:
     # path stopped reading it. It is still accepted, so a project that sets it
     # keeps loading, and `doctor` names it as inert rather than reading it.
     cfg["inert_settings"] = ["agent_budget.followup_design"] if "followup_design" in agent_budget else []
+    # #409: the wall clock a managed role may spend running tests, given to it
+    # in its launch text beside the VERIFIED section
+    minutes = agent_budget.get("test_wall_clock_minutes", DEFAULT_TEST_WALL_CLOCK_MINUTES)
+    if not isinstance(minutes, int) or isinstance(minutes, bool) or not 1 <= minutes <= 600:
+        raise HandsoffError("handsoff.toml: agent_budget.test_wall_clock_minutes must be an integer from 1 to 600")
+    cfg["test_wall_clock_minutes"] = minutes
     for config_key, toml_key in (("check_commands", "commands"), ("live_check_commands", "live_commands")):
         value = checks.get(toml_key, cfg[config_key])
         if not isinstance(value, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in value):
@@ -694,6 +740,19 @@ def load_config(root: Path) -> dict:
     if not isinstance(timeout_value, int) or isinstance(timeout_value, bool) or timeout_value <= 0:
         raise HandsoffError("handsoff.toml: checks.timeout_seconds must be a positive integer")
     cfg["check_timeout_seconds"] = timeout_value
+    cfg["check_env"] = validate_check_env(checks.get("env", {}))
+    concurrency = checks.get("concurrency", 1)
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool) \
+            or not 1 <= concurrency <= MAX_CHECK_CONCURRENCY:
+        raise HandsoffError(f"handsoff.toml: checks.concurrency must be an integer from 1 to {MAX_CHECK_CONCURRENCY}")
+    cfg["check_concurrency"] = concurrency
+    # #412: an untracked file under one of these prefixes is work an
+    # implementer has not yet added, never reviewer scratch
+    source_paths = checks.get("source_paths", [])
+    if not isinstance(source_paths, list) or not all(
+            isinstance(item, str) and item.strip() and not item.startswith(("/", "../")) for item in source_paths):
+        raise HandsoffError("handsoff.toml: checks.source_paths must be a list of repository-relative paths")
+    cfg["check_source_paths"] = list(source_paths)
     for key in ("files", "exclude"):
         value = documentation.get(key, [])
         if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):

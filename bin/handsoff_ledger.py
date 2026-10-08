@@ -26,6 +26,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -302,7 +303,54 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
                 result["changed_paths_note"] = "snapshot not recorded"
             result["refresh_commands"].append(
                 f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
+    result.update(untracked_scratch_drift(root, cfg, result["changed_paths"],
+                                          truncated=result["changed_paths_truncated"]))
     return result
+
+
+def _tracked_paths(root: Path) -> set[str] | None:
+    """The paths git tracks at `root`, or None outside a git checkout."""
+    try:
+        probe = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=str(root),
+                               capture_output=True, text=True, timeout=10, check=False)
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            return None
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=str(root), capture_output=True,
+                                timeout=30, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {x.decode("utf-8", "replace") for x in listed.split(b"\0") if x}
+
+
+def _repository_prefix(prefix: object) -> str:
+    """#412: a [checks].source_paths value as a repository-relative prefix:
+    './src' and 'src/' are 'src', and '.', './' or '' are the whole
+    repository (returned as '', which every path is under)."""
+    return "/".join(part for part in str(prefix).replace("\\", "/").split("/") if part not in {"", "."})
+
+
+def untracked_scratch_drift(root: Path, cfg: dict, changed: list[str] | None, *,
+                            truncated: bool = False) -> dict:
+    """#412: drift whose changed paths are ALL untracked and outside every
+    [checks].source_paths prefix is scratch (a probe a reviewer left), not
+    work: named as such, with the command that removes the ones still
+    present. A tracked change, an untracked file under a source path, a
+    truncated list or a root outside git is reported as drift as always."""
+    none = {"untracked_scratch": False, "untracked_paths": [], "clean_command": None}
+    if not changed or truncated:
+        return none
+    tracked = _tracked_paths(root)
+    if tracked is None:
+        return none
+    sources = [_repository_prefix(prefix) for prefix in (cfg or {}).get("check_source_paths") or []]
+    for path in changed:
+        if path in tracked or any(prefix == "" or path == prefix or path.startswith(prefix + "/")
+                                  for prefix in sources):
+            return none
+    present = [path for path in changed if (Path(root) / path).exists()]
+    return {"untracked_scratch": True, "untracked_paths": list(changed),
+            "clean_command": ("git clean -f -- " + " ".join(shlex.quote(path) for path in present))
+            if present else None}
 
 
 def feature_enabled(cfg: dict, name: str) -> bool:
@@ -959,5 +1007,10 @@ def verification_config_hash(cfg: dict) -> str:
     bound["check_timeout_seconds"] = cfg.get("check_timeout_seconds")
     bound["regressions"] = [{"name": group.get("name"), "commands": list(group.get("commands", []))}
                             for group in cfg.get("regressions", [])]
+    # #410: the [checks].env table changes what a command proves, so evidence
+    # recorded under other values is stale. Bound only when set, so a project
+    # without one keeps the hash its evidence already carries.
+    if cfg.get("check_env"):
+        bound["check_env"] = dict(sorted(cfg["check_env"].items()))
     _bind_digest_ignore(bound, cfg)
     return hashlib.sha256(_canonical(bound).encode("utf-8")).hexdigest()

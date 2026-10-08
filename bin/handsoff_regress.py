@@ -693,7 +693,8 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
     log_path = Path(tempfile.gettempdir()) / (
         f"handsoff-regress-{os.getpid()}-{command_index}-{shard['index']}.log"
     )
-    env = {**os.environ, "PYTHONUNBUFFERED": "1",
+    # #410: inherited, then [checks].env, then the worker's own fixed variables
+    env = {**os.environ, **(state.get("check_env") or {}), "PYTHONUNBUFFERED": "1",
            "HANDSOFF_SKIP_PREFLIGHT": os.environ.get("HANDSOFF_SKIP_PREFLIGHT", "1")}
     timed_out = threading.Event()
     process = None
@@ -920,8 +921,10 @@ def _totals(state: dict) -> dict:
 def run_battery_results(root: Path, label: str, commands: list[str], *, timeout: int,
                         request_id: str | None = None, command_sha256: str | None = None,
                         max_shards: int = DEFAULT_SHARDS) -> list[dict]:
+    check_env: dict = {}
     try:
         cfg = lib.load_config(root)
+        check_env = lib.recorded_check_env(cfg)  # #410
         run_id = lib.feature_hash(lib.load_unique_json(lib.status_path(root, cfg)), lib.read_events(root, cfg))
     except (lib.HandsoffError, OSError):
         run_id = hashlib.sha256(str(Path(root).resolve()).encode("utf-8")).hexdigest()
@@ -936,7 +939,7 @@ def run_battery_results(root: Path, label: str, commands: list[str], *, timeout:
              "request_id": request_id, "command_sha256": approved_hash,
              "execution_id": normalized["execution_id"], "run_id": run_id,
              "planned_commands": list(commands), "worker_limit": max_shards,
-             "inventory": None, "collection_error": None}
+             "inventory": None, "collection_error": None, "check_env": check_env}
     heartbeat_stop = threading.Event()
 
     def keep_alive() -> None:

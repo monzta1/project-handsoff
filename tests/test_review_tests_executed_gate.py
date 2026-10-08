@@ -117,6 +117,8 @@ class ReviewTestsExecutedGateTests(HandsoffTestCase):
 
     # REQ-003
     def _evidence_refresh(self):
+        # #411: an identical tree keeps the review; a changed file revokes it
+        (self.tmp / "refresh.txt").write_text("a change after the review\n")
         result = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer"], cwd=self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIsNone(self.read_status()["review"])

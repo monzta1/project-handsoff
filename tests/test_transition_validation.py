@@ -177,7 +177,7 @@ class CommitIsTheOnlyWayAStatusReachesTheDisk(unittest.TestCase):
         ("handsoff_regress.main", "inventory_path(root)"),
         ("handsoff_supervisor._load_close_transaction", "path"),
         ("handsoff_supervisor._runtime_write", "path"),
-        ("handsoff_supervisor.cmd_verify", "snapshot"),
+        ("handsoff_supervisor._write_digest_snapshot", "snapshot"),  # #411: verify and record-review
         ("handsoff_supervisor.cmd_verify_live", "inflight_path"),
         ("handsoff_supervisor.on_progress", "inflight_path"),
         ("handsoff_supervisor.persist", "path"),

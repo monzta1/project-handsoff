@@ -322,7 +322,9 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
                         feature_hash: str | None = None,
                         repository_digest: str | None = None,
                         attempts: list[dict] | None = None,
-                        rules: dict | None = None) -> dict:
+                        rules: dict | None = None,
+                        env: dict | None = None,
+                        concurrency: int | None = None) -> dict:
     """Append a hash-chained evidence record. Caller must hold project_lock.
 
     #43: `binding` (command to verification_binding hash), `executed`,
@@ -378,12 +380,31 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
     if rules is not None:
         record["rules_hash"] = rules["rules_hash"]  # #170: a live record binds its rules set
         record["rules_entries"] = rules["rules_entries"]
+    if env is not None:
+        if not isinstance(env, dict) or len(env) > 32:
+            raise HandsoffError("verification record: 'env' must be an object of at most 32 entries")
+        record["env"] = dict(env)  # #410: the [checks].env table the commands ran under
+    if concurrency is not None:
+        record["concurrency"] = concurrency  # #410
     record["hash"] = hashlib.sha256((_canonical(record) + prev_hash).encode("utf-8")).hexdigest()
     with path.open("a", encoding="utf-8") as fh:
         fh.write(_canonical(record) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
     return record
+
+
+def live_record_specs_current(record: dict, criteria: list[dict]) -> bool:
+    """#411: a live record carrying the tree digest it ran on is bound to
+    the criterion specifications (its criterion_hashes), never to the
+    evidence-bearing acceptance hash, so re-verifying an unchanged tree
+    does not stale it; the tree half is checked where a digest is taken
+    (the re-verification that would rebind it). A legacy record without a
+    digest keeps the acceptance-hash binding."""
+    if not record.get("repository_digest"):
+        return record.get("acceptance_hash") == acceptance_hash(criteria)
+    current = {c.get("id"): criterion_spec_hash(c) for c in criteria if isinstance(c, dict)}
+    return record.get("criterion_hashes") == current
 
 
 def _is_green(criteria: list[dict]) -> bool:
@@ -639,8 +660,14 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     if root is not None and phase >= 5:
         drift = evidence_drift(root, cfg, acceptance, records)
         for cid in drift["stale"]:
-            paths = ", ".join(drift.get("changed_paths", []))
+            paths = ", ".join(drift.get("changed_paths") or [])
             suffix = f"; changed paths: {paths}" if paths else ""
+            if drift.get("untracked_scratch"):
+                # #412: every changed path is untracked scratch, not tracked work
+                suffix += (" (untracked scratch, not tracked work: remove it with "
+                           f"`{drift['clean_command']}`, or re-verify if it was present when verified)"
+                           if drift.get("clean_command") else
+                           " (untracked scratch, already removed; it was present when verified)")
             errors.append(f"evidence drift: {cid} was verified on a different repository digest{suffix}; "
                           f"re-run handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
     expected_coverage = coverage_for(criteria, resolved)
@@ -736,10 +763,14 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
             approval = status.get("deployment_approved") or {}
             if not record or record.get("kind") != "live" or record.get("ok") is not True:
                 errors.append("live gate: Phase 8 requires a successful live verification run")
-            elif record.get("acceptance_hash") != acceptance_hash(criteria):
+            elif not live_record_specs_current(record, criteria):
                 errors.append("live gate: acceptance changed since live verification")
             elif record.get("config_hash") != config_hash(cfg):
                 errors.append("live gate: workflow policy changed since live verification; run it again")
+            elif (record.get("env") or {}) != dict(cfg.get("check_env") or {}):
+                # #410: config_hash is blind to [checks].env; the live record
+                # carries the table it ran under, as every reader's does
+                errors.append("live gate: [checks].env changed since live verification; run it again")
             else:
                 live_rules_errors = rules_binding_errors(root, cfg, record, "live gate")
                 if live_rules_errors:

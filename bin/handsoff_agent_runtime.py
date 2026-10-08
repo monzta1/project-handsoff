@@ -831,14 +831,19 @@ def create_implementer_workspace(root: Path, session: dict) -> Path:
         raise HandsoffError(f"git worktree add failed: {result.stderr.strip()[:160]}")
     seeded = {}
     for relative in _changed_since(root, workspace["launch_commit"]):
+        if any(part.startswith(".handsoff") for part in relative.split("/")):
+            continue  # Handsoff's own side state (beacons, locks, temp files), never project content
         source, target = root / relative, path / relative
         if source.is_dir() and not source.is_symlink():
             continue  # a nested repository; git names it, not its files
         if target.is_symlink() or target.is_file():
             target.unlink()
-        if source.is_symlink() or source.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target, follow_symlinks=False)
+        try:
+            if source.is_symlink() or source.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target, follow_symlinks=False)
+        except FileNotFoundError:
+            continue  # removed while the workspace was seeded (an atomic write's temp file)
         seeded[relative] = _path_digest(target)
     # #416: the run's version pin (never in git) and its effective config (a
     # skip-worktree local edit git does not report) are seeded as well, so
@@ -873,6 +878,42 @@ def remove_implementer_workspace(root: Path, session: dict) -> None:
     _git(root, "worktree", "prune")
 
 
+def implementer_workspace_changes(cfg: dict, session: dict, manifest: dict | None = None) -> list[str]:
+    """#359 #413: the paths a workspace session changed, against what it was
+    seeded with: what an apply would copy back, and what `status` lists for a
+    stopped session's kept workspace. Handsoff's own state files are neither."""
+    workspace = Path(session["workspace"]["path"])
+    if manifest is None:
+        manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
+    seeded = manifest["seeded"]
+    state_files = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
+    # #416: handsoff.toml is out of the evidence digest but seeded here, so
+    # an unchanged copy is a no-op and an implementer's edit is attributed
+    # (and refused as outside its ownership), never silently dropped.
+    return sorted(
+        path for path in set(_changed_since(workspace, session["workspace"]["launch_commit"])) | set(seeded)
+        if (path == "handsoff.toml" or not _digest_excluded(path, state_files))
+        and (path not in seeded or _path_digest(workspace / path) != seeded[path]))
+
+
+#: #413: exit codes of a child stopped by a signal through a shell or runner
+STOPPED_EXIT_CODES = (130, 137, 143)
+
+
+def workspace_kept_on_stop(session: object) -> bool:
+    """#413: an implementer workspace is kept for an explicit disposition when
+    its session was stopped (cancelled, timed out, or its child killed by a
+    signal) and nothing was applied. A normal exit keeps today's automatic
+    apply, and a refused apply is removed as before."""
+    if not isinstance(session, dict) or not isinstance(session.get("workspace"), dict):
+        return False
+    if (session.get("apply") or {}).get("state") == "applied":
+        return False
+    state, code = session.get("state"), session.get("exit_code")
+    signalled = isinstance(code, int) and not isinstance(code, bool) and (code < 0 or code in STOPPED_EXIT_CODES)
+    return state in {"cancelled", "timed_out"} or (state == "failed" and signalled)
+
+
 def apply_implementer_workspace(root: Path, session_id: str) -> dict:
     """#359: copy an ownership-declaring implementer's changes back.
 
@@ -896,17 +937,8 @@ def apply_implementer_workspace(root: Path, session_id: str) -> dict:
             raise HandsoffError(f"agent session {session_id} has no implementer workspace")
         owned = session.get("owned_paths") or []
         workspace = Path(session["workspace"]["path"])
-        launch_commit = session["workspace"]["launch_commit"]
         manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
-        seeded = manifest["seeded"]
-        state_files = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
-        # #416: handsoff.toml is out of the evidence digest but seeded here, so
-        # an unchanged copy is a no-op and an implementer's edit is attributed
-        # (and refused as outside its ownership), never silently dropped.
-        changed = sorted(
-            path for path in set(_changed_since(workspace, launch_commit)) | set(seeded)
-            if (path == "handsoff.toml" or not _digest_excluded(path, state_files))
-            and (path not in seeded or _path_digest(workspace / path) != seeded[path]))
+        changed = implementer_workspace_changes(cfg, session, manifest)
         outside = [path for path in changed
                    if not any(path == mine or path.startswith(mine + "/") for mine in owned)]
         if outside:
@@ -1245,9 +1277,13 @@ def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
                              failure: dict | None = None, usage: dict | None = None,
                              reported_model: str | None = None,
-                             apply: dict | None = None) -> dict:
+                             apply: dict | None = None,
+                             halfway_at: str | None = None) -> dict:
     """Apply a session-ID-matched lifecycle-only update under the lock.
-    `apply` (#359) records a concurrent implementer's apply-back outcome."""
+    `apply` (#359) records a concurrent implementer's apply-back outcome.
+    `halfway_at` (#409) rides the transition to running, in the same commit."""
+    if halfway_at is not None and (state != "running" or not isinstance(halfway_at, str)):
+        raise HandsoffError("halfway_at is recorded on the transition to running only")
     if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
         raise HandsoffError("agent session id is invalid")
     if state not in AGENT_SESSION_STATES - {"launching"}:
@@ -1312,6 +1348,8 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         updated["state"] = state
         if state == "running":
             updated["running_at"] = now
+            if halfway_at is not None:
+                updated["halfway_at"] = halfway_at
             if role == "reviewer":
                 warnings = proposed.setdefault("warnings", [])
                 if "a reviewer is live; do not edit the tree" not in warnings:
@@ -1758,7 +1796,8 @@ def progress_summary(progress: list | None, acceptance: dict | None) -> dict:
     order = list(dict.fromkeys(automated + sorted(last)))
     out = {"done": [], "partial": [], "untouched": []}
     for criterion in order:
-        out[last.get(criterion, "untouched")].append(criterion)
+        # #413: present only when an implementer reported one
+        out.setdefault(last.get(criterion, "untouched"), []).append(criterion)
     return out
 
 

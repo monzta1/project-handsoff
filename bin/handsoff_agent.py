@@ -83,6 +83,12 @@ MAX_SUPERVISOR_REQUESTS = 8
 IMPLEMENTATION_REVIEW_PACKET_HEADING = "# Implementation review delta"
 #: #397: the engine-built packet every Phase-5 reviewer launch carries.
 IMPLEMENTATION_REVIEW_FULL_PACKET_HEADING = "# Implementation review packet"
+#: #413: the stop condition every implementer task carries.
+IMPLEMENTER_SCOPE_RULE = (
+    "# Scope exceptions\n\nFailures in paths you do not own are expected. Do not fix them or keep "
+    "re-running suites to chase them: report each once as `HANDSOFF_PROGRESS: {\"criterion\": \"ID\", "
+    "\"state\": \"scope_exception\", \"test\": \"COMMAND\", \"note\": \"PATH: what failed\"}` and stop."
+)
 
 # Managed coding roles need the repository shell, not the user's entire
 # interactive Codex plugin/app/tool catalogue.  Disabling those optional
@@ -147,7 +153,8 @@ def build_compact_role_input(root: Path, task: str, scope: list[dict]) -> str:
     review_packet = applicable_implementation_review_packet(Path(root).resolve(), "reviewer", compact=True)
     packet_section = ("" if review_packet is None else
                       f"{IMPLEMENTATION_REVIEW_FULL_PACKET_HEADING}\n\n"
-                      f"{json.dumps(review_packet, sort_keys=True, separators=(',', ':'))}\n\n")
+                      f"{json.dumps(review_packet, sort_keys=True, separators=(',', ':'))}\n\n"
+                      f"{lib.verified_section(Path(root).resolve(), lib.load_config(Path(root).resolve()))}\n\n")
     return (f"{packet_section}# Sandbox\n\nYou review a compact scope. Do not run `handsoff supervisor` commands. The host "
             "records your HANDSOFF_REVIEW_RESULT line.\n\n"
             "# Compact review scope\n\nYour working directory holds only these slices, one `.slice` "
@@ -197,7 +204,8 @@ def _reviewer_scratch(root: Path, adapter: str, role: str, *, create: bool = Tru
         return None
     root = root.resolve()
     if not create:
-        return root / ".handsoff-reviewer-inspect"
+        # #412: even the inspected (never launched) cwd is outside the root
+        return Path(tempfile.gettempdir()).resolve() / "handsoff-reviewer-inspect"
     scratch = Path(tempfile.mkdtemp(prefix="handsoff-reviewer-")).resolve()
     assert not (scratch == root or root in scratch.parents)
     return scratch
@@ -356,6 +364,9 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
                 "Write only inside the current directory.\n\n" + text)
     if role == "implementer":
         text = f"{lib.implementer_permissions_section(root)}\n\n{text}"
+        text = f"{text}\n\n{IMPLEMENTER_SCOPE_RULE}"  # #413
+        if lib.status_path(root, cfg).is_file() and lib.acceptance_path(root, cfg).is_file():
+            text = f"{text}\n\n{lib.verified_section(root, cfg)}"  # #409
         progress = _progress_section(root, role)  # #215: a relaunch knows what was finished
         if progress:
             text = f"{text}\n\n{progress}"
@@ -380,7 +391,9 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
         review_packet = applicable_implementation_review_packet(root, role)
         if review_packet is not None:
             review_json = json.dumps(review_packet, sort_keys=True, separators=(",", ":"))
-            text = f"{IMPLEMENTATION_REVIEW_FULL_PACKET_HEADING}\n\n{review_json}\n\n{text}"
+            # #409: the packet carries what may be reused rather than re-run
+            text = (f"{IMPLEMENTATION_REVIEW_FULL_PACKET_HEADING}\n\n{review_json}\n\n"
+                    f"{lib.verified_section(root, cfg)}\n\n{text}")
         if implementation_delta is not None:
             delta_json = json.dumps(implementation_delta, sort_keys=True, separators=(",", ":"))
             text = f"{IMPLEMENTATION_REVIEW_PACKET_HEADING}\n\n{delta_json}\n\n{text}"
@@ -465,6 +478,30 @@ def _launch_episode(history: dict, started_at: str | None) -> dict | None:
 #: #383: implementer sessions whose workspace is held for adoption, so the
 #: launcher's cleanup leaves it in place even if the session record refused.
 _HELD_WORKSPACES: set[str] = set()
+
+
+def _keep_stopped_workspace(root: Path, session_id: str) -> bool:
+    """#413: mark a stopped implementer's workspace pending and keep it.
+    True when it is kept; any failure to record falls back to removal, as
+    before, so a workspace is never kept without a record that names it."""
+    try:
+        with lib.project_lock(root):
+            cfg = lib.load_config(root)
+            status = lib.load_unique_json(lib.status_path(root, cfg))
+            session = (status.get("agent_sessions") or {}).get(session_id)
+            # a run the Pilot closed took its workspaces with it
+            if status.get("run_closed") or not lib.workspace_kept_on_stop(session):
+                return False
+            changed = lib.implementer_workspace_changes(cfg, session)
+            proposed = json.loads(json.dumps(status))
+            proposed["agent_sessions"][session_id]["workspace_disposition"] = "pending"
+            lib.commit(root, cfg, status=proposed, event_kind="implementer_workspace_kept",
+                       event_message="Stopped implementer's workspace kept for implementer-apply or "
+                                     "implementer-discard",
+                       session_id=session_id, state=session.get("state"), changed_paths=changed[:64])
+        return True
+    except (lib.HandsoffError, OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return False
 
 
 def _quarantine_late_result(root: Path, session_id: str, role: str, kind: str,
@@ -1303,6 +1340,41 @@ def _process_pid(process) -> int | None:
     return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
 
 
+#: #409: the roles whose task states the session's deadline and halfway mark
+DEADLINE_ROLES = frozenset({"reviewer", "implementer"})
+
+
+def _utc_stamp(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def session_deadline_section(launched_at: datetime, timeout: float) -> tuple[str, str]:
+    """#409: a headless role's input is closed at launch, so nothing can
+    reach it once it runs. The task states up front when the session ends
+    and where its halfway mark falls, both UTC from the launch time and the
+    timeout. Returns the section and the halfway mark the host records."""
+    deadline = launched_at + timedelta(seconds=float(timeout))
+    halfway = launched_at + timedelta(seconds=float(timeout) / 2)
+    text = (f"# Session deadline\n\n"
+            f"This session was launched at {_utc_stamp(launched_at)} with a {float(timeout):g}-second "
+            f"timeout. Its wall-clock deadline is {_utc_stamp(deadline)} and its halfway mark is "
+            f"{_utc_stamp(halfway)} (UTC). No message can reach you while you run, so no warning will "
+            "come: when tests are long, deliver your result before the halfway mark.")
+    return text, halfway.astimezone(timezone.utc).isoformat()
+
+
+def _with_session_deadline(spec: LaunchSpec, timeout: float,
+                           *, now=None) -> tuple[LaunchSpec, str | None]:
+    """#409: append the deadline section to a reviewer's or implementer's
+    task. Returns the halfway mark, which the transition to running records
+    on the session in the same commit."""
+    if spec.role not in DEADLINE_ROLES:
+        return spec, None
+    launched_at = now() if now else datetime.now(timezone.utc)
+    section, halfway_at = session_deadline_section(launched_at, timeout)
+    return dataclasses.replace(spec, stdin=f"{spec.stdin.rstrip()}\n\n{section}\n"), halfway_at
+
+
 class _LiveBeacon:
     """#33: a daemon thread that writes `.handsoff-live.json` every
     `interval` seconds while the child runs, plus one final write after the
@@ -1619,7 +1691,9 @@ def execute_launch(spec: LaunchSpec, *, timeout: int = 3600, actor: str | None =
                                         popen_factory=popen_factory, beacon_interval=beacon_interval)
     finally:
         # #383: a quarantined workspace is the result itself; adoption applies it.
-        if session_id not in _HELD_WORKSPACES:
+        # #413: a stopped session's workspace waits for implementer-apply or
+        # implementer-discard.
+        if session_id not in _HELD_WORKSPACES and not _keep_stopped_workspace(root, session_id):
             lib.remove_implementer_workspace(root, session)
         if isinstance(session.get("workspace"), dict):
             lib.live_beacon_path(root, session_id).unlink(missing_ok=True)
@@ -1629,6 +1703,7 @@ def _execute_started_session(spec: LaunchSpec, root: Path, session: dict, cwd: s
                              popen_factory, beacon_interval: float) -> int:
     capture_supervisor = spec.role == "supervisor"
     session_id = session["session_id"]
+    spec, halfway_at = _with_session_deadline(spec, timeout)  # #409
     child_env = (_reviewer_environment(os.environ.copy(), spec.env_overrides)
                  if spec.role == "reviewer" else os.environ.copy())
     child_env[MANAGED_ROLE_ENV] = spec.role
@@ -1674,6 +1749,7 @@ def _execute_started_session(spec: LaunchSpec, root: Path, session: dict, cwd: s
             spec, root, session_id, process, timeout, capture_supervisor, portable_output,
             repository_digest_before=repository_digest_before,
             beacon=beacon, workspace=isinstance(session.get("workspace"), dict),
+            halfway_at=halfway_at,
         )
         if spec.env_overrides and spec.role == "reviewer":
             shutil.rmtree(spec.cwd, ignore_errors=True)
@@ -1687,7 +1763,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                          timeout: int, capture_supervisor: bool,
                          portable_output: _PortableOutput,
                          repository_digest_before: str | None = None,
-                         beacon: _LiveBeacon | None = None, workspace: bool = False) -> int:
+                         beacon: _LiveBeacon | None = None, workspace: bool = False,
+                         halfway_at: str | None = None) -> int:
     """The lifecycle of an already-started child: exactly one terminal
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
@@ -1767,7 +1844,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 items[-1]["tests_executed"] = "no"
             lib.record_session_result(root, session_id, kind, items[-1])
     try:
-        lib.transition_agent_session(root, session_id, "running")
+        lib.transition_agent_session(root, session_id, "running", halfway_at=halfway_at)
     except Exception:
         _stop_process_group(process)
         raise

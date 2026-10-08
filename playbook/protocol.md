@@ -155,9 +155,9 @@ HANDSOFF_PROGRESS: {"criterion": "REQ-001", "state": "done", "test": "python3 -m
 | field | values | required |
 |---|---|---|
 | `criterion` | a criterion id | yes |
-| `state` | `done`, `partial`, `untouched` | yes |
+| `state` | `done`, `partial`, `untouched`, `scope_exception` | yes |
 | `test` | the command run, at most 512 characters | no |
 | `note` | at most 200 characters | no |
 
-Until the engine that carries #215 is installed, the line is a protocol
-warning like any other unknown line.
+`scope_exception` (#413): a failure outside owned paths; report it once in
+`note`, then stop.

@@ -318,6 +318,8 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         sid = self._assert_adopted("non_zero_exit", through_adoption=True)
         self.assertIsInstance(self._session()[2]["rules_entries"], dict)
         edit()
+        # #411: an identical tree keeps the review; a product change revokes it
+        (self.tmp / "product.txt").write_text("changed after the review\n")
         verified = run(["verify", "--all", "--by", "test-implementer"], cwd=self.tmp)
         self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
         self.assertIsNone(self.read_status()["review"], "verify clears the recorded review")
@@ -352,6 +354,7 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         del status["agent_sessions"][sid]["rules_entries"]
         lib.commit(self.tmp, lib.load_config(self.tmp), status=status, event_kind="fixture_legacy",
                    event_message="a reviewer session launched before rules_entries", actor="test")
+        (self.tmp / "product.txt").write_text("changed after the review\n")  # #411
         run(["verify", "--all", "--by", "test-implementer"], cwd=self.tmp)
         again = run(["session-result-adopt", "--session", sid, "--by", "test-pilot"], cwd=self.tmp)
         self.assertNotEqual(again.returncode, 0)

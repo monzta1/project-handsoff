@@ -173,7 +173,15 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  "compact", "quarantined_result",
                                  # #405 #406: the rules set a reviewer launched under; adoption
                                  # compares it with the current one. Absent on older sessions.
-                                 "rules_entries"}
+                                 "rules_entries",
+                                 # #409: the halfway mark the task stated, from launch time and timeout
+                                 "halfway_at",
+                                 # #413: a stopped implementer's kept workspace: pending until
+                                 # implementer-apply or implementer-discard decides it
+                                 "workspace_disposition"}
+
+#: #413
+WORKSPACE_DISPOSITIONS = ("pending", "applied", "discarded")
 
 
 #: #359: bounds on an implementer's declared ownership.
@@ -254,7 +262,9 @@ def _validate_session_apply(value: object) -> None:
 
 
 #: #215: one HANDSOFF_PROGRESS line per criterion the Implementer finished or abandoned
-PROGRESS_STATES = ("done", "partial", "untouched")
+#: #413: scope_exception is a failure outside the implementer's owned paths,
+#: reported once before it stops
+PROGRESS_STATES = ("done", "partial", "untouched", "scope_exception")
 
 
 PROGRESS_CRITERION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -1319,10 +1329,14 @@ def validate_status_schema(status: dict) -> list[str]:
             }
             label = f"status: regression_requests[{index}]"
             rid = item.get("request_id") if isinstance(item, dict) else None
-            optional = {"release_version", "release_class", "policy_override_reason", "timeout_seconds"}
+            optional = {"release_version", "release_class", "policy_override_reason", "timeout_seconds", "env"}
             if not isinstance(item, dict) or not required <= set(item) or set(item) - required - optional:
                 errors.append(f"{label} has invalid fields")
                 continue
+            env = item.get("env", {})  # #410: the [checks].env table the run used
+            if not isinstance(env, dict) or len(env) > 32 or not all(
+                    isinstance(k, str) and isinstance(v, str) and len(v) <= 1024 for k, v in env.items()):
+                errors.append(f"{label}.env is invalid")
             if "release_version" in item:
                 try:
                     normalized, release_class = classify_release_version(item.get("release_version"))
@@ -1455,6 +1469,12 @@ def validate_status_schema(status: dict) -> list[str]:
                             errors.append(f"{label}.{optional_field}: {exc}")
                         if session.get("role") != "implementer":
                             errors.append(f"{label}.{optional_field} applies only to implementer sessions")
+                    continue
+                if optional_field == "workspace_disposition":
+                    if value is not None and (value not in WORKSPACE_DISPOSITIONS
+                                              or session.get("role") != "implementer"):
+                        errors.append(f"{label}.workspace_disposition must be one of "
+                                      f"{', '.join(WORKSPACE_DISPOSITIONS)} on an implementer session")
                     continue
                 if optional_field == "compact":
                     # #388: only a reviewer is launched compact

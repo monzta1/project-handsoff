@@ -216,6 +216,8 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     active_regression_request,
     agent_profiles,
     apply_implementer_workspace,
+    implementer_workspace_changes,
+    workspace_kept_on_stop,
     claim_precreated_agent_session,
     create_agent_session,
     create_implementer_workspace,
@@ -300,6 +302,7 @@ from handsoff_workflow import (  # noqa: E402,F401
     gate_progress,
     handsoff_toml_hashes,
     lane_gate_refusal,
+    live_record_specs_current,
     load_launch_rules,
     pending_design_decline,
     plan_criteria_transaction,
@@ -407,8 +410,10 @@ from handsoff_config import (  # noqa: E402,F401
 )
 from handsoff_config import (  # noqa: E402,F401
     FIXTURE_ROOT_PREFIXES,
+    MAX_CHECK_CONCURRENCY,
     RUN_KINDS,
     classify_archive_record,
+    validate_check_env,
 )
 from handsoff_ledger import (  # noqa: E402,F401
     ANALYSIS_DIR,
@@ -5497,18 +5502,42 @@ def activity_view(status: dict, cfg: dict, root: Path, *, now: datetime | None =
 # check execution: close the loop between a claimed state and reality
 # --------------------------------------------------------------------------
 
+def check_environment(cfg: dict, fixed: dict | None = None) -> dict | None:
+    """#410: the overrides a verification command runs with, applied over the
+    inherited environment: [checks].env, then the reader's fixed variables.
+    None when there are none, so the child inherits unchanged."""
+    merged = {**(cfg.get("check_env") or {}), **(fixed or {})}
+    return merged or None
+
+
+def recorded_check_env(cfg: dict) -> dict:
+    """#410: what evidence records: the [checks].env table only, never the
+    inherited environment and never a reader's fixed variable."""
+    return dict(sorted((cfg.get("check_env") or {}).items()))
+
+
 def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
                timeout: int | None = None, *, allow_regression: bool = False,
                on_progress=None, env: dict | None = None,
-               progress_source: str = "verify") -> list[dict]:
+               progress_source: str = "verify", concurrency: int = 1,
+               on_result=None) -> list[dict]:
     """Actually execute the given commands (default: [checks].commands), in
     the project root. Each result is real evidence a criterion's evidence
     list can reference, not a sentence someone typed. Timeout comes from
-    handsoff.toml's checks.timeout_seconds (default 600s) unless overridden."""
+    handsoff.toml's checks.timeout_seconds (default 600s) unless overridden.
+
+    #410: the environment is the inherited one, then [checks].env, then the
+    reader's own fixed `env` (a regression seed), which wins. With
+    `concurrency` above 1 the commands run in a pool of that size; either
+    way `on_result(command, result)` is called in this thread as each one
+    finishes, so a caller's ledger writes stay single-writer. Results are
+    returned in the order the commands were given."""
     import subprocess
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     import handsoff_progress as test_progress
+    env = check_environment(cfg, env)
     timeout = timeout if timeout is not None else cfg.get("check_timeout_seconds", 600)
-    results = []
     selected = list(commands if commands is not None else cfg.get("check_commands", []))
     if not allow_regression:
         regression_commands = configured_regression_commands(cfg)
@@ -5537,17 +5566,20 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
     progress["totals"] = test_progress.aggregate_units(all_units)
     progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
     test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
-    for cmd in selected:
-        index = len(results) + 1
-        if on_progress:
-            on_progress(index, len(selected), cmd, None)
+    progress_lock = threading.Lock()
+
+    def publish():
+        with progress_lock:
+            progress["totals"] = test_progress.aggregate_units(all_units)
+            progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
+            test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
+
+    def run_one(index: int, cmd: str) -> dict:
         started = time.time()
         unit = all_units[index - 1]
         unit["state"] = "running"
         progress["state"] = "running"
-        progress["totals"] = test_progress.aggregate_units(all_units)
-        progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
-        test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
+        publish()
         try:
             proc = subprocess.Popen(cmd, shell=True, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, env={**os.environ, **env} if env else None)
@@ -5565,10 +5597,7 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
                 except subprocess.TimeoutExpired:
                     if time.monotonic() - last_heartbeat >= test_progress.HEARTBEAT_SECONDS:
                         unit["elapsed_seconds"] = round(time.time() - started, 2)
-                        progress["totals"] = test_progress.aggregate_units(all_units)
-                        progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
-                        if not test_progress.write(root, progress, expected_execution_id=progress["execution_id"]):
-                            pass
+                        publish()
                         last_heartbeat = time.monotonic()
             returncode = proc.returncode
             output = stdout + stderr
@@ -5585,25 +5614,51 @@ def run_checks(cfg: dict, root: Path, commands: list[str] | None = None,
         # #43: the three flags the verification cache reads. A timed-out
         # (124) or truncated result is real evidence of what happened but
         # never a reusable proof that the command passes.
-        results.append({
+        result = {
             "command": cmd, "exit_code": returncode, "output_sha256": output_hash,
             "duration_s": round(time.time() - started, 2),
             "timed_out": returncode == 124,
             "truncated": len(output) > CHECK_OUTPUT_TAIL_CHARS,
             "output_bytes": len(raw),
             "output_tail": output[-CHECK_OUTPUT_TAIL_CHARS:],
-        })
+        }
         unit["state"] = "timed_out" if returncode == 124 else ("passed" if returncode == 0 else "failed")
         unit["done"] = 1
         unit["progress"] = 1.0
-        unit["elapsed_seconds"] = results[-1]["duration_s"]
+        unit["elapsed_seconds"] = result["duration_s"]
         unit["result"] = f"exit {returncode}"
-        progress["totals"] = test_progress.aggregate_units(all_units)
-        progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
-        progress["state"] = progress["totals"]["state"]
-        test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
+        with progress_lock:
+            progress["totals"] = test_progress.aggregate_units(all_units)
+            progress["units"] = all_units[:test_progress.MAX_VISIBLE_UNITS]
+            progress["state"] = progress["totals"]["state"]
+            test_progress.write(root, progress, expected_execution_id=progress["execution_id"])
+        return result
+
+    by_index: dict[int, dict] = {}
+
+    def finished(index: int, cmd: str, result: dict) -> None:
+        by_index[index] = result
         if on_progress:
-            on_progress(index, len(selected), cmd, results[-1])
+            on_progress(index, len(selected), cmd, result)
+        if on_result:
+            on_result(cmd, result)
+
+    if concurrency <= 1 or len(selected) <= 1:
+        for index, cmd in enumerate(selected, 1):
+            if on_progress:
+                on_progress(index, len(selected), cmd, None)
+            finished(index, cmd, run_one(index, cmd))
+    else:
+        with ThreadPoolExecutor(max_workers=min(concurrency, len(selected))) as pool:
+            futures = {}
+            for index, cmd in enumerate(selected, 1):
+                if on_progress:
+                    on_progress(index, len(selected), cmd, None)
+                futures[pool.submit(run_one, index, cmd)] = (index, cmd)
+            for future in as_completed(futures):
+                index, cmd = futures[future]
+                finished(index, cmd, future.result())
+    results = [by_index[index] for index in range(1, len(selected) + 1)]
     final_state = progress["totals"]["state"]
     if final_state not in test_progress.TERMINAL_STATES:
         final_state = "passed" if all(item["state"] == "passed" for item in all_units) else "failed"
@@ -6613,6 +6668,91 @@ def implementation_review_packet(root: Path, cfg: dict, *, compact: bool = False
     return build_implementation_review_packet(
         (acceptance or {}).get("criteria") or [], records,
         diff if diff is not None else implementation_review_diff(root), compact=compact)
+
+
+VERIFIED_HEADING = "# VERIFIED"
+VERIFIED_GUIDANCE = (
+    "Recorded verification for this run. A command listed as reusable passed on the current tree, "
+    "configuration and [checks].env, with no later failure: do not re-run it unless a finding needs "
+    "it, and run focused tests instead. A command listed as not reusable names why."
+)
+
+
+def verified_commands(root: Path, cfg: dict) -> list[dict]:
+    """#409: for each [checks] command with a recorded run in this run, its
+    reuse standing: reusable (a passing executed run for this run's feature,
+    bound to the current verification binding, with no later failure of the
+    same command) or not, with the reason: stale tree, changed env, changed
+    configuration, changed criterion, later failure or failed."""
+    root = Path(root).resolve()
+    status = load_unique_json(status_path(root, cfg))
+    acceptance = load_unique_json(acceptance_path(root, cfg))
+    records, _problems = load_verifications(root, cfg)
+    run_hash = feature_hash(status, read_events(root, cfg))
+    digest = repository_digest(root, cfg)
+    config_digest = verification_config_hash(cfg)
+    env = recorded_check_env(cfg)
+    specs = {c.get("id"): criterion_spec_hash(c) for c in (acceptance or {}).get("criteria") or []
+             if isinstance(c, dict)}
+    rows = []
+    for command in cfg.get("check_commands", []):
+        mine = [(record, result) for record in records
+                if isinstance(record, dict) and record.get("kind") == "checks"
+                and record.get("feature_hash") == run_hash
+                for result in record.get("results") or []
+                if isinstance(result, dict) and result.get("command") == command]
+        if not mine:
+            continue
+        last_pass = next((index for index in range(len(mine) - 1, -1, -1)
+                          if mine[index][0].get("executed") is True and check_result_reusable(mine[index][1])),
+                         None)
+        if last_pass is None:
+            rows.append({"command": command, "reusable": False, "reason": "failed",
+                         "run_id": mine[-1][0].get("run_id")})
+            continue
+        record = mine[last_pass][0]
+        later_failure = next((r for r, result in mine[last_pass + 1:] if result.get("exit_code") != 0), None)
+        # the binding's parts (verification_binding): tree, configuration
+        # (which carries [checks].env) and the specs it was verified under
+        reason = None
+        if later_failure is not None:
+            reason = f"later failure ({later_failure.get('run_id')})"
+        elif record.get("repository_digest") != digest:
+            reason = "stale tree"
+        elif (record.get("env") or {}) != env:
+            reason = "changed env"
+        elif record.get("config_hash") != config_digest:
+            reason = "changed configuration"
+        elif any(specs.get(cid) != spec for cid, spec in (record.get("criterion_hashes") or {}).items()):
+            reason = "changed criterion"
+        rows.append({"command": command, "reusable": reason is None, "reason": reason,
+                     "run_id": record.get("run_id"), "at": record.get("at")})
+    return rows
+
+
+def verified_section(root: Path, cfg: dict) -> str:
+    """#409: the VERIFIED section the implementation review packet and the
+    implementer task carry, with the role's test wall-clock budget."""
+    try:
+        rows = verified_commands(root, cfg)
+    except (HandsoffError, OSError, ValueError):
+        rows = []
+    lines = [VERIFIED_HEADING, "", VERIFIED_GUIDANCE,
+             f"Test budget: spend at most {cfg.get('test_wall_clock_minutes', 20)} minutes of wall clock "
+             "running tests in this session ([agent_budget].test_wall_clock_minutes).", ""]
+    for row in rows:
+        if row["reusable"]:
+            lines.append(f"- reusable: `{row['command']}` (run {row['run_id']}, {row.get('at')})")
+        else:
+            lines.append(f"- not reusable: `{row['command']}` ({row['reason']}; last pass {row['run_id']})"
+                         if row["reason"] != "failed" else
+                         f"- not reusable: `{row['command']}` (failed; run {row['run_id']})")
+    if not rows:
+        lines.append("- no [checks] command has a recorded run in this run")
+    others = len(cfg.get("check_commands", [])) - len(rows)
+    if rows and others > 0:
+        lines.append(f"- {others} other [checks] commands have no recorded run in this run")
+    return "\n".join(lines)
 
 
 def implementation_review_estimate(*, diff_bytes: int, packet_bytes: int) -> int:
@@ -8031,6 +8171,11 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
                 if replacement.get("to_session_id") == sid and replacement.get("state") in {"claimed", "running"}:
                     replacement["state"] = "failed"
                     replacement["ended_at"] = now
+        # #413: a stopped implementer's kept workspace closes with the run
+        kept = [target for target in (proposed.get("agent_sessions") or {}).values()
+                if isinstance(target, dict) and target.get("workspace_disposition") == "pending"]
+        for target in kept:
+            target["workspace_disposition"] = "discarded"
         proposed["background_wait"] = None
         proposed["human_pause"] = None
         proposed["recovery_lease"] = None
@@ -8058,7 +8203,7 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
         # #359: a cancelled implementer's worktree and seed record go with it;
         # its launcher's own cleanup never runs once that process is gone,
         # and removal is idempotent when it does.
-        for session in live:
+        for session in [*live, *kept]:
             remove_implementer_workspace(root, session)
     dashboard =release_run_dashboard(root) if release_dashboard else {
         "released": False, "reason": "dashboard release delegated to caller",

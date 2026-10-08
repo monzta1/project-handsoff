@@ -2033,7 +2033,11 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
         self.assertFalse(kwargs["shell"])
         self.assertTrue(kwargs["start_new_session"])
         self.assertEqual(kwargs["cwd"], str(self.tmp))
-        self.assertEqual(calls[0], ("prompt and task", 12))
+        # #409: an implementer's task ends with its session deadline section
+        sent, sent_timeout = calls[0]
+        self.assertEqual(sent_timeout, 12)
+        self.assertTrue(sent.startswith("prompt and task\n\n# Session deadline\n\n"))
+        self.assertIn("with a 12-second timeout", sent)
 
         failed = FakeProcess()
         failed.returncode = 9
@@ -2283,8 +2287,11 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "host_session_id": None, "amendment_id": None,
             # #168: usage per session; a fake process reports none.
             "usage": {"source": "not reported", "tokens_in": None, "tokens_out": None, "tokens_total": None},
+            # #409: an implementer's session records its halfway mark
+            "halfway_at": session["halfway_at"],
         })
         self.assertIsNotNone(session["running_at"])
+        self.assertIsNotNone(session["halfway_at"])
         self.assertIsNotNone(session["ended_at"])
         # #420: the completed session leaves the pointer and stays the role's latest session
         self.assertNotIn("implementer", status["current_agent_sessions"])
@@ -10256,9 +10263,10 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertEqual(run(["advance", "6", "80", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
         design_before_p6_evidence = self.read_status()["design_approved"]
 
-        # Re-running verify at phase 6 must still re-invalidate review per
-        # the pre-existing rollback_to=5 cascade (unchanged regression
-        # coverage), while design_approved -- the new field -- survives.
+        # Re-running verify at phase 6 on a changed tree must still
+        # re-invalidate review per the rollback_to=5 cascade (#411: an
+        # identical tree keeps it), while design_approved survives.
+        (self.tmp / "product.txt").write_text("changed after the review\n")
         verify_again = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
         self.assertEqual(verify_again.returncode, 0, verify_again.stdout + verify_again.stderr)
         after_p6 = self.read_status()

@@ -72,6 +72,8 @@ OPERATION_REGISTRY = {
     "review-attempt-start": {"class": "agent-only", "surface": "review-attempts-panel"},
     "record-review-findings": {"class": "agent-only", "surface": "review-attempts-panel"},
     "session-result-adopt": {"class": "operator-facing", "surface": "review-attempts-panel"},
+    "implementer-apply": {"class": "agent-only", "surface": "live-status"},  # #413
+    "implementer-discard": {"class": "destructive", "surface": "live-status"},  # #413
     "review-cap-override": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "recover": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "watch": {"class": "automatic", "surface": "live-status"},
@@ -508,6 +510,153 @@ def _invalidate_decisions(status: dict, *, rollback_to: int = 5, invalidate_desi
     return revoked
 
 
+def _reviewed_design_hash(status: dict) -> str | None:
+    """#411: the design a review judged: the recorded proposal's hash, else
+    the approved design's, else None (a run that never had a design)."""
+    for key in ("design_proposal", "design_approved"):
+        value = status.get(key)
+        if isinstance(value, dict) and value.get("design_hash"):
+            return value["design_hash"]
+    return None
+
+
+def _reviewed_binding(root: Path, cfg: dict, status: dict, acceptance: dict) -> dict:
+    """#411: what a review certified: the repository digest of the tree it
+    reviewed, the criterion specifications hash (lib.design_hash: specs
+    only, never evidence ids) and the design hash. The digest's per-path
+    snapshot is kept so a later rollback can name the changed paths."""
+    digest = lib.repository_digest(root, cfg)
+    _write_digest_snapshot(root, cfg, digest)
+    return {"digest": digest, "specs_hash": lib.design_hash(acceptance.get("criteria", [])),
+            "design_hash": _reviewed_design_hash(status)}
+
+
+def _write_digest_snapshot(root: Path, cfg: dict, digest: str, *, replace: bool = False) -> None:
+    digest_dir = root / ".handsoff-digests"
+    digest_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = digest_dir / f"{digest}.json"
+    if replace or not snapshot.exists():
+        lib.atomic_write_json(snapshot, {"digest": digest, "entries": lib.repository_digest_entries(root, cfg)})
+    snapshots = sorted(digest_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in snapshots[16:]:
+        old.unlink()
+
+
+def _changed_paths_since(root: Path, cfg: dict, digest: str | None) -> list[str] | None:
+    """Paths whose content differs from the snapshot of `digest`, or None
+    when no snapshot was kept."""
+    snapshot = root / ".handsoff-digests" / f"{digest}.json"
+    if not digest or not snapshot.is_file():
+        return None
+    try:
+        old = lib.load_unique_json(snapshot).get("entries", {})
+    except (OSError, lib.HandsoffError, ValueError):
+        return None
+    current = lib.repository_digest_entries(root, cfg)
+    return sorted(path for path in {*old, *current} if old.get(path, "<absent>") != current.get(path, "<absent>"))
+
+
+def _review_retention_refusal(root: Path, cfg: dict, status: dict, acceptance: dict, *,
+                              digest_before: str, digest_after: str, rechecked: list[dict]) -> str | None:
+    """#411: why the recorded review cannot stand after new evidence, or
+    None when it can: the completion-time digest, the specs hash and the
+    design hash all equal the reviewed binding, no command edited the tree
+    while it ran, and every re-checked criterion still passes."""
+    review = status.get("review")
+    binding = review.get("reviewed_binding") if isinstance(review, dict) else None
+    if not isinstance(binding, dict) or not binding.get("digest") or not binding.get("specs_hash"):
+        return "the review records no reviewed binding"
+    if digest_before != digest_after:
+        paths = _changed_paths_since(root, cfg, digest_before)
+        return ("a command edited the tree while it ran"
+                + (f": {', '.join(paths[:16])}" if paths else ""))
+    if digest_after != binding["digest"]:
+        paths = _changed_paths_since(root, cfg, binding["digest"])
+        return ("the tree changed since the review"
+                + (f": {', '.join(paths[:16])}" if paths else " (no snapshot to name the paths)"))
+    if lib.design_hash(acceptance.get("criteria", [])) != binding["specs_hash"]:
+        return "the criterion specifications changed since the review"
+    if _reviewed_design_hash(status) != binding.get("design_hash"):
+        return "the design changed since the review"
+    failed = [c.get("id") for c in rechecked if c.get("state") != "passing"]
+    if failed:
+        return f"a re-checked criterion is not passing: {', '.join(failed)}"
+    return None
+
+
+def _live_binding_holds(root: Path, cfg: dict, live_id: str, acceptance: dict, digest: str) -> bool:
+    """#411: the recorded live run still stands for this tree: it carries
+    the completion digest it ran on, equal to `digest`, its criterion
+    specifications, configuration and [checks].env are current."""
+    records, _problems = lib.load_verifications(root, cfg)
+    record = next((r for r in records if isinstance(r, dict) and r.get("run_id") == live_id), None)
+    return (isinstance(record, dict) and record.get("kind") == "live" and record.get("ok") is True
+            and bool(record.get("repository_digest")) and record.get("repository_digest") == digest
+            and lib.live_record_specs_current(record, acceptance.get("criteria", []))
+            and record.get("config_hash") == lib.config_hash(cfg)
+            and (record.get("env") or {}) == lib.recorded_check_env(cfg))
+
+
+def _retain_or_invalidate(root: Path, cfg: dict, status: dict, acceptance: dict, *,
+                          digest_before: str, digest_after: str, rechecked: list[dict]) -> dict | None:
+    """#411: after verify or record-evidence, keep the review, the phase,
+    the progress and the deployment approval when the reviewed binding
+    still holds, rebinding their acceptance hashes to the new evidence in
+    the same commit; otherwise roll back as _invalidate_decisions always
+    has. Returns the outcome to record (None when there was no review)."""
+    review = status.get("review")
+    if not isinstance(review, dict):
+        _invalidate_decisions(status)
+        return None
+    reason = _review_retention_refusal(root, cfg, status, acceptance, digest_before=digest_before,
+                                       digest_after=digest_after, rechecked=rechecked)
+    if reason is not None:
+        # named in the event and the command's output; next_action stays the
+        # rolled-back phase's own default (#110)
+        _invalidate_decisions(status)
+        return {"retained": False, "reason": reason}
+    binding = review["reviewed_binding"]
+    previous = review.get("acceptance_hash")
+    current = lib.acceptance_hash(acceptance.get("criteria", []))
+    review["acceptance_hash"] = current
+    deployment = status.get("deployment_approved")
+    if isinstance(deployment, dict):
+        deployment["acceptance_hash"] = current
+    closed = [a for a in status.get("review_attempts") or [] if isinstance(a, dict) and a.get("closed_at")]
+    if closed and closed[-1].get("disposition") == "approved" and closed[-1].get("acceptance_hash") == previous:
+        closed[-1]["acceptance_hash"] = current
+    # A live verification is evidence with its own binding (the criterion
+    # specifications, the tree digest and the [checks].env it ran under),
+    # never the evidence-bearing acceptance hash: re-verifying the same tree
+    # keeps it; when that binding moved, the live run alone is stale and is
+    # re-run with verify-live.
+    live_cleared = None
+    if status.get("live_verification_id") and not _live_binding_holds(
+            root, cfg, status["live_verification_id"], acceptance, digest_after):
+        live_cleared = status["live_verification_id"]
+        status["live_verification_id"] = None
+        if int(status.get("phase_number") or 0) >= 8:
+            # Phase 8 stands on the live run; the run waits at Phase 7 for it
+            status["phase_number"] = 7
+            status["phase"] = lib.PHASES[7]
+            status["status"] = "in_progress"
+            status["progress"] = min(status.get("progress", 0), 90)
+            status["next_action"] = lib.NEXT_ACTION_DEFAULTS[7]
+    return {"retained": True, "digest": binding["digest"], "specs_hash": binding["specs_hash"],
+            "design_hash": binding.get("design_hash"), "previous_acceptance_hash": previous,
+            "acceptance_hash": current, "live_verification_cleared": live_cleared}
+
+
+def _retention_events(outcome: dict | None) -> list[dict]:
+    if not outcome or not outcome.get("retained"):
+        return []
+    return [{"kind": "review_retained",
+             "message": "Re-verification of the reviewed tree kept the review",
+             **{key: outcome[key] for key in ("digest", "specs_hash", "design_hash",
+                                              "previous_acceptance_hash", "acceptance_hash",
+                                              "live_verification_cleared")}}]
+
+
 def _approval_edit_guard(status: dict, revoke: bool) -> bool:
     """Require an explicit opt-in before registry edits destroy an approved design.
 
@@ -922,6 +1071,8 @@ def cmd_status(args) -> int:
         "live_sessions": [{field: session.get(field) for field in
                            ("session_id", "role", "actor", "state", "started_at", "owned_paths")}
                           for session in lib.live_agent_sessions(status)],
+        # #413: a stopped implementer's kept workspace and what it changed
+        "kept_workspaces": _kept_workspaces(cfg, status),
         "unattributed_criteria": lib.derive_work_items(status, acceptance, cfg)["unattributed_criteria"],
         "crew": lib.crew_view(cfg),
         "event_log_intact": not log_problems, "event_log_problems": log_problems,
@@ -1851,6 +2002,9 @@ def _regression_bindings(root: Path, cfg: dict, acceptance: dict, status: dict) 
         "regression_gate": cfg.get("regression_gate", {}),
         "check_timeout_seconds": cfg.get("check_timeout_seconds"),
     }
+    if cfg.get("check_env"):
+        # #410: a regression run under other [checks].env values is another run
+        regression_policy["check_env"] = lib.recorded_check_env(cfg)
     events = lib.read_events(root, cfg)
     epoch = {
         "sessions": sorted((status.get("agent_sessions") or {}).keys()),
@@ -2535,6 +2689,7 @@ def cmd_regression_run(args) -> int:
             if bindings_valid else "invalidated"
         item["completed_at"] = now
         item["results"] = _durable_results(results)
+        item["env"] = lib.recorded_check_env(cfg)  # #410: bound through _regression_bindings
         status["updated_at"] = now
         lib.commit(root, cfg, status=status, event_kind=f"regression_{item['state']}",
                    event_message=f"Regression request {item['state']}", request_id=item["request_id"])
@@ -2631,6 +2786,9 @@ def cmd_verify(args) -> int:
         # the command actually ran against, not whatever it left behind.
         run_hash = lib.feature_hash(status, lib.read_events(root, cfg))
         repo_digest = lib.repository_digest(root, cfg)
+        # #411: the pre-run snapshot, so a command that edits the tree while
+        # it runs can be named against what it started from
+        _write_digest_snapshot(root, cfg, repo_digest)
         config_digest = lib.verification_config_hash(cfg)
         bindings = {
             cmd: lib.verification_binding(cmd, repo_digest, config_digest,
@@ -2660,6 +2818,95 @@ def cmd_verify(args) -> int:
         launched = [cmd for cmd in needed if cmd not in reused]
         repeat_attempts: dict[str, list[dict]] = {}
         results_by_command: dict[str, dict] = {}
+        for cmd, source in reused.items():
+            copied = next(r for r in source["results"] if r.get("command") == cmd)
+            results_by_command[cmd] = {**copied, "reused_from": source["run_id"]}
+        check_env = lib.recorded_check_env(cfg)  # #410: the table only
+        concurrency = int(cfg.get("check_concurrency", 1) or 1)
+        written: dict[str, dict] = {}
+
+        def write_record(status: dict, criterion: dict, records: list[dict]) -> tuple[dict, dict]:
+            """Append one criterion's record and set its state. The caller
+            holds the project lock and commits `status` and the acceptance."""
+            own_tests = list(criterion.get("tests", []))
+            own_results = [results_by_command[t] for t in own_tests]
+            # #410: passing only when every one of its commands passed
+            own_ok = bool(own_results) and all(r["exit_code"] == 0 for r in own_results)
+            attempts = repeat_attempts.get(criterion["id"])
+            if attempts is not None:
+                # #169: every attempt must pass; the record names the one that did not
+                own_ok = bool(attempts) and all(a["ok"] for a in attempts) and len(attempts) == int(criterion["repeat"])
+            own_sources = {reused[t]["run_id"] for t in own_tests if t in reused}
+            # A record is executed only when every one of its commands
+            # was launched here; a partially reused multi-command record
+            # is not a reuse source, and names its source only when all
+            # of its reused results came from the same record (each
+            # copied result carries its own reused_from regardless).
+            executed = not own_sources
+            record_digest = repo_digest if executed else next(
+                (reused[t].get("repository_digest") for t in own_tests if t in reused), None)
+            reused_from = next(iter(own_sources)) if len(own_sources) == 1 else None
+            failed_attempt = next((a for a in (attempts or []) if not a["ok"]), None)
+            record = lib.append_verification(
+                root, cfg, kind="checks", ok=own_ok, by=args.by,
+                criteria=[criterion], results=_durable_results(own_results),
+                commands=own_tests,
+                binding={t: bindings[t] for t in own_tests}, executed=executed,
+                reused_from=reused_from, feature_hash=run_hash,
+                repository_digest=record_digest, config_digest=config_digest,
+                attempts=attempts, env=check_env, concurrency=concurrency,
+                description=(f"repeat {criterion['repeat']}: failed at attempt {failed_attempt['attempt']}"
+                             + (f" (seed {failed_attempt['seed']})" if failed_attempt.get("seed") else "")
+                             if failed_attempt else f"repeat {criterion['repeat']}: {len(attempts)}/{criterion['repeat']} passed")
+                if attempts is not None else None)
+            if record_digest:
+                # the executed digest's snapshot was taken before the run (#411)
+                _write_digest_snapshot(root, cfg, record_digest)
+            status["verification_head"] = record["hash"]
+            if record["run_id"] not in criterion["evidence"]:
+                criterion["evidence"].append(record["run_id"])
+            if not own_ok:
+                criterion["state"] = "failing"
+            elif lib.criterion_fully_evidenced(criterion, records + [record]):
+                criterion["state"] = "passing"
+            else:
+                criterion["state"] = "not_tested"
+            return record, {"run_id": record["run_id"], "ok": own_ok,
+                            "executed": executed, "reused_from": reused_from,
+                            **({"attempts": len(attempts), "repeat": int(criterion["repeat"])}
+                               if attempts is not None else {})}
+
+        def record_completed(cmd: str, result: dict) -> None:
+            """#410: as each concurrent command finishes, every criterion
+            whose commands are now all done is written in one single-writer
+            transaction under the project lock. A criterion that changed or
+            an audit failure is left to the final pass, which refuses it."""
+            results_by_command[cmd] = result
+            ready = [cid for cid in args.criterion if cid not in written and cid not in repeated
+                     and all(t in results_by_command for t in tests_by_criterion[cid])]
+            if not ready:
+                return
+            with lib.project_lock(root):
+                status, acceptance, records, problems = _load_all(root, cfg)
+                if _audit_errors(root, cfg, status, records, problems):
+                    return
+                fresh = {cid: _criterion(acceptance, cid) for cid in ready}
+                if any(c is None or lib.criterion_spec_hash(c) != before[cid] for cid, c in fresh.items()):
+                    return
+                entries = {}
+                for cid in ready:
+                    record, entries[cid] = write_record(status, fresh[cid], records)
+                    records.append(record)
+                lib.sync_coverage(status, acceptance)
+                status["updated_at"] = datetime.now(timezone.utc).isoformat()
+                lib.commit(root, cfg, status=status, acceptance=acceptance,
+                           event_kind="criterion_checks_recorded",
+                           event_message=f"Recorded checks for {', '.join(ready)} as their commands finished",
+                           criteria=entries, command=cmd, concurrency=concurrency)
+                written.update(entries)
+
+        tests_by_criterion = {c["id"]: list(c.get("tests", [])) for c in criteria}
+        concurrent = concurrency > 1 and not expect_fail and not repeated and len(launched) > 1
         if repeated:
             # each repeat criterion's commands run N times on their own; a
             # command shared with a plain criterion is run for that one too
@@ -2673,13 +2920,15 @@ def cmd_verify(args) -> int:
             plain_needed = [cmd for cmd in launched if cmd not in results_by_command]
             results = (lib.run_checks(cfg, root, commands=plain_needed) if plain_needed else []) \
                 + [results_by_command[cmd] for cmd in launched if cmd in results_by_command]
+        elif concurrent:
+            results = lib.run_checks(cfg, root, commands=launched, concurrency=concurrency,
+                                     on_result=record_completed)
         else:
             results = lib.run_checks(cfg, root, commands=launched) if launched else []
         results_by_command.update({r["command"]: r for r in results})
-        for cmd, source in reused.items():
-            copied = next(r for r in source["results"] if r.get("command") == cmd)
-            results_by_command[cmd] = {**copied, "reused_from": source["run_id"]}
         results = [results_by_command[cmd] for cmd in needed]
+        # #411: the digest when the commands completed, never the pre-run one
+        completion_digest = lib.repository_digest(root, cfg)
         with lib.project_lock(root):
             status, acceptance, existing_records, verification_problems = _load_all(root, cfg)
             audit_errors = _audit_errors(root, cfg, status, existing_records, verification_problems)
@@ -2704,7 +2953,7 @@ def cmd_verify(args) -> int:
                         criteria=[criterion], results=_durable_results(own_results),
                         commands=own_tests, binding={t: bindings[t] for t in own_tests},
                         executed=True, feature_hash=run_hash, repository_digest=repo_digest,
-                        config_digest=config_digest,
+                        config_digest=config_digest, env=check_env,
                         description="baseline: commands expected to fail before the feature"
                         if valid else "baseline_invalid: a command passed before the feature")
                     status["verification_head"] = record["hash"]
@@ -2724,62 +2973,15 @@ def cmd_verify(args) -> int:
                 print(__import__("json").dumps({"ok": overall_ok, "expected": "fail", "criteria": per_criterion,
                                                 "results": results, "launched": launched, "reused": {}}, indent=2))
                 return 0 if overall_ok else 1
+            new_records: list[dict] = []
             for criterion in criteria:
-                own_tests = list(criterion.get("tests", []))
-                own_results = [results_by_command[t] for t in own_tests]
-                own_ok = bool(own_results) and all(r["exit_code"] == 0 for r in own_results)
-                attempts = repeat_attempts.get(criterion["id"])
-                if attempts is not None:
-                    # #169: every attempt must pass; the record names the one that did not
-                    own_ok = bool(attempts) and all(a["ok"] for a in attempts) and len(attempts) == int(criterion["repeat"])
-                own_sources = {reused[t]["run_id"] for t in own_tests if t in reused}
-                # A record is executed only when every one of its commands
-                # was launched here; a partially reused multi-command record
-                # is not a reuse source, and names its source only when all
-                # of its reused results came from the same record (each
-                # copied result carries its own reused_from regardless).
-                executed = not own_sources
-                record_digest = repo_digest if executed else next(
-                    (reused[t].get("repository_digest") for t in own_tests if t in reused), None)
-                reused_from = next(iter(own_sources)) if len(own_sources) == 1 else None
-                failed_attempt = next((a for a in (attempts or []) if not a["ok"]), None)
-                record = lib.append_verification(
-                    root, cfg, kind="checks", ok=own_ok, by=args.by,
-                                         criteria=[criterion], results=_durable_results(own_results),
-                    commands=own_tests,
-                    binding={t: bindings[t] for t in own_tests}, executed=executed,
-                    reused_from=reused_from, feature_hash=run_hash,
-                    repository_digest=record_digest, config_digest=config_digest,
-                    attempts=attempts,
-                    description=(f"repeat {criterion['repeat']}: failed at attempt {failed_attempt['attempt']}"
-                                 + (f" (seed {failed_attempt['seed']})" if failed_attempt.get("seed") else "")
-                                 if failed_attempt else f"repeat {criterion['repeat']}: {len(attempts)}/{criterion['repeat']} passed")
-                    if attempts is not None else None)
-                if record_digest:
-                    digest_dir = root / ".handsoff-digests"
-                    digest_dir.mkdir(parents=True, exist_ok=True)
-                    snapshot = digest_dir / f"{record_digest}.json"
-                    if executed or not snapshot.exists():
-                        lib.atomic_write_json(snapshot, {
-                            "digest": record_digest,
-                            "entries": lib.repository_digest_entries(root, cfg),
-                        })
-                    snapshots = sorted(digest_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-                    for old in snapshots[16:]:
-                        old.unlink()
-                status["verification_head"] = record["hash"]
-                if record["run_id"] not in criterion["evidence"]:
-                    criterion["evidence"].append(record["run_id"])
-                if not own_ok:
-                    criterion["state"] = "failing"
-                elif lib.criterion_fully_evidenced(criterion, existing_records + [record]):
-                    criterion["state"] = "passing"
-                else:
-                    criterion["state"] = "not_tested"
-                per_criterion[criterion["id"]] = {"run_id": record["run_id"], "ok": own_ok,
-                                                  "executed": executed, "reused_from": reused_from,
-                                                  **({"attempts": len(attempts), "repeat": int(criterion["repeat"])}
-                                                     if attempts is not None else {})}
+                if criterion["id"] in written:
+                    # #410: recorded under the lock as its last command finished
+                    per_criterion[criterion["id"]] = written[criterion["id"]]
+                    continue
+                record, per_criterion[criterion["id"]] = write_record(
+                    status, criterion, existing_records + new_records)
+                new_records.append(record)
             symptom_run = _automatic_symptom_run(status, acceptance, per_criterion, existing_records)
             symptom_events = []
             if symptom_run:
@@ -2790,7 +2992,9 @@ def cmd_verify(args) -> int:
                 symptom_events = [{"kind": "symptom_resolved", "message": "Original symptom marked resolved by verify",
                                    "evidence": symptom_run, "by": args.by, "automatic": True}]
             lib.sync_coverage(status, acceptance)
-            _invalidate_decisions(status)
+            # #411: after every evidence mutation, so the rebound hash is final
+            retention = _retain_or_invalidate(root, cfg, status, acceptance, digest_before=repo_digest,
+                                              digest_after=completion_digest, rechecked=criteria)
             _name_symptom_step(status, acceptance, existing_records + [
                 {"run_id": v["run_id"], "ok": v["ok"], "criteria": [cid],
                  "criterion_hashes": {cid: before[cid]}} for cid, v in per_criterion.items()])
@@ -2798,7 +3002,8 @@ def cmd_verify(args) -> int:
             status["updated_at"] = datetime.now(timezone.utc).isoformat()
             lib.commit(root, cfg, status=status, acceptance=acceptance,
                       event_kind="checks_run", event_message="Ran and attached configured checks",
-                      extra_events=symptom_events or None,
+                      extra_events=(symptom_events + _retention_events(retention)) or None,
+                      review_retention=retention,
                       criteria=per_criterion,
                       review_attempt_refreshed=review_refresh,
                       launched_count=len(launched), reused_count=len(reused),
@@ -2809,6 +3014,7 @@ def cmd_verify(args) -> int:
         "ok": overall_ok, "criteria": per_criterion, "results": results,
         "launched": launched, "reused": {cmd: source["run_id"] for cmd, source in reused.items()},
         **({"original_symptom_resolved": symptom_run} if symptom_run else {}),
+        **({"review": retention} if retention else {}),
     }, indent=2))
     if symptom_run:
         # #419: stdout stays one JSON document; the marker is on stderr
@@ -2882,15 +3088,20 @@ def cmd_record_evidence(args) -> int:
         criterion["state"] = ("passing" if lib.criterion_fully_evidenced(criterion, records + [record])
                               else "not_tested")
         lib.sync_coverage(status, acceptance)
-        _invalidate_decisions(status)
+        digest = lib.repository_digest(root, cfg)  # #411: nothing runs, so one digest is both ends
+        retention = _retain_or_invalidate(root, cfg, status, acceptance, digest_before=digest,
+                                          digest_after=digest, rechecked=[criterion])
         _name_symptom_step(status, acceptance, records + [record])  # #419
         review_refresh = lib.refresh_review_attempt_after_evidence(status, acceptance)
         status["updated_at"] = datetime.now(timezone.utc).isoformat()
         lib.commit(root, cfg, status=status, acceptance=acceptance,
                   event_kind="evidence_recorded", event_message="Attached criterion evidence",
+                  extra_events=_retention_events(retention) or None, review_retention=retention,
                   run_id=record["run_id"], criterion=args.criterion, by=args.by,
                   review_attempt_refreshed=review_refresh)
     print(f"EVIDENCE_RECORDED: {record['run_id']}")
+    if retention:
+        print("REVIEW_RETAINED" if retention["retained"] else f"REVIEW_REVOKED: {retention['reason']}")
     return 0
 
 
@@ -4112,6 +4323,7 @@ def cmd_record_review(args) -> int:
             **lib.review_tests_executed_waiver(args.tests_executed),  # #341
             "profiles_distinct": profiles_distinct,
             **lib.rules_binding(root, cfg),  # #170
+            "reviewed_binding": _reviewed_binding(root, cfg, status, acceptance),  # #411
             "checklist": {"symptom_reproduced": args.symptom_reproduced,
                           "symptom_resolved": "yes", "all_criteria_verified": "yes",
                           "evidence_attached": "yes"},
@@ -4227,6 +4439,7 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
         "reaffirmed_attempt": latest.get("attempt"),
         "reaffirmed_from_acceptance_hash": previous_hash,
         **lib.rules_binding(root, cfg),  # #170: the reaffirmed review certifies the current set
+        "reviewed_binding": _reviewed_binding(root, cfg, status, acceptance),  # #411
         "checklist": {"symptom_reproduced": args.symptom_reproduced,
                       "symptom_resolved": "yes", "all_criteria_verified": "yes",
                       "evidence_attached": "yes"},
@@ -4256,6 +4469,105 @@ def _record_review_reaffirm(root, cfg, status, acceptance, records, problems, re
                design_hash=current_design, reviewer_session_id=getattr(args, "session", None),
                rules_changed=stale_rules)
     print(f"INDEPENDENT_REVIEW_REAFFIRMED{': rules set changed (' + ', '.join(stale_rules[:8]) + ')' if stale_rules else ''}")
+    return 0
+
+
+def _kept_workspace_refusal(status: dict, session_id: str) -> tuple[dict | None, str | None]:
+    """#413: the kept workspace a disposition may act on, or why not: the
+    session must be an implementer's, terminal, not quarantined, and kept
+    (workspace_disposition pending)."""
+    session = (status.get("agent_sessions") or {}).get(session_id)
+    if not isinstance(session, dict) or session.get("role") != "implementer" \
+            or not isinstance(session.get("workspace"), dict):
+        return None, f"{session_id} is not an implementer session with a workspace"
+    if session.get("state") not in lib.AGENT_SESSION_TERMINAL_STATES:
+        return None, f"{session_id} is still live; stop it first"
+    quarantined = session.get("quarantined_result")
+    if isinstance(quarantined, dict) and not quarantined.get("adopted_at"):
+        return None, f"{session_id} holds a quarantined result; session-result-adopt decides it"
+    if session.get("workspace_disposition") != "pending":
+        return None, (f"{session_id} has no kept workspace awaiting a disposition "
+                      f"({session.get('workspace_disposition') or 'none'})")
+    return session, None
+
+
+def _kept_workspaces(cfg: dict, status: dict) -> list[dict]:
+    """#413: every stopped implementer's kept workspace with its changed paths."""
+    kept = []
+    for session in (status.get("agent_sessions") or {}).values():
+        if not isinstance(session, dict) or session.get("workspace_disposition") != "pending":
+            continue
+        try:
+            changed = lib.implementer_workspace_changes(cfg, session)
+        except (lib.HandsoffError, OSError, ValueError, KeyError, subprocess.SubprocessError):
+            changed = None
+        kept.append({"session_id": session.get("session_id"), "state": session.get("state"),
+                     "owned_paths": session.get("owned_paths"), "changed_paths": changed,
+                     "apply": f"implementer-apply --session {session.get('session_id')} --by ACTOR",
+                     "discard": f"implementer-discard --session {session.get('session_id')} --by ACTOR"})
+    return kept
+
+
+def cmd_implementer_apply(args) -> int:
+    """#413: apply a stopped implementer's owned-path changes, with every
+    check a normal apply makes (ownership, host edits, type transitions)."""
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, _ = _load(root, cfg)
+        _session, refusal = _kept_workspace_refusal(status, args.session)
+    if refusal:
+        print(f"SHIP_FEATURE_BLOCKED: {refusal}")
+        return 1
+    # apply_implementer_workspace takes the project lock itself
+    try:
+        applied = lib.apply_implementer_workspace(root, args.session)
+    except (lib.HandsoffError, OSError, subprocess.SubprocessError) as exc:
+        applied = {"state": "refused", "reason": "apply_failed", "paths": [], "detail": str(exc)[:120]}
+    with lib.project_lock(root):
+        status, _ = _load(root, cfg)
+        session, refusal = _kept_workspace_refusal(status, args.session)
+        if refusal:
+            print(f"SHIP_FEATURE_BLOCKED: {refusal}")
+            return 1
+        if applied["state"] != "applied":
+            print(f"IMPLEMENTER_APPLY_REFUSED: {applied['reason']}: "
+                  + (", ".join(applied.get("paths") or []) or applied.get("detail", "")))
+            lib.commit(root, cfg, event_kind="implementer_workspace_apply_refused",
+                       event_message="Kept implementer workspace apply refused; it stays pending",
+                       session_id=args.session, by=actor, reason=applied["reason"],
+                       paths=applied.get("paths") or [])
+            return 1
+        session["apply"] = {"state": "applied", "paths": applied["paths"]}
+        session["workspace_disposition"] = "applied"
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        lib.commit(root, cfg, status=status, event_kind="implementer_workspace_applied",
+                   event_message="Stopped implementer's owned-path changes applied",
+                   session_id=args.session, by=actor, paths=applied["paths"])
+    lib.remove_implementer_workspace(root, session)
+    print(f"IMPLEMENTER_APPLIED: {', '.join(applied['paths']) or 'no changes'}")
+    return 0
+
+
+def cmd_implementer_discard(args) -> int:
+    """#413: remove a stopped implementer's kept workspace; nothing is applied."""
+    actor = lib.validate_agent_actor(args.by)
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    with lib.project_lock(root):
+        status, _ = _load(root, cfg)
+        session, refusal = _kept_workspace_refusal(status, args.session)
+        if refusal:
+            print(f"SHIP_FEATURE_BLOCKED: {refusal}")
+            return 1
+        session["workspace_disposition"] = "discarded"
+        status["updated_at"] = datetime.now(timezone.utc).isoformat()
+        lib.commit(root, cfg, status=status, event_kind="implementer_workspace_discarded",
+                   event_message="Stopped implementer's kept workspace discarded",
+                   session_id=args.session, by=actor)
+    lib.remove_implementer_workspace(root, session)
+    print(f"IMPLEMENTER_DISCARDED: {args.session}")
     return 0
 
 
@@ -4578,6 +4890,7 @@ def cmd_verify_live(args) -> int:
 
     try:
         lib.atomic_write_json(inflight_path, progress)
+        ran_env = lib.recorded_check_env(cfg)  # #410
         results = lib.run_checks(cfg, root, commands, on_progress=on_progress,
                                  progress_source="verify-live")
         ok = all(r["exit_code"] == 0 for r in results)
@@ -4598,11 +4911,17 @@ def cmd_verify_live(args) -> int:
             if lib.config_hash(cfg) != config_digest:
                 print("SHIP_FEATURE_BLOCKED: workflow policy changed during live verification; run it again")
                 return 1
+            if lib.recorded_check_env(cfg) != ran_env:
+                print("SHIP_FEATURE_BLOCKED: [checks].env changed during live verification; run it again")
+                return 1
             record = lib.append_verification(root, cfg, kind="live", ok=ok, by=args.by,
                                              criteria=acceptance["criteria"], results=_durable_results(results),
                                              commands=commands,
                                              acceptance_digest=digest, config_digest=config_digest,
-                                             rules=lib.rules_binding(root, cfg))
+                                             # #411: taken when the commands completed, so a
+                                             # later re-verify of the same tree keeps the run
+                                             repository_digest=lib.repository_digest(root, cfg),
+                                             rules=lib.rules_binding(root, cfg), env=ran_env)
             status["verification_head"] = record["hash"]
             if ok:
                 status["live_verification_id"] = record["run_id"]
@@ -6641,6 +6960,14 @@ def build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--session", required=True)
     adopt.add_argument("--by", required=True)
 
+    implementer_apply = sub.add_parser("implementer-apply",
+                                       help="#413: apply a stopped implementer's owned-path changes")
+    implementer_discard = sub.add_parser("implementer-discard",
+                                         help="#413: remove a stopped implementer's kept workspace")
+    for disposition in (implementer_apply, implementer_discard):
+        disposition.add_argument("--session", required=True)
+        disposition.add_argument("--by", required=True)
+
     release_plan = sub.add_parser("release-plan", help="record semantic release class and verification policy")
     release_plan.add_argument("--version", required=True)
     release_plan.add_argument("--by", required=True)
@@ -7207,6 +7534,8 @@ def main() -> int:
         "review-attempt-start": cmd_review_attempt_start,
         "record-review-findings": cmd_record_review_findings,
         "session-result-adopt": cmd_session_result_adopt,
+        "implementer-apply": cmd_implementer_apply,
+        "implementer-discard": cmd_implementer_discard,
         "review-cap-override": cmd_review_cap_override,
         "recover": cmd_recover,
         "watch": cmd_watch,
