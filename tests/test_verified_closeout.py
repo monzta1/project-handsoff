@@ -83,7 +83,9 @@ class AnEarlyCloseNamesWhatItIs(unittest.TestCase):
             "released_unverified")
 
     def test_the_unverified_outcomes_are_listed_together(self):
-        self.assertEqual(set(lib.UNVERIFIED_RUN_OUTCOMES), {"aborted", "released_unverified"})
+        # P2.4: qa_pending and blocked_environment are unverified too
+        self.assertEqual(set(lib.UNVERIFIED_RUN_OUTCOMES),
+                         {"aborted", "released_unverified", "qa_pending", "blocked_environment"})
 
 
 class PostingSuccessRequiresVerifiedPhase8(HandsoffTestCase):
