@@ -59,6 +59,10 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-ops-") as tmp:
     toml.write_text(toml.read_text(encoding="utf-8") + '\n[agents]\nsupervisor = "host"\narchitect = "codex"\n'
                     'implementer = "codex"\nreviewer = "codex"\n', encoding="utf-8")
     run("supervisor", "--root", str(project), "init", "Live operations smoke", "--item", "#1")
+    # #418: an --item run starts with no placeholder criterion; add the one
+    # the rest of this smoke works on before advancing to Phase 2
+    run("supervisor", "--root", str(project), "criterion-add", "REQ-001", "--type", "primary_fix", "--verification", "manual",
+        "--requirement", "[#1] Tagged to the registered issue", "--test", "manual check")
     run("supervisor", "--root", str(project), "advance", "2", "10")
     run("supervisor", "--root", str(project), "criterion-update", "REQ-001", "--type", "primary_fix",
         "--verification", "manual", "--requirement", "[#1] Tagged to the registered issue")
