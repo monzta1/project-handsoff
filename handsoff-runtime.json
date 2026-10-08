@@ -2,7 +2,7 @@
   "files": {
     "bin/handsoff_adapters.py": "9761cf16afe4475559c69bd528010454b04f9598d78a92fd48e48a9759fac7ee",
     "bin/handsoff_agent.py": "6be478dbccd589a0ab50578304bf485fe7eac75c5ca2e122d85d46dc8ce5ef48",
-    "bin/handsoff_agent_runtime.py": "abc2c19874e7ee60c316d3eb0e6913db932e27c28927f52b592fc2957986909f",
+    "bin/handsoff_agent_runtime.py": "9a90837119ba5110eb92ab4552c861381e9e6fa0e672409b40580e60b31b4271",
     "bin/handsoff_analyzer.py": "5ff494f22c6675fa23c2a894f6688f8ece47ba8f9d9446ee7bd813e42c4eb89e",
     "bin/handsoff_broker.py": "08e194410c8c060df472dcd6fee6d050c1ed412709fc451be2b624f809490040",
     "bin/handsoff_cli.py": "bbd88e43b6fecde0b526978c4898a93698fb656405d9294ae667123ce5f171d9",
@@ -60,7 +60,7 @@
     "playbook/lessons-evidence.md": "ff2b6b81cf2c7a2d13fd4b1a51ea3d4fd30b511caa3ac5cd19eb58719ac2a1ce",
     "playbook/lessons-lane.md": "5ae613127bff42bddb7cfe810afc267235ea3c266961c66137380b8a03011f35",
     "playbook/lessons-proof.md": "2d9a379bfd8a5f455d5ac4d65ca75f4bd15075fb8e59ddac0e5687e3c278371a",
-    "playbook/protocol.md": "f324d1bc3770a8147e1bf7f16939c077d22c51c0abcc07d988d562716092500e",
+    "playbook/protocol.md": "6e1378247de91f05e717074b1cf858d940d0b0effecfeade0175bde4fe2ad334",
     "playbook/reviewers.md": "aa658f85b3e4361e49bbfb768d4bda17d6b558b172ee4dff81f437688d9ca757",
     "prompts/architect.md": "62ecf258cf3ca565bc070e3280dc4e5de03e105cbd09734ca2f12f6969e8aede",
     "prompts/implementer.md": "0b7c6d4290426c231576146a21ce4a69b176e2fe5c353248c48a60f6321bc226",

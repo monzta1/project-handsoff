@@ -831,14 +831,19 @@ def create_implementer_workspace(root: Path, session: dict) -> Path:
         raise HandsoffError(f"git worktree add failed: {result.stderr.strip()[:160]}")
     seeded = {}
     for relative in _changed_since(root, workspace["launch_commit"]):
+        if any(part.startswith(".handsoff") for part in relative.split("/")):
+            continue  # Handsoff's own side state (beacons, locks, temp files), never project content
         source, target = root / relative, path / relative
         if source.is_dir() and not source.is_symlink():
             continue  # a nested repository; git names it, not its files
         if target.is_symlink() or target.is_file():
             target.unlink()
-        if source.is_symlink() or source.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target, follow_symlinks=False)
+        try:
+            if source.is_symlink() or source.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target, follow_symlinks=False)
+        except FileNotFoundError:
+            continue  # removed while the workspace was seeded (an atomic write's temp file)
         seeded[relative] = _path_digest(target)
     # #416: the run's version pin (never in git) and its effective config (a
     # skip-worktree local edit git does not report) are seeded as well, so
