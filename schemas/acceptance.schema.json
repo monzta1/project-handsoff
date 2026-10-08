@@ -159,6 +159,17 @@
           "notes": {
             "type": "string",
             "maxLength": 512
+          },
+          "implemented_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "#415: when a completed implementer session bound to this item (launch --item) landed"
+          },
+          "implemented_by": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "#415: the actor of that bound session"
           }
         }
       }

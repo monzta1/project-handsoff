@@ -115,6 +115,8 @@ OPERATION_REGISTRY = {
     # the run-owned dashboard runs it, and it only reads and transitions.
     "performance-watch": {"class": "automatic", "surface": "metrics-panel"},
     "performance-resume": {"class": "operator-facing", "surface": "metrics-panel"},
+    # #414: the Pilot's standing auto-resume decision.
+    "performance-auto-resume": {"class": "operator-facing", "surface": "metrics-panel"},
     # #302: applies one shadow recommendation, only with a Mission Control approval.
     "shadow-apply": {"class": "operator-facing", "surface": "metrics-panel"},
     # #379: reads the report and the routed choice; writes nothing.
@@ -136,6 +138,11 @@ PERFORMANCE_READ_ONLY_COMMANDS = frozenset({
     # during a pause would make the pause un-observable from its own watcher.
     "performance-watch",
 })
+#: #414: commands that only write the ledger; none of them launches a role.
+PERFORMANCE_BOOKKEEPING_COMMANDS = frozenset({
+    "advance", "pilot-note", "work-item-update", "record-evidence", "record-symptom-resolved",
+    "ci-watch", "performance-auto-resume",
+})
 #: #383: every supervisor command decides a pause through
 #: runtime_control.require_performance_operation, under the operation it
 #: performs. A command not named here is mutating and is judged under its own
@@ -146,6 +153,11 @@ PERFORMANCE_COMMAND_OPERATIONS = {
     "performance-resume": "explicit_resume",
     "regression-cancel": "cancel",
     "run-close": "safe_close",
+    # #414: ledger bookkeeping that starts no new work stays allowed while
+    # paused; a role launch and any other new work stay blocked.
+    **{command: "bookkeeping" for command in PERFORMANCE_BOOKKEEPING_COMMANDS},
+    # #414: verify binds cached results only; cmd_verify refuses a miss.
+    "verify": "verify_cached",
 }
 
 
@@ -377,9 +389,13 @@ def refresh_performance_state(
         if isinstance(session, dict) and session.get("state") in getattr(lib, "AGENT_SESSION_LIVE_STATES", set())
     ]
     history, decision = runtime_control.transition_performance(history, now=now, in_flight=live_sessions)
+    auto_resumed = None
     if persist:
         _runtime_write(root, PERFORMANCE_RECORD, history)
         _append_performance_timeline(root, history, lock_held=lock_held)
+        history, auto_resumed = _auto_resume_performance(root, cfg, history, events, now, lock_held=lock_held)
+        if auto_resumed is not None:
+            decision = {**decision, "action": "performance_auto_resumed", "block_new_work": False}
     episode = history["episodes"][-1]
     active_seconds = runtime_control.episode_active_seconds(episode, now=now)
     progress = max(0, min(100, int(float(status.get("progress", 0) or 0))))
@@ -400,7 +416,113 @@ def refresh_performance_state(
         "forecast_total_seconds": forecast_total, "forecast_remaining_seconds": forecast_remaining,
         "forecast_variance_seconds": (forecast_total - 120 * 60) if forecast_total is not None else None,
         "bottleneck": bottleneck, "breaches": history["breaches"],
+        "pause": performance_pause_view(episode, active_seconds),
+        "auto_resume": _auto_resume_view(validated_auto_resume_decision(root, cfg)),
+        "auto_resumed": auto_resumed,
     }
+
+
+#: #414: the ledger event carrying the Pilot's standing auto-resume decision
+PERFORMANCE_AUTO_RESUME_EVENT = "performance_auto_resume_decided"
+PERFORMANCE_RESUME_COMMAND = 'handsoff performance-resume --by <pilot> --reason "<why>"'
+
+
+def performance_auto_resume_decision(events: list[dict]) -> dict | None:
+    """#414: the standing decision, read from the hash-chained ledger only
+    (never from status, so editing state cannot grant it): the last
+    performance_auto_resume_decided event when it turned auto-resume on."""
+    for event in reversed(events or []):
+        if isinstance(event, dict) and event.get("kind") == PERFORMANCE_AUTO_RESUME_EVENT:
+            return dict(event) if event.get("auto_resume") is True else None
+    return None
+
+
+def validated_auto_resume_decision(root: Path, cfg: dict) -> dict | None:
+    """#414 review: the standing decision only from a ledger whose hash chain
+    validates; a break, an unchained line or a missing head reads as none,
+    for the clock and for what status and Mission Control show alike."""
+    chain_problems, _ = lib.event_log_chain_errors(root, cfg)
+    if chain_problems:
+        return None
+    return performance_auto_resume_decision(lib.read_events(root, cfg))
+
+
+def _auto_resume_view(standing: dict | None) -> dict | None:
+    if standing is None:
+        return None
+    return {"decision_id": standing.get("decision_id"), "by": standing.get("by"), "at": standing.get("at")}
+
+
+def performance_pause_view(episode: dict, active_seconds: float) -> dict | None:
+    """#414: what status and Mission Control show while paused: since when,
+    the active time that tripped it, and the command that resumes it."""
+    if episode.get("state") != "paused_for_performance_review":
+        return None
+    try:  # the active time at the pause, which is what tripped it
+        active_seconds = runtime_control.episode_active_seconds(
+            episode, now=_event_datetime(episode.get("paused_at"), datetime.now(timezone.utc)))
+    except runtime_control.RuntimeControlError:
+        pass
+    return {"episode_id": episode["episode_id"], "since": episode.get("paused_at"),
+            "active_seconds": active_seconds, "resume_command": PERFORMANCE_RESUME_COMMAND}
+
+
+def _auto_resume_performance(root: Path, cfg: dict, history: dict, events: list[dict], now: datetime,
+                             *, lock_held: bool) -> tuple[dict, dict | None]:
+    """#414: resume a pause that began after the Pilot's standing decision.
+
+    The resume is the same runtime-control transition performance-resume
+    makes, bound to the paused episode's hash, and the ledger records a
+    performance_auto_resumed event naming the decision. A pause that began
+    before the decision is left for an explicit performance-resume."""
+    episode = history["episodes"][-1]
+    if episode["state"] != "paused_for_performance_review":
+        return history, None
+    # the decision counts only from a ledger whose hash chain validates: a
+    # break, an unchained line or a missing head fails closed (no resume),
+    # and the events read are the validated file's, not a caller's copy
+    standing = validated_auto_resume_decision(root, cfg)
+    if standing is None or not isinstance(standing.get("decision_id"), str):
+        return history, None
+    paused_at = _event_datetime(episode.get("paused_at"), now)
+    if _event_datetime(standing.get("at"), now) > paused_at:
+        return history, None
+    resume = {
+        "decision_id": f"auto-{episode['episode_id']}", "action": "resume",
+        "actor": str(standing.get("by") or "pilot"),
+        "reason": f"standing decision {standing['decision_id']}",
+        "evidence_hash": runtime_control.content_hash(episode), "at": now.isoformat(),
+    }
+    try:
+        resumed = runtime_control.resume_performance(
+            history, resume, f"episode-{len(history['episodes']) + 1}")
+    except runtime_control.RuntimeControlError:
+        return history, None
+    record = {"decision_id": standing["decision_id"], "episode_id": episode["episode_id"],
+              "new_episode_id": resumed["episodes"][-1]["episode_id"]}
+
+    def write() -> bool:
+        # a concurrent refresh may have resumed this pause first
+        current = _read_performance_record(root)
+        if current is not None and current["episodes"][-1]["episode_id"] != episode["episode_id"]:
+            return False
+        _runtime_write(root, PERFORMANCE_RECORD, resumed)
+        _append_performance_timeline(root, resumed, lock_held=True)
+        lib.commit(root, cfg, event_kind="performance_auto_resumed",
+                   event_message=(f"Performance pause {episode['episode_id']} resumed by the Pilot's "
+                                  f"standing decision {standing['decision_id']}"),
+                   **record)
+        return True
+
+    if lock_held:
+        written = write()
+    else:
+        with lib.project_lock(root):
+            written = write()
+    if not written:
+        current = _read_performance_record(root)
+        return (current if current is not None else history), None
+    return resumed, record
 
 
 def performance_mutation_refusal(root: Path, operation: str) -> str | None:
@@ -422,6 +544,22 @@ def performance_mutation_refusal(root: Path, operation: str) -> str | None:
     except (runtime_control.RuntimeControlError, lib.HandsoffError, OSError):
         return None
     return None
+
+
+def paused_verify_refusal(root: Path, launched: list[str], use_cache: bool) -> str | None:
+    """#414: while paused, verify may bind results whose cache key matches
+    and run nothing. None when the run is not paused."""
+    try:
+        view = refresh_performance_state(root)
+    except (lib.HandsoffError, OSError):
+        return None
+    if not view["block_new_work"]:
+        return None
+    reason = ("this verify runs every command (--no-cache, a baseline or a repeat)" if not use_cache
+              else f"{len(launched)} command(s) have no cached result: {', '.join(launched)}")
+    return (f"verify is blocked: the run is paused_for_performance_review and {reason}; "
+            "only a cache-only verify binds while paused. Record an explicit performance-resume "
+            "decision to run checks")
 
 
 def _runtime_snapshot(status: dict, events: list[dict], performance: dict) -> dict:
@@ -1038,7 +1176,15 @@ def cmd_status(args) -> int:
         budget = lib.design_review_budget(status, cfg)
         reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
         log_problems = lib.verify_event_log(root, cfg)
+        # #414: the performance pause, shown up front with its resume command
+        try:
+            performance = refresh_performance_state(root, status=status, cfg=cfg, lock_held=True)
+        except (lib.HandsoffError, OSError, ValueError, runtime_control.RuntimeControlError):
+            performance = {}
+    progress_shown = lib.progress_view(status, acceptance, cfg)  # #415
     print(__import__("json").dumps({
+        "performance_pause": performance.get("pause"),
+        "performance_auto_resume": performance.get("auto_resume"),
         "root": str(root), "feature": status.get("feature"), "phase": status.get("phase"),
         "engine": lib.runtime_identity(root),
         "phase_number": status.get("phase_number"), "progress": status.get("progress"),
@@ -1099,6 +1245,18 @@ def cmd_status(args) -> int:
         # #422: an open human pause names itself; a caller that polls status
         # (Sentinel's resume) must not conclude that none is open.
         "human_pause": human_pause_view(status),
+        # #415: the progress status, the board and the first HTML all show
+        # (lib.progress_view), whether it was set in this phase or derived,
+        # and every work item with how it becomes implemented and done
+        "display_progress": progress_shown["progress"],
+        "progress_source": progress_shown["source"],
+        "progress_set_phase": status.get("progress_set_phase"),
+        "progress_view": progress_shown,
+        "work_item_done_condition": lib.WORK_ITEM_DONE_CONDITION,
+        "work_items": [{field: item.get(field) for field in
+                        ("id", "status", "required", "criteria", "unmet_criteria",
+                         "implemented_at", "implemented_by", "done_when")}
+                       for item in lib.derive_work_items(status, acceptance, cfg)["items"]],
     }, indent=2))
     return 1 if errors or log_problems else 0
 
@@ -1131,6 +1289,165 @@ def cmd_validate(args) -> int:
         return 1
     print("SHIP_FEATURE_VALID")
     return 0
+
+
+_SUPERVISOR_CMD = "handsoff_supervisor.py"
+_EMBEDDED_COMMAND = re.compile(r"handsoff_supervisor\.py (.+?)(?= on the tree| or |;|,|$)")
+
+
+def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None:
+    """#421: the command that clears one unmet gate line. Every gate
+    compute_errors emits maps to one (None only for a line no gate wrote).
+    The gate text itself is never changed."""
+    cmd = f"{_SUPERVISOR_CMD} "
+    drift = re.match(r"evidence drift: (\S+) was verified", message)
+    if drift:
+        return cmd + f"verify --criterion {drift.group(1)} --by ACTOR"
+    evidence = re.match(r"evidence gate: passing criterion (\S+) lacks valid (.+) evidence", message)
+    if evidence:
+        cid, kinds = evidence.group(1), evidence.group(2)
+        if "checks" in kinds:
+            return cmd + f"verify --criterion {cid} --by ACTOR"
+        if "mutation" in kinds:
+            return cmd + f"mutation-proof {cid} --by ACTOR"
+        kind = "browser" if "browser" in kinds else "manual"
+        return cmd + f"record-evidence {cid} --kind {kind} --description TEXT --by ACTOR"
+    unreasoned = re.match(r"baseline gate: (\S+) says baseline not_applicable without a reason", message)
+    if unreasoned:
+        return cmd + f"criterion-update {unreasoned.group(1)} --baseline-reason TEXT"
+    escalated = re.search(r"until the escalation is cleared by (?:Run )?(\S.*)$", message)
+    if message.startswith("escalation gate:") and escalated:
+        return cmd + escalated.group(1).strip()
+    embedded = _EMBEDDED_COMMAND.search(message)
+    if embedded:
+        return cmd + embedded.group(1).strip()
+    if message.startswith("state gate: Phase 7 requires status"):
+        return cmd + "advance 7 --status awaiting_approval"
+    if message.startswith("state gate: requirement_coverage"):
+        return cmd + "verify --all --by ACTOR"
+    if message.startswith(("state gate: status and acceptance describe different features",
+                           "verification ledger:")):
+        return cmd + "doctor"
+    if message.startswith("live gate: Phase 8 requires progress 100"):
+        return cmd + "advance 8 100"
+    if message.startswith("live gate:"):
+        # no successful run, acceptance, policy, [checks].env or rules
+        # changed since it, or it preceded the deployment approval
+        return cmd + "verify-live --by ACTOR"
+    if message.startswith("design gate: a decline is pending"):
+        return cmd + "record-design-review --by REVIEWER --architect ARCHITECT --summary TEXT --approve"
+    if message.startswith("design gate:"):
+        return cmd + "design-approve --by PILOT --architect ARCHITECT --summary TEXT"
+    if message.startswith(("design review gate:", "stale proposal:")):
+        return cmd + "record-design-review --by REVIEWER --architect ARCHITECT --summary TEXT --approve"
+    if message.startswith("amendment gate:"):
+        return (cmd + "amendment-review --by REVIEWER --approve --summary TEXT, then "
+                + cmd + "amendment-approve --by PILOT")
+    if message.startswith("round cap: design_round"):
+        return cmd + "config-override --key workflow.max_design_rounds --value N --by PILOT"
+    if message.startswith("round cap: review_round"):
+        return cmd + "review-cap-override --by PILOT --reason TEXT"
+    if message.startswith("review attempt gate:"):
+        return cmd + "record-review --by REVIEWER --tests-executed yes"
+    if message.startswith("CI:"):
+        pr = re.search(r"ci-watch --pr (\S+)", message)
+        return cmd + f"ci-watch --pr {pr.group(1) if pr else 'N'} --by ACTOR"
+    if message.startswith("symptom gate:"):
+        return cmd + "record-symptom-resolved --evidence RUN_ID --by ACTOR"
+    if message.startswith(("phase gate:", "progress gate: 95%+", "status gate:")):
+        resolved = (status.get("requirement_coverage") or {}).get("original_symptom_resolved") is True
+        return cmd + "verify --all --by ACTOR" + (
+            "" if resolved else f", then {cmd}record-symptom-resolved --evidence RUN_ID --by ACTOR")
+    if message.startswith(("progress gate:", "work items gate:")) and "work item" in message:
+        return cmd + "verify --all --by ACTOR"
+    if message.startswith("review gate: Phase 6+ requires 'implemented_by'"):
+        return cmd + f"advance {phase} --implemented-by ACTOR"
+    if message.startswith("review gate:"):
+        return cmd + "record-review --by REVIEWER --tests-executed yes"
+    if message.startswith("review anchor gate:"):
+        # the anchor is written only by a review-lane init that adopts a commit
+        return cmd + 'init "FEATURE" --lane review --adopt REF --by ACTOR'
+    if message.startswith("deployment gate:"):
+        return cmd + "deployment-gate --approve --by PILOT"
+    if message.startswith("live gate: Phase 8 requires a successful live") \
+            or message.startswith("live gate:") and "run it again" in message:
+        return cmd + "verify-live --by ACTOR"
+    return None
+
+
+def advance_gates(errors: list[str], phase: int, status: dict) -> list[tuple[str, str, str | None]]:
+    """#421: every unmet gate of an advance to `phase`, as (gate, message,
+    clearing command), in the order compute_errors found them. Aggregation
+    only: which gates exist and what they say is compute_errors' alone."""
+    gates = []
+    for message in errors:
+        gate = message.split(":", 1)[0].strip() if ":" in message else "gate"
+        gates.append((gate, message, _gate_clearing_command(message, phase, status)))
+    return gates
+
+
+def _gate_lines(gates: list[tuple[str, str, str | None]]) -> str:
+    lines = []
+    for _gate, message, command in gates:
+        lines.append(f"- {message}")
+        if command:
+            lines.append(f"  clears with: {command}")
+    return "\n".join(lines)
+
+
+def _advance_preview_errors(root: Path, cfg: dict, status: dict, acceptance: dict,
+                            verifications: list[dict], verification_problems: list[str],
+                            phase: int, requested_status: str | None) -> list[str]:
+    """#421: the gates an advance to `phase` would meet right now, for a
+    refusal that names them. Mirrors cmd_advance's proposed status for the
+    fields the gates read; never writes."""
+    proposed = deepcopy(status)
+    proposed["phase_number"] = phase
+    proposed["phase"] = lib.PHASES[phase]
+    proposed["progress"] = max(status.get("progress", 0) or 0,
+                               lib.gate_progress(status, acceptance)["percent"])
+    if requested_status:
+        proposed["status"] = requested_status
+    elif phase == 7:
+        proposed["status"] = ("awaiting_approval" if lib.adaptive_deployment_approval_required(proposed, cfg)
+                              else "ready_to_deploy")
+    elif phase == 8:
+        proposed["status"] = "complete"
+    if phase == 3 and status.get("lane") == "design":
+        proposed["status"] = "design_complete"
+    if phase == 6 and proposed.get("lane") == "review":
+        proposed["status"] = "review_complete"
+    proposed["_preserve_progress"] = True
+    return lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
+                              verification_problems=verification_problems, root=root)
+
+
+def _multi_step_refusal(root: Path, cfg: dict, status: dict, acceptance: dict,
+                        verifications: list[dict], verification_problems: list[str],
+                        current: int, requested: int, requested_status: str | None) -> str:
+    """#421: a jump of more than one phase is still refused, and the refusal
+    names what holds the next phase and what the requested one adds."""
+    nxt = current + 1
+    lines = [f"phase transition blocked: current={current}, requested={requested} "
+             f"(one step at a time); advance {nxt} first"]
+    try:
+        held = _advance_preview_errors(root, cfg, status, acceptance, verifications,
+                                       verification_problems, nxt, None)
+        target = _advance_preview_errors(root, cfg, status, acceptance, verifications,
+                                         verification_problems, requested, requested_status)
+    except lib.HandsoffError as exc:
+        lines.append(f"gates not evaluated: {exc}")
+        return "\n".join(lines)
+    if held:
+        lines.append(f"Phase {nxt} is held by {len(held)} unmet gate(s):")
+        lines.append(_gate_lines(advance_gates(held, nxt, status)))
+    else:
+        lines.append(f"Phase {nxt} has no unmet gate; clears with: {_SUPERVISOR_CMD} advance {nxt}")
+    extra = [e for e in target if e not in held]
+    if extra and requested != nxt:
+        lines.append(f"Phase {requested} also needs:")
+        lines.append(_gate_lines(advance_gates(extra, requested, status)))
+    return "\n".join(lines)
 
 
 def cmd_advance(args) -> int:
@@ -1183,7 +1500,12 @@ def cmd_advance(args) -> int:
             current == 1 and args.phase == 4
             and not lib.full_design_required(status, acceptance, cfg)
         )
-        if args.phase < current or (args.phase > current + 1 and not small_fix_jump):
+        if args.phase > current + 1 and not small_fix_jump:
+            # #421: still one step at a time, but name what holds the next phase
+            print(_multi_step_refusal(root, cfg, status, acceptance, verifications, verification_problems,
+                                      current, args.phase, args.status))
+            return 1
+        if args.phase < current:
             print(f"phase transition blocked: current={current}, requested={args.phase} (one step at a time)")
             return 1
         if args.phase >= 2 and not acceptance.get("criteria"):
@@ -1208,6 +1530,10 @@ def cmd_advance(args) -> int:
         proposed["phase_number"] = args.phase
         proposed["phase"] = lib.PHASES[args.phase]
         proposed["progress"] = progress
+        if args.progress is not None and getattr(args, "progress_explicit", True):
+            # #415: an explicit value is 'set' for this phase only; a later
+            # phase inherits it as 'derived' (lib.progress_view)
+            proposed["progress_set_phase"] = args.phase
         proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
         proposed["next_action"] = args.next_action or lib.NEXT_ACTION_DEFAULTS.get(args.phase, proposed.get("next_action"))
         if args.status:
@@ -1333,7 +1659,7 @@ def cmd_advance(args) -> int:
                     lib.commit(root, cfg, event_kind="design_approval_requested",
                               event_message="Design approval requested (advance to Phase 3 blocked pending it)")
             print("SHIP_FEATURE_BLOCKED")
-            print("\n".join(f"- {x}" for x in errors))
+            print(_gate_lines(advance_gates(errors, args.phase, proposed)))  # #421: every gate, each with its command
             return 1
         if args.phase == 3 and status.get("lane") == "design":
             design_document = lib.render_design_document(root, cfg, proposed, acceptance)
@@ -1429,6 +1755,7 @@ def advance_approved_design(root: Path) -> bool:
         implemented_by=None, design_round=None, new_design_round=False,
         design_round_reason=None, review_round=None, dry_run=False,
         next_action=None, authorization_hold=None,
+        progress_explicit=False,  # #415: the engine's own step, not a recorded value
     )
     result = cmd_advance(args)
     if result != 0:
@@ -2816,6 +3143,13 @@ def cmd_verify(args) -> int:
                 if source is not None:
                     reused[cmd] = source
         launched = [cmd for cmd in needed if cmd not in reused]
+        if launched or not use_cache:
+            # #414: a paused run binds cached results only; running a
+            # command is new work, so a cache miss or --no-cache is refused
+            refusal = paused_verify_refusal(root, launched, use_cache)
+            if refusal:
+                print(f"SHIP_FEATURE_BLOCKED: {refusal}")
+                return 1
         repeat_attempts: dict[str, list[dict]] = {}
         results_by_command: dict[str, dict] = {}
         for cmd, source in reused.items():
@@ -3663,7 +3997,9 @@ def cmd_record_design_review(args) -> int:
         # recorded the review directly (launch_session_id null).
         authorized = budget["authorized"]
         if authorized:
-            status["design_review_authorization"]["consumed_at"] = now
+            # #417: one attempt spends one authorized round; a multi-round
+            # grant stays open for the next attempt until its last round.
+            lib.spend_design_review_authorization(status, now)
         # #37: a Pilot escalation buys exactly one primary-tier attempt; this
         # record is that attempt, so the escalation is spent here.
         escalation = status.get("design_reviewer_escalation")
@@ -3703,7 +4039,34 @@ def cmd_record_design_review(args) -> int:
             "escalation_consumed": escalation_consumed,
         }
         after = lib.design_review_budget(status, cfg)
-        if decision == "changes_requested" and after["exhausted"]:
+        auto = (lib.design_round_auto_authorization(status, cfg)
+                if decision == "changes_requested" else None)
+        if auto is not None:
+            # #417: [workflow] design_rounds_on_convergence grants one more
+            # round because this round recorded strictly fewer findings than
+            # the one before it; the cumulative per-run count is ledgered.
+            status["design_review_authorization"] = {
+                "by": lib.DESIGN_ROUNDS_ON_CONVERGENCE_ACTOR, "at": now,
+                "note": (f"findings fell from {auto['previous_findings']} to {auto['findings']}; "
+                         f"automatic round {auto['auto_used']} of {auto['allowance']}"),
+                "attempt_permitted": auto["round"], "launch_session_id": None, "consumed_at": None,
+                "rounds_remaining": 1,
+            }
+            status["design_rounds_auto_used"] = auto["auto_used"]
+            status["status"] = "in_progress"
+            status.pop("authorization_hold", None)
+            status["next_action"] = f"Launch the automatically authorized design-review attempt {auto['round']}"
+            lib.commit(root, cfg, status=status, extra_events=[review_event],
+                      event_kind="design_review_auto_authorized",
+                      event_message=(f"Design-review attempt {auto['round']} authorized by policy: findings fell "
+                                     f"from {auto['previous_findings']} to {auto['findings']} "
+                                     f"({auto['auto_used']}/{auto['allowance']} automatic rounds used)"),
+                      round=auto["round"], findings=auto["findings"],
+                      previous_findings=auto["previous_findings"],
+                      design_rounds_auto_used=auto["auto_used"],
+                      design_rounds_on_convergence=auto["allowance"],
+                      reviewer_session_id=getattr(args, "session", None))
+        elif decision == "changes_requested" and after["exhausted"]:
             # The run cannot request another review on its own. Phase 3
             # stays closed (the gate still sees changes_requested); the
             # Pilot's command is the next action, verbatim, so status and
@@ -3824,13 +4187,23 @@ def cmd_design_review_packet(args) -> int:
 
 
 def cmd_design_review_authorize(args) -> int:
-    """#35: the Pilot permits exactly one more design-review attempt past
-    the autonomous budget. Human-only (the broker refuses it). Refuses
+    """#35: the Pilot permits one more design-review attempt past the
+    autonomous budget (#417: or up to five with --rounds N, consumed one
+    per recorded attempt). Human-only (the broker refuses it). Refuses
     while the budget is not exhausted (nothing to authorize) and while an
     earlier authorization is still unconsumed (one at a time). Never
     touches design_review_attempts: only a recorded review counts."""
     if not args.by or not args.by.strip():
         print("SHIP_FEATURE_BLOCKED: --by must be a non-empty string")
+        return 1
+    # #417: one ledgered grant may cover up to MAX rounds; without --rounds
+    # it covers exactly one, as before.
+    rounds = getattr(args, "rounds", None)
+    rounds = 1 if rounds is None else rounds
+    if (not isinstance(rounds, int) or isinstance(rounds, bool)
+            or not 1 <= rounds <= lib.MAX_DESIGN_REVIEW_AUTHORIZED_ROUNDS):
+        print(f"SHIP_FEATURE_BLOCKED: --rounds must be an integer from 1 to "
+              f"{lib.MAX_DESIGN_REVIEW_AUTHORIZED_ROUNDS}, got {rounds!r}")
         return 1
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -3862,16 +4235,21 @@ def cmd_design_review_authorize(args) -> int:
             "by": args.by.strip(), "at": now, "note": note,
             "attempt_permitted": budget["next_attempt"],
             "launch_session_id": None, "consumed_at": None,
+            "rounds_remaining": rounds,
         }
+        last_attempt = budget["next_attempt"] + rounds - 1
+        span = (f"attempt {budget['next_attempt']}" if rounds == 1
+                else f"attempts {budget['next_attempt']} to {last_attempt}")
         status["status"] = "in_progress"
         status.pop("authorization_hold", None)
-        status["next_action"] = f"Launch the authorized design-review attempt {budget['next_attempt']}"
+        status["next_action"] = f"Launch the authorized design-review {span}"
         status["updated_at"] = now
         lib.commit(root, cfg, status=status, event_kind="design_review_attempt_authorized",
-                  event_message=note or f"Pilot authorized design-review attempt {budget['next_attempt']}",
-                  by=args.by.strip(), attempt_permitted=budget["next_attempt"],
+                  event_message=note or f"Pilot authorized design-review {span}",
+                  by=args.by.strip(), attempt_permitted=budget["next_attempt"], rounds=rounds,
                   design_review_attempts=budget["attempts"], design_review_limit=budget["limit"])
-    print(f"DESIGN_REVIEW_ATTEMPT_AUTHORIZED: {budget['next_attempt']}")
+    suffix = "" if rounds == 1 else f" ({rounds} rounds, through attempt {last_attempt})"
+    print(f"DESIGN_REVIEW_ATTEMPT_AUTHORIZED: {budget['next_attempt']}{suffix}")
     return 0
 
 
@@ -4830,9 +5208,13 @@ def _adopt_quarantined_workspace(root: Path, cfg: dict, session_id: str, actor: 
             return False, "SESSION_RESULT_ADOPT_REFUSED: the quarantined result is already adopted"
         session["apply"] = {"state": "applied", "paths": applied["paths"]}
         held["adopted_at"], held["adopted_by"] = datetime.now(timezone.utc).isoformat(), actor
-        lib.commit(root, cfg, status=status, event_kind="session_result_adopted",
+        # #415: the completed, now applied, bound session credits its items
+        acceptance = lib.load_unique_json(lib.acceptance_path(root, cfg))
+        credited = lib.credit_session_work_items(status, acceptance, session_id, held["adopted_at"])
+        lib.commit(root, cfg, status=status, acceptance=acceptance if credited else None,
+                   event_kind="session_result_adopted",
                    event_message="Quarantined implementer workspace adopted", session_id=session_id, by=actor,
-                   automatic=False)
+                   automatic=False, **({"work_items_implemented": credited} if credited else {}))
     lib.remove_implementer_workspace(root, session)
     return True, "SESSION_RESULT_ADOPTED"
 
@@ -6839,6 +7221,31 @@ def cmd_performance_resume(args) -> int:
     return 0
 
 
+def cmd_performance_auto_resume(args) -> int:
+    """#414: the Pilot's standing decision, [performance] auto_resume = true,
+    recorded as a ledger event. Each pause that begins after it resumes by
+    itself with a performance_auto_resumed event naming it; --off withdraws
+    it. Human-only: it is not in the broker's table, so no managed role can send it."""
+    for name in ("by", "reason"):
+        if not isinstance(getattr(args, name), str) or not getattr(args, name).strip():
+            raise lib.HandsoffError(f"performance-auto-resume: --{name} must be a non-empty string")
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    enabled = not getattr(args, "off", False)
+    decision_id = f"auto-resume-{uuid.uuid4().hex[:16]}"
+    with lib.project_lock(root):
+        if not lib.status_path(root, cfg).exists():
+            raise lib.HandsoffError("performance-auto-resume: no current run (run init first)")
+        lib.commit(root, cfg, event_kind=PERFORMANCE_AUTO_RESUME_EVENT,
+                   event_message=(f"Pilot {args.by.strip()} recorded [performance] auto_resume = "
+                                  f"{'true' if enabled else 'false'} ({decision_id})"),
+                   decision_id=decision_id, auto_resume=enabled, by=args.by.strip(),
+                   reason=" ".join(args.reason.split())[:400])
+    print(f"PERFORMANCE_AUTO_RESUME_RECORDED: {decision_id} auto_resume={'true' if enabled else 'false'}"
+          + ("; each later performance pause resumes by itself" if enabled else ""))
+    return 0
+
+
 def cmd_monitor_poll(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -7135,12 +7542,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     design_review_authorize = sub.add_parser(
         "design-review-authorize",
-        help="Pilot-only: permit exactly one more design-review attempt once the autonomous budget "
-             "([workflow] max_autonomous_design_reviews) is exhausted; consumed by the next "
-             "record-design-review, whether a managed reviewer session or a human recorded it")
+        help="Pilot-only: permit one more design-review attempt (or --rounds N) once the autonomous "
+             "budget ([workflow] max_autonomous_design_reviews) is exhausted; each round is consumed by "
+             "a record-design-review, whether a managed reviewer session or a human recorded it")
     design_review_authorize.add_argument("--by", required=True, help="the Pilot's identity")
     design_review_authorize.add_argument("--note", default=None,
                                          help="optional one-line reason, recorded as the event message")
+    design_review_authorize.add_argument("--rounds", type=int, default=1,
+                                         help="#417: how many more attempts this one ledgered grant permits "
+                                              "(1 to 5, default 1), consumed one per recorded attempt")
 
     design_review_escalate = sub.add_parser(
         "design-review-escalate",
@@ -7490,6 +7900,14 @@ def build_parser() -> argparse.ArgumentParser:
     performance_resume = sub.add_parser("performance-resume", help="open a new episode after explicit reevaluation")
     performance_resume.add_argument("--by", required=True)
     performance_resume.add_argument("--reason", required=True)
+    auto_resume = sub.add_parser(
+        "performance-auto-resume",
+        help="#414: record the Pilot's standing decision ([performance] auto_resume) that each later "
+             "performance pause resumes by itself; --off withdraws it")
+    auto_resume.add_argument("--by", required=True)
+    auto_resume.add_argument("--reason", required=True)
+    auto_resume.add_argument("--off", action="store_true",
+                             help="withdraw the standing decision; later pauses wait for performance-resume")
     performance_resume.add_argument(
         "--evidence-hash", default=None,
         help="optional: sha256 of the paused episode this resume answers; the engine "
@@ -7575,6 +7993,7 @@ def main() -> int:
         "performance-status": cmd_performance_status,
         "performance-watch": cmd_performance_watch,
         "performance-resume": cmd_performance_resume,
+        "performance-auto-resume": cmd_performance_auto_resume,
     }
     # #378/#379: pure readers of a record or report never touch the run, so
     # they skip the performance gate, whose clock refresh writes state and

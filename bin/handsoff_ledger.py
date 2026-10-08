@@ -771,8 +771,10 @@ def item_progress(status: dict, acceptance: dict, cfg: dict, item_id: str) -> di
     lane_gate = (bool(delivery.get("confirmed_by")) if delivery.get("lane") == "small-fix"
                  else not _design_errors(status, acceptance, cfg)
                  and not _design_review_errors(status, acceptance, cfg))
-    implemented_by = delivery.get("implemented_by")
-    implemented = bool(implemented_by and any(c.get("evidence") for c in own))
+    # #415: implemented only by a bound implementer session's credit on the
+    # item, never by evidence or a delivery record's implemented_by
+    implemented = any(isinstance(item, dict) and item.get("id") == item_id and item.get("implemented_at")
+                      for item in acceptance.get("work_items") or [])
     item_hash = item_acceptance_hash(acceptance, item_id)
     reviewed = bool(delivery.get("reviewed_by") and delivery.get("review_hash") == item_hash)
     global_review = status.get("review") or {}

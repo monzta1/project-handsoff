@@ -758,6 +758,15 @@ function workItemProgressLabel(item) {
   return `${Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0}%`;
 }
 
+// #415: how an item becomes done, in the server's words, and what is still unmet
+function workItemDoneWhen(item) {
+  const condition = typeof item?.done_when === "string" ? item.done_when : "";
+  if (!condition) return "";
+  const unmet = Array.isArray(item?.unmet_criteria) ? item.unmet_criteria.map(String) : [];
+  if (item?.done) return condition;
+  return unmet.length ? `${condition}; not passing: ${unmet.join(", ")}` : condition;
+}
+
 function smallFixCanConfirm(item) {
   return item?.lane === "small-fix" && !item?.lane_confirmed && !item?.lane_escalation;
 }
@@ -946,6 +955,7 @@ if (typeof module !== "undefined" && module.exports) {
     pilotNoteText,
     workItemLaneLabel,
     workItemProgressLabel,
+    workItemDoneWhen,
     smallFixCanConfirm,
     workItemLaneDetail,
     trancheIssueDetail,

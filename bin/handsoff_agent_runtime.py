@@ -965,7 +965,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
                          reviewer_isolation: dict | None = None,
                          reasoning_effort: str | None = None,
                          routing_contract: dict | None = None,
-                         owned_paths: list[str] | None = None) -> dict:
+                         owned_paths: list[str] | None = None,
+                         work_items: list[str] | None = None) -> dict:
     """Commit the immutable launch snapshot before a managed child starts.
 
     The task/prompt, environment, runner output, credentials, and token data
@@ -985,6 +986,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         if role != "implementer":
             raise HandsoffError("--owns applies to implementer sessions only")
         owned_paths = validate_owned_paths(list(owned_paths))
+    if work_items is not None and role != "implementer":
+        raise HandsoffError("--item applies to implementer sessions only")
     actor = validate_agent_actor(actor)
     if adapter not in LAUNCHABLE_AGENT_ADAPTERS:
         raise HandsoffError("agent session adapter must be codex, claude or a registered contract adapter")
@@ -1033,6 +1036,9 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
         if schema_errors:
             raise HandsoffError(schema_errors[0])
         _assert_agent_telemetry_integrity(root, cfg, status)
+        if work_items is not None:
+            from handsoff_workflow import validate_bound_work_items
+            work_items = validate_bound_work_items(acceptance, work_items)  # #415
         legacy_risk_defaulted = False
         if adaptive_routing is not None:
             policy = status.get("model_policy", cfg.get("model_policy", DEFAULT_MODEL_POLICY))
@@ -1177,6 +1183,8 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session["rules_entries"] = rules_set_entries(root)
         if owned_paths is not None:
             session["owned_paths"] = list(owned_paths)
+        if work_items:
+            session["work_items"] = list(work_items)  # #415: the explicit binding
         if launch_commit is not None:
             session["workspace"] = {"path": str(implementer_workspace_dir(root) / session_id),
                                     "launch_commit": launch_commit}
@@ -1394,9 +1402,19 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         schema_errors = validate_status_schema(proposed)
         if schema_errors:
             raise HandsoffError(schema_errors[0])
+        # #415: a completed session bound to work items (launch --item)
+        # credits exactly those items, once its workspace (if any) applied
+        credited_acceptance, credited = None, []
+        if state == "completed" and updated.get("work_items"):
+            from handsoff_workflow import credit_session_work_items
+            credited_acceptance = load_unique_json(acceptance_path(root, cfg))
+            credited = credit_session_work_items(proposed, credited_acceptance, session_id, now)
+            if not credited:
+                credited_acceptance = None
         event_kind = f"agent_session_{state}"
         commit(
-            root, cfg, status=proposed,
+            root, cfg, status=proposed, acceptance=credited_acceptance,
+            **({"work_items_implemented": credited} if credited else {}),
             event_kind=event_kind,
             event_message=f"Managed {role} agent session is {state.replace('_', ' ')}",
             session_id=session_id, role=role, state=state, exit_code=exit_code,
@@ -1689,10 +1707,15 @@ def design_review_budget(status: dict, cfg: dict) -> dict:
     authorization = status.get("design_review_authorization")
     authorized = isinstance(authorization, dict) and authorization.get("consumed_at") is None
     launch_reserved = authorized and authorization.get("launch_session_id") is not None
+    # #417: a grant may cover several rounds (design-review-authorize
+    # --rounds N); each recorded attempt past the limit spends one. A grant
+    # written before the field existed covers exactly one.
+    rounds_remaining = int(authorization.get("rounds_remaining", 1) or 0) if authorized else 0
     return {
         "attempts": attempts,
         "limit": limit,
         "authorized": authorized,
+        "rounds_remaining": rounds_remaining,
         "exhausted": attempts >= limit and not authorized,
         "launch_reserved": launch_reserved,
         "next_attempt": attempts + 1,
@@ -1724,6 +1747,66 @@ def design_review_launch_refusal(budget: dict, status: dict) -> str | None:
                 f"record-design-review must consume it before any further launch, after which "
                 f"the Pilot may run {budget['authorization_command']} again")
     return None
+
+
+#: #417: the most rounds one design-review-authorize may grant.
+MAX_DESIGN_REVIEW_AUTHORIZED_ROUNDS = 5
+#: #417: who an engine-granted round is recorded as granted by.
+DESIGN_ROUNDS_ON_CONVERGENCE_ACTOR = "policy:design_rounds_on_convergence"
+
+
+def spend_design_review_authorization(status: dict, now: str) -> int:
+    """#417: one recorded attempt spends one authorized round. The grant
+    stays open (attempt_permitted moves to the following attempt and the
+    launch reservation is released) while rounds remain; the last round
+    sets consumed_at exactly as a single-round grant always has. Returns
+    the rounds still remaining afterwards."""
+    authorization = status["design_review_authorization"]
+    remaining = max(int(authorization.get("rounds_remaining", 1) or 0) - 1, 0)
+    if "rounds_remaining" in authorization or remaining:
+        authorization["rounds_remaining"] = remaining
+    if remaining:
+        authorization["attempt_permitted"] = int(authorization["attempt_permitted"]) + 1
+        authorization["launch_session_id"] = None
+    else:
+        authorization["consumed_at"] = now
+    return remaining
+
+
+def design_review_finding_counts(status: dict) -> tuple[int, int] | None:
+    """#417: (latest, previous) finding counts of the last two recorded
+    design-review rounds, or None with fewer than two. Recorded findings
+    carry no severity, so only the count is compared; a legacy entry's
+    findings list is counted the same way, whatever its items hold."""
+    history = [h for h in (status.get("design_review_history") or []) if isinstance(h, dict)]
+    if len(history) < 2:
+        return None
+
+    def count(entry: dict) -> int:
+        findings = entry.get("findings")
+        return len(findings) if isinstance(findings, list) else 0
+
+    return count(history[-1]), count(history[-2])
+
+
+def design_round_auto_authorization(status: dict, cfg: dict) -> dict | None:
+    """#417: whether [workflow] design_rounds_on_convergence grants one more
+    round right now: the budget is exhausted, the cumulative per-run
+    allowance (status.design_rounds_auto_used, never reset by a proposal or
+    a restart) is not spent, and the latest round recorded strictly fewer
+    findings than the one before it. Returns the event fields, or None."""
+    allowance = int(cfg.get("design_rounds_on_convergence", 0) or 0)
+    used = int(status.get("design_rounds_auto_used", 0) or 0)
+    if allowance <= 0 or used >= allowance:
+        return None
+    budget = design_review_budget(status, cfg)
+    if not budget["exhausted"]:
+        return None
+    counts = design_review_finding_counts(status)
+    if counts is None or not counts[0] < counts[1]:
+        return None
+    return {"round": budget["next_attempt"], "findings": counts[0], "previous_findings": counts[1],
+            "auto_used": used + 1, "allowance": allowance}
 
 
 def session_liveness_path(root: Path) -> Path:

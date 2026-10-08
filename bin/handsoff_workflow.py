@@ -703,21 +703,25 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         if phase < 6:
             errors.extend(evidence_errors)  # name the baseline gaps here too (#165)
     if "work_items" in acceptance and progress >= 95:
+        # #415: unfinished is exactly "not every tagged criterion passes"
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
-                      if item.get("required") and item.get("status") != "done"]
+                      if item.get("required") and not item.get("done")]
         for item in unfinished:
-            if item.get("status") == "unscoped":
+            if item.get("status") == "unscoped" or not item.get("criteria"):
                 tag = f"#{item['number']}" if item.get("kind") == "issue" else item["id"][4:]
                 errors.append(f"progress gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
             else:
-                errors.append(f"progress gate: required work item {item['id']} must be done before 95%+")
+                # #415: name the condition and what is still unmet
+                unmet = ", ".join(item.get("unmet_criteria") or []) or "none"
+                errors.append(f"progress gate: required work item {item['id']} must be done before 95%+ "
+                              f"({WORK_ITEM_DONE_CONDITION}; not passing: {unmet})")
     if status.get("status") in ("ready_to_deploy", "awaiting_approval", "complete", "review_complete") and (not green or not anchor_record or evidence_errors):
         errors.append("status gate: acceptance registry is not fully green")
     if "work_items" in acceptance and (phase >= 8 or status.get("status") == "complete"):
         unfinished = [item for item in derive_work_items(status, acceptance, cfg)["items"]
-                      if item.get("required") and item.get("status") != "done"]
+                      if item.get("required") and not item.get("done")]  # #415
         for item in unfinished:
-            if item.get("status") == "unscoped":
+            if item.get("status") == "unscoped" or not item.get("criteria"):
                 tag = f"#{item['number']}" if item.get("kind") == "issue" else item["id"][4:]
                 errors.append(f"work items gate: required work item {item['id']} has no acceptance criteria (unscoped); run handsoff_supervisor.py work-item-remove {item['id']} --by ACTOR or tag a criterion [{tag}]")
             else:
@@ -844,6 +848,13 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
         own = mapping.get(item["id"], [])
         progress_view = item_progress(status, acceptance, cfg, item["id"])
         blocker = ""
+        # #415: an item is done exactly when every criterion tagged to it
+        # passes (WORK_ITEM_DONE_CONDITION); status, the board and the 95%+
+        # refusal all state this one condition. A run-wide state (blocked,
+        # awaiting approval, recovering, in review) still outranks it on the
+        # row, but never on `done`, which is what the gates read.
+        unmet = [c.get("id") for c in own if c.get("state") != "passing"]
+        done = bool(own) and not unmet
         if escalation or status.get("status") == "blocked":
             state = "blocked"
             blocker = (escalation or {}).get("reason") or status.get("next_action", "Run blocked")
@@ -855,23 +866,24 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
             blocker = "Assigned worker recovery is active"
         elif reviewing:
             state = "in_review"
+        elif done:
+            state = "done"
         elif item.get("required", True) and not own:
             state = "unscoped"
             blocker = "Required work item has no mapped acceptance criteria"
-        elif progress_view["percent"] == 100:
-            state = "done"
         elif any(c.get("state") == "blocked" for c in own):
             state = "blocked"
             blocker = "A mapped acceptance criterion is blocked"
-        elif status.get("active_work_item") == item["id"] or any(c.get("evidence") for c in own):
+        elif status.get("active_work_item") == item["id"] or any(c.get("evidence") for c in own) \
+                or item.get("implemented_at"):
             state = "in_progress"
         else:
             state = "not_started"
         github_state = item.get("github_state")
         discrepancy = None
-        if github_state == "closed" and state != "done":
+        if github_state == "closed" and not done:
             discrepancy = "GitHub is closed but Handsoff work is unfinished"
-        elif github_state == "open" and state == "done":
+        elif github_state == "open" and done:
             discrepancy = "Handsoff is done but GitHub is still open"
         rendered.append({**item, "status": state, "criteria": [c.get("id") for c in own],
                          "lane": progress_view["lane"], "progress": progress_view["percent"],
@@ -879,7 +891,11 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
                          "lane_facts": progress_view["facts"],
                          "lane_escalation": progress_view["escalation_reason"],
                          "phase_or_next": status.get("next_action") or status.get("phase"),
-                         "blocker": blocker, "discrepancy": discrepancy})
+                         "blocker": blocker, "discrepancy": discrepancy,
+                         # #415: how this item becomes implemented and done
+                         "implemented_at": item.get("implemented_at"),
+                         "implemented_by": item.get("implemented_by"),
+                         "done": done, "done_when": WORK_ITEM_DONE_CONDITION, "unmet_criteria": unmet})
     counts = {state: sum(item["status"] == state for item in rendered) for state in WORK_ITEM_STATES}
     unattributed_criteria = [c.get("id") for c in mapping.get("unattributed", [])]
     return {"multi": len(rendered) > 1, "registry": source,
@@ -888,6 +904,112 @@ def derive_work_items(status: dict, acceptance: dict, cfg: dict) -> dict:
             "items": rendered, "aggregate": {"total": len(rendered), "done": counts["done"],
                                                "counts": counts,
                                                "progress": overall_item_progress(status, acceptance, cfg)}}
+
+
+#: #415: the one condition that makes a work item done, stated verbatim by
+#: status, the board and the 95%+ refusal.
+WORK_ITEM_DONE_CONDITION = "a work item is done when every criterion tagged to it passes"
+
+
+#: #415: each phase's default progress. The derived value for a phase stays
+#: from its own default up to one below the next phase's default.
+PHASE_DEFAULT_PROGRESS = {1: 0, 2: 20, 3: 30, 4: 40, 5: 50, 6: 75, 7: 90, 8: 95}
+
+
+def progress_view(status: dict, acceptance: dict | None, cfg: dict) -> dict:
+    """#415: the one progress value status, the board and the first HTML
+    show. `source` is 'set' only when an advance recorded an explicit value
+    in the current phase (status.progress_set_phase); anything inherited is
+    'derived': base = the phase's default, band = the next phase's default
+    minus base, fraction = (passing criteria + implemented items) /
+    (criteria + items), 0 when both are empty, and the value is base +
+    floor(fraction x (band - 1)), so it never reaches the next phase's value
+    and stays below 100 until the run is complete. A 'set' value shows as
+    recorded, never below the phase's default. The stored status.progress
+    the gates read is never changed here."""
+    phase = int(status.get("phase_number", 1) or 1)
+    stored = status.get("progress", 0)
+    try:
+        stored = int(float(stored or 0))
+    except (TypeError, ValueError):
+        stored = 0
+    base = PHASE_DEFAULT_PROGRESS.get(phase, 0)
+    ceiling = PHASE_DEFAULT_PROGRESS.get(phase + 1, 100)
+    acceptance = acceptance if isinstance(acceptance, dict) else {}
+    criteria = [c for c in acceptance.get("criteria", []) if isinstance(c, dict)]
+    try:
+        items = effective_work_items(acceptance, cfg)[0] if acceptance else []
+    except (HandsoffError, KeyError, TypeError, ValueError):
+        items = []
+    passing = sum(c.get("state") == "passing" for c in criteria)
+    implemented = sum(1 for item in items if isinstance(item, dict) and item.get("implemented_at"))
+    denominator = len(criteria) + len(items)
+    fraction = (passing + implemented) / denominator if denominator else 0.0
+    set_phase = status.get("progress_set_phase")
+    source = "set" if isinstance(set_phase, int) and not isinstance(set_phase, bool) \
+        and set_phase == phase else "derived"
+    if status.get("status") == "complete":
+        value = 100
+    elif source == "set":
+        value = min(100, max(stored, base))
+    else:
+        band = ceiling - base
+        value = base + int((fraction * (band - 1)) // 1) if band > 1 else base
+        value = min(value, 99)
+    return {"progress": value, "source": source, "stored": stored, "phase_number": phase,
+            "base": base, "next_phase_default": ceiling,
+            "passing_criteria": passing, "criteria": len(criteria),
+            "implemented_items": implemented, "items": len(items)}
+
+
+def validate_bound_work_items(acceptance: dict, item_ids) -> list[str]:
+    """#415: launch implementer --item ID (repeatable): each must name an
+    existing work item on the run's registry, once."""
+    ids = [str(item_id).strip() for item_id in (item_ids or [])]
+    if not ids:
+        raise HandsoffError("--item needs a work item id")
+    if len(set(ids)) != len(ids):
+        raise HandsoffError("--item must not repeat a work item id")
+    registry = acceptance.get("work_items") if isinstance(acceptance, dict) else None
+    if not isinstance(registry, list):
+        raise HandsoffError("--item refused: the run has no work item registry; run work-items-sync first")
+    known = {item.get("id") for item in registry if isinstance(item, dict)}
+    unknown = [item_id for item_id in ids if item_id not in known]
+    if unknown:
+        raise HandsoffError(f"--item refused: unknown work item {', '.join(unknown)} "
+                            f"(known: {', '.join(sorted(k for k in known if k)) or 'none'})")
+    return ids
+
+
+def credit_session_work_items(status: dict, acceptance: dict, session_id: str,
+                              now: str | None = None) -> list[str]:
+    """#415: mark exactly the work items a completed implementer session was
+    bound to (launch --item) implemented, on the item itself (implemented_at,
+    implemented_by). Only a completed session credits, and one with a
+    workspace only once that workspace applied; paths never credit, an
+    unbound session credits nothing. Mutates `acceptance`; returns the ids
+    newly credited."""
+    session = (status.get("agent_sessions") or {}).get(session_id)
+    if not isinstance(session, dict) or session.get("role") != "implementer" \
+            or session.get("state") != "completed":
+        return []
+    bound = session.get("work_items")
+    if not isinstance(bound, list) or not bound:
+        return []
+    if isinstance(session.get("workspace"), dict) \
+            and (session.get("apply") or {}).get("state") != "applied":
+        return []
+    items = acceptance.get("work_items") if isinstance(acceptance, dict) else None
+    if not isinstance(items, list):
+        return []
+    stamp = now or datetime.now(timezone.utc).isoformat()
+    credited = []
+    for item in items:
+        if isinstance(item, dict) and item.get("id") in bound and not item.get("implemented_at"):
+            item["implemented_at"] = stamp
+            item["implemented_by"] = session.get("actor")
+            credited.append(item["id"])
+    return credited
 
 
 CRITERION_TYPES = ("primary_fix", "supporting")

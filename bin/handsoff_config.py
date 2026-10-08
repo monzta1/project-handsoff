@@ -162,6 +162,9 @@ DEFAULT_CONFIG = {
     "max_review_rounds": 3,
     "stall_minutes": 10,
     "max_autonomous_design_reviews": DEFAULT_MAX_AUTONOMOUS_DESIGN_REVIEWS,
+    # #417: a cumulative per-run allowance of design-review rounds the engine
+    # authorizes on its own while finding counts shrink; 0 turns it off.
+    "design_rounds_on_convergence": 0,
     "small_fix_max_criteria": DEFAULT_SMALL_FIX_MAX_CRITERIA,
     "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
     "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
@@ -550,6 +553,7 @@ def load_config(root: Path) -> dict:
         if not path_value.is_file(): raise HandsoffError(f"handsoff.toml: adapters.{adapter} must name an existing file")
         cfg["adapters"][adapter] = str(path_value.resolve())
     for key in ("max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews",
+                "design_rounds_on_convergence",
                 "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
         value = workflow.get(key, cfg[key])
         if not isinstance(value, int) or isinstance(value, bool):
@@ -888,6 +892,7 @@ def load_config(root: Path) -> dict:
                 f"handsoff.toml: project.{key} resolves outside the project root "
                 f"(a parent directory may be a symlink)") from None
     for key in ("max_design_rounds", "stall_minutes", "max_autonomous_design_reviews",
+                "design_rounds_on_convergence",
                 "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files"):
         if cfg[key] < 0:
             raise HandsoffError(f"handsoff.toml: {key} must not be negative")
@@ -1088,6 +1093,7 @@ FEATURES = {
 CONFIG_OVERRIDE_SCHEMA: dict[str, type] = {
     **{f"workflow.{key}": int for key in (
         "max_design_rounds", "max_review_rounds", "stall_minutes", "max_autonomous_design_reviews",
+        "design_rounds_on_convergence",
         "small_fix_max_criteria", "small_fix_max_changed_lines", "small_fix_max_files")},
     **{f"workflow.{key}": bool for key in (
         "auto_handoff", "require_live_verification", "deployment_requires_explicit_approval",

@@ -12,6 +12,9 @@ auto_handoff = true
 max_design_rounds = 3
 max_review_rounds = 3
 max_autonomous_design_reviews = 3
+# #417: design-review rounds the engine may authorize on its own, per run, when
+# the latest round recorded fewer findings than the one before. 0 turns it off.
+design_rounds_on_convergence = 0
 stall_minutes = 10
 small_fix_max_criteria = 3
 small_fix_max_changed_lines = 200

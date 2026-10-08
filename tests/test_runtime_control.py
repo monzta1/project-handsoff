@@ -538,6 +538,11 @@ class SupervisorPauseRuleTests(unittest.TestCase):
         "performance-status": "inspect", "performance-watch": "inspect",
         "monitor-poll": "reconcile", "performance-resume": "explicit_resume",
         "regression-cancel": "cancel", "run-close": "safe_close",
+        # #414: ledger bookkeeping and the cache-only verify
+        **{command: "bookkeeping" for command in (
+            "advance", "pilot-note", "work-item-update", "record-evidence", "record-symptom-resolved",
+            "ci-watch", "performance-auto-resume")},
+        "verify": "verify_cached",
     }
 
     @classmethod
@@ -597,11 +602,11 @@ class SupervisorPauseRuleTests(unittest.TestCase):
                     mock.patch.object(control, "require_performance_operation",
                                       wraps=control.require_performance_operation) as rule:
                 self.assertIn("paused_for_performance_review",
-                              self.supervisor.performance_mutation_refusal(root, "advance"))
+                              self.supervisor.performance_mutation_refusal(root, "release-plan"))
                 self.assertIsNone(self.supervisor.performance_mutation_refusal(root, "run-close"))
                 self.assertIsNone(self.supervisor.performance_mutation_refusal(root, "monitor-poll"))
             self.assertEqual([call.args[1] for call in rule.call_args_list],
-                             ["advance", "safe_close", "reconcile"])
+                             ["release-plan", "safe_close", "reconcile"])
 
 
 class LegacyVersionTests(unittest.TestCase):

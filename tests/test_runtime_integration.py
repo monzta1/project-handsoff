@@ -42,7 +42,7 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertTrue(paused["block_new_work"])
         self.assertEqual(paused["transition"], "pause_for_performance_review")
         with mock.patch.object(supervisor, "refresh_performance_state", return_value=paused):
-            self.assertIn("blocked", supervisor.performance_mutation_refusal(self.root, "advance"))
+            self.assertIn("blocked", supervisor.performance_mutation_refusal(self.root, "release-plan"))
             self.assertIsNone(supervisor.performance_mutation_refusal(self.root, "status"))
             self.assertIsNone(supervisor.performance_mutation_refusal(self.root, "performance-resume"))
 

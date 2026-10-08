@@ -178,7 +178,10 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  "halfway_at",
                                  # #413: a stopped implementer's kept workspace: pending until
                                  # implementer-apply or implementer-discard decides it
-                                 "workspace_disposition"}
+                                 "workspace_disposition",
+                                 # #415: the work items an implementer was launched for
+                                 # (launch --item); absent on an unbound session
+                                 "work_items"}
 
 #: #413
 WORKSPACE_DISPOSITIONS = ("pending", "applied", "discarded")
@@ -654,9 +657,23 @@ def validate_acceptance_schema(acceptance: dict) -> list[str]:
                     "github_checked_at", "created_at", "updated_at", "notes"}
         for index, item in enumerate(work_items):
             label = f"acceptance: work_items[{index}]"
-            if not isinstance(item, dict) or set(item) != required:
+            # #415: implemented_at/implemented_by are optional, set together
+            # when a bound implementer session's work lands
+            if not isinstance(item, dict) or not required <= set(item) <= required | {"implemented_at", "implemented_by"}:
                 errors.append(f"{label} has invalid fields")
                 continue
+            if ("implemented_at" in item) != ("implemented_by" in item):
+                errors.append(f"{label} implemented_at and implemented_by are set together")
+            elif item.get("implemented_at") is not None or item.get("implemented_by") is not None:
+                try:
+                    stamp = datetime.fromisoformat(item.get("implemented_at"))
+                    if stamp.tzinfo is None:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    errors.append(f"{label}.implemented_at must be a timezone-aware timestamp")
+                by = item.get("implemented_by")
+                if not isinstance(by, str) or not by.strip() or len(by) > 128:
+                    errors.append(f"{label}.implemented_by must be a non-empty string of at most 128 characters")
             item_id = item.get("id")
             if not isinstance(item_id, str) or not WORK_ITEM_ID_PATTERN.fullmatch(item_id) or item_id in seen_work_items:
                 errors.append(f"{label}.id is invalid or duplicated")
@@ -899,6 +916,11 @@ def validate_status_schema(status: dict) -> list[str]:
         errors.append("status: 'phase' does not match 'phase_number'")
     if "progress" in status and (not _is_number(status["progress"]) or not 0 <= status["progress"] <= 100):
         errors.append(f"status: 'progress' must be a finite number from 0 to 100, got {status['progress']!r}")
+    if status.get("progress_set_phase") is not None and (
+            not isinstance(status["progress_set_phase"], int) or isinstance(status["progress_set_phase"], bool)
+            or status["progress_set_phase"] not in PHASES):
+        # #415: the phase an advance recorded an explicit progress value in
+        errors.append("status: 'progress_set_phase' must be null or a phase number")
     for field in ("design_round", "review_round", "retry_count"):
         if field in status and (not isinstance(status[field], int) or isinstance(status[field], bool) or status[field] < 0):
             errors.append(f"status: '{field}' must be a non-negative integer, got {status[field]!r}")
@@ -977,15 +999,28 @@ def validate_status_schema(status: dict) -> list[str]:
             or status["design_review_attempts"] < 0):
         errors.append("status: 'design_review_attempts' must be a non-negative integer, "
                       f"got {status['design_review_attempts']!r}")
+    if "design_rounds_auto_used" in status and (
+            not isinstance(status["design_rounds_auto_used"], int)
+            or isinstance(status["design_rounds_auto_used"], bool)
+            or status["design_rounds_auto_used"] < 0):
+        errors.append("status: 'design_rounds_auto_used' must be a non-negative integer, "
+                      f"got {status['design_rounds_auto_used']!r}")
     if "design_review_authorization" in status and status["design_review_authorization"] is not None:
         authorization = status["design_review_authorization"]
         if not isinstance(authorization, dict):
             errors.append("status: 'design_review_authorization' must be an object or null")
         else:
             expected = {"by", "at", "note", "attempt_permitted", "launch_session_id", "consumed_at"}
-            if set(authorization) != expected:
+            # #417: rounds_remaining is absent on an authorization written
+            # before multi-round grants existed (read as one round).
+            if set(authorization) - {"rounds_remaining"} != expected:
                 errors.append("status: 'design_review_authorization' must have exactly the keys "
-                              f"{sorted(expected)}")
+                              f"{sorted(expected)} (plus the optional 'rounds_remaining')")
+            if "rounds_remaining" in authorization:
+                remaining = authorization["rounds_remaining"]
+                if not isinstance(remaining, int) or isinstance(remaining, bool) or not 0 <= remaining <= 5:
+                    errors.append("status: 'design_review_authorization.rounds_remaining' must be an "
+                                  f"integer from 0 to 5, got {remaining!r}")
             if not isinstance(authorization.get("by"), str) or not authorization["by"].strip():
                 errors.append("status: 'design_review_authorization.by' must be a non-empty string")
             for sub in ("at", "consumed_at"):
@@ -1469,6 +1504,16 @@ def validate_status_schema(status: dict) -> list[str]:
                             errors.append(f"{label}.{optional_field}: {exc}")
                         if session.get("role") != "implementer":
                             errors.append(f"{label}.{optional_field} applies only to implementer sessions")
+                    continue
+                if optional_field == "work_items":
+                    # #415: 1..MAX_WORK_ITEMS distinct work item ids, implementer only
+                    if value is not None and (session.get("role") != "implementer" or not isinstance(value, list)
+                                              or not 1 <= len(value) <= MAX_WORK_ITEMS
+                                              or len(set(map(str, value))) != len(value)
+                                              or not all(isinstance(v, str) and WORK_ITEM_ID_PATTERN.fullmatch(v)
+                                                         for v in value)):
+                        errors.append(f"{label}.work_items must be a list of distinct work item ids "
+                                      "on an implementer session")
                     continue
                 if optional_field == "workspace_disposition":
                     if value is not None and (value not in WORKSPACE_DISPOSITIONS

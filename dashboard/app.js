@@ -1230,7 +1230,7 @@ function renderWorkItems(workItems) {
       <td data-label="Title">${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
       <td data-label="Lane"><span class="ticket-state">${escapeHtml(workItemLaneLabel(item))}</span><small>${escapeHtml(workItemLaneDetail(item))}</small>${smallFixCanConfirm(item) ? `<button class="mini-action lane-confirm" data-item="${escapeHtml(item.id)}">CONFIRM</button>` : ""}</td>
       <td data-label="Progress"><strong>${escapeHtml(workItemProgressLabel(item))}</strong></td>
-      <td data-label="Status"><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
+      <td data-label="Status"><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span>${workItemDoneWhen(item) ? `<small class="ticket-done-when">${escapeHtml(workItemDoneWhen(item))}</small>` : ""}</td>
       <td data-label="Phase / next">${escapeHtml(item.phase_or_next || "n/a")}</td>
       <td data-label="Blocker">${escapeHtml(item.blocker || "n/a")}</td>
       <td data-label="Updated">${escapeHtml(relativeTime(item.updated_at))}</td>
@@ -1611,9 +1611,22 @@ function renderClocks() {
   }
 }
 
+// #414: a performance pause is shown up front, not only in the metrics
+// panel: since when, the active time that tripped it, and the resume command.
+function renderPerformancePause(performance) {
+  const banner = $("performance-pause-banner");
+  if (!banner) return;
+  const pause = performance && performance.pause;
+  banner.classList.toggle("hidden", !pause);
+  banner.textContent = pause
+    ? `PAUSED FOR PERFORMANCE REVIEW since ${pause.since || "unknown"} · active ${metricDuration(pause.active_seconds)} · resume: ${pause.resume_command}`
+    : "";
+}
+
 function renderMetrics(metrics) {
   if (!metrics) return;
   const performance = state.performance || null;
+  renderPerformancePause(performance);
   const currentPhase = String(state.phaseNumber ?? "");
   state.clocks = { startedAt: metrics.started_at || null, endedAt: metrics.ended_at || null, phaseStartedAt: metrics.phase_started_at || null,
     asleepSeconds: metrics.asleep_seconds || 0, phaseAsleepSeconds: (metrics.phase_asleep_seconds || {})[currentPhase] || 0 };
