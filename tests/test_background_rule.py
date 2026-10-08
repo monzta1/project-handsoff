@@ -108,9 +108,51 @@ class BackgroundRuleTests(HandsoffTestCase):
         self.assertEqual((category, state), ("no_artifact", "failed"))
 
     def test_a_killed_background_call_no_longer_counts_as_outstanding(self):
-        killed = _tool_use("toolu_5", "KillShell", shell_id="bash_1")
+        killed = (_tool_use("toolu_5", "KillShell", shell_id="bash_1")
+                  + _tool_result("toolu_5", "Successfully killed shell: bash_1"))
         category, _, _ = self._end(stdout=BACKGROUND_STARTED + killed, returncode=0)
         self.assertEqual(category, "no_artifact")
+
+    def test_a_quoted_ampersand_and_a_collected_job_are_not_outstanding(self):
+        for command in ("printf 'a & b'", 'echo "x &"', "echo a \\& b", "sleep 0 & wait",
+                        "sleep 0 & sleep 0 & wait", "bash -lc 'sleep 0 & wait'"):
+            with self.subTest(command=command):
+                work = runtime._BackgroundWork()
+                work.feed(_tool_use("toolu_6", "Bash", command=command))
+                self.assertEqual(work.outstanding, [])
+                category, _, _ = self._end(stdout=_tool_use("toolu_6", "Bash", command=command), returncode=0)
+                self.assertEqual(category, "no_artifact")
+                self.tearDown()
+                self.setUp()
+        for command in ("sleep 9 &", "sleep 0 & wait; sleep 9 &", "sleep 9 & disown; wait",
+                        "bash -lc 'nohup sleep 9 > log 2>&1 &'", "setsid -f sleep 9"):
+            with self.subTest(command=command):
+                work = runtime._BackgroundWork()
+                work.feed(_tool_use("toolu_7", "Bash", command=command))
+                self.assertEqual(work.outstanding, ["toolu_7"])
+
+    def test_a_run_in_background_task_is_outstanding_until_the_stream_reports_it_finished(self):
+        notified = _event("user", {"type": "text", "text": (
+            "<task-notification>\n<task-id>bash_1</task-id>\n<status>completed</status>\n"
+            "<summary>Background command completed</summary>\n</task-notification>")})
+        system = json.dumps({"type": "system", "subtype": "task_notification",
+                             "task_id": "bash_1", "status": "completed"}) + "\n"
+        still_running = (_tool_use("toolu_8", "BashOutput", bash_id="bash_1")
+                         + _tool_result("toolu_8", "<status>running</status>"))
+        for name, stdout, outstanding in (
+                ("still running at the last turn", BACKGROUND_STARTED + still_running, ["toolu_1"]),
+                ("task notification", BACKGROUND_STARTED + notified, []),
+                ("system notification", BACKGROUND_STARTED + system, []),
+                ("poll reports completed", BACKGROUND_STARTED + BACKGROUND_FINISHED, [])):
+            with self.subTest(name):
+                work = runtime._BackgroundWork()
+                for line in stdout.splitlines():
+                    work.feed(line)
+                self.assertEqual(work.outstanding, outstanding)
+                category, _, _ = self._end(stdout=stdout, returncode=0)
+                self.assertEqual(category, "background_abandoned" if outstanding else "no_artifact")
+                self.tearDown()
+                self.setUp()
 
     def test_no_background_work_and_no_result_keeps_no_artifact(self):
         for stdout in ("", FOREGROUND):
@@ -122,6 +164,54 @@ class BackgroundRuleTests(HandsoffTestCase):
         category, _, state = self._end(stdout=BACKGROUND_STARTED + APPROVED, returncode=0)
         self.assertEqual((category, state), (None, "completed"))
         self.assertIsNotNone(self.read_status()["review"])
+
+
+DONE = ('HANDSOFF_PROGRESS: {"criterion": "REQ-001", "state": "done", '
+        '"test": "true", "note": ""}\n')
+
+
+class ImplementerBackgroundRuleTests(HandsoffTestCase):
+    """#408: an Implementer's result is a criterion reported done; a clean
+    exit without one while its background work is outstanding is
+    background_abandoned, never a completed session."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(BIN.parent / "prompts", self.tmp / "prompts")
+        write_version_pin(self.tmp)
+        self.init("Implementer background rule #408")
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(4, implemented_by="test-implementer")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+
+    def _end(self, stdout):
+        spec = runtime.LaunchSpec("implementer", "claude", "default", ("/bin/claude", "-p"), str(self.tmp),
+                                  "bounded prompt", token_budget=40_000, project_root=str(self.tmp.resolve()))
+        code, error, out = launch(self, spec, stdout=stdout, returncode=0)
+        status = self.read_status()
+        sid = lib.role_session_ids(status)["implementer"]
+        failure = (status.get("agent_failures") or {}).get(sid) or {}
+        return failure.get("category"), status["agent_sessions"][sid]["state"], error
+
+    def test_outstanding_background_work_and_no_done_criterion_is_background_abandoned(self):
+        for started in (BACKGROUND_STARTED, DETACHED):
+            with self.subTest(detached=started is DETACHED):
+                category, state, error = self._end(started)
+                self.assertEqual((category, state), ("background_abandoned", "failed"))
+                self.assertIsNotNone(error, "the launch returned success")
+                self.assertIn(category, lib.RECOVERABLE_FAILURE_CATEGORIES)
+                self.tearDown()
+                self.setUp()
+
+    def test_a_done_criterion_finished_work_or_none_completes(self):
+        for name, stdout in (("done reported", BACKGROUND_STARTED + DONE),
+                             ("work finished", BACKGROUND_STARTED + BACKGROUND_FINISHED),
+                             ("no background work", FOREGROUND)):
+            with self.subTest(name):
+                category, state, error = self._end(stdout)
+                self.assertEqual((category, state, error), (None, "completed", None))
+                self.tearDown()
+                self.setUp()
 
 
 if __name__ == "__main__":

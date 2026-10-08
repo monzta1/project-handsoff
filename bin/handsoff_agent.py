@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import signal
 import shutil
 import subprocess
@@ -1170,25 +1171,86 @@ def _terminalize_runner_io_failure(root: Path, session_id: str, process, *, stop
         )
 
 
-#: #408: a shell command that detaches a process: nohup, setsid or disown,
-#: or a lone `&` (not `&&`, `2>&1` or `&>`).
-_DETACHED_COMMAND = re.compile(r"(?:^|[\s;&|(])(?:nohup|setsid|disown)\b|(?<![&>|<])&(?![&>])(?=\s|$|;|\))")
+#: #408: a lone `&` (not `&&`, `|&`, `2>&1`, `<&` or `&>`), a `wait` or
+#: `disown` command word, and `setsid --fork`, read from unquoted text only.
+_LONE_AMPERSAND = re.compile(r"(?<![&>|<])&(?![&>])")
+_COMMAND_WORD = r"(?:^|[;&|(){}\n])\s*"
+_WAIT = re.compile(_COMMAND_WORD + r"wait\b")
+_DISOWN = re.compile(_COMMAND_WORD + r"disown\b")
+_SETSID_FORK = re.compile(_COMMAND_WORD + r"setsid\s+(?:-\w*f\w*|--fork)\b")
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _BACKGROUND_ID = re.compile(r"\bID:\s*([A-Za-z0-9_.-]+)")
-_BACKGROUND_DONE = re.compile(r"<status>\s*(?:completed|failed|killed)\s*</status>|"
-                              r"\bstatus:\s*(?:completed|failed|killed)\b", re.IGNORECASE)
+_DONE_STATUS = r"(?:completed|failed|killed|exited|stopped)"
+_BACKGROUND_DONE = re.compile(r"<status>\s*" + _DONE_STATUS + r"\s*</status>|"
+                              r"\bstatus:\s*" + _DONE_STATUS + r"\b", re.IGNORECASE)
+_TASK_NOTIFICATION = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
+_TASK_ID = re.compile(r"<(?:task|shell|bash)[-_]id>\s*([A-Za-z0-9_.-]+)\s*</(?:task|shell|bash)[-_]id>")
+
+
+def _unquoted(command: str) -> str:
+    """#408: the command with quoted text and escaped characters blanked, so
+    `printf 'a & b'` has no `&` left to read."""
+    out, quote, escaped = [], None, False
+    for char in command:
+        if escaped:
+            out.append(" ")
+            escaped = False
+        elif char == "\\" and quote != "'":
+            out.append(" ")
+            escaped = True
+        elif quote:
+            quote = None if char == quote else quote
+            out.append(" ")
+        elif char in "'\"":
+            quote = char
+            out.append(" ")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _shell_body(command: str) -> str:
+    """A `bash -lc '...'` wrapper (how Codex reports a command) is unwrapped
+    once, so the script it runs is what is read."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return command
+    if len(words) == 3 and Path(words[0]).name in _SHELLS and words[1].startswith("-") and "c" in words[1]:
+        return words[2]
+    return command
+
+
+def _detaches(command: str) -> bool:
+    """#408: the command leaves a process running after it returns: a lone
+    `&` outside quotes with no later `wait` to collect it (or one disowned
+    before the wait), or `setsid --fork`."""
+    text = _unquoted(_shell_body(command))
+    if _SETSID_FORK.search(text):
+        return True
+    last = None
+    for match in _LONE_AMPERSAND.finditer(text):
+        last = match.start()
+    if last is None:
+        return False
+    tail = text[last:]
+    collected = _WAIT.search(tail)
+    return collected is None or _DISOWN.search(tail[:collected.start()]) is not None
 
 
 class _BackgroundWork:
     """#408: background work a managed role started, read from its streamed
-    events: a tool call with run_in_background, or a command that detaches a
-    process. A background call is closed when a poll reports it finished or
-    it is killed; a detached process is never seen to finish. `outstanding`
-    is what was still running at the session's last turn."""
+    events: a tool call the stream marks run_in_background, or a command that
+    backgrounds a process outside quotes with no later wait. A background
+    call is closed when the stream reports it finished: the background task
+    notification, or a BashOutput/TaskOutput poll or KillShell result saying
+    so. A detached process is never seen to finish. `outstanding` is what was
+    still running at the session's last turn."""
 
     def __init__(self):
         self._open: dict[str, str] = {}
         self._aliases: dict[str, str] = {}
-        self._polls: dict[str, str] = {}
+        self._polls: dict[str, tuple[str, str]] = {}
 
     @property
     def outstanding(self) -> list[str]:
@@ -1207,15 +1269,22 @@ class _BackgroundWork:
         item = event.get("item")
         if event.get("type") == "item.started" and isinstance(item, dict) \
                 and item.get("type") == "command_execution" and isinstance(item.get("command"), str) \
-                and _DETACHED_COMMAND.search(item["command"]):
+                and _detaches(item["command"]):
             self._open[str(item.get("id") or len(self._open))] = "detached"
+        if event.get("type") == "system" and isinstance(event.get("task_id"), str) \
+                and isinstance(event.get("status"), str) and re.fullmatch(_DONE_STATUS, event["status"]):
+            self._close(event["task_id"])  # the stream's own task notification
         message = event.get("message")
         content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            self._notifications(content)
         for block in content if isinstance(content, list) else []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 self._tool_use(block)
             elif isinstance(block, dict) and block.get("type") == "tool_result":
                 self._tool_result(block)
+            elif isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                self._notifications(block["text"])
 
     def _tool_use(self, block: dict) -> None:
         call_id = str(block.get("id") or "")
@@ -1225,12 +1294,12 @@ class _BackgroundWork:
                        if isinstance(args.get(key), str)), None)
         if args.get("run_in_background") is True:
             self._open[call_id] = "background"
-        elif isinstance(args.get("command"), str) and _DETACHED_COMMAND.search(args["command"]):
+        elif isinstance(args.get("command"), str) and _detaches(args["command"]):
             self._open[call_id] = "detached"
         elif name in ("BashOutput", "TaskOutput") and target:
-            self._polls[call_id] = target
+            self._polls[call_id] = ("poll", target)
         elif name in ("KillShell", "KillBash", "TaskStop") and target:
-            self._close(target)
+            self._polls[call_id] = ("kill", target)
 
     def _tool_result(self, block: dict) -> None:
         call_id = str(block.get("tool_use_id") or "")
@@ -1242,9 +1311,19 @@ class _BackgroundWork:
             match = _BACKGROUND_ID.search(body)
             if match:
                 self._aliases[match.group(1)] = call_id
-        target = self._polls.pop(call_id, None)
-        if target and _BACKGROUND_DONE.search(body):
+        kind, target = self._polls.pop(call_id, (None, None))
+        if (kind == "kill" and block.get("is_error") is not True) \
+                or (kind == "poll" and _BACKGROUND_DONE.search(body)):
             self._close(target)
+        self._notifications(body)
+
+    def _notifications(self, text: str) -> None:
+        """Claude reports a finished background task as a
+        `<task-notification>` naming its id and a terminal status."""
+        for note in _TASK_NOTIFICATION.findall(text):
+            task = _TASK_ID.search(note)
+            if task and _BACKGROUND_DONE.search(note):
+                self._close(task.group(1))
 
     def _close(self, target: str) -> None:
         key = self._aliases.get(target, target)
@@ -1691,6 +1770,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     stdout_tail = [""]
     stderr_tail = [""]
     background = _BackgroundWork()  # #408
+    progress_done = [0]  # #408: the Implementer's result is a criterion reported done
     # #168: the adapter's own usage, watched per streamed line on both
     # streams, independent of the bounded tails above.
     usage_watcher = lib.UsageWatcher(spec.adapter)
@@ -1822,7 +1902,9 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
                             question_lines[0] += 1
                         _parse_operation_line(line, root, session_id, spec.role)
-                        _parse_progress_line(line, root, session_id, spec.role)
+                        progress = _parse_progress_line(line, root, session_id, spec.role)
+                        if progress and progress.get("state") == "done":
+                            progress_done[0] += 1
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                             persist_new(supervisor_requests, "supervisor_request")
@@ -2191,12 +2273,15 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(orchestration_noop=True, role=spec.role),
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
-    if spec.role in {"reviewer", "architect", "supervisor"} and background.outstanding \
-            and not reviewer_results and not architect_results and not architect_declines \
-            and not supervisor_requests and question_lines[0] == 0:
+    no_result = question_lines[0] == 0 and (
+        (spec.role in {"reviewer", "architect", "supervisor"} and not reviewer_results and not architect_results
+         and not architect_declines and not supervisor_requests)
+        or (spec.role == "implementer" and progress_done[0] == 0))
+    if background.outstanding and no_result:
         # #408: a clean exit with no result while background work it started
         # was still running: the turn ended the session. Recoverable, and no
-        # review round is spent (the open attempt is reused on relaunch).
+        # review round is spent (the open attempt is reused on relaunch). An
+        # Implementer's workspace is never applied as a completed session.
         failure = {"category": "background_abandoned",
                    "reason": lib._FAILURE_REASON_LABELS["background_abandoned"],
                    "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
@@ -2632,23 +2717,25 @@ def _claude_logical_lines(line: str) -> list[str]:
 PROGRESS_PREFIX = "HANDSOFF_PROGRESS:"
 
 
-def _parse_progress_line(line: str, root: Path, session_id: str, role: str) -> None:
+def _parse_progress_line(line: str, root: Path, session_id: str, role: str) -> dict | None:
     """#215: persist a valid per-criterion progress claim from the
     Implementer on its session; a malformed line is a protocol warning and
-    never a failure; another role's line is ignored."""
+    never a failure; another role's line is ignored. Returns the valid claim
+    (#408: a `done` claim is the Implementer's result)."""
     if role != "implementer" or not line.startswith(PROGRESS_PREFIX):
-        return
+        return None
     try:
         record = lib.validate_progress_line(json.loads(line[len(PROGRESS_PREFIX):].strip()))
     except (ValueError, TypeError):
         record = None
     if record is None:
         lib.count_operation_warning(root, session_id, role, "protocol_warnings")
-        return
+        return None
     try:
         lib.record_session_progress(root, session_id, record)
     except Exception:
-        return  # telemetry never turns a child outcome into a failure
+        pass  # telemetry never turns a child outcome into a failure
+    return record
 
 
 def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> None:
