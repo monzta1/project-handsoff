@@ -1054,7 +1054,7 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
         }
 
     try:
-        lib.reconcile_gone_sessions(root)  # #420, P1.10: as status does, before the read
+        lib.reconcile_gone_sessions(root, cfg)  # #420, P1.10: as status does, before the read
     except (lib.HandsoffError, OSError, ValueError):
         pass  # the read below reports what is wrong
     try:

@@ -8410,7 +8410,7 @@ def session_never_started(root: Path, session: dict, cfg: dict, now: datetime | 
     return age is not None and age >= float(cfg.get("stall_minutes", 10))
 
 
-def reconcile_gone_sessions(root: Path) -> list[str]:
+def reconcile_gone_sessions(root: Path, cfg: dict | None = None) -> list[str]:
     """#420: on a status read, a live-state session whose recorded process
     is gone is failed (process_gone). The pid must no longer exist AND its
     beacon must be stale: the launcher refreshes the beacon until it records
@@ -8418,7 +8418,9 @@ def reconcile_gone_sessions(root: Path) -> list[str]:
     root = Path(root).resolve()
     now = datetime.now(timezone.utc)
     with project_lock(root):
-        cfg = load_config(root)
+        # a caller that already loaded the config passes it (#393: one read
+        # of handsoff.toml per Fleet build; E2 sweep)
+        cfg = cfg if cfg is not None else load_config(root)
         status = load_unique_json(status_path(root, cfg))
         gone = []
         for session in live_agent_sessions(status):
