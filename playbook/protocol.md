@@ -155,9 +155,13 @@ HANDSOFF_PROGRESS: {"criterion": "REQ-001", "state": "done", "test": "python3 -m
 | field | values | required |
 |---|---|---|
 | `criterion` | a criterion id | yes |
-| `state` | `done`, `partial`, `untouched` | yes |
+| `state` | `done`, `partial`, `untouched`, `scope_exception` | yes |
 | `test` | the command run, at most 512 characters | no |
 | `note` | at most 200 characters | no |
+
+`scope_exception` (#413) is a failure in a path the Implementer does not
+own: reported once, naming the failing test and the path in `note`, and
+then the Implementer stops.
 
 Until the engine that carries #215 is installed, the line is a protocol
 warning like any other unknown line.

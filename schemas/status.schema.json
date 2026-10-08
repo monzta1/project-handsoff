@@ -680,6 +680,14 @@
             "type": "integer",
             "minimum": 1
           },
+          "env": {
+            "type": "object",
+            "maxProperties": 32,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
           "state": {
             "enum": [
               "awaiting_approval",
@@ -1136,6 +1144,8 @@
               "type": "object",
               "additionalProperties": {"type": ["string", "null"]}
             },
+            "half_timeout_warned_at": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+            "workspace_disposition": {"enum": ["pending", "applied", "discarded", null]},
             "quarantined_result": {
               "type": "object",
               "additionalProperties": false,

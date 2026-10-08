@@ -873,6 +873,42 @@ def remove_implementer_workspace(root: Path, session: dict) -> None:
     _git(root, "worktree", "prune")
 
 
+def implementer_workspace_changes(cfg: dict, session: dict, manifest: dict | None = None) -> list[str]:
+    """#359 #413: the paths a workspace session changed, against what it was
+    seeded with: what an apply would copy back, and what `status` lists for a
+    stopped session's kept workspace. Handsoff's own state files are neither."""
+    workspace = Path(session["workspace"]["path"])
+    if manifest is None:
+        manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
+    seeded = manifest["seeded"]
+    state_files = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
+    # #416: handsoff.toml is out of the evidence digest but seeded here, so
+    # an unchanged copy is a no-op and an implementer's edit is attributed
+    # (and refused as outside its ownership), never silently dropped.
+    return sorted(
+        path for path in set(_changed_since(workspace, session["workspace"]["launch_commit"])) | set(seeded)
+        if (path == "handsoff.toml" or not _digest_excluded(path, state_files))
+        and (path not in seeded or _path_digest(workspace / path) != seeded[path]))
+
+
+#: #413: exit codes of a child stopped by a signal through a shell or runner
+STOPPED_EXIT_CODES = (130, 137, 143)
+
+
+def workspace_kept_on_stop(session: object) -> bool:
+    """#413: an implementer workspace is kept for an explicit disposition when
+    its session was stopped (cancelled, timed out, or its child killed by a
+    signal) and nothing was applied. A normal exit keeps today's automatic
+    apply, and a refused apply is removed as before."""
+    if not isinstance(session, dict) or not isinstance(session.get("workspace"), dict):
+        return False
+    if (session.get("apply") or {}).get("state") == "applied":
+        return False
+    state, code = session.get("state"), session.get("exit_code")
+    signalled = isinstance(code, int) and not isinstance(code, bool) and (code < 0 or code in STOPPED_EXIT_CODES)
+    return state in {"cancelled", "timed_out"} or (state == "failed" and signalled)
+
+
 def apply_implementer_workspace(root: Path, session_id: str) -> dict:
     """#359: copy an ownership-declaring implementer's changes back.
 
@@ -896,17 +932,8 @@ def apply_implementer_workspace(root: Path, session_id: str) -> dict:
             raise HandsoffError(f"agent session {session_id} has no implementer workspace")
         owned = session.get("owned_paths") or []
         workspace = Path(session["workspace"]["path"])
-        launch_commit = session["workspace"]["launch_commit"]
         manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
-        seeded = manifest["seeded"]
-        state_files = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
-        # #416: handsoff.toml is out of the evidence digest but seeded here, so
-        # an unchanged copy is a no-op and an implementer's edit is attributed
-        # (and refused as outside its ownership), never silently dropped.
-        changed = sorted(
-            path for path in set(_changed_since(workspace, launch_commit)) | set(seeded)
-            if (path == "handsoff.toml" or not _digest_excluded(path, state_files))
-            and (path not in seeded or _path_digest(workspace / path) != seeded[path]))
+        changed = implementer_workspace_changes(cfg, session, manifest)
         outside = [path for path in changed
                    if not any(path == mine or path.startswith(mine + "/") for mine in owned)]
         if outside:
@@ -1758,7 +1785,8 @@ def progress_summary(progress: list | None, acceptance: dict | None) -> dict:
     order = list(dict.fromkeys(automated + sorted(last)))
     out = {"done": [], "partial": [], "untouched": []}
     for criterion in order:
-        out[last.get(criterion, "untouched")].append(criterion)
+        # #413: present only when an implementer reported one
+        out.setdefault(last.get(criterion, "untouched"), []).append(criterion)
     return out
 
 

@@ -27,7 +27,10 @@ class ReviewReaffirmTests(HandsoffTestCase):
         return status
 
     def _evidence_refresh(self):
-        """verify again on an unchanged spec: the review is revoked, the design is not."""
+        """verify again on an unchanged spec after a tree change: the review is
+        revoked, the design is not. #411: an identical tree keeps the review,
+        so the fixture changes a file first."""
+        (self.tmp / "refresh.txt").write_text("a change after the review\n")
         result = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer"], cwd=self.tmp)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         status = self.read_status()

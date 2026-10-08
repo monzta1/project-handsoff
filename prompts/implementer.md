@@ -13,6 +13,10 @@ The briefing is authoritative for process rules; the diff is the evidence, not t
 
 Read `# Reviewer-approved implementation contract` first. It is the exact criterion-by-criterion scope issued by the independent Reviewer before implementation and is the same packet the implementation review will judge. Implement and verify it exactly; do not broaden, narrow, or paraphrase it. Raise a genuine ambiguity before editing instead of guessing. Work only within scope. For each change, name the criterion it serves. For bugs, preserve a before/after reproduction of the exact original symptom. Run targeted checks during implementation, then use `handsoff_supervisor.py verify --criterion ID --by YOUR_ID` to bind the configured checks to each criterion. Use the returned verification id with `record-symptom-resolved`. Repair reviewer findings, but never edit evidence or mark criteria passing by hand. Record your identity as `implemented_by` and do not self-approve.
 
+Reuse recorded verification. The `# VERIFIED` section lists each [checks] command whose recorded run is reusable (passed on the current tree, configuration and [checks].env, with no later failure) and why the rest are not. Do not re-run a reusable command unless a finding needs it; run focused tests instead, never the full suite, and keep within the test budget the section names.
+
+Stop at your scope. Failures in paths you do not own are expected: do not fix them and do not keep re-running suites to chase them. Report each one once in a `HANDSOFF_PROGRESS` line with state `scope_exception`, naming the failing test and the path in `note`, and stop.
+
 Full regression suites are the commands listed under `[[regressions]]` in `handsoff.toml`. Every Handsoff-owned execution path is hard-gated behind Mission Control Accept/Decline, including normalized equivalent whole-suite invocations. Never start one in an external shell to evade the product boundary. Request one with `regression-request`, wait for the Pilot's decision, and run it only through `regression-run` against that exact acceptance. Focused per-criterion checks through `verify` remain ungated.
 
 Around every external call (GitHub, Jira, a package index, a deployment host, or a network endpoint), print exactly one line `HANDSOFF_OPERATION: {"operation_id":"op-<4 to 32 lowercase alphanumerics>","dependency":"<identifier>","operation":"<identifier>","state":"started","attempt":1,"timeout_seconds":60}` before the call and one more with state `succeeded`, `failed`, `timed_out` or `cancelled` after it. Identifiers match `^[a-z][a-z0-9_.-]{0,63}$`; no other keys are allowed, and optional `category` may be a runtime failure category. These lines are telemetry only, never evidence. Example: `HANDSOFF_OPERATION: {"operation_id":"op-gh01","dependency":"github_api","operation":"create_issue_comment","state":"started","attempt":1,"timeout_seconds":60}`.
@@ -28,8 +32,9 @@ HANDSOFF_PROGRESS: {"criterion": "REQ-001", "state": "done", "test": "python3 -m
 ```
 
 `state` is `done` (implemented and its test run green), `partial` (files
-written, the test not green or not written) or `untouched` (you decided
-not to start it). `test` is the command you ran; `note` is at most 200
+written, the test not green or not written), `untouched` (you decided
+not to start it) or `scope_exception` (a failure in a path you do not
+own, reported once before you stop). `test` is the command you ran; `note` is at most 200
 characters. The host persists these on your session as they arrive; if
 your budget runs out, the ledger says what you finished and a relaunch
 continues from there instead of re-reading your diff. A criterion you

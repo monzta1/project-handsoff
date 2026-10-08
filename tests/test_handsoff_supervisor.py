@@ -10256,9 +10256,10 @@ class TestArchitectDesignApprovalGate(HandsoffTestCase):
         self.assertEqual(run(["advance", "6", "80", "--implemented-by", "impl-1"], cwd=self.tmp).returncode, 0)
         design_before_p6_evidence = self.read_status()["design_approved"]
 
-        # Re-running verify at phase 6 must still re-invalidate review per
-        # the pre-existing rollback_to=5 cascade (unchanged regression
-        # coverage), while design_approved -- the new field -- survives.
+        # Re-running verify at phase 6 on a changed tree must still
+        # re-invalidate review per the rollback_to=5 cascade (#411: an
+        # identical tree keeps it), while design_approved survives.
+        (self.tmp / "product.txt").write_text("changed after the review\n")
         verify_again = run(["verify", "--criterion", "REQ-001", "--by", "impl-1"], cwd=self.tmp)
         self.assertEqual(verify_again.returncode, 0, verify_again.stdout + verify_again.stderr)
         after_p6 = self.read_status()
