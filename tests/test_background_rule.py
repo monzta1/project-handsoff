@@ -68,8 +68,8 @@ class BackgroundRuleTests(HandsoffTestCase):
                 self.assertIn("The session ends when the turn ends", text)
 
     def test_a_clean_exit_with_outstanding_background_work_and_no_result_is_background_abandoned(self):
-        for started in (BACKGROUND_STARTED, DETACHED):
-            with self.subTest(detached=started is DETACHED):
+        for started in (BACKGROUND_STARTED,):
+            with self.subTest(started="run_in_background"):
                 category, rounds, state = self._end(stdout=started, returncode=0)
                 self.assertEqual((category, state), ("background_abandoned", "failed"))
                 self.assertIn(category, lib.RECOVERABLE_FAILURE_CATEGORIES)
@@ -113,51 +113,27 @@ class BackgroundRuleTests(HandsoffTestCase):
         category, _, _ = self._end(stdout=BACKGROUND_STARTED + killed, returncode=0)
         self.assertEqual(category, "no_artifact")
 
-    def test_a_quoted_ampersand_and_a_collected_job_are_not_outstanding(self):
-        for command in ("printf 'a & b'", 'echo "x &"', "echo a \\& b", "sleep 0 & wait",
-                        "sleep 0 & sleep 0 & wait", "bash -lc 'sleep 0 & wait'"):
+    def test_shell_text_is_never_background_work(self):
+        """#408 (narrowed): only a structured run_in_background launch counts.
+        Shell text is never parsed, so no command, however it backgrounds or
+        quotes, can make a failed session budget-exempt."""
+        commands = ("sleep 9 &", "printf 'a & b'", "sleep 0 & wait", "sleep 9 & disown; wait",
+                    "nohup python3 probe.py > probe.log 2>&1 &", "setsid -f sleep 9",
+                    "bash -lc 'sleep 90 & sleep 0 & wait $!'", "printf done # run tests & review",
+                    "sleep 90 & wait '$!'; true", "sleep 90 & wait \\$!; true",
+                    'sleep 90 & wait "\\$!"; true', "echo 'unbalanced &")
+        for command in commands:
             with self.subTest(command=command):
                 work = runtime._BackgroundWork()
                 work.feed(_tool_use("toolu_6", "Bash", command=command))
                 self.assertEqual(work.outstanding, [])
+        for command in ("sleep 9 &", 'sleep 90 & wait "\\$!"; true'):
+            with self.subTest(classified=command):
                 category, _, _ = self._end(stdout=_tool_use("toolu_6", "Bash", command=command), returncode=0)
                 self.assertEqual(category, "no_artifact")
                 self.tearDown()
                 self.setUp()
-        for command in ("sleep 9 &", "sleep 0 & wait; sleep 9 &", "sleep 9 & disown; wait",
-                        "bash -lc 'nohup sleep 9 > log 2>&1 &'", "setsid -f sleep 9"):
-            with self.subTest(command=command):
-                work = runtime._BackgroundWork()
-                work.feed(_tool_use("toolu_7", "Bash", command=command))
-                self.assertEqual(work.outstanding, ["toolu_7"])
-
-    def test_jobs_are_tracked_through_wait_disown_comments_and_quotes(self):
-        for command, outstanding in (
-                ("sleep 90 & sleep 0 & wait $!", True),  # wait $! collects only sleep 0
-                ("printf done # run tests & review", False),  # a comment starts nothing
-                ("sleep 90 & wait", False),
-                ("sleep 90 & disown; wait", True),
-                ("a & b & wait %1", True),  # b is never collected
-                ("a & b & wait %1 %2", False),
-                ("sleep 90 & disown %1\nwait", True),
-                ("sleep 90 &\nwait", False),
-                ("nohup sleep 90 & wait", False),  # nohup's child is still the shell's; wait collects it
-                ("nohup sleep 0 & wait", False),
-                ("nohup sleep 90 &", True),
-                ("sleep 90 & wait '$!'; true", True),  # a quoted '$!' is literal: wait fails, sleep runs on
-                ('sleep 90 & wait "$!"', False),  # double quotes still expand $!
-                ("sleep 90 & wait \\$!; true", True),  # an escaped \\$! is literal too
-                ('bash -c "sleep 90 & wait \\$!"', False),  # inside double quotes the nested shell gets $!
-                ("bash -c 'sleep 90 & wait \\$!'", True),  # inside single quotes the nested shell gets \\$!
-                ("echo \"#x\" &", True),
-                ("echo a#b", False),
-                ("echo 'unbalanced &", False),  # unparseable: never background
-                ("bash -lc 'sleep 90 & sleep 0 & wait $!'", True)):
-            with self.subTest(command=command):
-                self.assertEqual(runtime._detaches(command), outstanding)
-                work = runtime._BackgroundWork()
-                work.feed(_tool_use("toolu_9", "Bash", command=command))
-                self.assertEqual(work.outstanding, ["toolu_9"] if outstanding else [])
+        self.assertFalse(hasattr(runtime, "_detaches"), "the shell-text parser is gone")
 
     def test_a_run_in_background_task_is_outstanding_until_the_stream_reports_it_finished(self):
         notified = _event("user", {"type": "text", "text": (
@@ -222,8 +198,8 @@ class ImplementerBackgroundRuleTests(HandsoffTestCase):
         return failure.get("category"), status["agent_sessions"][sid]["state"], error
 
     def test_outstanding_background_work_and_no_done_criterion_is_background_abandoned(self):
-        for started in (BACKGROUND_STARTED, DETACHED):
-            with self.subTest(detached=started is DETACHED):
+        for started in (BACKGROUND_STARTED,):
+            with self.subTest(started="run_in_background"):
                 category, state, error = self._end(started)
                 self.assertEqual((category, state), ("background_abandoned", "failed"))
                 self.assertIsNotNone(error, "the launch returned success")
@@ -234,7 +210,8 @@ class ImplementerBackgroundRuleTests(HandsoffTestCase):
     def test_a_done_criterion_finished_work_or_none_completes(self):
         for name, stdout in (("done reported", BACKGROUND_STARTED + DONE),
                              ("work finished", BACKGROUND_STARTED + BACKGROUND_FINISHED),
-                             ("no background work", FOREGROUND)):
+                             ("no background work", FOREGROUND),
+                             ("shell text only", DETACHED)):
             with self.subTest(name):
                 category, state, error = self._end(stdout)
                 self.assertEqual((category, state, error), (None, "completed", None))

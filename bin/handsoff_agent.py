@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import signal
 import shutil
 import subprocess
@@ -1171,11 +1170,6 @@ def _terminalize_runner_io_failure(root: Path, session_id: str, process, *, stop
         )
 
 
-#: #408: shell operators inside one shlex punctuation token (`&;`, `2>&1`),
-#: longest first; the separators end a simple command, the rest redirect.
-_SHELL_OPERATOR = re.compile(r"&&|\|\||;;|\|&|&>>|&>|>&|<&|>>|<<|<>|>\||[;&|()<>]")
-_SEPARATORS = {";", ";;", "&&", "||", "|", "|&", "&", "(", ")"}
-_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _BACKGROUND_ID = re.compile(r"\bID:\s*([A-Za-z0-9_.-]+)")
 _DONE_STATUS = r"(?:completed|failed|killed|exited|stopped)"
 _BACKGROUND_DONE = re.compile(r"<status>\s*" + _DONE_STATUS + r"\s*</status>|"
@@ -1184,173 +1178,14 @@ _TASK_NOTIFICATION = re.compile(r"<task-notification>(.*?)</task-notification>",
 _TASK_ID = re.compile(r"<(?:task|shell|bash)[-_]id>\s*([A-Za-z0-9_.-]+)\s*</(?:task|shell|bash)[-_]id>")
 
 
-class _Script:
-    """#408: the text a `_ShellLexer` reads, one character at a time. An
-    unquoted newline reads as `;` (it ends a command), `#` starts a comment
-    only at a word start, and a comment stops before its newline."""
-
-    def __init__(self, text: str):
-        self.text, self.pos, self.lexer = text, 0, None
-
-    def read(self, _size: int = 1) -> str:
-        state = self.lexer.state
-        if state == "c":
-            self.lexer.operator = True  # the token being read is unquoted punctuation
-        if self.pos >= len(self.text):
-            return ""
-        char = self.text[self.pos]
-        self.pos += 1
-        if state in ("'", '"', "\\"):
-            return char
-        if char == "\n":
-            return ";"
-        self.lexer.commenters = "" if state == "a" else "#"
-        return char
-
-    def readline(self) -> str:
-        end = self.text.find("\n", self.pos)
-        self.pos = len(self.text) if end < 0 else end
-        return ""
-
-    def close(self) -> None:
-        pass
-
-
-class _ShellLexer(shlex.shlex):
-    """#408: shlex in POSIX mode with punctuation characters, which also says
-    whether each token was an unquoted operator (`'&'` and `\\&` are words)."""
-
-    def __init__(self, text: str):
-        script = _Script(text)
-        super().__init__(script, posix=True, punctuation_chars=True)
-        script.lexer = self
-        self.whitespace_split = True
-        self.operator = False
-
-    def read_token(self):
-        self.operator = False
-        return super().read_token()
-
-
-def _simple_commands(script: str):
-    """#408: (words, separator) for each simple command, redirections and
-    their targets dropped. Raises ValueError for text shlex cannot read."""
-    lexer, words, redirect = _ShellLexer(script), [], False
-    while (token := lexer.get_token()) is not None:
-        if not lexer.operator:
-            if not redirect:
-                words.append(token)
-            redirect = False
-            continue
-        for operator in _SHELL_OPERATOR.findall(token):
-            if operator in _SEPARATORS:
-                yield words, operator
-                words, redirect = [], False
-            else:
-                if words and words[-1].isdigit():
-                    words.pop()  # the descriptor of `2>&1`
-                redirect = True
-    yield words, None
-
-
-def _mark_literal_pid(script: str) -> str:
-    """#408: replace the forms of `$!` the shell passes literally (`'$!'`
-    and, outside double quotes, `\\$!`) with a word no rule matches. Inside
-    double quotes bash turns `\\$!` into `$!` (shlex does not), so it is
-    unescaped here for the nested shell."""
-    out, i, quote = [], 0, None
-    while i < len(script):
-        char = script[i]
-        if quote is None and script.startswith("'$!'", i):
-            out.append("__literal_dollar_bang__")
-            i += 4
-            continue
-        if char == "\\" and quote != "'":
-            if quote is None and script.startswith("\\$!", i):
-                out.append("__literal_dollar_bang__")
-                i += 3
-                continue
-            if quote == '"' and script.startswith("\\$!", i):
-                out.append("$!")  # bash unescapes \\$ inside double quotes; shlex does not
-                i += 3
-                continue
-            out.append(script[i:i + 2])
-            i += 2
-            continue
-        if char in "'\"" and quote in (None, char):
-            quote = None if quote == char else char
-        out.append(char)
-        i += 1
-    return "".join(out)
-
-
-def _outstanding(script: str) -> int:
-    """#408: how many processes `script` leaves running when it returns.
-    Each simple command ended by `&` is a job and `$!` names the latest.
-    `wait` collects every job not disowned, `wait $!` the latest, `wait %N`
-    job N, any other operand nothing; `disown` keeps a job running but out
-    of the wait set. `nohup` and `setsid` jobs are waitable like any other;
-    `setsid -f` and a nested `bash -c` that leaves work running are
-    outstanding whatever waits. A single-quoted `'$!'` collects nothing."""
-    jobs: list[dict] = []
-    pinned = 0
-    # A single-quoted '$!' and an escaped \\$! are literal text, not the
-    # latest job; POSIX shlex drops the quoting, so mark them before
-    # tokenizing (they collect nothing).
-    script = _mark_literal_pid(script)
-    for words, separator in _simple_commands(script):
-        if not words:
-            continue
-        name, operands = Path(words[0]).name, words[1:]
-        if separator == "&":
-            # nohup and setsid (without -f) still run as the shell's child,
-            # so a later wait collects them like any other job
-            jobs.append({"waitable": True, "collected": False})
-            continue
-        if name == "setsid" and any(word == "--fork" or (word.startswith("-") and not word.startswith("--")
-                                                          and "f" in word) for word in operands):
-            pinned += 1
-        elif name in _SHELLS and len(operands) >= 2 and operands[0].startswith("-") \
-                and not operands[0].startswith("--") and "c" in operands[0]:
-            pinned += _outstanding(operands[1])
-        elif name in ("wait", "disown"):
-            if not operands:
-                chosen = jobs if name == "wait" else jobs[-1:]
-            elif name == "disown" and operands in (["-a"], ["-r"]):
-                chosen = jobs
-            else:
-                chosen = []
-                for operand in operands:
-                    if operand == "$!":
-                        chosen += jobs[-1:]
-                    elif re.fullmatch(r"%[1-9][0-9]*", operand) and int(operand[1:]) <= len(jobs):
-                        chosen.append(jobs[int(operand[1:]) - 1])
-            for job in chosen:
-                if name == "disown":
-                    job["waitable"] = False
-                elif job["waitable"]:
-                    job["collected"] = True
-    return pinned + sum(1 for job in jobs if not job["collected"])
-
-
-def _detaches(command: str) -> bool:
-    """#408: the command leaves a process running after it returns. A
-    command shlex cannot read is not background work, so it never exempts
-    a failure from the review budget."""
-    try:
-        return _outstanding(command) > 0
-    except ValueError:
-        return False
-
-
 class _BackgroundWork:
     """#408: background work a managed role started, read from its streamed
-    events: a tool call the stream marks run_in_background, or a command that
-    backgrounds a process outside quotes with no later wait. A background
-    call is closed when the stream reports it finished: the background task
-    notification, or a BashOutput/TaskOutput poll or KillShell result saying
-    so. A detached process is never seen to finish. `outstanding` is what was
-    still running at the session's last turn."""
+    events: only a tool call the stream marks run_in_background (shell text
+    is never parsed, so a mis-read command can never exempt a failure from
+    the review budget). A background call is closed when the stream reports
+    it finished: the background task notification, or a BashOutput/TaskOutput
+    poll or KillShell result saying so. `outstanding` is what was still
+    running at the session's last turn."""
 
     def __init__(self):
         self._open: dict[str, str] = {}
@@ -1371,11 +1206,6 @@ class _BackgroundWork:
             return
         if not isinstance(event, dict):
             return
-        item = event.get("item")
-        if event.get("type") == "item.started" and isinstance(item, dict) \
-                and item.get("type") == "command_execution" and isinstance(item.get("command"), str) \
-                and _detaches(item["command"]):
-            self._open[str(item.get("id") or len(self._open))] = "detached"
         if event.get("type") == "system" and isinstance(event.get("task_id"), str) \
                 and isinstance(event.get("status"), str) and re.fullmatch(_DONE_STATUS, event["status"]):
             self._close(event["task_id"])  # the stream's own task notification
@@ -1399,8 +1229,6 @@ class _BackgroundWork:
                        if isinstance(args.get(key), str)), None)
         if args.get("run_in_background") is True:
             self._open[call_id] = "background"
-        elif isinstance(args.get("command"), str) and _detaches(args["command"]):
-            self._open[call_id] = "detached"
         elif name in ("BashOutput", "TaskOutput") and target:
             self._polls[call_id] = ("poll", target)
         elif name in ("KillShell", "KillBash", "TaskStop") and target:
