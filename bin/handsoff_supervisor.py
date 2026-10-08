@@ -1193,6 +1193,8 @@ def cmd_status(args) -> int:
         "work_item_completion": lib.work_item_completion_lines(
             lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)),
         "status": status.get("status"), "next_action": status.get("next_action"),
+        # P2.4: the close outcome with its reason and known risk
+        "run_closed": status.get("run_closed"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
         "review_attempts": [{k: item.get(k) for k in ("attempt", "attempt_id", "trigger", "disposition", "reviewer")}
                             for item in (status.get("review_attempts") or [])],
@@ -6489,6 +6491,12 @@ def cmd_doctor(args) -> int:
     way past real damage."""
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
+    if getattr(args, "prompts", False) or getattr(args, "probe", None):
+        # P0.4 / P1.9: read-only reports; neither takes the project lock nor
+        # writes anything, and the probe runs only when named here
+        report, code = lib.doctor_prompt_probe_report(root, cfg, prompts=args.prompts, probe=args.probe)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return code
     with lib.project_lock(root):
         chain_problems, last_event = lib.event_log_chain_errors(root, cfg)
         records, ledger_problems = lib.load_verifications(root, cfg)
@@ -6897,11 +6905,16 @@ def _run_close_transaction(args, root: Path, cfg: dict) -> dict:
         outcome = getattr(args, "outcome", None) or (
             "closed" if lib.run_is_live_verified(close_status, cfg)
             else lib.unverified_close_outcome(close_status))
+        known_risk = getattr(args, "known_risk", None)
+        # P2.4: the outcome and its text ride on the close transaction too
+        transaction.record["close_outcome"] = {"outcome": outcome, "reason": args.reason,
+                                               "known_risk": known_risk}
+        transaction._persist()
         result.update(lib.close_run(
             root, by=args.by, reason=args.reason,
             expected_updated_at=getattr(args, "expected_updated_at", None),
             cancel_active=bool(getattr(args, "cancel_active", False)),
-            release_dashboard=False, outcome=outcome,
+            release_dashboard=False, outcome=outcome, known_risk=known_risk,
         ))
 
     started_at = transaction.record.get("created_at") or ""
@@ -7064,6 +7077,12 @@ def cmd_run_close(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
     try:
+        if args.outcome or args.known_risk is not None:
+            # P2.4: refused before a close transaction exists
+            with lib.project_lock(root):
+                status = lib.load_unique_json(lib.status_path(root, cfg))
+            if not isinstance(status.get("run_closed"), dict):
+                lib.validate_close_outcome(status, cfg, args.outcome or "closed", args.reason, args.known_risk)
         result = _run_close_transaction(args, root, cfg)
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}")
@@ -7338,6 +7357,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--dry-run", action="store_true")
+    doctor.add_argument("--prompts", action="store_true",
+                        help="P0.4: report every role's effective prompt, its source and verdict, without launching")
+    doctor.add_argument("--probe", metavar="ADAPTER", default=None,
+                        help="P1.9: run a bounded real protocol exchange with ADAPTER (codex, claude or all); "
+                             "spends tokens, records nothing in the run ledger")
 
     dashboard = sub.add_parser("dashboard", help="open the local read-only Mission Control dashboard")
     dashboard.add_argument("--host", default="127.0.0.1")
@@ -7840,6 +7864,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_close.add_argument("--outcome", choices=lib.RUN_OUTCOMES, default=None,
                            help="#296: name the outcome explicitly; without it a run that has "
                                 "not passed verified Phase 8 records aborted or released_unverified")
+    run_close.add_argument("--known-risk", default=None, metavar="TEXT",
+                           help="P2.4: the risk a verified_with_known_risk close accepts (required with it)")
 
     run_reopen = sub.add_parser("run-reopen", help="reopen a non-complete cleanly closed run")
     run_reopen.add_argument("--by", required=True)

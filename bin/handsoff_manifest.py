@@ -60,6 +60,7 @@ RUNTIME_FILES = (
     "fleet/metrics.js",
     "fleet/styles.css",
     "playbook/INDEX.md",
+    "playbook/crews.md",
     "playbook/index.json",
     "playbook/landing.md",
     "playbook/lanes.md",

@@ -94,6 +94,11 @@ timeout_seconds = 600
 # applies to the full relative path and to any path component.
 ignore = []
 
+[workspace]
+# #429: gitignored project-relative paths (a .venv, a local knowledge base)
+# symlinked into an owning implementer's worktree; never applied back.
+local_paths = []
+
 [regression_gate]
 approval_timeout_minutes = 30
 launch_window_minutes = 10

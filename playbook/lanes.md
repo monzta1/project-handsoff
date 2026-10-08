@@ -8,6 +8,9 @@ live check; written close. Read this before `init`, `landing.md` before Phase
 **One run, N tickets.** Tickets landing together use one `init`, worktree,
 PR, and release. Tag each criterion `[#N]`. Split only independent releases.
 
+**Crews.** Choose `[agents]` with the `crews` topic, a recommendation
+never enforced over a project's `[agents]`.
+
 **Board first.** After `init --by <you>`, serve `dashboard --owned-by-run
 --port <free> --no-open` from the engine being changed, confirm HTTP 200,
 open it, post the issue's started comment, then apply criteria. The Pilot
@@ -37,6 +40,12 @@ launch review only after `DESIGN_PROPOSAL_RECORDED`. A third attempt needs
 **Reviewer first.** After design approval, `advance 4 40`. Approval issues
 the exact reviewer-bound acceptance registry as the Implementer's contract;
 never substitute a host paraphrase. Later review judges that same contract.
+
+**Parallel implementers (Phase 4).** At `advance 4`, map each item to the
+files it changes. Disjoint path groups: one implementer each, launched
+concurrently with its own `--owns` and `--item`; every task fixes the shared
+interface and each shared file's single owner. Overlapping paths stay one
+implementer (say so in a `pilot-note`).
 
 **Continuous monitoring is a host obligation.** From `init` until `advance
 8 100`, the host monitors sessions, shards, CI, merge, release, install, and live
@@ -90,9 +99,8 @@ they touch different files. The second to land rebases (keep both sides, then
 the manifest, re-verifies, reaffirms. Landing is serial: one installed engine,
 one live verification at a time.
 
-**One criterion per Implementer launch (#215).** When the registry has
-more than three automated criteria, brief the managed Implementer one
-criterion (or one small group) per launch. A 120,000-token budget ran
-out twice on 2026-09-19 (seven and three criteria), leaving diffs with no
-account of the work. `HANDSOFF_PROGRESS` now gives a relaunch the done list;
-a launch that fits its budget never needs it.
+**One criterion per Implementer launch (#215).** With
+more than three automated criteria, brief one criterion (or small group) per
+launch; a task too big for one budget is split the same way, not retried
+whole. A 120,000-token budget ran out twice on 2026-09-19.
+`HANDSOFF_PROGRESS` gives a relaunch the done list.

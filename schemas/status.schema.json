@@ -152,6 +152,23 @@
         "cancelled_active": {
           "type": "boolean"
         },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "closed",
+            "not_planned",
+            "aborted",
+            "released_unverified",
+            "verified_with_known_risk",
+            "qa_pending",
+            "blocked_environment"
+          ]
+        },
+        "known_risk": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
         "session_ids": {
           "type": "array",
           "uniqueItems": true,

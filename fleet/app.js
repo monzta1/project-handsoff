@@ -216,6 +216,16 @@ function asleepSuffix(project) {
   return ` <span class="asleep">asleep ${esc(words)}</span>`;
 }
 
+// P2.4: a closed run's card names how it closed, why, and any known risk.
+function closedOutcome(project) {
+  const closed = project && project.run_closed;
+  if (!closed || typeof closed !== "object") return "";
+  const outcome = closed.outcome || "closed";
+  const reason = closed.reason ? ` · ${esc(closed.reason)}` : "";
+  const risk = closed.known_risk ? ` · <span class="known-risk">KNOWN RISK: ${esc(closed.known_risk)}</span>` : "";
+  return `<p class="close-outcome" data-outcome="${esc(outcome)}">CLOSED AS ${esc(String(outcome).toUpperCase())}${reason}${risk}</p>`;
+}
+
 function projectCard(project) {
   const state = project.state || "quiet";
   const engine = engineMeta(project);
@@ -241,6 +251,7 @@ function projectCard(project) {
     ${phaseRail(project)}
     <p class="phase">${phase}${asleepSuffix(project)}${missing}</p>
     ${project.next_action ? `<p class="next">${esc(project.next_action)}</p>` : ""}
+    ${closedOutcome(project)}
     ${Array.isArray(project.claimed_twice) && project.claimed_twice.length ? `<p class="claimed-twice">CLAIMED TWICE: ${esc(project.claimed_twice.map((n) => "#" + n).join(", "))} is also listed by another live run</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
     ${signalsStrip(project)}

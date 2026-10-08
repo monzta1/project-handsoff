@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
@@ -855,23 +856,101 @@ def create_implementer_workspace(root: Path, session: dict) -> Path:
                 target.unlink()
             shutil.copy2(source, target)
             seeded[relative] = _path_digest(target)
+    linked, skipped = _link_local_paths(root, path, load_config(root).get("workspace_local_paths") or [])
     # The host-edit baseline is the PROJECT's owned files at launch, not the
     # worktree's: git checks files out 0644/0755, so a host file at 0600
     # would otherwise read as a host edit at apply time.
     if _owned_snapshot(root, owned) != baseline:
+        _unlink_local_paths(path, linked)
         _git(root, "worktree", "remove", "--force", str(path))
         shutil.rmtree(path, ignore_errors=True)
         raise HandsoffError("an owned path changed in the project while the implementer workspace was "
                             "being seeded; nothing was launched, retry the launch")
-    manifest = {"seeded": seeded, "owned": baseline}
+    manifest = {"seeded": seeded, "owned": baseline, "local_paths": linked, "local_paths_skipped": skipped}
     _workspace_manifest_path(workspace).write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     return path
+
+
+def _link_local_paths(root: Path, workspace: Path, local_paths: list[str]) -> tuple[list[str], list[dict]]:
+    """#429: symlink each [workspace].local_paths entry from the project into
+    the worktree. A path must exist, resolve inside the root and be
+    gitignored; anything else is skipped and named, never linked."""
+    linked, skipped = [], []
+    for relative in local_paths:
+        source, target = root / relative, workspace / relative
+        if not os.path.lexists(source):
+            skipped.append({"path": relative, "reason": "absent"})
+            continue
+        # the entry itself must lie inside the root (no `..` escape, no
+        # symlinked parent directory); what an in-root link points at is the
+        # project's business: a lane's .venv is usually a link to the main
+        # checkout's environment (E1 live proof)
+        try:
+            Path(os.path.normpath(root / relative)).relative_to(root)
+            source.parent.resolve().relative_to(Path(root).resolve())
+        except ValueError:
+            skipped.append({"path": relative, "reason": "outside the project root"})
+            continue
+        if _git(root, "check-ignore", "-q", "--", relative).returncode != 0:
+            skipped.append({"path": relative, "reason": "not gitignored"})
+            continue
+        if os.path.lexists(target):
+            skipped.append({"path": relative, "reason": "present in the worktree"})
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(source, target, target_is_directory=source.is_dir())
+        linked.append(relative)
+    return linked, skipped
+
+
+def _unlink_local_paths(workspace: Path, linked: list[str]) -> None:
+    """#429: the links go first, so removing a worktree never reaches the
+    project's own .venv or knowledge base through them. Every ancestor is
+    opened without following links: an agent that replaced `cache` with a
+    link to the project's `cache` must not reach the project's `cache/.venv`
+    (E1 review). Such an entry is left for the worktree removal, which
+    unlinks the planted link itself."""
+    for relative in linked:
+        parts = Path(relative).parts
+        try:
+            fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            return
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            if stat.S_ISLNK(os.stat(parts[-1], dir_fd=fd, follow_symlinks=False).st_mode):
+                os.unlink(parts[-1], dir_fd=fd)
+        except OSError:
+            pass  # a symlinked, replaced or missing ancestor: nothing of ours to unlink
+        finally:
+            os.close(fd)
+
+
+def _is_local_path(path: str, local_paths: list[str]) -> bool:
+    return any(path == item or path.startswith(item + "/") for item in local_paths)
+
+
+def workspace_local_path_report(session: dict) -> dict:
+    """#429: what the launch linked and skipped, from the seed record."""
+    try:
+        manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"linked": [], "skipped": []}
+    return {"linked": manifest.get("local_paths") or [], "skipped": manifest.get("local_paths_skipped") or []}
 
 
 def remove_implementer_workspace(root: Path, session: dict) -> None:
     workspace = session.get("workspace") if isinstance(session, dict) else None
     if not isinstance(workspace, dict):
         return
+    try:
+        manifest = json.loads(_workspace_manifest_path(workspace).read_text(encoding="utf-8"))
+        _unlink_local_paths(Path(workspace["path"]), manifest.get("local_paths") or [])
+    except (OSError, ValueError):
+        pass
     _git(root, "worktree", "remove", "--force", workspace["path"])
     shutil.rmtree(workspace["path"], ignore_errors=True)
     _workspace_manifest_path(workspace).unlink(missing_ok=True)
@@ -886,32 +965,32 @@ def implementer_workspace_changes(cfg: dict, session: dict, manifest: dict | Non
     if manifest is None:
         manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
     seeded = manifest["seeded"]
+    local_paths = manifest.get("local_paths") or []
     state_files = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
     # #416: handsoff.toml is out of the evidence digest but seeded here, so
     # an unchanged copy is a no-op and an implementer's edit is attributed
     # (and refused as outside its ownership), never silently dropped.
+    # #429: a linked local path is never in the change set, so it is never
+    # applied back nor checked against ownership.
     return sorted(
         path for path in set(_changed_since(workspace, session["workspace"]["launch_commit"])) | set(seeded)
         if (path == "handsoff.toml" or not _digest_excluded(path, state_files))
+        and not _is_local_path(path, local_paths)
         and (path not in seeded or _path_digest(workspace / path) != seeded[path]))
-
-
-#: #413: exit codes of a child stopped by a signal through a shell or runner
-STOPPED_EXIT_CODES = (130, 137, 143)
 
 
 def workspace_kept_on_stop(session: object) -> bool:
     """#413: an implementer workspace is kept for an explicit disposition when
     its session was stopped (cancelled, timed out, or its child killed by a
-    signal) and nothing was applied. A normal exit keeps today's automatic
-    apply, and a refused apply is removed as before."""
+    signal) and nothing was applied. #429: a failed session (any failure
+    category, token_budget_exhaustion and ownership_violation included) is
+    kept the same way, so its partial edits can still be applied or
+    discarded. A normal exit keeps today's automatic apply."""
     if not isinstance(session, dict) or not isinstance(session.get("workspace"), dict):
         return False
     if (session.get("apply") or {}).get("state") == "applied":
         return False
-    state, code = session.get("state"), session.get("exit_code")
-    signalled = isinstance(code, int) and not isinstance(code, bool) and (code < 0 or code in STOPPED_EXIT_CODES)
-    return state in {"cancelled", "timed_out"} or (state == "failed" and signalled)
+    return session.get("state") in {"cancelled", "timed_out", "failed"}
 
 
 def apply_implementer_workspace(root: Path, session_id: str) -> dict:

@@ -9,7 +9,9 @@ here runs on that path: a SignalCache is filled by a background refresh and
   project's `origin` remote, read through `gh api` when gh is authenticated,
   else GITHUB_TOKEN over HTTPS. Without either the signal carries the error
   "GitHub is not configured" and null counts: unauthenticated access is
-  refused on purpose (60 requests an hour would be gone in minutes).
+  refused on purpose (60 requests an hour would be gone in minutes). #433:
+  one GraphQL query per repository per refresh, never the search API, and a
+  rate-limited repository waits out the reset GitHub reports.
 - `beakon`: beams for the project in the local Beakon worker's landing
   folder. One `bk-*` folder is one beam; `task.md` frontmatter `workdir`
   attributes it, no `result.json` means in flight, and the newest finished
@@ -110,8 +112,77 @@ class GitHubUnavailable(Exception):
     """A GitHub read failed; the caller keeps its last good values."""
 
 
+RATE_LIMITED = "GitHub rate limited"
+#: #433: the backoff when a rate-limit answer names no reset time.
+DEFAULT_RATE_LIMIT_BACKOFF_SECONDS = 60.0
+#: #433: one query per repository for the three values the card shows. It
+#: costs about one point of the 5000-an-hour GraphQL bucket; the search API
+#: (30 requests a minute) is never used.
+GITHUB_SIGNAL_QUERY = (
+    "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { "
+    "issues(states: OPEN) { totalCount } pullRequests(states: OPEN) { totalCount } "
+    "latestRelease { tagName publishedAt } } }"
+)
+
+
+class GitHubRateLimited(GitHubUnavailable):
+    """#433: GitHub refused the read for its rate limit. `reset_at` is the
+    epoch second GitHub reported the limit resets at, or None when it named
+    none; the cache fetches nothing for that repository before then."""
+
+    def __init__(self, reset_at: float | None = None):
+        super().__init__(RATE_LIMITED)
+        self.reset_at = reset_at
+
+
+def _rate_limit_reset(headers: dict) -> float | None:
+    lower = {str(k).lower(): v for k, v in (headers or {}).items()}
+    try:
+        reset = int(lower.get("x-ratelimit-reset") or 0)
+        if reset:
+            return float(reset)
+        retry = int(lower.get("retry-after") or 0)
+    except (TypeError, ValueError):
+        return None
+    return datetime.now(timezone.utc).timestamp() + retry if retry else None
+
+
+def _is_rate_limited(status: int | None, headers: dict, body: str, detail: str = "") -> bool:
+    """#433: a rate-limit answer in any form GitHub gives one: 403 or 429
+    with no requests left or naming the limit, or a GraphQL error of type
+    RATE_LIMITED (which can arrive with HTTP 200)."""
+    lower = {str(k).lower(): v for k, v in (headers or {}).items()}
+    text = f"{body}\n{detail}".lower()
+    if status in (403, 429) and (str(lower.get("x-ratelimit-remaining")) == "0" or "rate limit" in text):
+        return True
+    if status is None and "rate limit" in text:
+        return True
+    try:
+        payload = json.loads(body) if body else None
+    except ValueError:
+        payload = None
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    return isinstance(errors, list) and any(isinstance(e, dict) and e.get("type") == "RATE_LIMITED" for e in errors)
+
+
+def _signal_answer(status: int | None, headers: dict, body: str, failure: str):
+    """The parsed JSON of one answer, None for 404. Raises GitHubRateLimited
+    for a rate-limit answer and GitHubUnavailable(`failure`) for any other."""
+    if _is_rate_limited(status, headers, body, failure):
+        raise GitHubRateLimited(_rate_limit_reset(headers))
+    if status == 404:
+        return None
+    if status != 200:
+        raise GitHubUnavailable(failure)
+    try:
+        return json.loads(body)
+    except ValueError as exc:
+        raise GitHubUnavailable("GitHub returned invalid JSON") from exc
+
+
 def _gh_client():
-    """A fetch(path) over the gh CLI, or None when gh is absent or logged out."""
+    """A fetch(path, body=None) over the gh CLI, or None when gh is absent or
+    logged out. A body is sent as the JSON request body (a POST)."""
     executable = shutil.which("gh")
     if not executable:
         return None
@@ -122,35 +193,44 @@ def _gh_client():
     if probe.returncode != 0 or not probe.stdout.strip():
         return None
 
-    def fetch(path: str):
+    def fetch(path: str, body: dict | None = None):
+        argv = [executable, "api", "-i", path] + (["--input", "-"] if body is not None else [])
         try:
-            proc = subprocess.run([executable, "api", path], capture_output=True, text=True, timeout=30)
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                                  input=json.dumps(body) if body is not None else None)
         except (OSError, subprocess.SubprocessError) as exc:
             raise GitHubUnavailable(f"gh api failed: {type(exc).__name__}") from exc
-        if proc.returncode != 0:
-            if "HTTP 404" in proc.stderr:
-                return None
-            raise GitHubUnavailable((proc.stderr.strip().splitlines() or ["gh api failed"])[-1][:200])
+        failure = (proc.stderr.strip().splitlines() or ["gh api failed"])[-1][:200]
         try:
-            return json.loads(proc.stdout)
-        except ValueError as exc:
-            raise GitHubUnavailable("gh api returned invalid JSON") from exc
+            status, headers, text = _parse_gh_include(proc.stdout)
+        except GitHubUnavailable:
+            # No status line on stdout: gh failed before an answer came back.
+            if _is_rate_limited(None, {}, "", proc.stderr):
+                raise GitHubRateLimited(None) from None
+            raise GitHubUnavailable(failure if proc.returncode != 0 else "gh api printed no HTTP status line") from None
+        return _signal_answer(status, headers, text, failure if proc.returncode != 0 else f"GitHub HTTP {status}")
     return fetch
 
 
 def _token_client(token: str):
-    def fetch(path: str):
-        request = urllib.request.Request(f"{GITHUB_API}/{path}", headers={
-            "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-            "User-Agent": "handsoff-fleet",
-        })
+    def fetch(path: str, body: dict | None = None):
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                   "User-Agent": "handsoff-fleet"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(f"{GITHUB_API}/{path}", headers=headers,
+                                         data=json.dumps(body).encode("utf-8") if body is not None else None)
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return _signal_answer(200, dict(response.headers.items()), response.read().decode("utf-8"),
+                                      "GitHub HTTP 200")
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return None
-            raise GitHubUnavailable(f"GitHub HTTP {exc.code}") from exc
+            try:
+                text = exc.read().decode("utf-8", errors="replace")
+            except (OSError, ValueError):
+                text = ""
+            return _signal_answer(exc.code, dict(exc.headers.items()) if exc.headers else {}, text,
+                                  f"GitHub HTTP {exc.code}")
         except (OSError, ValueError) as exc:
             raise GitHubUnavailable(f"GitHub unreachable: {type(exc).__name__}") from exc
     return fetch
@@ -165,20 +245,21 @@ def github_client():
     return _token_client(token) if token else None
 
 
-def _count(payload) -> int:
-    if not isinstance(payload, dict) or not isinstance(payload.get("total_count"), int):
-        raise GitHubUnavailable("GitHub search answer had no total_count")
-    return payload["total_count"]
+def _total(node) -> int:
+    if not isinstance(node, dict) or not isinstance(node.get("totalCount"), int):
+        raise GitHubUnavailable("GitHub answer had no totalCount")
+    return node["totalCount"]
 
 
 _ASK = object()
 
 
 def fetch_github(root: Path, client=_ASK) -> dict:
-    """One project's GitHub signal. `client` is fetch(path) -> parsed JSON or
-    None for 404, or None when GitHub is not configured; left out, it is
-    `github_client()`. Raises GitHubUnavailable on a failed read so the
-    cache can keep the previous good values."""
+    """One project's GitHub signal. `client` is fetch(path, body=None) ->
+    parsed JSON or None for 404, or None when GitHub is not configured; left
+    out, it is `github_client()`. #433: one GraphQL query, never the search
+    API. Raises GitHubUnavailable (GitHubRateLimited for a rate-limit answer)
+    on a failed read so the cache can keep the previous good values."""
     repo = origin_repo(root)
     if repo is None:
         return {"repo": None, "open_issues": None, "open_prs": None, "latest_release": None,
@@ -187,14 +268,30 @@ def fetch_github(root: Path, client=_ASK) -> dict:
     if fetch is None:
         return {"repo": repo, "open_issues": None, "open_prs": None, "latest_release": None,
                 "fetched_at": utcnow(), "error": GITHUB_NOT_CONFIGURED}
-    issues = _count(fetch(f"search/issues?q=repo:{repo}+is:issue+is:open&per_page=1"))
-    prs = _count(fetch(f"search/issues?q=repo:{repo}+is:pr+is:open&per_page=1"))
-    release = fetch(f"repos/{repo}/releases/latest")
+    owner, _, name = repo.partition("/")
+    payload = fetch("graphql", {"query": GITHUB_SIGNAL_QUERY, "variables": {"owner": owner, "name": name}})
+    data = payload.get("data") if isinstance(payload, dict) else None
+    node = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(node, dict):
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+        raise GitHubUnavailable(str(first.get("message") or f"GitHub repository {repo} was not found")[:200])
+    release = node.get("latestRelease")
     latest = None
-    if isinstance(release, dict) and release.get("tag_name"):
-        latest = {"tag": release["tag_name"], "published_at": release.get("published_at")}
-    return {"repo": repo, "open_issues": issues, "open_prs": prs, "latest_release": latest,
-            "fetched_at": utcnow(), "error": None}
+    if isinstance(release, dict) and release.get("tagName"):
+        latest = {"tag": release["tagName"], "published_at": release.get("publishedAt")}
+    return {"repo": repo, "open_issues": _total(node.get("issues")), "open_prs": _total(node.get("pullRequests")),
+            "latest_release": latest, "fetched_at": utcnow(), "error": None}
+
+
+def rate_limited_line(fetched_at: str | None) -> str:
+    """#433: the card's plain line for a rate-limited repository, naming the
+    local time of the values it still shows; never gh's stderr."""
+    try:
+        stamp = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00")).astimezone().strftime("%H:%M")
+    except (TypeError, ValueError):
+        return f"{RATE_LIMITED}; no values yet"
+    return f"{RATE_LIMITED}; showing values from {stamp}"
 
 
 # --- Beakon -----------------------------------------------------------------
@@ -295,6 +392,7 @@ class SignalCache:
         self._data: dict[str, dict] = {}
         self.loaded_at: str | None = None
         self.refreshed_at: str | None = None
+        self.backoff: dict[str, float] = {}  # #433: repository -> epoch second its rate limit resets
         self.load()
 
     def load(self) -> None:
@@ -316,8 +414,16 @@ class SignalCache:
             if isinstance(root, str) and isinstance(value, dict):
                 clean[root] = {"github": value.get("github") if isinstance(value.get("github"), dict) else None,
                                "beakon": value.get("beakon") if isinstance(value.get("beakon"), dict) else None}
+        # #433: a restart before a repository's reported reset keeps its
+        # backoff, so Fleet never fetches it early.
+        stored = payload.get("backoff") if isinstance(payload, dict) else None
+        backoff = {}
+        for identity, until in (stored.items() if isinstance(stored, dict) else ()):
+            if isinstance(identity, str) and isinstance(until, (int, float)) and not isinstance(until, bool):
+                backoff[identity] = float(until)
         with self._lock:
             self._data = clean
+            self.backoff = backoff
             self.loaded_at = utcnow()
 
     def get(self, root: Path | str) -> dict:
@@ -330,31 +436,63 @@ class SignalCache:
             return {root: dict(value) for root, value in self._data.items()}
 
     def refresh(self, roots, *, github_fetch=None, beakon_scan=None,
-                work_root: Path | None = None, client=_ASK) -> dict[str, dict]:
+                work_root: Path | None = None, client=_ASK, now: float | None = None) -> dict[str, dict]:
         """Recompute every registered project's signals and swap them in.
         `github_fetch(root, client)` and `beakon_scan(work_root)` are the
         seams tests inject (the module functions when left out, looked up
-        at call time); `work_root` None means "ask beakon_work_root()"."""
+        at call time); `work_root` None means "ask beakon_work_root()".
+
+        #433: roots sharing a repository share one fetch per refresh, and a
+        repository GitHub rate-limited is not fetched again before the reset
+        it reported; meanwhile its roots keep their last good values under
+        the plain rate-limited line. `now` (epoch seconds) is for tests."""
         github_fetch = github_fetch or fetch_github
         beakon_scan = beakon_scan or scan_beakon
         roots = [Path(root).resolve() for root in roots]
+        now = datetime.now(timezone.utc).timestamp() if now is None else now
         previous = self.snapshot()
         if work_root is None:
             work_root = beakon_work_root()
         scan = beakon_scan(work_root) if work_root is not None else None
         if client is _ASK:
             client = github_client()  # resolved once per refresh, not per project
+        fetched: dict[str, object] = {}  # repository -> its signal or the exception its fetch raised
         fresh: dict[str, dict] = {}
         for root in roots:
             key = str(root)
             old = previous.get(key) or dict(EMPTY)
+            identity = repo_identity(origin_repo(root))
+            if identity is not None and identity not in fetched:
+                until = self.backoff.get(identity)
+                if until is not None and now < until:
+                    fetched[identity] = GitHubRateLimited(until)
+                else:
+                    try:
+                        fetched[identity] = github_fetch(root, client)
+                        self.backoff.pop(identity, None)
+                    except GitHubRateLimited as exc:
+                        self.backoff[identity] = exc.reset_at if exc.reset_at and exc.reset_at > now \
+                            else now + DEFAULT_RATE_LIMIT_BACKOFF_SECONDS
+                        fetched[identity] = GitHubRateLimited(self.backoff[identity])
+                    except GitHubUnavailable as exc:
+                        fetched[identity] = exc
             try:
-                github = github_fetch(root, client)
+                if identity is None:
+                    github = github_fetch(root, client)
+                elif isinstance(fetched[identity], GitHubUnavailable):
+                    raise fetched[identity]
+                else:
+                    github = dict(fetched[identity])
             except GitHubUnavailable as exc:
                 github = dict(old["github"]) if old.get("github") else {
                     "repo": None, "open_issues": None, "open_prs": None, "latest_release": None, "fetched_at": None,
                 }
-                github["error"] = str(exc)
+                github.pop("rate_limited_until", None)
+                if isinstance(exc, GitHubRateLimited):
+                    github["error"] = rate_limited_line(github.get("fetched_at"))
+                    github["rate_limited_until"] = datetime.fromtimestamp(exc.reset_at, tz=timezone.utc).isoformat()
+                else:
+                    github["error"] = str(exc)
             fresh[key] = {"github": github, "beakon": beakon_signal(root, scan)}
         with self._lock:
             self._data = fresh
@@ -365,7 +503,7 @@ class SignalCache:
     def _persist(self, data: dict[str, dict]) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            lib.atomic_write_json(self.path, {"schema": 1, "projects": data})
+            lib.atomic_write_json(self.path, {"schema": 1, "projects": data, "backoff": dict(self.backoff)})
         except OSError as exc:
             sys.stderr.write(f"HANDSOFF_FLEET_WARNING: fleet signals cache {self.path} was not written "
                              f"({type(exc).__name__})\n")
