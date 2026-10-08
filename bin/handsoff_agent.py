@@ -2754,8 +2754,16 @@ def _parse_progress_line(line: str, root: Path, session_id: str, role: str) -> d
     Implementer on its session; a malformed line is a protocol warning and
     never a failure; another role's line is ignored. Returns the valid claim
     (#408: a `done` claim is the Implementer's result)."""
-    if role != "implementer" or not line.startswith(PROGRESS_PREFIX):
+    if role != "implementer":
         return None
+    if not line.startswith(PROGRESS_PREFIX):
+        # E3 live proof: a Claude implementer's line arrives inside a
+        # stream-json text event, as reviewer results do
+        found = None
+        for logical in _claude_logical_lines(line):
+            if logical != line and logical.startswith(PROGRESS_PREFIX):
+                found = _parse_progress_line(logical, root, session_id, role) or found
+        return found
     try:
         record = lib.validate_progress_line(json.loads(line[len(PROGRESS_PREFIX):].strip()))
     except (ValueError, TypeError):
@@ -2774,8 +2782,16 @@ def _parse_checkpoint_line(line: str, root: Path, session_id: str, role: str) ->
     """P1.6: store a valid HANDSOFF_CHECKPOINT from the Implementer on its
     session; a malformed line is refused, logged as a protocol warning and
     on stderr, and never stored; another role's line is ignored."""
-    if role != "implementer" or not line.startswith(checkpoints.CHECKPOINT_PREFIX):
+    if role != "implementer":
         return None
+    if not line.startswith(checkpoints.CHECKPOINT_PREFIX):
+        # E3 live proof: a Claude implementer prints it inside a stream-json
+        # text event; unwrap it the way reviewer results are
+        found = None
+        for logical in _claude_logical_lines(line):
+            if logical != line and logical.startswith(checkpoints.CHECKPOINT_PREFIX):
+                found = _parse_checkpoint_line(logical, root, session_id, role) or found
+        return found
     record = checkpoints.parse_checkpoint_line(line)
     if record is None:
         lib.count_operation_warning(root, session_id, role, "protocol_warnings")

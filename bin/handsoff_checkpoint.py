@@ -196,7 +196,7 @@ def resume_section(checkpoint: dict | None, acceptance: dict, work_items: list[s
                if cid not in {item[0] for item in unfinished}]
     who = f"session {from_session_id}" if from_session_id else "session"
     lines = [RESUME_HEADING, "",
-             f"The previous {who} left a {checkpoint.get('source')} checkpoint at {checkpoint.get('at')}.",
+             f"The previous {who} left a checkpoint (source: {checkpoint.get('source')}) at {checkpoint.get('at')}.",
              "", "Unfinished criteria (from the current acceptance, not from the checkpoint):"]
     lines += [f"- {cid} ({state})" for cid, state in unfinished] or ["- none"]
     lines += ["", "Criteria the ledger shows passing: " + (", ".join(passing) or "none")

@@ -117,6 +117,29 @@ class HandoverCheckpointTests(HandsoffTestCase):
                          ["launch", "agent", "failure"])
         self.assertEqual(run(["verify-log"], cwd=self.tmp).returncode, 0)
 
+    def test_a_claude_stream_json_event_carries_the_checkpoint_and_progress(self):
+        """E3 live proof: a Claude implementer prints protocol lines inside a
+        stream-json text event; both are stored, once each."""
+        session = lib.create_agent_session(self.tmp, role="implementer", actor="impl",
+                                           adapter="claude", requested_model="default",
+                                           resolution_source="configured")
+        sid = session["session_id"]
+        checkpoint = 'HANDSOFF_CHECKPOINT: {"files_changed": ["a.txt"], "remaining": ["finish"]}'
+        progress = 'HANDSOFF_PROGRESS: {"criterion": "REQ-001", "state": "partial", "test": "true", "note": "half"}'
+        event = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": checkpoint + "\n" + progress}]}})
+        self.assertIsNotNone(runtime._parse_checkpoint_line(event, self.tmp, sid, "implementer"))
+        self.assertIsNotNone(runtime._parse_progress_line(event, self.tmp, sid, "implementer"))
+        result = json.dumps({"type": "result", "result": checkpoint})
+        runtime._parse_checkpoint_line(result, self.tmp, sid, "implementer")  # the final result echo is not re-stored
+        stored = self.read_status()["agent_sessions"][sid]
+        agent = [c for c in stored["checkpoints"] if c["source"] == "agent"]
+        self.assertEqual(len(agent), 1)
+        self.assertEqual(agent[0]["files_changed"], ["a.txt"])
+        self.assertEqual([p["criterion"] for p in stored["progress"]], ["REQ-001"])
+        # a reviewer's identical event is ignored
+        self.assertIsNone(runtime._parse_checkpoint_line(event, self.tmp, sid, "reviewer"))
+
     def test_the_history_is_bounded_latest_first(self):
         session = lib.create_agent_session(self.tmp, role="implementer", actor="codex-implementer", adapter="codex",
                                            requested_model="m", resolution_source="configured")
