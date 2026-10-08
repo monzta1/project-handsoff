@@ -880,8 +880,13 @@ def _link_local_paths(root: Path, workspace: Path, local_paths: list[str]) -> tu
         if not os.path.lexists(source):
             skipped.append({"path": relative, "reason": "absent"})
             continue
+        # the entry itself must lie inside the root (no `..` escape, no
+        # symlinked parent directory); what an in-root link points at is the
+        # project's business: a lane's .venv is usually a link to the main
+        # checkout's environment (E1 live proof)
         try:
-            source.resolve().relative_to(root)
+            Path(os.path.normpath(root / relative)).relative_to(root)
+            source.parent.resolve().relative_to(Path(root).resolve())
         except ValueError:
             skipped.append({"path": relative, "reason": "outside the project root"})
             continue

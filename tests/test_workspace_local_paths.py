@@ -147,6 +147,48 @@ class LocalPathWorkspaceTests(HandsoffTestCase):
         self.assertFalse(path.exists())
         self._root_local_paths_intact()
 
+    def test_an_in_root_link_to_an_outside_environment_is_linked(self):
+        """E1 live proof: a lane's .venv is usually a symlink to the main
+        checkout's environment, outside the lane root. The entry lies inside
+        the root, so it is linked; where it points is the project's choice."""
+        import shutil
+        import tempfile
+        outside = Path(tempfile.mkdtemp(prefix="hs-outside-venv-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "bin").mkdir()
+        (outside / "bin" / "python").write_text(VENV_PYTHON)
+        shutil.rmtree(self.tmp / ".venv")
+        (self.tmp / ".venv").symlink_to(outside, target_is_directory=True)
+        # git sees a link as a file, so `.venv/` alone does not ignore it;
+        # real projects list `.venv` as well (ToneCommand does)
+        (self.tmp / ".gitignore").write_text(".venv/\n.venv\nkb/\nmissing-cache/\n")
+        session = lib.create_agent_session(self.tmp, role="implementer", actor="local-paths",
+                                           adapter="codex", requested_model="default",
+                                           resolution_source="configured", owned_paths=["a.txt"])
+        session = self.read_status()["agent_sessions"][session["session_id"]]
+        path = lib.create_implementer_workspace(self.tmp, session)
+        try:
+            self.assertTrue((path / ".venv").is_symlink())
+            self.assertEqual((path / ".venv" / "bin" / "python").read_text(), VENV_PYTHON)
+            self.assertIn(".venv", lib.workspace_local_path_report(session)["linked"])
+        finally:
+            lib.remove_implementer_workspace(self.tmp, session)
+        self.assertEqual((outside / "bin" / "python").read_text(), VENV_PYTHON)
+
+    def test_an_entry_under_a_symlinked_parent_that_escapes_the_root_is_skipped(self):
+        import shutil
+        import tempfile
+        outside = Path(tempfile.mkdtemp(prefix="hs-outside-parent-"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "cache").mkdir()
+        (self.tmp / "linked-dir").symlink_to(outside, target_is_directory=True)
+        workspace = Path(tempfile.mkdtemp(prefix="hs-ws-"))
+        self.addCleanup(shutil.rmtree, workspace, True)
+        import handsoff_agent_runtime
+        linked, skipped = handsoff_agent_runtime._link_local_paths(self.tmp, workspace, ["linked-dir/cache"])
+        self.assertEqual(linked, [])
+        self.assertEqual(skipped, [{"path": "linked-dir/cache", "reason": "outside the project root"}])
+
     def test_an_absent_path_is_skipped_and_named_in_the_launch_output(self):
         sid, _cwd, result, error, err = self._launch(lambda cwd: (cwd / "a.txt").write_text("a by agent\n"))
         self.assertIsNone(error)

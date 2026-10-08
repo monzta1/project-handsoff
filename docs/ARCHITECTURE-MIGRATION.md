@@ -170,7 +170,7 @@ that existed nowhere, overstating the coupling by one. That is why the test
 compares in both directions: a rule that only asks "is every import declared"
 cannot see an entry that names nothing.
 
-**What is left in the monolith, measured.** `handsoff_lib` is 9,099 lines and
+**What is left in the monolith, measured.** `handsoff_lib` is 9,397 lines and
 351 top-level symbols. Seven clusters in it close cleanly under the reference
 graph and are the obvious next extractions:
 
