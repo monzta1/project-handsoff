@@ -170,7 +170,10 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  # #388: a compact reviewer, which cannot run tests.
                                  # #383: a late result held while its launch episode was
                                  # paused, until session-result-adopt applies it once.
-                                 "compact", "quarantined_result"}
+                                 "compact", "quarantined_result",
+                                 # #405 #406: the rules set a reviewer launched under; adoption
+                                 # compares it with the current one. Absent on older sessions.
+                                 "rules_entries"}
 
 
 #: #359: bounds on an implementer's declared ownership.
@@ -1457,6 +1460,12 @@ def validate_status_schema(status: dict) -> list[str]:
                     # #388: only a reviewer is launched compact
                     if value is not None and (not isinstance(value, bool) or session.get("role") != "reviewer"):
                         errors.append(f"{label}.compact must be a boolean on a reviewer session")
+                    continue
+                if optional_field == "rules_entries":
+                    if value is not None and (session.get("role") != "reviewer" or not isinstance(value, dict)
+                                              or not all(isinstance(k, str) and (v is None or isinstance(v, str))
+                                                         for k, v in value.items())):
+                        errors.append(f"{label}.rules_entries must be a map of rules entries on a reviewer session")
                     continue
                 if optional_field == "quarantined_result":
                     if value is not None:

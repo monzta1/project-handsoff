@@ -4310,6 +4310,13 @@ def adopt_session_result(root, session_id: str, actor: str, *,
         readopt = False
         approval = kind == "review" and payload.get("kind") != "design" and payload.get("decision") == "approved" \
             and not (isinstance(session, dict) and session.get("amendment_id"))
+        if approval:
+            # #405 #406 fix round 1: the verdict judged the rules in force
+            # when its reviewer session ran; a later policy edit needs a fresh
+            # review, whatever the recorded review says (verify clears it).
+            refusal = _session_rules_refusal(root, session)
+            if refusal:
+                return False, refusal
         if approval and isinstance(status.get("review"), dict):
             # #405 #406: a review is already recorded (the run sits past
             # Phase 5), so this approval reaffirms it; the re-bind decides.
@@ -4391,6 +4398,23 @@ def adopt_session_result(root, session_id: str, actor: str, *,
                    automatic=automatic)
         lib.mark_beacon_adopted(root, session_id)  # #172
     return True, "SESSION_RESULT_ADOPTED"
+
+
+def _session_rules_refusal(root: Path, session: dict) -> str | None:
+    """#405 #406: why a stored approval may not be adopted under the current
+    rules set, or None. Compared with the entries recorded when the reviewer
+    session launched; only policy entries count (rules_set_diff). A session
+    with none recorded fails closed: what it judged cannot be known."""
+    entries = session.get("rules_entries")
+    if not isinstance(entries, dict):
+        return ("SESSION_RESULT_ADOPT_REFUSED: the reviewer session recorded no rules set at launch, "
+                "so the rules its verdict judged are unknown; a fresh review is required")
+    policy = lib.rules_set_diff(root, entries)
+    if not policy:
+        return None
+    shown = ", ".join(policy[:8]) + (f" (+{len(policy) - 8} more)" if len(policy) > 8 else "")
+    return (f"SESSION_RESULT_ADOPT_REFUSED: the rules set changed in policy entries ({shown}) "
+            "since the reviewer session ran; a fresh review is required")
 
 
 def _rebind_review(root: Path, cfg: dict, status: dict, acceptance: dict, records, problems,

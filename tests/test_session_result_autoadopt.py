@@ -311,6 +311,52 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
                 self.assertIsNone(session["result"]["adopted_at"])
                 self._fresh()
 
+    # fix round 1: verify clears the recorded review, so the readoption path
+    # must judge the rules the reviewer session ran under, not status.review
+    def _adopt_edit_verify(self, edit):
+        self._phase5()
+        sid = self._assert_adopted("non_zero_exit", through_adoption=True)
+        self.assertIsInstance(self._session()[2]["rules_entries"], dict)
+        edit()
+        verified = run(["verify", "--all", "--by", "test-implementer"], cwd=self.tmp)
+        self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+        self.assertIsNone(self.read_status()["review"], "verify clears the recorded review")
+        return sid, run(["session-result-adopt", "--session", sid, "--by", "test-pilot"], cwd=self.tmp)
+
+    def test_readopting_an_approval_after_an_agents_md_edit_and_verify_is_refused(self):
+        sid, again = self._adopt_edit_verify(
+            lambda: (self.tmp / "AGENTS.md").write_text("# new rules for agents\n"))
+        self.assertNotEqual(again.returncode, 0, again.stdout)
+        self.assertIn("SESSION_RESULT_ADOPT_REFUSED: the rules set changed in policy entries (AGENTS.md)",
+                      again.stdout)
+        self.assertIn("a fresh review is required", again.stdout)
+        status = self.read_status()
+        self.assertIsNone(status["review"])
+        self.assertNotIn("readoptions", status["agent_sessions"][sid]["result"])
+
+    def test_readopting_an_approval_after_a_mechanics_edit_and_verify_still_adopts(self):
+        toml = self.tmp / "handsoff.toml"
+        sid, again = self._adopt_edit_verify(
+            lambda: toml.write_text(toml.read_text().replace("reviewer = 200000", "reviewer = 150000")))
+        self.assertIn("reviewer = 150000", toml.read_text(), "the mechanics edit applied")
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("SESSION_RESULT_ADOPTED", again.stdout)
+        status = self.read_status()
+        self.assertIsNotNone(status["review"])
+        self.assertEqual(len(status["agent_sessions"][sid]["result"]["readoptions"]), 1)
+
+    def test_a_reviewer_session_without_a_recorded_rules_set_fails_closed(self):
+        self._phase5()
+        sid = self._assert_adopted("non_zero_exit", through_adoption=True)
+        status = self.read_status()
+        del status["agent_sessions"][sid]["rules_entries"]
+        lib.commit(self.tmp, lib.load_config(self.tmp), status=status, event_kind="fixture_legacy",
+                   event_message="a reviewer session launched before rules_entries", actor="test")
+        run(["verify", "--all", "--by", "test-implementer"], cwd=self.tmp)
+        again = run(["session-result-adopt", "--session", sid, "--by", "test-pilot"], cwd=self.tmp)
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn("recorded no rules set at launch", again.stdout)
+
     def _phase7(self):
         self.init("Auto-adopt at Phase 7")
         self.set_criterion_state("passing", resolved=True)

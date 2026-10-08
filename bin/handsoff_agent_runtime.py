@@ -1120,6 +1120,11 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             session["routing_contract"] = deepcopy(routing_contract)
         if reviewer_isolation is not None:
             session["reviewer_isolation"] = deepcopy(reviewer_isolation)
+        if role == "reviewer":
+            # #405 #406: the rules this verdict will judge; adoption compares
+            # them with the rules in force then.
+            from handsoff_workflow import rules_set_entries
+            session["rules_entries"] = rules_set_entries(root)
         if owned_paths is not None:
             session["owned_paths"] = list(owned_paths)
         if launch_commit is not None:
