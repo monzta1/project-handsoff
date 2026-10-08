@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import handsoff_lib as lib  # noqa: E402
 import handsoff_progress as test_progress  # noqa: E402
+import handsoff_projection as projection  # noqa: E402
 import handsoff_supervisor as supervisor  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
 
@@ -1053,6 +1054,10 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
         }
 
     try:
+        lib.reconcile_gone_sessions(root)  # #420, P1.10: as status does, before the read
+    except (lib.HandsoffError, OSError, ValueError):
+        pass  # the read below reports what is wrong
+    try:
         with lib.project_lock(root):
             status = lib.load_unique_json(status_file)
             acceptance = lib.load_unique_json(acceptance_file)
@@ -1069,6 +1074,11 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
             # stall warning, the activity note, and the live view, the same
             # function `status` prints, so CLI and dashboard cannot disagree.
             liveness = lib.liveness_view(status, root, cfg)
+            # P1.10: one session-state projection; the stall warning is
+            # derived from it, so a fresh heartbeat clears it.
+            sessions_projected = projection.session_projection(root, cfg, status)
+            liveness = {**liveness, "stall_warning": projection.projected_stall_warning(
+                sessions_projected, liveness["stall_warning"])}
             stall = liveness["stall_warning"]
             lib.record_stall_transition(root, cfg, stall)
             activity_view = liveness
@@ -1145,6 +1155,7 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
         display_status["phase"] = _display_phase_name(status, verification_view.get("live"))
     display_status["stall_warning"] = liveness["stall_warning"]
     display_status["live"] = live
+    display_status["session_projection"] = sessions_projected  # P1.10: the state status and Fleet show
     display_status["activity"] = liveness
     display_status["process_signal"] = liveness["process_signal"]
     display_status["consistency_errors"] = design_reviewer_selection.get("consistency_errors", [])

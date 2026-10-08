@@ -224,6 +224,7 @@ body.is-offline main { opacity: .45; filter: grayscale(.6); }
 .live-role { color: var(--ink); font: 700 10.5px/1.2 var(--sans); letter-spacing: .08em; }
 .live-age { color: var(--muted); font-variant-numeric: tabular-nums; }
 .live-detail { flex: 1 1 240px; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.live-session { color: var(--muted); letter-spacing: .04em; }
 
 /* ---------- panels ---------- */
 .panel {

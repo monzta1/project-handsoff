@@ -266,12 +266,15 @@ from handsoff_workflow import (  # noqa: E402,F401
     BASELINE_NOT_APPLICABLE,
     CHECKLIST_VALUES,
     CRITERION_ADD_FIELDS,
+    CRITERION_OPTIONAL_ADD_FIELDS,
     CRITERION_SETTABLE_STATES,
     CRITERION_TYPES,
     CRITERION_UPDATE_FIELDS,
     CriteriaTransactionError,
     GATE_PROGRESS_WEIGHTS,
     MAX_CRITERIA_TRANSACTION_OPERATIONS,
+    MAX_CRITERION_PATHS,
+    MAX_OUTCOME_CHARS,
     MAX_REPEAT,
     MAX_RULE_BYTES,
     PROJECT_RULES_DIR,
@@ -341,6 +344,23 @@ NEXT_ACTION_DEFAULTS = {
     7: "Get explicit deployment approval, then run `verify-live` before advancing to Phase 8.",
     8: "Workflow complete; no further action required.",
 }
+
+#: #434: the Phase 7 step when this project does not require deployment
+#: approval (adaptive_deployment_approval_required false).
+PHASE7_NO_APPROVAL_NEXT_ACTION = (
+    "Deployment approval is not required for this project; land the change, "
+    "then run `verify-live` before advancing to Phase 8."
+)
+
+
+def phase_next_action(phase: int, status: dict | None, cfg: dict | None,
+                      default: str | None = None) -> str | None:
+    """#434: the default next_action for `phase`. Phase 7 states the
+    approval step only when the project requires it; otherwise it names the
+    next step (land, then verify-live)."""
+    if phase == 7 and not adaptive_deployment_approval_required(status or {}, cfg or {}):
+        return PHASE7_NO_APPROVAL_NEXT_ACTION
+    return NEXT_ACTION_DEFAULTS.get(phase, default)
 
 #: The literal placeholder criterion `init` seeds a fresh run with. Shared
 #: between cmd_init (which writes it) and design-approve (which refuses to
@@ -420,10 +440,12 @@ from handsoff_config import (  # noqa: E402,F401
     validate_model_policy,
 )
 from handsoff_config import (  # noqa: E402,F401
+    EVIDENCE_CLASSES,
     FIXTURE_ROOT_PREFIXES,
     MAX_CHECK_CONCURRENCY,
     RUN_KINDS,
     classify_archive_record,
+    required_evidence_kinds,
     validate_check_env,
 )
 from handsoff_ledger import (  # noqa: E402,F401
@@ -473,7 +495,11 @@ from handsoff_ledger import (  # noqa: E402,F401
     removed_work_item_ids,
     repository_digest,
     repository_digest_entries,
+    criterion_scope_digest,
+    criterion_scope_digests,
+    path_in_scope,
     scope_hash_matches,
+    scoped_digest,
     scoped_work_items,
     verification_config_hash,
     verification_log_path,
@@ -3777,7 +3803,7 @@ def criterion_fully_evidenced(criterion: dict, verifications: list[dict]) -> boo
     has a valid record. A combined automated_and_browser criterion with
     only its automated half run is NOT fully evidenced: it must not read
     as 'passing' until the browser half lands too."""
-    required = VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+    required = required_evidence_kinds(criterion)  # P1.1: policy plus evidence_classes
     return bool(required) and required <= valid_evidence_kinds(criterion, verifications)
 
 
@@ -3789,7 +3815,7 @@ def reviewer_launch_evidence_gaps(criteria: list[dict], verifications: list[dict
     gaps: list[str] = []
     for criterion in criteria:
         cid = criterion.get("id")
-        required = VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        required = required_evidence_kinds(criterion)  # P1.1
         present = valid_evidence_kinds(criterion, verifications)
         for kind in sorted(required - present):
             if kind == "checks":
@@ -6069,10 +6095,24 @@ def record_session_result(root: Path, session_id: str, kind: str, payload: dict,
 
 
 def verification_binding(command: str, repo_digest: str, config_digest: str,
-                         criterion_hashes: list[str]) -> str:
+                         criterion_hashes: list[str],
+                         scoped: list[tuple[str, str]] | None = None) -> str:
     """The cache key for one command: any change to the command, the
     repository content, the verification configuration, or the spec of a
-    criterion being verified with it produces a different binding."""
+    criterion being verified with it produces a different binding.
+
+    P1.2: `scoped` is one (spec hash, digest) pair per criterion the command
+    covers, the digest being the criterion's scoped digest when it declares
+    paths and the whole-repository digest otherwise. Given (some covered
+    criterion declares paths), the key is the command, the configuration
+    and those pairs, so a change outside every covered criterion's paths
+    keeps the command reusable. Absent, the key is the legacy one."""
+    if scoped:
+        return hashlib.sha256(_canonical({
+            "command": command,
+            "verification_config_hash": config_digest,
+            "criteria": sorted([spec, digest] for spec, digest in scoped),
+        }).encode("utf-8")).hexdigest()
     return hashlib.sha256(_canonical({
         "command": command,
         "repository_digest": repo_digest,
@@ -7020,6 +7060,22 @@ VERIFIED_GUIDANCE = (
 )
 
 
+def _record_tree_current(record: dict, criteria_by_id: dict, digest: str, entries) -> bool:
+    """P1.2: a checks record's tree half still holds: every criterion it
+    names that declares paths has the scoped digest it recorded, and, when
+    any it names declares none, the whole-repository digest is unchanged."""
+    scoped = record.get("scope_digests") if isinstance(record.get("scope_digests"), dict) else {}
+    whole_needed = False
+    for cid in record.get("criteria") or []:
+        criterion = criteria_by_id.get(cid)
+        if cid in scoped and isinstance(criterion, dict) and criterion.get("paths"):
+            if scoped[cid] != scoped_digest(entries(), criterion["paths"]):
+                return False
+        else:
+            whole_needed = True
+    return not whole_needed or record.get("repository_digest") == digest
+
+
 def verified_commands(root: Path, cfg: dict) -> list[dict]:
     """#409: for each [checks] command with a recorded run in this run, its
     reuse standing: reusable (a passing executed run for this run's feature,
@@ -7036,6 +7092,14 @@ def verified_commands(root: Path, cfg: dict) -> list[dict]:
     env = recorded_check_env(cfg)
     specs = {c.get("id"): criterion_spec_hash(c) for c in (acceptance or {}).get("criteria") or []
              if isinstance(c, dict)}
+    criteria_by_id = {c.get("id"): c for c in (acceptance or {}).get("criteria") or [] if isinstance(c, dict)}
+    scanned: dict = {}
+
+    def entries_once() -> dict:
+        if "entries" not in scanned:
+            scanned["entries"] = repository_digest_entries(root, cfg)
+        return scanned["entries"]
+
     rows = []
     for command in cfg.get("check_commands", []):
         mine = [(record, result) for record in records
@@ -7059,7 +7123,7 @@ def verified_commands(root: Path, cfg: dict) -> list[dict]:
         reason = None
         if later_failure is not None:
             reason = f"later failure ({later_failure.get('run_id')})"
-        elif record.get("repository_digest") != digest:
+        elif not _record_tree_current(record, criteria_by_id, digest, entries_once):
             reason = "stale tree"
         elif (record.get("env") or {}) != env:
             reason = "changed env"

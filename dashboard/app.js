@@ -1462,6 +1462,15 @@ function renderLive(live) {
   renderLiveAge();
 }
 
+// P1.10: the session state status and Fleet show, by the same name.
+function renderSessionState(projection) {
+  const session = $("live-session");
+  if (!session) return;
+  const projected = projection && typeof projection.state === "string" ? projection.state : "idle";
+  session.dataset.sessionState = projected;
+  session.textContent = `SESSION ${projected}`;
+}
+
 // #181: the CI row under the phase rail; hidden when no watch is recorded.
 function renderCi(ci) {
   const strip = $("ci-status");
@@ -1841,6 +1850,7 @@ function render(snapshot) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
 
   renderLive(snapshot.live);
+  renderSessionState(status?.session_projection);
   state.modelPolicy = snapshot.model_policy || null;
   state.launchPreflight = snapshot.launch_preflight || null;
   renderAdaptiveRouting(snapshot.adaptive_routing || null);

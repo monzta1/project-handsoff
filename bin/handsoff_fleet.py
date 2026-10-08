@@ -94,6 +94,18 @@ def load_registry(path: Path | None = None) -> list[dict]:
     return result
 
 
+def registry_signature(path: Path | None = None) -> tuple:
+    """#434: the registry file's identity and content digest; any write,
+    by this process or another, changes it. A missing file has its own."""
+    path = path or registry_path()
+    try:
+        stat = path.stat()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return (str(path), None)
+    return (str(path), stat.st_ino, stat.st_mtime_ns, stat.st_size, digest)
+
+
 #: #166: optional per-entry fields the ticket lock maintains.
 REGISTRY_LOCK_KEYS = ("work_items", "state", "updated_at")
 #: #207: a register entry whose root vanished is forgotten once it has been
@@ -825,6 +837,31 @@ def host_working_age(root: Path, cfg: dict | None, status: dict, now: float | No
 _PROBE = object()
 
 
+#: #434: the card's Phase 7 line when the project does not require deployment approval
+NO_APPROVAL_PHASE7_LINE = ("Deployment approval is not required for this project. "
+                           "Next: land the change, then run verify-live.")
+
+
+def card_next_action(status: dict, cfg: dict | None) -> str | None:
+    """#434: the run's next_action, except at an open Phase 7 whose
+    deployment approval is not required (adaptive_deployment_approval_required
+    false): the card says so plainly and names the next step, whatever an
+    older next_action asked for. A run that requires approval keeps its text."""
+    next_action = status.get("next_action")
+    if cfg is None or int(status.get("phase_number") or 0) != 7 or status.get("status") != "in_progress" \
+            or isinstance(status.get("run_closed"), dict):
+        return next_action
+    try:
+        required = lib.adaptive_deployment_approval_required(status, cfg)
+    except (lib.HandsoffError, KeyError, TypeError, ValueError):
+        return next_action
+    if required:
+        return next_action
+    if isinstance(next_action, str) and "approval is not required" in next_action:
+        return next_action  # the run's own plain line (#434), kept word for word
+    return NO_APPROVAL_PHASE7_LINE
+
+
 def project_view(entry: dict, signals: "signals_module.SignalCache | None" = None, *,
                  facts: dict | None = None, owner=_PROBE) -> dict:
     root = Path(entry["root"])
@@ -909,6 +946,9 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
             "owner": owner.get("run_token") if owner else None,
             "closed": status.get("run_closed"), "actions": [item.get("action_id") for item in decisions]}
     binding = hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:20]
+    # P1.10: the run dashboard's own session projection, so the card names
+    # the state status and Mission Control name.
+    projected = status.get("session_projection") if isinstance(status.get("session_projection"), dict) else {}
     return {
         "root": str(root), "name": name, "folder": root.name,  # #389
         "registered_at": entry["registered_at"], "initialized": True,
@@ -917,7 +957,8 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
         "host": (snap.get("host") or {}).get("family") or "unknown",  # #186
         "host_wait": snap.get("host_wait"),  # #194
         "phase_number": status.get("phase_number"), "progress": status.get("progress"), "state": state,
-        "next_action": status.get("next_action"), "role": role,
+        "session_state": projected.get("state"), "session_projection": projected.get("sessions") or [],
+        "next_action": card_next_action(status, cfg), "role": role,
         "started_at": (snap.get("metrics") or {}).get("started_at"),
         "asleep_seconds": (snap.get("metrics") or {}).get("asleep_seconds"),  # #193
         "phase_asleep_seconds": ((snap.get("metrics") or {}).get("phase_asleep_seconds") or {}).get(str(status.get("phase_number"))),
@@ -1240,14 +1281,12 @@ class FleetServer(ThreadingHTTPServer):
         # slower clock (default 900 s; the lists are larger).
         self.signals = signals if signals is not None else signals_module.SignalCache(registry=registry or registry_path())
         self.issues = issues if issues is not None else signals_module.IssueCache(registry=registry or registry_path())
-        # #384: the runs to resume monitoring, found once as the server starts
+        # #384: the runs to resume monitoring, found as the server starts
         # (after a reboot nothing else would) and served on /api/fleet.
-        try:
-            self.rediscovered, self.rediscovery_error = rediscover(registry), None
-        except Exception as exc:  # a broken record must not stop Fleet from serving
-            self.rediscovered, self.rediscovery_error = [], f"{type(exc).__name__}: {exc}"
-        _fleet_log(f"fleet_rediscovered runs={len(self.rediscovered)}"
-                   f"{' error=' + self.rediscovery_error if self.rediscovery_error else ''}", registry)
+        # #434: found again whenever the registry file's signature changes.
+        self.rediscovery_lock = threading.Lock()
+        self.rediscovery_signature = None
+        self.refresh_rediscovered()
         super().__init__(address, FleetHandler)
         # Only a server that bound its port collects; a failed bind leaves no thread behind.
         roots = lambda: [entry["root"] for entry in load_registry(self.registry)]  # noqa: E731
@@ -1259,6 +1298,24 @@ class FleetServer(ThreadingHTTPServer):
         self.issues_thread = signals_module.start_refresh_thread(
             self.issues, roots, name="fleet-issues", wake_path=wake_path,
             interval=signals_module.issues_interval() if issues_interval is None else issues_interval)
+
+    def refresh_rediscovered(self) -> tuple[list, str | None]:
+        """#434: the rediscovered runs, recomputed when the registry file's
+        signature differs from the one they were computed from, so a root
+        another process unregistered or removed drops off the next
+        /api/fleet without a restart."""
+        with self.rediscovery_lock:
+            signature = registry_signature(self.registry)
+            if signature != self.rediscovery_signature:
+                try:
+                    self.rediscovered, self.rediscovery_error = rediscover(self.registry), None
+                except Exception as exc:  # a broken record must not stop Fleet from serving
+                    self.rediscovered, self.rediscovery_error = [], f"{type(exc).__name__}: {exc}"
+                self.rediscovery_signature = signature
+                _fleet_log(f"fleet_rediscovered runs={len(self.rediscovered)}"
+                           f"{' error=' + self.rediscovery_error if self.rediscovery_error else ''}",
+                           self.registry)
+            return self.rediscovered, self.rediscovery_error
 
 
 class FleetHandler(BaseHTTPRequestHandler):
@@ -1337,8 +1394,10 @@ class FleetHandler(BaseHTTPRequestHandler):
         if path == "/api/fleet":
             payload = build_fleet(self.server.registry, public_base=self._public_base(),
                                   signals=self.server.signals, issues=self.server.issues)
-            self._json(HTTPStatus.OK, {**payload, "rediscovered": self.server.rediscovered,  # #384
-                                       "rediscovery_error": self.server.rediscovery_error})
+            # #434: after the build, which may itself forget a vanished root
+            rediscovered, error = self.server.refresh_rediscovered()
+            self._json(HTTPStatus.OK, {**payload, "rediscovered": rediscovered,  # #384
+                                       "rediscovery_error": error})
             return
         if path == "/api/queue":
             # #386: the durable queue, read-only, behind the same token check.

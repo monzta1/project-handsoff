@@ -38,7 +38,9 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 from handsoff_core import (
     HandsoffError, _canonical, acceptance_hash, criterion_spec_hash, design_hash,
 )
-from handsoff_config import AGENT_ROLES, normalized_test_footprint
+from handsoff_config import (
+    AGENT_ROLES, EVIDENCE_CLASSES, normalized_test_footprint, required_evidence_kinds,
+)
 from handsoff_routing import adaptive_deployment_approval_required
 from handsoff_ledger import (
     VERIFICATION_REQUIREMENTS, _design_errors, _design_review_errors, _last_hash,
@@ -324,7 +326,8 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
                         attempts: list[dict] | None = None,
                         rules: dict | None = None,
                         env: dict | None = None,
-                        concurrency: int | None = None) -> dict:
+                        concurrency: int | None = None,
+                        scope_digests: dict | None = None) -> dict:
     """Append a hash-chained evidence record. Caller must hold project_lock.
 
     #43: `binding` (command to verification_binding hash), `executed`,
@@ -386,6 +389,10 @@ def append_verification(root: Path, cfg: dict, *, kind: str, ok: bool,
         record["env"] = dict(env)  # #410: the [checks].env table the commands ran under
     if concurrency is not None:
         record["concurrency"] = concurrency  # #410
+    if scope_digests is not None:
+        if not isinstance(scope_digests, dict) or not set(scope_digests) <= set(record["criteria"]):
+            raise HandsoffError("verification record: 'scope_digests' must map the record's criteria to digests")
+        record["scope_digests"] = dict(scope_digests)  # P1.2: the scoped digest each one ran on
     record["hash"] = hashlib.sha256((_canonical(record) + prev_hash).encode("utf-8")).hexdigest()
     with path.open("a", encoding="utf-8") as fh:
         fh.write(_canonical(record) + "\n")
@@ -444,7 +451,7 @@ def _evidence_errors(criteria: list[dict], verifications: list[dict]) -> list[st
         if criterion.get("state") != "passing":
             continue
         cid = criterion.get("id")
-        required = VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set())
+        required = required_evidence_kinds(criterion)  # P1.1: policy plus evidence_classes
         missing = required - valid_evidence_kinds(criterion, verifications)
         if missing:
             errors.append(f"evidence gate: passing criterion {cid} lacks valid {', '.join(sorted(missing))} evidence")
@@ -475,7 +482,7 @@ def baseline_errors(criteria: list[dict], verifications: list[dict], cfg: dict) 
     for criterion in criteria:
         if criterion.get("state") != "passing":
             continue
-        if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+        if "checks" not in required_evidence_kinds(criterion):
             continue
         cid = criterion.get("id")
         if criterion.get("baseline") == BASELINE_NOT_APPLICABLE:
@@ -540,7 +547,7 @@ def review_tests_executed_errors(tests_executed: object, acceptance: dict) -> li
         return []
     criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
     requiring = [str(c.get("id")) for c in criteria if isinstance(c, dict)
-                 and "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+                 and "checks" in required_evidence_kinds(c)]
     if not requiring:
         return []
     return [f"review gate: tests_executed is {tests_executed}; an approval must run the tests "
@@ -568,7 +575,7 @@ def gate_progress(status: dict, acceptance: dict) -> dict:
     phase-weighted; here it reads 25. Gates are cumulative: the percent is
     the weight of the highest gate cleared, `cleared` lists them in order."""
     criteria = acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
-    automated = [c for c in criteria if "checks" in VERIFICATION_REQUIREMENTS.get(c.get("verification"), set())]
+    automated = [c for c in criteria if "checks" in required_evidence_kinds(c)]
     review = status.get("design_review") if isinstance(status, dict) else None
     facts = {
         "initialized": bool(status),
@@ -659,8 +666,11 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
         evidence_errors.extend(baseline_errors(gate_criteria, verifications or [], cfg))
     if root is not None and phase >= 5:
         drift = evidence_drift(root, cfg, acceptance, records)
+        scoped = {entry["criterion"]: entry.get("changed_paths") or []
+                  for entry in drift.get("invalidated") or []}
         for cid in drift["stale"]:
-            paths = ", ".join(drift.get("changed_paths") or [])
+            # P1.2: the paths that staled THIS criterion
+            paths = ", ".join(scoped.get(cid) or drift.get("changed_paths") or [])
             suffix = f"; changed paths: {paths}" if paths else ""
             if drift.get("untracked_scratch"):
                 # #412: every changed path is untracked scratch, not tracked work
@@ -1034,7 +1044,21 @@ CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "stat
                            # with the symbol chosen at proof time instead, a
                            # proof against an irrelevant symbol stayed valid
                            # evidence for that criterion forever.
-                           "mutation_target", "mutation_symbol")
+                           "mutation_target", "mutation_symbol",
+                           # P1.1: the observable outcome, the evidence classes
+                           # required on top of the policy, and the paths the
+                           # evidence depends on (P1.2). All three are spec.
+                           "outcome", "evidence_classes", "paths")
+
+
+#: P1.1: the optional criterion fields criterion-add and an add operation accept.
+CRITERION_OPTIONAL_ADD_FIELDS = ("mutation_target", "mutation_symbol", "outcome", "evidence_classes", "paths")
+
+
+MAX_OUTCOME_CHARS = 512
+
+
+MAX_CRITERION_PATHS = 32
 
 
 MAX_REPEAT = 50
@@ -1057,13 +1081,50 @@ class CriteriaTransactionError(HandsoffError):
         super().__init__(f"operation {index} ({self.op} {self.criterion_id}): {reason}")
 
 
-def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> list[str]:
+def _criterion_scope_errors(fields: dict, check_commands: list[str] | None) -> list[str]:
+    """P1.1: outcome, evidence_classes and paths. Each may be null in an
+    update (clearing it); when set it must be well formed. Declaring the
+    checks class means verify runs the criterion's tests, so with
+    `check_commands` given every test must be one of them."""
+    errors: list[str] = []
+    outcome = fields.get("outcome")
+    if outcome is not None and (not isinstance(outcome, str) or not outcome.strip()
+                                or len(outcome) > MAX_OUTCOME_CHARS):
+        errors.append(f"'outcome' must be a non-empty string of at most {MAX_OUTCOME_CHARS} characters")
+    classes = fields.get("evidence_classes")
+    if classes is not None:
+        if not isinstance(classes, list) or not classes or len(set(map(str, classes))) != len(classes) \
+                or not all(isinstance(kind, str) and kind in EVIDENCE_CLASSES for kind in classes):
+            errors.append(f"'evidence_classes' must be a non-empty list of distinct values among "
+                          f"{', '.join(EVIDENCE_CLASSES)} (mutation is policy-only: verification "
+                          "automated_and_mutation)")
+        elif "checks" in classes and check_commands is not None:
+            unmatched = [test for test in fields.get("tests") or [] if test not in check_commands]
+            if unmatched or not fields.get("tests"):
+                errors.append("evidence class checks needs tests that are [checks].commands entries; "
+                              f"not configured: {', '.join(unmatched) or '(no tests)'}")
+    paths = fields.get("paths")
+    if paths is not None:
+        if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_CRITERION_PATHS \
+                or not all(isinstance(path, str) and path.strip() for path in paths):
+            errors.append(f"'paths' must be a list of 1 to {MAX_CRITERION_PATHS} non-empty project-relative globs")
+        elif any(Path(path).is_absolute() or path.startswith(("/", "\\")) or ".." in Path(path).parts
+                 for path in paths):
+            errors.append("'paths' must be project-relative, without '..'")
+        elif len(set(paths)) != len(paths):
+            errors.append("'paths' must not repeat a glob")
+    return errors
+
+
+def validate_criterion_fields(fields: dict, *, require_all: bool = False,
+                              check_commands: list[str] | None = None) -> list[str]:
     """The one field validator behind criterion-add, criterion-update, and
     criteria-apply. `require_all` is the add form: id, type, requirement,
     verification, and a non-empty tests list must all be present. Without
     it (the update and remove forms) any subset of the fields is checked,
     `id` included; whether a subset may be empty is the caller's rule.
-    Returns a list of problems."""
+    `check_commands` ([checks].commands) lets the P1.1 checks class refuse
+    tests verify could not run. Returns a list of problems."""
     if not isinstance(fields, dict):
         return ["criterion fields must be an object"]
     allowed = set(CRITERION_ADD_FIELDS) | set(CRITERION_UPDATE_FIELDS)
@@ -1128,6 +1189,7 @@ def validate_criterion_fields(fields: dict, *, require_all: bool = False) -> lis
         errors.append("a criterion with verification automated_and_mutation must declare "
                       "'mutation_target' and 'mutation_symbol': the function whose loss its "
                       "tests must detect, chosen at design time and bound to the criterion hash")
+    errors.extend(_criterion_scope_errors(fields, check_commands))  # P1.1
     return errors
 
 
@@ -1166,7 +1228,7 @@ def _transaction_test_gate(index: int, op: str, criterion: dict, cfg: dict, root
     register a test that verification would later refuse. Manual and
     browser criteria carry attestation descriptions, never commands, and
     are not gated here, matching the single commands."""
-    if "checks" not in VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()):
+    if "checks" not in required_evidence_kinds(criterion):
         return
     regression_commands = configured_regression_commands(cfg)
     for test in criterion.get("tests", []):
@@ -1238,16 +1300,17 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
             # #349: the mutation pair is OPTIONAL here, so every existing
             # transaction file stays valid, and required by the policy rule in
             # validate_criterion_fields when the verification demands it.
-            optional_add = {"mutation_target", "mutation_symbol"}
+            optional_add = set(CRITERION_OPTIONAL_ADD_FIELDS)
             if not isinstance(spec, dict) or not set(CRITERION_ADD_FIELDS) <= set(spec) \
                     or set(spec) - set(CRITERION_ADD_FIELDS) - optional_add:
                 raise CriteriaTransactionError(
                     position, op, spec.get("id") if isinstance(spec, dict) else None,
                     "an add criterion has id, type, requirement, verification, tests, and "
-                    "optionally mutation_target and mutation_symbol",
+                    "optionally mutation_target, mutation_symbol, outcome, evidence_classes and paths",
                 )
             criterion_id = spec.get("id")
-            problems = validate_criterion_fields(spec, require_all=True)
+            problems = validate_criterion_fields(spec, require_all=True,
+                                                 check_commands=list(cfg.get("check_commands", [])))
             if problems:
                 raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
             if criterion_id in seen_ids:
@@ -1267,7 +1330,7 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
             # change the hash of every criterion this path touches.
             for field in sorted(optional_add):
                 if spec.get(field):
-                    criterion[field] = spec[field]
+                    criterion[field] = list(spec[field]) if isinstance(spec[field], list) else spec[field]
             _transaction_test_gate(position, op, criterion, cfg, root)
             criteria.append(criterion)
             if criterion["type"] == "primary_fix":
@@ -1329,8 +1392,10 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
             for field in ("mutation_target", "mutation_symbol"):
                 backfilled[field] = merged.get(field) or None
         problems = list(validate_criterion_fields(backfilled))
-        problems += [problem for problem in validate_criterion_fields(merged)
-                     if "automated_and_mutation" in problem and problem not in problems]
+        problems += [problem for problem in validate_criterion_fields(
+                         merged, check_commands=list(cfg.get("check_commands", [])))
+                     if ("automated_and_mutation" in problem or "evidence class checks" in problem)
+                     and problem not in problems]
         if problems:
             raise CriteriaTransactionError(position, op, criterion_id, "; ".join(problems))
         was_primary = criterion.get("type") == "primary_fix"
@@ -1353,13 +1418,22 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
             else:
                 criterion.pop(field, None)
             spec_changed = True
+        for field in ("outcome", "evidence_classes", "paths"):
+            # P1.1: spec fields; null clears, and the key is never stored as null
+            if field not in fields:
+                continue
+            if fields[field]:
+                criterion[field] = list(fields[field]) if isinstance(fields[field], list) else fields[field]
+            else:
+                criterion.pop(field, None)
+            spec_changed = True
         if "state" in fields:
             criterion["state"] = fields["state"]
         if spec_changed or "state" in fields:
             criterion["evidence"] = []
             if "state" not in fields:
                 criterion["state"] = "not_tested"
-        if "tests" in fields or "verification" in fields:
+        if "tests" in fields or "verification" in fields or "evidence_classes" in fields:
             _transaction_test_gate(position, op, criterion, cfg, root)
         if spec_changed and (was_primary or criterion.get("type") == "primary_fix"):
             resets_symptom = True
