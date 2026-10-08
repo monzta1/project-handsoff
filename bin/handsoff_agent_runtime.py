@@ -399,8 +399,11 @@ def _new_agent_session_id(sessions: dict, *, id_factory=None) -> str:
 
 
 def _prune_agent_sessions(sessions: dict, current: dict) -> set[str]:
-    """Bound status growth while retaining every role's current snapshot."""
+    """Bound status growth while retaining every role's current snapshot
+    (#420: its latest ended session too, now that ending clears the pointer)."""
     protected = {value for value in current.values() if isinstance(value, str)}
+    protected |= {value for value in role_session_ids(
+        {"agent_sessions": sessions, "current_agent_sessions": current}).values() if value}
     removable = sorted(
         (session for sid, session in sessions.items()
          if sid not in protected and session.get("state") in AGENT_SESSION_TERMINAL_STATES),
@@ -418,8 +421,7 @@ def _prune_agent_sessions(sessions: dict, current: dict) -> set[str]:
 
 def _implementer_binding(status: dict, cfg: dict) -> dict | None:
     sessions = status.get("agent_sessions") or {}
-    current = status.get("current_agent_sessions") or {}
-    implementer = sessions.get(current.get("implementer"))
+    implementer = sessions.get(role_session_ids(status).get("implementer"))
     identity = _canonical_implementer_identity(implementer)
     implementer_session_id = implementer.get("session_id") if identity and isinstance(implementer, dict) else None
     if identity is None:
@@ -838,6 +840,16 @@ def create_implementer_workspace(root: Path, session: dict) -> Path:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target, follow_symlinks=False)
         seeded[relative] = _path_digest(target)
+    # #416: the run's version pin (never in git) and its effective config (a
+    # skip-worktree local edit git does not report) are seeded as well, so
+    # ledger verification runs in the worktree and apply treats them as seeded.
+    for relative in (VERSION_PIN_FILE, "handsoff.toml"):
+        source, target = root / relative, path / relative
+        if source.is_file() and not source.is_symlink():
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            shutil.copy2(source, target)
+            seeded[relative] = _path_digest(target)
     # The host-edit baseline is the PROJECT's owned files at launch, not the
     # worktree's: git checks files out 0644/0755, so a host file at 0600
     # would otherwise read as a host edit at apply time.
@@ -888,9 +900,12 @@ def apply_implementer_workspace(root: Path, session_id: str) -> dict:
         manifest = json.loads(_workspace_manifest_path(session["workspace"]).read_text(encoding="utf-8"))
         seeded = manifest["seeded"]
         state_files = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
+        # #416: handsoff.toml is out of the evidence digest but seeded here, so
+        # an unchanged copy is a no-op and an implementer's edit is attributed
+        # (and refused as outside its ownership), never silently dropped.
         changed = sorted(
             path for path in set(_changed_since(workspace, launch_commit)) | set(seeded)
-            if not _digest_excluded(path, state_files)
+            if (path == "handsoff.toml" or not _digest_excluded(path, state_files))
             and (path not in seeded or _path_digest(workspace / path) != seeded[path]))
         outside = [path for path in changed
                    if not any(path == mine or path.startswith(mine + "/") for mine in owned)]
@@ -1040,6 +1055,9 @@ def create_agent_session(root: Path, *, role: str, actor: str, adapter: str,
             # one-live-session rule for implementers. Refused there, before
             # any id, reservation or event exists.
             beside = live_implementer_sessions(status)
+            refusal = implementer_ownership_refusal(status, owned_paths)  # #407
+            if refusal:
+                raise HandsoffError(refusal)
             launch_commit = implementer_admission(root, beside, owned_paths, preferred_id=active_id)
         elif active and active.get("state") in AGENT_SESSION_LIVE_STATES:
             raise HandsoffError(
@@ -1306,6 +1324,9 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         else:
             updated["ended_at"] = now
             updated["exit_code"] = exit_code
+            if proposed["current_agent_sessions"].get(role) == session_id:
+                # #420: an ended session never stays current
+                proposed["current_agent_sessions"].pop(role)
             if reported_model is not None:
                 updated["reported_model"] = reported_model
             if usage is not None:
@@ -1432,17 +1453,59 @@ def claim_precreated_agent_session(root: Path, session_id: str, *, role: str,
         return deepcopy(proposed["agent_sessions"][session_id])
 
 
-def current_agent_sessions(status: dict) -> dict:
-    """Return each role's recorded current session, without inference."""
+def latest_terminal_session_id(sessions: dict, role: str) -> str | None:
+    """#420: the role's latest unsuperseded terminal session, by end time.
+    A session is superseded once a later launch of the role exists."""
+    own = [item for item in (sessions or {}).values()
+           if isinstance(item, dict) and item.get("role") == role]
+    ended = [item for item in own if item.get("state") in AGENT_SESSION_TERMINAL_STATES
+             and not any(str(other.get("started_at") or "") > str(item.get("started_at") or "")
+                         for other in own)]
+    if not ended:
+        return None
+    latest = max(ended, key=lambda item: (str(item.get("ended_at") or ""), str(item.get("started_at") or "")))
+    return latest.get("session_id")
+
+
+def role_session_ids(status: dict) -> dict:
+    """#420: each role's session id: the live pointer while one is current,
+    else the latest unsuperseded terminal session. A terminal transition
+    clears the pointer, so a reader of an ended session reads it here."""
     sessions = status.get("agent_sessions") if isinstance(status, dict) else None
     pointers = status.get("current_agent_sessions") if isinstance(status, dict) else None
-    if not isinstance(sessions, dict) or not isinstance(pointers, dict):
+    if not isinstance(sessions, dict):
         return {role: None for role in SELECTABLE_AGENT_ROLES}
-    return {
-        role: deepcopy(sessions.get(pointers.get(role)))
-        if isinstance(sessions.get(pointers.get(role)), dict) else None
-        for role in SELECTABLE_AGENT_ROLES
-    }
+    found = {}
+    for role in SELECTABLE_AGENT_ROLES:
+        pointed = pointers.get(role) if isinstance(pointers, dict) else None
+        if isinstance(pointed, str) and isinstance(sessions.get(pointed), dict):
+            found[role] = pointed
+        else:
+            found[role] = latest_terminal_session_id(sessions, role)
+    return found
+
+
+def current_agent_sessions(status: dict) -> dict:
+    """Return each role's session (#420: role_session_ids), a copy."""
+    sessions = status.get("agent_sessions") if isinstance(status, dict) else None
+    if not isinstance(sessions, dict):
+        return {role: None for role in SELECTABLE_AGENT_ROLES}
+    return {role: deepcopy(sessions[sid]) if sid else None
+            for role, sid in role_session_ids(status).items()}
+
+
+def implementer_ownership_refusal(status: dict, owned_paths, *, except_session_id: str | None = None) -> str | None:
+    """#407: once any implementer session in the run, live or historical,
+    declared owned paths, every implementer launch must declare its own."""
+    if owned_paths:
+        return None
+    declared = next((item for sid, item in sorted((status.get("agent_sessions") or {}).items())
+                     if sid != except_session_id and isinstance(item, dict)
+                     and item.get("role") == "implementer" and item.get("owned_paths")), None)
+    if declared is None:
+        return None
+    return (f"implementer launch refused: implementer session {declared.get('session_id')} declared "
+            "owned paths, so this launch must declare its own with --owns")
 
 
 def event_log_chain_errors(root: Path, cfg: dict) -> tuple[list[str], dict | None]:

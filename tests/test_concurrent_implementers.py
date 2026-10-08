@@ -264,8 +264,9 @@ class ConcurrentImplementerTests(HandsoffTestCase):
     def test_an_undeclared_launch_beside_a_live_implementer_is_refused_as_today(self):
         live = self._hold("a.txt")
         before = self._status_bytes()
+        # #407: refused first because the live session declared ownership
         with self.assertRaisesRegex(lib.HandsoffError,
-                                    f"role implementer already has live agent session {live['session_id']}"):
+                                    f"implementer session {live['session_id']} declared owned paths"):
             self._hold()
         self.assertEqual(self._status_bytes(), before)
         # and a declared launch beside an undeclared live one is refused too
@@ -305,7 +306,7 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertEqual(self._read("b.txt"), ORIGINAL["b.txt"])
         self.assertEqual(self._read("a.txt"), ORIGINAL["a.txt"])
         status = self.read_status()
-        sid = status["current_agent_sessions"]["implementer"]
+        sid = lib.role_session_ids(status)["implementer"]  # #420: an ended session leaves the pointer
         self.assertEqual(status["agent_sessions"][sid]["state"], "failed")
         self.assertEqual(status["agent_sessions"][sid]["apply"], {"state": "refused", "paths": ["b.txt"]})
         failure = status["agent_failures"][sid]
@@ -418,7 +419,7 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertIsNotNone(error)
         self.assertEqual(self._read("a.txt"), "a by host\n")
         status = self.read_status()
-        sid = status["current_agent_sessions"]["implementer"]
+        sid = lib.role_session_ids(status)["implementer"]  # #420: an ended session leaves the pointer
         failure = status["agent_failures"][sid]
         self.assertEqual(failure["category"], "ownership_violation")
         self.assertEqual(failure["changed_paths"], ["a.txt"])
@@ -448,7 +449,7 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertIsNotNone(error)
         self.assertEqual(self._tree(), before, "a refused apply leaves the project byte-identical")
         status = self.read_status()
-        failure = status["agent_failures"][status["current_agent_sessions"]["implementer"]]
+        failure = status["agent_failures"][lib.role_session_ids(status)["implementer"]]  # #420
         self.assertEqual(failure["category"], "ownership_violation")
         self.assertIn("file into a directory or back: b.txt", failure["reason"])
 
@@ -572,7 +573,7 @@ class ConcurrentImplementerTests(HandsoffTestCase):
         self.assertEqual(self._read("a.txt"), ORIGINAL["a.txt"])
         self.assertEqual((self.tmp / "a.txt").stat().st_mode & 0o777, 0o755)
         status = self.read_status()
-        failure = status["agent_failures"][status["current_agent_sessions"]["implementer"]]
+        failure = status["agent_failures"][lib.role_session_ids(status)["implementer"]]  # #420
         self.assertIn("host changed owned paths since launch: a.txt", failure["reason"])
 
     def _with_workspace(self, session_id):

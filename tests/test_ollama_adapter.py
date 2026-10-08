@@ -243,7 +243,7 @@ class _Project(HandsoffTestCase):
 
     def session(self, role):
         status = self.read_status()
-        sid = status["current_agent_sessions"][role]
+        sid = lib.role_session_ids(status)[role]  # #420: an ended session leaves the pointer
         return status, status["agent_sessions"][sid], (status.get("agent_failures") or {}).get(sid)
 
 
@@ -521,7 +521,7 @@ class Budgets(_Project):
         self.assertEqual((usage["premium_calls"], usage["concurrent_premium_agents"], usage["total_calls"]),
                          (0, 0, 1))
         # the same record on a remote adapter does draw it
-        sid = status["current_agent_sessions"]["architect"]
+        sid = lib.role_session_ids(status)["architect"]  # #420
         status["agent_sessions"][sid]["routing_contract"]["locality"] = "remote"
         remote = lib.adaptive_usage(status)
         self.assertEqual((remote["premium_calls"], remote["concurrent_premium_agents"]), (1, 1))

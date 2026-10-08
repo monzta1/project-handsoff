@@ -54,7 +54,7 @@ class ArchitectRefusalReasonTests(HandsoffTestCase):
             with self.assertRaises(runtime.AgentLaunchError) as raised:
                 runtime.execute_launch(self._spec(role), popen_factory=factory, beacon_interval=0.01)
         status = self.read_status()
-        sid = status["current_agent_sessions"][role]
+        sid = lib.role_session_ids(status)[role]  # #420: an ended session leaves the pointer
         return status["agent_sessions"][sid], status["agent_failures"][sid], str(raised.exception), err.getvalue()
 
     # REQ-004

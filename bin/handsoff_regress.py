@@ -1002,7 +1002,7 @@ def main() -> int:
     commands = list(args.command)
     label = "ad hoc"
     if args.group:
-        group = next((g for g in cfg.get("regressions", []) if g.get("name") == args.group), None)
+        group = next((g for g in lib.effective_regression_groups(cfg) if g.get("name") == args.group), None)  # #416
         if group is None:
             print(f"HANDSOFF_REGRESS_BLOCKED: no [[regressions]] group named {args.group!r}", file=sys.stderr)
             return 2

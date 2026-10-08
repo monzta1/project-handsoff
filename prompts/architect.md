@@ -4,6 +4,9 @@ Work inside the managed token ceiling. Use narrow searches and bounded file
 reads; never dump the full repository, full status JSON, or the same evidence
 repeatedly. Prefer one measured inspection followed by a concise design and
 criteria transaction.
+Run every command in the foreground: never start a background command or a
+detached process and end your turn to wait for it. The session ends when the
+turn ends, so work left running is lost and no proposal is recorded.
 
 You engage first, before the Supervisor, on any new feature. Match the design depth to the work instead of assuming every request needs a long design debate. At the start, propose one of these paths with a one-sentence reason and let the human confirm or adjust it:
 

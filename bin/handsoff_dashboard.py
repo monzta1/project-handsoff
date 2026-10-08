@@ -1367,6 +1367,8 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
 #: otherwise kill a live board. Two minutes is ample for the reported case,
 #: an orphan that held its port for a day and seventeen hours.
 ORPHAN_ROOT_MISSING_TICKS = 2
+#: #407: who a dashboard-initiated launch names in its dashboard_launch event
+ORCHESTRATOR_ACTOR, WATCHDOG_ACTOR = lib.DASHBOARD_LAUNCH_ACTORS
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -1461,15 +1463,21 @@ class DashboardServer(ThreadingHTTPServer):
         return True
 
     def _launch_managed_role(self, role: str, task: str, actor: str | None = None,
-                             owned_paths: list[str] | None = None) -> int:
+                             owned_paths: list[str] | None = None,
+                             launched_by: tuple[str, str] | None = None) -> int:
         """Launch a managed role. `actor` names who asked for the launch and
         becomes the session's recorded identity, so only a Pilot-initiated
         /api/launch-role passes "Mission Control Pilot"; watchdog and
         orchestration launches keep the runtime default (adapter-role) so
-        a machine reviewer is never recorded under the Pilot's name."""
+        a machine reviewer is never recorded under the Pilot's name.
+        `launched_by` (#407) is the (actor, reason) of a dashboard-initiated
+        launch, logged as a dashboard_launch event and a printed line."""
         refusal = supervisor.performance_mutation_refusal(self.project_root, "launch_agent")
         if refusal:
             raise lib.HandsoffError(refusal)
+        if launched_by is not None:
+            lib.record_dashboard_launch(self.project_root, launched_by[0], launched_by[1], role, task,
+                                        owned_paths)
         import handsoff_agent
         spec = handsoff_agent.build_launch_spec(self.project_root, role, task, owned_paths=owned_paths)
         return handsoff_agent.execute_with_recovery(spec, actor=actor)
@@ -1504,7 +1512,8 @@ class DashboardServer(ThreadingHTTPServer):
             if profile.get("adapter") != lib.HOST_AGENT_ADAPTER and lib.assigned_role(status) == "architect" \
                     and not any(isinstance(item, dict) and item.get("state") in lib.AGENT_SESSION_LIVE_STATES
                                 for item in (status.get("agent_sessions") or {}).values()):
-                self._launch_managed_role("architect", lib.orchestration_task("architect", status, objective=objective))
+                self._launch_managed_role("architect", lib.orchestration_task("architect", status, objective=objective),
+                                          launched_by=(ORCHESTRATOR_ACTOR, "orchestration"))
                 return
         if supervisor.advance_approved_design(self.project_root):
             return
@@ -1513,7 +1522,10 @@ class DashboardServer(ThreadingHTTPServer):
         role = lib.managed_handoff_role(status, cfg)
         if role is None:
             return
-        self._launch_managed_role(role, lib.orchestration_task(role, status))
+        if role == "implementer" and lib.host_supervised(cfg):
+            return  # #407: the host Supervisor launches implementers, with a task
+        self._launch_managed_role(role, lib.orchestration_task(role, status),
+                                  launched_by=(ORCHESTRATOR_ACTOR, "orchestration"))
 
     def _watchdog_loop(self):
         cfg = lib.load_config(self.project_root)
@@ -1523,8 +1535,9 @@ class DashboardServer(ThreadingHTTPServer):
                 def launcher(role, owned_paths=None):
                     task = (f"Resume trusted Handsoff state as {role}; read status, acceptance, and event log "
                             "and continue without repeating evidenced work.")
-                    return self._launch_managed_role(role, task, owned_paths=owned_paths)  # #359
-                lib.recover_run(self.project_root, actor="Mission Control Watchdog", launcher=launcher)
+                    return self._launch_managed_role(role, task, owned_paths=owned_paths,  # #359
+                                                     launched_by=(WATCHDOG_ACTOR, "recovery"))  # #407
+                lib.recover_run(self.project_root, actor=WATCHDOG_ACTOR, launcher=launcher)
             except Exception as exc:
                 print(f"HANDSOFF_WATCHDOG_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
 

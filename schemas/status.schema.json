@@ -1207,7 +1207,9 @@
                 "process_crash",
                 "non_zero_exit",
                 "unknown",
-                "presumed_lost"
+                "presumed_lost",
+                "background_abandoned",
+                "process_gone"
               ]
             },
             "reason": {

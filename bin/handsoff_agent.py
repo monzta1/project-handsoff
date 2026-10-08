@@ -662,6 +662,11 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             phase = int(run_status.get("phase_number") or 0) or None
         except (ValueError, TypeError):
             phase = None
+    if role == "implementer" and isinstance(run_status, dict):
+        # #407: refused here, before any scratch, session or reservation
+        refusal = lib.implementer_ownership_refusal(run_status, owned_paths)
+        if refusal:
+            raise lib.HandsoffError(refusal)
     effective_model_policy = lib.validate_model_policy(
         (run_status or {}).get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))
     )
@@ -1165,6 +1170,88 @@ def _terminalize_runner_io_failure(root: Path, session_id: str, process, *, stop
         )
 
 
+#: #408: a shell command that detaches a process: nohup, setsid or disown,
+#: or a lone `&` (not `&&`, `2>&1` or `&>`).
+_DETACHED_COMMAND = re.compile(r"(?:^|[\s;&|(])(?:nohup|setsid|disown)\b|(?<![&>|<])&(?![&>])(?=\s|$|;|\))")
+_BACKGROUND_ID = re.compile(r"\bID:\s*([A-Za-z0-9_.-]+)")
+_BACKGROUND_DONE = re.compile(r"<status>\s*(?:completed|failed|killed)\s*</status>|"
+                              r"\bstatus:\s*(?:completed|failed|killed)\b", re.IGNORECASE)
+
+
+class _BackgroundWork:
+    """#408: background work a managed role started, read from its streamed
+    events: a tool call with run_in_background, or a command that detaches a
+    process. A background call is closed when a poll reports it finished or
+    it is killed; a detached process is never seen to finish. `outstanding`
+    is what was still running at the session's last turn."""
+
+    def __init__(self):
+        self._open: dict[str, str] = {}
+        self._aliases: dict[str, str] = {}
+        self._polls: dict[str, str] = {}
+
+    @property
+    def outstanding(self) -> list[str]:
+        return sorted(self._open)
+
+    def feed(self, line: str) -> None:
+        text = line.strip()
+        if not text.startswith("{"):
+            return
+        try:
+            event = json.loads(text)
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        item = event.get("item")
+        if event.get("type") == "item.started" and isinstance(item, dict) \
+                and item.get("type") == "command_execution" and isinstance(item.get("command"), str) \
+                and _DETACHED_COMMAND.search(item["command"]):
+            self._open[str(item.get("id") or len(self._open))] = "detached"
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                self._tool_use(block)
+            elif isinstance(block, dict) and block.get("type") == "tool_result":
+                self._tool_result(block)
+
+    def _tool_use(self, block: dict) -> None:
+        call_id = str(block.get("id") or "")
+        name = block.get("name")
+        args = block.get("input") if isinstance(block.get("input"), dict) else {}
+        target = next((args[key] for key in ("bash_id", "shell_id", "task_id")
+                       if isinstance(args.get(key), str)), None)
+        if args.get("run_in_background") is True:
+            self._open[call_id] = "background"
+        elif isinstance(args.get("command"), str) and _DETACHED_COMMAND.search(args["command"]):
+            self._open[call_id] = "detached"
+        elif name in ("BashOutput", "TaskOutput") and target:
+            self._polls[call_id] = target
+        elif name in ("KillShell", "KillBash", "TaskStop") and target:
+            self._close(target)
+
+    def _tool_result(self, block: dict) -> None:
+        call_id = str(block.get("tool_use_id") or "")
+        body = block.get("content")
+        if isinstance(body, list):
+            body = "\n".join(str(part.get("text") or "") for part in body if isinstance(part, dict))
+        body = body if isinstance(body, str) else ""
+        if self._open.get(call_id) == "background":
+            match = _BACKGROUND_ID.search(body)
+            if match:
+                self._aliases[match.group(1)] = call_id
+        target = self._polls.pop(call_id, None)
+        if target and _BACKGROUND_DONE.search(body):
+            self._close(target)
+
+    def _close(self, target: str) -> None:
+        key = self._aliases.get(target, target)
+        if self._open.get(key) == "background":
+            self._open.pop(key)
+
+
 class _ChunkReader:
     """#41: read a child's text pipe as output ARRIVES, not in 4096-character
     blocks. `TextIOWrapper.read(n)` blocks until n characters or EOF, so a
@@ -1603,6 +1690,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     raised_questions: set[str] = set()  # #345: one record per question per launch
     stdout_tail = [""]
     stderr_tail = [""]
+    background = _BackgroundWork()  # #408
     # #168: the adapter's own usage, watched per streamed line on both
     # streams, independent of the bounded tails above.
     usage_watcher = lib.UsageWatcher(spec.adapter)
@@ -1728,6 +1816,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         usage_watcher.feed(line)
+                        background.feed(line)
                         record_model()
                         enforce_ceiling()
                         if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
@@ -1752,6 +1841,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         discarding = True
                 if pending and not discarding:
                     usage_watcher.feed(pending)
+                    background.feed(pending)
                     record_model()
                     enforce_ceiling()
                     if _raise_question_line(root, spec.role, session_id, pending, question_errors, raised_questions):
@@ -2101,6 +2191,17 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(orchestration_noop=True, role=spec.role),
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
+    if spec.role in {"reviewer", "architect", "supervisor"} and background.outstanding \
+            and not reviewer_results and not architect_results and not architect_declines \
+            and not supervisor_requests and question_lines[0] == 0:
+        # #408: a clean exit with no result while background work it started
+        # was still running: the turn ended the session. Recoverable, and no
+        # review round is spent (the open attempt is reused on relaunch).
+        failure = {"category": "background_abandoned",
+                   "reason": lib._FAILURE_REASON_LABELS["background_abandoned"],
+                   "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
+        end_session("failed", exit_code=0, failure=failure)
+        raise AgentLaunchError(failure["reason"], session_id)
     if capture_supervisor and not supervisor_requests and question_lines[0] == 0:
         end_session(
             "failed", exit_code=1,

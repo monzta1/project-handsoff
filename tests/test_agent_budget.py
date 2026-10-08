@@ -181,7 +181,7 @@ class TestAgentTokenBudget(HandsoffTestCase):
                 beacon_interval=0.01,
             )
         status = self.read_status()
-        session = status["agent_sessions"][status["current_agent_sessions"]["supervisor"]]
+        session = status["agent_sessions"][lib.role_session_ids(status)["supervisor"]]  # #420
         self.assertEqual(session["state"], "failed")
         failure = status["agent_failures"][session["session_id"]]
         self.assertEqual(failure["category"], "orchestration_noop")
@@ -202,7 +202,7 @@ class TestAgentTokenBudget(HandsoffTestCase):
                 beacon_interval=0.01,
             )
         status = self.read_status()
-        session = status["agent_sessions"][status["current_agent_sessions"]["supervisor"]]
+        session = status["agent_sessions"][lib.role_session_ids(status)["supervisor"]]  # #420
         failure = status["agent_failures"][session["session_id"]]
         self.assertEqual(failure["category"], "orchestration_noop")
         assessment = lib.recovery_assessment(
@@ -228,7 +228,7 @@ class TestAgentTokenBudget(HandsoffTestCase):
         ), 0)
         status = self.read_status()
         self.assertEqual(status["design_proposal"]["summary"], "Small design")
-        session = status["agent_sessions"][status["current_agent_sessions"]["architect"]]
+        session = status["agent_sessions"][lib.role_session_ids(status)["architect"]]  # #420
         self.assertEqual(session["state"], "completed")
 
         with self.assertRaisesRegex(runtime.AgentLaunchError, "without a structured design proposal"):
@@ -256,7 +256,7 @@ class TestAgentTokenBudget(HandsoffTestCase):
             spec, popen_factory=mock.Mock(return_value=process), beacon_interval=0.01,
         ), 0)
         status = self.read_status()
-        session = status["agent_sessions"][status["current_agent_sessions"]["architect"]]
+        session = status["agent_sessions"][lib.role_session_ids(status)["architect"]]  # #420
         self.assertEqual(session["state"], "completed")
         self.assertEqual(status["design_proposal"]["summary"], "Complete design")
 

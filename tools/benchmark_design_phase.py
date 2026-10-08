@@ -556,6 +556,7 @@ class ArmRun:
                 "stdin_bytes": len(spec.stdin.encode("utf-8")),
             })
             buffer = io.StringIO()
+            sessions_before = set(self.status().get("agent_sessions") or {})
             record["started_at"] = now_iso()
             clock = time.monotonic()
             launch_error = None
@@ -584,7 +585,11 @@ class ArmRun:
             session_id = launch_error.session_id if launch_error else None
             status = self.status()
             if session_id is None:
-                session_id = (status.get("current_agent_sessions") or {}).get(role)
+                # #420: an ended session is no longer current, so the launch's
+                # session is the one of this role that did not exist before it
+                launched = [sid for sid, item in (status.get("agent_sessions") or {}).items()
+                            if sid not in sessions_before and isinstance(item, dict) and item.get("role") == role]
+                session_id = launched[-1] if launched else (status.get("current_agent_sessions") or {}).get(role)
             session = (status.get("agent_sessions") or {}).get(session_id) if session_id else None
             if isinstance(session, dict):
                 record.update({
