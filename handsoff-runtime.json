@@ -23,7 +23,7 @@
     "bin/handsoff_ollama.py": "0e5b32532c7e7052acd227e76f6c92d3c86d044e44edc6ecd2b15ab649f248ac",
     "bin/handsoff_preflight.py": "31483bc4c2e853967c127fee6dc0fc7ed00f7012187394554d24c3280790acb5",
     "bin/handsoff_progress.py": "1cd5066f46c393b9360e0d1baec453a103505aa24a59a61b40332dd8bfae9a9e",
-    "bin/handsoff_projection.py": "4fa65b4ac711171cf81b7af1e4a292353bf0877354a46b902b4dbdd4270ed792",
+    "bin/handsoff_projection.py": "981396f4396e1ac8fc46aa7093f037cb4230643df196e4b44e09cadb7854549a",
     "bin/handsoff_queue.py": "ffd84c7a868797f27eaae30ec0860c8136b675db4c7f7ea291ef7a2885f0267c",
     "bin/handsoff_regress.py": "d072bc8d640261ffc2148129109d803230cff115c1582ca31af1f43ad86a6a7c",
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",

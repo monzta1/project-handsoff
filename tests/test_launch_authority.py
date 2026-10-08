@@ -103,6 +103,30 @@ class HostSupervisorRecovery(LaunchAuthorityCase):
                 self.assertEqual(launched, [], "a host-supervised implementer was replaced")
                 self.assertEqual(self.read_status()["agent_sessions"][LOST_IMPLEMENTER]["state"], state)
 
+    def test_a_running_implementer_reconciled_to_process_gone_reports_host_supervised_with_its_id(self):
+        # the live proof's gap: inside the grace window the wrapper read
+        # 'assigned session is terminal but not recoverable' with no session
+        from tests.test_session_terminal import dead_pid
+        self.host_supervisor()
+        when = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        self.commit(4, [session(LOST_IMPLEMENTER, "implementer", "running", when)],
+                    {"implementer": LOST_IMPLEMENTER})
+        lib.write_live_beacon(self.tmp, session_id=LOST_IMPLEMENTER, role="implementer", state="running",
+                              pid=dead_pid(), now=datetime.now(timezone.utc) - timedelta(minutes=2))
+        self.assertEqual(lib.reconcile_gone_sessions(self.tmp), [LOST_IMPLEMENTER])
+        status = self.read_status()
+        self.assertEqual(status["agent_failures"][LOST_IMPLEMENTER]["category"], "process_gone")
+        assessment = lib.recovery_assessment(status, lib.load_config(self.tmp), {}, [],
+                                             datetime.now(timezone.utc), root=self.tmp)
+        self.assertEqual((assessment["state"], assessment["reason"], assessment["assigned_role"],
+                          assessment["lost_session_id"]),
+                         ("not_applicable", "host_supervised", "implementer", LOST_IMPLEMENTER), assessment)
+        # a non-recoverable failure keeps its own reason
+        status["agent_failures"][LOST_IMPLEMENTER]["category"] = "token_budget_exhaustion"
+        assessment = lib.recovery_assessment(status, lib.load_config(self.tmp), {}, [],
+                                             datetime.now(timezone.utc), root=self.tmp)
+        self.assertEqual(assessment["reason"], "non_recoverable_failure", assessment)
+
     def test_the_same_implementer_without_a_host_supervisor_is_still_recovered(self):
         # the control: the rule is the host Supervisor, not the implementer
         self.commit(4, [session(LOST_IMPLEMENTER, "implementer", "failed", self.stale)], {},

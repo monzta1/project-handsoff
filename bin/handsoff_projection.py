@@ -396,6 +396,18 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
     elif held and result.get("state") == "not_applicable":
         # the lost implementer set aside below, when nothing else is recovered
         result.update(reason="host_supervised", assigned_role="implementer", lost_session_id=held[-1])
+    elif host and result.get("state") == "not_applicable" \
+            and result.get("reason") == "assigned session is terminal but not recoverable" \
+            and result.get("assigned_role") == "implementer":
+        # an implementer that ended in a recoverable failure (process_gone
+        # inside the grace window) or was stopped is reported, not replaced
+        sid = role_session_ids(status).get("implementer")
+        ended = (status.get("agent_sessions") or {}).get(sid) if isinstance(sid, str) else None
+        failure = (status.get("agent_failures") or {}).get(sid) or {}
+        if isinstance(ended, dict) and (ended.get("state") == "cancelled" or (
+                ended.get("state") in {"failed", "timed_out", "failed_to_start"}
+                and failure.get("category") in RECOVERABLE_FAILURE_CATEGORIES)):
+            result.update(reason="host_supervised", lost_session_id=sid)
     return result
 
 
