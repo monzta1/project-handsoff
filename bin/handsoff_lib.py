@@ -4370,15 +4370,15 @@ def work_item_checkpoints(status: dict, acceptance: dict, events: list[dict] | N
     """#104: durable per-item checkpoints derived from the ledger only,
     never stored, so they cannot drift from the run they describe.
 
-    designed: a design approval is recorded. implemented: implemented_by is
-    on the item's delivery record, or every tagged criterion carries
-    evidence. verified: every tagged criterion is passing. reviewed: an
+    designed: a design approval is recorded. implemented: a completed
+    implementer session bound to the item (launch --item) credited it
+    (#415); evidence or a delivery record's implemented_by alone never does.
+    verified: every tagged criterion is passing. reviewed: an
     approved review recorded after the newest verification for the item.
     complete: all four."""
     cfg = cfg or DEFAULT_CONFIG
     registry, _ = effective_work_items(acceptance, cfg)
     criteria = acceptance.get("criteria", [])
-    delivery = status.get("work_item_delivery") if isinstance(status.get("work_item_delivery"), dict) else {}
     designed = isinstance(status.get("design_approved"), dict)
     review = status.get("review") if isinstance(status.get("review"), dict) else None
     review_at = review.get("at") if review else None
@@ -4386,10 +4386,7 @@ def work_item_checkpoints(status: dict, acceptance: dict, events: list[dict] | N
     for item in registry:
         own = [c for c in criteria if criterion_work_item_id(c) == item["id"]
                or (criterion_work_item_id(c) is None and len(registry) == 1)]
-        record = delivery.get(item["id"]) if isinstance(delivery, dict) else None
-        implemented = bool(item.get("implemented_at")) \
-            or bool(isinstance(record, dict) and record.get("implemented_by")) \
-            or (bool(own) and all(c.get("evidence") for c in own))  # #415: a bound session's credit
+        implemented = bool(item.get("implemented_at"))  # #415: only a bound session's credit
         verified = bool(own) and all(c.get("state") == "passing" for c in own)
         newest_evidence = None
         for record_v in verifications or []:

@@ -284,10 +284,45 @@ class AutoResume(PausedRunFixture):
         # placed after the pause the way it would be on a real run
         events = self.events()
         events[-1] = {**events[-1], "at": (paused_at + timedelta(minutes=5)).isoformat()}
-        view = supervisor.refresh_performance_state(self.tmp, events=events,
-                                                    now=paused_at + timedelta(minutes=6))
+        # the chain on disk still validates; the decision is read back with the moved time
+        with mock.patch.object(lib, "read_events", return_value=events):
+            view = supervisor.refresh_performance_state(self.tmp, events=events,
+                                                        now=paused_at + timedelta(minutes=6))
         self.assertTrue(view["block_new_work"])
         self.assertNotIn("performance_auto_resumed", [e["kind"] for e in self.events()])
+
+    def _forged_decision(self):
+        return {"kind": supervisor.PERFORMANCE_AUTO_RESUME_EVENT, "auto_resume": True,
+                "decision_id": "forged", "by": "moncy",
+                "at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()}
+
+    def assert_pause_holds(self, **refresh):
+        later = datetime.now(timezone.utc) + timedelta(minutes=121)
+        view = supervisor.refresh_performance_state(self.tmp, now=later, **refresh)
+        self.assertTrue(view["block_new_work"], view)
+        self.assertNotIn("performance_auto_resumed", [e["kind"] for e in self.events()])
+        return view
+
+    def test_an_unchained_decision_appended_to_the_ledger_does_not_resume(self):
+        log = self.tmp / "handsoff-events.jsonl"
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(self._forged_decision()) + "\n")
+        view = self.assert_pause_holds()
+        # review (live scratch): status must not name the forged decision either
+        self.assertIsNone(view["auto_resume"], view["auto_resume"])
+
+    def test_a_broken_chain_fails_closed_even_with_a_real_decision(self):
+        self._decide()
+        log = self.tmp / "handsoff-events.jsonl"
+        lines = log.read_text().splitlines()
+        first = json.loads(lines[0])
+        first["message"] = "edited in place"
+        lines[0] = json.dumps(first)
+        log.write_text("\n".join(lines) + "\n")
+        self.assert_pause_holds()
+
+    def test_a_decision_only_in_the_callers_events_does_not_resume(self):
+        self.assert_pause_holds(events=self.events() + [self._forged_decision()])
 
     def test_editing_state_cannot_grant_it(self):
         status = self.read_status()

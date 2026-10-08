@@ -417,7 +417,7 @@ def refresh_performance_state(
         "forecast_variance_seconds": (forecast_total - 120 * 60) if forecast_total is not None else None,
         "bottleneck": bottleneck, "breaches": history["breaches"],
         "pause": performance_pause_view(episode, active_seconds),
-        "auto_resume": _auto_resume_view(performance_auto_resume_decision(events)),
+        "auto_resume": _auto_resume_view(validated_auto_resume_decision(root, cfg)),
         "auto_resumed": auto_resumed,
     }
 
@@ -435,6 +435,16 @@ def performance_auto_resume_decision(events: list[dict]) -> dict | None:
         if isinstance(event, dict) and event.get("kind") == PERFORMANCE_AUTO_RESUME_EVENT:
             return dict(event) if event.get("auto_resume") is True else None
     return None
+
+
+def validated_auto_resume_decision(root: Path, cfg: dict) -> dict | None:
+    """#414 review: the standing decision only from a ledger whose hash chain
+    validates; a break, an unchained line or a missing head reads as none,
+    for the clock and for what status and Mission Control show alike."""
+    chain_problems, _ = lib.event_log_chain_errors(root, cfg)
+    if chain_problems:
+        return None
+    return performance_auto_resume_decision(lib.read_events(root, cfg))
 
 
 def _auto_resume_view(standing: dict | None) -> dict | None:
@@ -468,7 +478,10 @@ def _auto_resume_performance(root: Path, cfg: dict, history: dict, events: list[
     episode = history["episodes"][-1]
     if episode["state"] != "paused_for_performance_review":
         return history, None
-    standing = performance_auto_resume_decision(events)
+    # the decision counts only from a ledger whose hash chain validates: a
+    # break, an unchained line or a missing head fails closed (no resume),
+    # and the events read are the validated file's, not a caller's copy
+    standing = validated_auto_resume_decision(root, cfg)
     if standing is None or not isinstance(standing.get("decision_id"), str):
         return history, None
     paused_at = _event_datetime(episode.get("paused_at"), now)
@@ -1283,8 +1296,9 @@ _EMBEDDED_COMMAND = re.compile(r"handsoff_supervisor\.py (.+?)(?= on the tree| o
 
 
 def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None:
-    """#421: the command that clears one unmet gate line, or None when the
-    gate names no single command. The gate text itself is never changed."""
+    """#421: the command that clears one unmet gate line. Every gate
+    compute_errors emits maps to one (None only for a line no gate wrote).
+    The gate text itself is never changed."""
     cmd = f"{_SUPERVISOR_CMD} "
     drift = re.match(r"evidence drift: (\S+) was verified", message)
     if drift:
@@ -1298,11 +1312,43 @@ def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None
             return cmd + f"mutation-proof {cid} --by ACTOR"
         kind = "browser" if "browser" in kinds else "manual"
         return cmd + f"record-evidence {cid} --kind {kind} --description TEXT --by ACTOR"
+    unreasoned = re.match(r"baseline gate: (\S+) says baseline not_applicable without a reason", message)
+    if unreasoned:
+        return cmd + f"criterion-update {unreasoned.group(1)} --baseline-reason TEXT"
+    escalated = re.search(r"until the escalation is cleared by (?:Run )?(\S.*)$", message)
+    if message.startswith("escalation gate:") and escalated:
+        return cmd + escalated.group(1).strip()
     embedded = _EMBEDDED_COMMAND.search(message)
     if embedded:
         return cmd + embedded.group(1).strip()
     if message.startswith("state gate: Phase 7 requires status"):
         return cmd + "advance 7 --status awaiting_approval"
+    if message.startswith("state gate: requirement_coverage"):
+        return cmd + "verify --all --by ACTOR"
+    if message.startswith(("state gate: status and acceptance describe different features",
+                           "verification ledger:")):
+        return cmd + "doctor"
+    if message.startswith("live gate: Phase 8 requires progress 100"):
+        return cmd + "advance 8 100"
+    if message.startswith("live gate:"):
+        # no successful run, acceptance, policy, [checks].env or rules
+        # changed since it, or it preceded the deployment approval
+        return cmd + "verify-live --by ACTOR"
+    if message.startswith("design gate: a decline is pending"):
+        return cmd + "record-design-review --by REVIEWER --architect ARCHITECT --summary TEXT --approve"
+    if message.startswith("design gate:"):
+        return cmd + "design-approve --by PILOT --architect ARCHITECT --summary TEXT"
+    if message.startswith(("design review gate:", "stale proposal:")):
+        return cmd + "record-design-review --by REVIEWER --architect ARCHITECT --summary TEXT --approve"
+    if message.startswith("amendment gate:"):
+        return (cmd + "amendment-review --by REVIEWER --approve --summary TEXT, then "
+                + cmd + "amendment-approve --by PILOT")
+    if message.startswith("round cap: design_round"):
+        return cmd + "config-override --key workflow.max_design_rounds --value N --by PILOT"
+    if message.startswith("round cap: review_round"):
+        return cmd + "review-cap-override --by PILOT --reason TEXT"
+    if message.startswith("review attempt gate:"):
+        return cmd + "record-review --by REVIEWER --tests-executed yes"
     if message.startswith("CI:"):
         pr = re.search(r"ci-watch --pr (\S+)", message)
         return cmd + f"ci-watch --pr {pr.group(1) if pr else 'N'} --by ACTOR"
@@ -1319,7 +1365,8 @@ def _gate_clearing_command(message: str, phase: int, status: dict) -> str | None
     if message.startswith("review gate:"):
         return cmd + "record-review --by REVIEWER --tests-executed yes"
     if message.startswith("review anchor gate:"):
-        return cmd + "session-result-adopt --session SESSION --by ACTOR"
+        # the anchor is written only by a review-lane init that adopts a commit
+        return cmd + 'init "FEATURE" --lane review --adopt REF --by ACTOR'
     if message.startswith("deployment gate:"):
         return cmd + "deployment-gate --approve --by PILOT"
     if message.startswith("live gate: Phase 8 requires a successful live") \

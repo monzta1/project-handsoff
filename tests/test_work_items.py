@@ -349,7 +349,9 @@ class WorkItemCliTests(HandsoffTestCase):
         self.assertTrue(points["issue-90"]["designed"])
         self.assertFalse(points["issue-90"]["implemented"] or points["issue-90"]["verified"])
         shown = json.loads(run(["status"], cwd=self.tmp).stdout)
-        self.assertIn("issue-70 designed, implemented, verified", shown["work_item_completion"])
+        # #415: verify alone never credits implemented; only a bound session does
+        self.assertFalse(points["issue-70"]["implemented"])
+        self.assertIn("issue-70 designed, verified", shown["work_item_completion"])
         self.assertIn("issue-90 designed", shown["work_item_completion"])
         import shutil
         import handsoff_agent as runtime

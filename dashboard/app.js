@@ -1230,7 +1230,7 @@ function renderWorkItems(workItems) {
       <td data-label="Title">${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}${item.discrepancy ? `<span class="ticket-state blocked" title="${escapeHtml(item.discrepancy)}">DISCREPANT</span>` : ""}</td>
       <td data-label="Lane"><span class="ticket-state">${escapeHtml(workItemLaneLabel(item))}</span><small>${escapeHtml(workItemLaneDetail(item))}</small>${smallFixCanConfirm(item) ? `<button class="mini-action lane-confirm" data-item="${escapeHtml(item.id)}">CONFIRM</button>` : ""}</td>
       <td data-label="Progress"><strong>${escapeHtml(workItemProgressLabel(item))}</strong></td>
-      <td data-label="Status"><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span></td>
+      <td data-label="Status"><span class="ticket-state ${escapeHtml(item.status)}">${escapeHtml(String(item.status).replaceAll("_", " "))}</span>${workItemDoneWhen(item) ? `<small class="ticket-done-when">${escapeHtml(workItemDoneWhen(item))}</small>` : ""}</td>
       <td data-label="Phase / next">${escapeHtml(item.phase_or_next || "n/a")}</td>
       <td data-label="Blocker">${escapeHtml(item.blocker || "n/a")}</td>
       <td data-label="Updated">${escapeHtml(relativeTime(item.updated_at))}</td>

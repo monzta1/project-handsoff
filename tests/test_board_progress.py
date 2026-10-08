@@ -158,6 +158,39 @@ class BoardProgressTests(HandsoffTestCase):
         self.assertEqual((session["state"], session["apply"]["state"]), ("failed", "refused"))
         self.assertFalse(any("implemented_at" in item for item in self.items().values()))
 
+    def implemented_everywhere(self):
+        """Every reader of an item's implemented state: the checkpoints, the
+        resume scope built from them, and the per-item lane progress."""
+        import handsoff_ledger as ledger
+        status, acceptance = self.read_status(), self.read_acceptance()
+        cfg = lib.load_config(self.tmp)
+        verifications, _ = lib.load_verifications(self.tmp, cfg)
+        points = lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)
+        lines = lib.work_item_completion_lines(points)
+        return {item_id: (points[item_id]["implemented"],
+                          any(line.startswith(item_id) and "implemented" in line for line in lines),
+                          ledger.item_progress(status, acceptance, cfg, item_id)["gates"]["implemented"])
+                for item_id in ("issue-101", "issue-102")}
+
+    def test_evidence_and_a_delivery_record_alone_never_mark_implemented(self):
+        # verify binds evidence to both items' criteria with no session at all
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace("commands = []", 'commands = ["true"]', 1))
+        r = run(["verify", "--all", "--by", "test-implementer"], cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(all(c.get("evidence") for c in self.read_acceptance()["criteria"]))
+        r = run(["work-item-update", "issue-101", "--by", "claude-host", "--implemented-by", "impl-one"],
+                cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.read_status().get("agent_sessions"))
+        self.assertEqual(self.implemented_everywhere(),
+                         {"issue-101": (False, False, False), "issue-102": (False, False, False)})
+        # the explicit binding is what credits, and only its own item
+        code, error = self.launch(self.spec(None, ["issue-101"]), actor="impl-one")
+        self.assertIsNone(error)
+        self.assertEqual(self.implemented_everywhere(),
+                         {"issue-101": (True, True, True), "issue-102": (False, False, False)})
+
     def test_a_bound_sole_implementer_without_a_workspace_is_credited_on_completion(self):
         code, error = self.launch(self.spec(None, ["issue-102"]), actor="impl-solo")
         self.assertIsNone(error)
