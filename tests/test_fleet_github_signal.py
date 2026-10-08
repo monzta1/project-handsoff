@@ -108,6 +108,25 @@ class GitHubSignalTests(unittest.TestCase):
         self.assertNotIn("rate_limited_until", fresh)
         self.assertNotIn("o/r", self.cache.backoff)
 
+    def test_a_restart_before_the_reset_keeps_the_backoff(self):
+        root = _git_repo(self.base / "one", "https://github.com/o/r.git")
+        client = _Client(issues=9)
+        self.refresh([root], client)
+        client.raise_next = signals.GitHubRateLimited(RESET)
+        self.refresh([root], client, now=NOW + 60)
+        # Fleet restarts: a new cache reads the persisted file.
+        self.cache = signals.SignalCache(self.base / "fleet-signals.json")
+        self.assertEqual(self.cache.backoff, {"o/r": RESET})
+        client.raise_next = None
+        calls = len(client.calls)
+        held = self.refresh([root], client, now=RESET - 1)[str(root)]["github"]
+        self.assertEqual(len(client.calls), calls, "no fetch before the reset after a restart")
+        self.assertEqual(held["open_issues"], 9)
+        self.assertTrue(held["error"].startswith("GitHub rate limited; showing values from "))
+        self.refresh([root], client, now=RESET)
+        self.assertEqual(len(client.calls), calls + 1)
+        self.assertEqual(signals.SignalCache(self.base / "fleet-signals.json").backoff, {})
+
     def test_a_rate_limit_with_no_reset_backs_off_a_default_interval(self):
         root = _git_repo(self.base / "one", "https://github.com/o/r.git")
         client = _Client()

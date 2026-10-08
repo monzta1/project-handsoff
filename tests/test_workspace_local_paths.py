@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -174,6 +175,33 @@ class LocalPathWorkspaceTests(HandsoffTestCase):
         finally:
             lib.remove_implementer_workspace(self.tmp, session)
         self.assertEqual((outside / "bin" / "python").read_text(), VENV_PYTHON)
+
+    def test_disposal_never_follows_a_symlinked_ancestor_the_agent_planted(self):
+        """E1 review: with cache/.venv linked, an agent that replaces the
+        worktree's cache with a link to the project's cache must not make
+        disposal unlink the project's own cache/.venv link."""
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace(f"local_paths = {self.LOCAL_PATHS}",
+                                                 'local_paths = ["cache/.venv"]'))
+        (self.tmp / ".gitignore").write_text(".venv/\nkb/\nmissing-cache/\ncache/\n")
+        (self.tmp / "cache").mkdir()
+        (self.tmp / "cache" / ".venv").symlink_to("../.venv", target_is_directory=True)
+        session = lib.create_agent_session(self.tmp, role="implementer", actor="local-paths",
+                                           adapter="codex", requested_model="default",
+                                           resolution_source="configured", owned_paths=["a.txt"])
+        session = self.read_status()["agent_sessions"][session["session_id"]]
+        path = lib.create_implementer_workspace(self.tmp, session)
+        try:
+            self.assertEqual(lib.workspace_local_path_report(session)["linked"], ["cache/.venv"])
+            self.assertTrue((path / "cache").is_dir() and not (path / "cache").is_symlink())
+            shutil.rmtree(path / "cache")
+            (path / "cache").symlink_to(self.tmp / "cache", target_is_directory=True)
+        finally:
+            lib.remove_implementer_workspace(self.tmp, session)
+        self.assertFalse(os.path.lexists(path))
+        self.assertTrue((self.tmp / "cache" / ".venv").is_symlink(), "the project's own link survives")
+        self.assertEqual((self.tmp / "cache" / ".venv" / "bin" / "python").read_text(), VENV_PYTHON)
+        self._root_local_paths_intact()
 
     def test_an_entry_under_a_symlinked_parent_that_escapes_the_root_is_skipped(self):
         import shutil

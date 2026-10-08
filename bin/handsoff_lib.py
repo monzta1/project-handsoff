@@ -2186,32 +2186,94 @@ def probe_prompt(nonce: int) -> str:
 def _probe_argv(adapter: str, executable: str, model: str, scratch: Path) -> list[str]:
     if adapter == "codex":
         return codex_argv(executable, "reviewer", model, PROBE_TOKEN_BUDGET, reviewer_sandbox=True)
-    return claude_argv(executable, "reviewer", [], model)
+    # Claude takes no token limit on the argv: one turn, and the ceiling is
+    # held by run_probe watching its streamed usage (E1 review)
+    return claude_argv(executable, "reviewer", [], model) + ["--max-turns", "1"]
+
+
+def _probe_token_ceiling(adapter: str) -> int | None:
+    """The limit run_probe must hold itself: None where the adapter's own
+    meter holds it from the argv (codex), the probe budget otherwise."""
+    return None if CEILING_ENFORCEMENT.get(adapter) == "native_rollout_meter" else PROBE_TOKEN_BUDGET
+
+
+def run_probe(argv: list[str], *, input: str, timeout: int, cwd: str, token_ceiling: int | None = None,
+              adapter: str = "claude", popen=subprocess.Popen) -> subprocess.CompletedProcess:
+    """P1.9: run one probe. With a token_ceiling, the adapter's streamed usage
+    is watched line by line and the child is stopped at the first report past
+    the ceiling (the wrapper bound managed Claude sessions use, #290); the
+    stop is named on stderr so it classifies as budget_too_small."""
+    if token_ceiling is None:
+        return subprocess.run(argv, input=input, text=True, capture_output=True, timeout=timeout, cwd=cwd)
+    watcher = UsageWatcher(adapter)
+    process = popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, cwd=cwd)
+    out: list[str] = []
+    err: list[str] = []
+    stopped: dict = {}
+
+    def read_out():
+        for line in process.stdout:
+            out.append(line)
+            watcher.feed(line)
+            total = (watcher.usage or {}).get("tokens_total")
+            if isinstance(total, int) and total > token_ceiling and not stopped:
+                stopped["observed"] = total
+                process.kill()
+
+    def read_err():
+        err.append(process.stderr.read())
+    readers = [threading.Thread(target=read_out, daemon=True), threading.Thread(target=read_err, daemon=True)]
+    for reader in readers:
+        reader.start()
+    try:
+        process.stdin.write(input)
+        process.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        returncode = None
+    for reader in readers:
+        reader.join(timeout=5)
+    process.stdout.close()
+    process.stderr.close()
+    if returncode is None:
+        raise subprocess.TimeoutExpired(argv, timeout, output="".join(out), stderr="".join(err))
+    stderr = "".join(err)
+    if stopped:
+        stderr += (f"\nHandsoff probe token budget exceeded: stopped at {stopped['observed']} tokens, "
+                   f"past the {token_ceiling}-token ceiling\n")
+    return subprocess.CompletedProcess(argv, returncode, "".join(out), stderr)
 
 
 def _probe_one(adapter: str, executable: str | None, model: str, scratch: Path, runner, timeout: int,
                nonce: int) -> dict:
+    ceiling = {"tokens": PROBE_TOKEN_BUDGET, "enforcement": CEILING_ENFORCEMENT.get(adapter)}
     if not executable:
         return {"class": "executable_missing", "detail": f"{adapter} is not on PATH and not set in [adapters]",
-                "tokens": PROBE_TOKEN_BUDGET}
+                **ceiling}
     argv = _probe_argv(adapter, executable, model, scratch)
     try:
-        completed = runner(argv, input=probe_prompt(nonce), text=True, capture_output=True,
-                           timeout=timeout, cwd=str(scratch))
+        completed = runner(argv, input=probe_prompt(nonce), timeout=timeout, cwd=str(scratch),
+                           token_ceiling=_probe_token_ceiling(adapter), adapter=adapter)
     except FileNotFoundError:
-        return {"class": "executable_missing", "detail": f"cannot execute {executable}", "tokens": PROBE_TOKEN_BUDGET}
+        return {"class": "executable_missing", "detail": f"cannot execute {executable}", **ceiling}
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
         kind = classify_probe(timed_out=True, stdout=stdout, stderr=stderr, nonce=nonce)
-        return {"class": kind, "detail": f"no answer within {timeout} seconds", "tokens": PROBE_TOKEN_BUDGET}
+        return {"class": kind, "detail": f"no answer within {timeout} seconds", **ceiling}
     stdout, stderr = completed.stdout or "", completed.stderr or ""
     kind = classify_probe(exit_code=completed.returncode, stdout=stdout, stderr=stderr, nonce=nonce)
     detail = "" if kind == "available" and completed.returncode == 0 else \
         f"exit code {completed.returncode}: " + (stderr.strip() or stdout.strip())[-MAX_PROBE_DETAIL:]
     detail = re.sub(r"(?i)(api[_ -]?key|token|password)\s*[:=]\s*\S+", r"\1=[redacted]", detail)
     return {"class": kind, "detail": redact_output_text(detail).replace("\n", " ")[:MAX_PROBE_DETAIL],
-            "tokens": PROBE_TOKEN_BUDGET}
+            **ceiling}
 
 
 def probe_summary(probes: dict) -> str:
@@ -2221,7 +2283,7 @@ def probe_summary(probes: dict) -> str:
     return "partial" if "available" in classes else "unavailable"
 
 
-def probe_adapters(cfg: dict, adapter: str = "all", *, which=shutil.which, runner=subprocess.run,
+def probe_adapters(cfg: dict, adapter: str = "all", *, which=shutil.which, runner=run_probe,
                    timeout: int = PROBE_TIMEOUT_SECONDS, nonce_source=None) -> dict:
     """P1.9: run only when asked (it spends tokens), from a clean scratch
     directory, and record nothing in any run's ledger or the project."""
@@ -2243,7 +2305,21 @@ def probe_adapters(cfg: dict, adapter: str = "all", *, which=shutil.which, runne
     return {"probes": probes, "probe_summary": probe_summary(probes)}
 
 
-PREFLIGHT_OK_BEFORE_BUDGET_REASON = "OK before trailing token-budget exhaustion"
+def doctor_prompt_probe_report(root: Path, cfg: dict, *, prompts: bool, probe: str | None) -> tuple[dict, int]:
+    """P0.4 / P1.9: `doctor --prompts` and `doctor --probe ADAPTER`, one report
+    for both the public `handsoff doctor` and the Supervisor's doctor.
+    Read-only: no project lock, nothing written, and the probe runs only
+    when named."""
+    report: dict = {}
+    if prompts:
+        report.update(prompts=prompt_preflight_report(root))
+    if probe:
+        report.update(probe_adapters(cfg, probe))
+    prompts_ok = report.get("prompts", {}).get("ok", True)
+    return report, 0 if prompts_ok and report.get("probe_summary", "available") != "unavailable" else 1
+
+
+PREFLIGHT_OK_BEFORE_BUDGET_REASON ="OK before trailing token-budget exhaustion"
 
 
 def _preflight_outcome(completed) -> dict:

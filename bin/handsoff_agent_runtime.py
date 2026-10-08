@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
@@ -904,11 +905,28 @@ def _link_local_paths(root: Path, workspace: Path, local_paths: list[str]) -> tu
 
 def _unlink_local_paths(workspace: Path, linked: list[str]) -> None:
     """#429: the links go first, so removing a worktree never reaches the
-    project's own .venv or knowledge base through them."""
+    project's own .venv or knowledge base through them. Every ancestor is
+    opened without following links: an agent that replaced `cache` with a
+    link to the project's `cache` must not reach the project's `cache/.venv`
+    (E1 review). Such an entry is left for the worktree removal, which
+    unlinks the planted link itself."""
     for relative in linked:
-        target = Path(workspace) / relative
-        if target.is_symlink():
-            target.unlink()
+        parts = Path(relative).parts
+        try:
+            fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            return
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            if stat.S_ISLNK(os.stat(parts[-1], dir_fd=fd, follow_symlinks=False).st_mode):
+                os.unlink(parts[-1], dir_fd=fd)
+        except OSError:
+            pass  # a symlinked, replaced or missing ancestor: nothing of ours to unlink
+        finally:
+            os.close(fd)
 
 
 def _is_local_path(path: str, local_paths: list[str]) -> bool:

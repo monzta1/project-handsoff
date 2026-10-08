@@ -6494,14 +6494,9 @@ def cmd_doctor(args) -> int:
     if getattr(args, "prompts", False) or getattr(args, "probe", None):
         # P0.4 / P1.9: read-only reports; neither takes the project lock nor
         # writes anything, and the probe runs only when named here
-        report = {}
-        if args.prompts:
-            report.update(prompts=lib.prompt_preflight_report(root))
-        if args.probe:
-            report.update(lib.probe_adapters(cfg, args.probe))
+        report, code = lib.doctor_prompt_probe_report(root, cfg, prompts=args.prompts, probe=args.probe)
         print(json.dumps(report, indent=2, sort_keys=True))
-        prompts_ok = report.get("prompts", {}).get("ok", True)
-        return 0 if prompts_ok and report.get("probe_summary", "available") != "unavailable" else 1
+        return code
     with lib.project_lock(root):
         chain_problems, last_event = lib.event_log_chain_errors(root, cfg)
         records, ledger_problems = lib.load_verifications(root, cfg)

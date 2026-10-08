@@ -18,6 +18,8 @@ import handsoff_cli as cli
 import handsoff_lib as lib
 import handsoff_supervisor as sup
 from tests.engine_patch import patch_engine
+# E1 review: the public `handsoff doctor` entrypoint, run with this module
+from tests.test_doctor_entrypoint import PublicDoctorTests  # noqa: F401
 
 NONCE = 424242
 GOOD = f'{lib.PROBE_PREFIX} {{"ok": true, "nonce": {NONCE}}}\n'
@@ -116,6 +118,28 @@ class ProbeClassificationTests(unittest.TestCase):
         self.assertEqual(kind, "available")
         self.assertIn("stream-json", runner.calls[0]["argv"])
 
+    def test_each_adapter_runs_under_the_ceiling_it_reports(self):
+        """E1 review: Codex holds the probe budget natively from its argv;
+        Claude takes no limit on the argv, so the runner holds it."""
+        kind, result, runner = self.probe(completed(0, GOOD), adapter="codex")
+        call = runner.calls[0]
+        self.assertIn(f"limit_tokens={lib.PROBE_TOKEN_BUDGET}", " ".join(call["argv"]))
+        self.assertIsNone(call["token_ceiling"])
+        self.assertEqual(result["probes"]["codex"]["default"]["enforcement"], "native_rollout_meter")
+        self.assertEqual(result["probes"]["codex"]["default"]["tokens"], lib.PROBE_TOKEN_BUDGET)
+        event = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": GOOD.strip()}]}})
+        kind, result, runner = self.probe(completed(0, event + "\n"), adapter="claude")
+        call = runner.calls[0]
+        self.assertEqual(call["argv"][0], "/bin/echo")
+        self.assertEqual(call["argv"][1:2], ["-p"])
+        self.assertIn("stream-json", call["argv"])
+        self.assertEqual(call["argv"][call["argv"].index("--max-turns") + 1], "1")
+        self.assertEqual(call["token_ceiling"], lib.PROBE_TOKEN_BUDGET)
+        self.assertEqual(call["adapter"], "claude")
+        self.assertEqual(result["probes"]["claude"]["default"]["enforcement"], "wrapper_enforced")
+        self.assertEqual(result["probes"]["claude"]["default"]["tokens"], lib.PROBE_TOKEN_BUDGET)
+        self.assertIs(lib.probe_adapters.__kwdefaults__["runner"], lib.run_probe)
+
     def test_precedence_credentials_over_a_valid_line(self):
         self.assertEqual(self.probe(completed(1, GOOD, "401 Unauthorized"))[0], "credentials_missing")
 
@@ -123,6 +147,39 @@ class ProbeClassificationTests(unittest.TestCase):
         self.assertEqual(lib.PROBE_CLASSES, (
             "executable_missing", "credentials_missing", "sandbox_refused", "provider_unreachable",
             "timeout", "available", "budget_too_small", "protocol_invalid", "unknown_error"))
+
+
+#: a stand-in Claude that streams growing usage and never stops on its own
+ENDLESS_CLAUDE = (
+    "import json, sys, time\n"
+    "sys.stdin.read()\n"
+    "n = 0\n"
+    "while True:\n"
+    "    n += 1\n"
+    "    print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'thinking'}],"
+    " 'usage': {'input_tokens': 1000 * n, 'output_tokens': 10}}}), flush=True)\n"
+    "    time.sleep(0.02)\n"
+)
+
+
+class ProbeTokenCeilingTests(unittest.TestCase):
+    def test_a_claude_probe_is_stopped_past_its_token_ceiling(self):
+        scratch = tempfile.mkdtemp(prefix="handsoff-probe-test-")
+        self.addCleanup(shutil.rmtree, scratch, True)
+        done = lib.run_probe([sys.executable, "-c", ENDLESS_CLAUDE], input="probe", timeout=30, cwd=scratch,
+                             token_ceiling=5000, adapter="claude")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("past the 5000-token ceiling", done.stderr)
+        self.assertLessEqual(done.stdout.count("\n"), 8, "stopped at the first report past the ceiling")
+        self.assertEqual(lib.classify_probe(exit_code=done.returncode, stdout=done.stdout, stderr=done.stderr,
+                                            nonce=NONCE), "budget_too_small")
+
+    def test_a_claude_probe_within_its_ceiling_is_untouched(self):
+        script = f"import sys; sys.stdin.read(); print({GOOD.strip()!r})"
+        done = lib.run_probe([sys.executable, "-c", script], input="probe", timeout=30, cwd=tempfile.gettempdir(),
+                             token_ceiling=5000, adapter="claude")
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        self.assertTrue(lib.probe_line_valid(done.stdout, NONCE))
 
 
 class ProbePerModelTests(unittest.TestCase):

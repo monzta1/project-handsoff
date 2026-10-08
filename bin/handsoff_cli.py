@@ -456,6 +456,11 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--skip-preflight", action="store_true")
     check.add_argument("--restore-state", metavar="PATH",
                        help="restore PATH from its bounded .bak last-known-good copy, then diagnose")
+    check.add_argument("--prompts", action="store_true",
+                       help="P0.4: report every role's effective prompt, its source and verdict, without launching")
+    check.add_argument("--probe", metavar="ADAPTER", default=None,
+                       help="P1.9: run a bounded real protocol exchange with ADAPTER (codex, claude or all); "
+                            "spends tokens, records nothing in the run ledger")
     sub.add_parser("commands", help="print the argparse command reference")
     playbook = sub.add_parser("playbook", help="#208: print the engine's lane playbook (the index, or one topic)")
     playbook.add_argument("topic", nargs="?", default=None, help="lanes, landing, reviewers, lessons")
@@ -546,6 +551,14 @@ def main() -> int:
                 if not result["diagnostics"]:
                     print("DOCUMENTATION_OK")
                 return 1 if result["diagnostics"] else 0
+            if args.prompts or args.probe:
+                if args.docs_only or args.restore_state:
+                    raise lib.HandsoffError("--prompts and --probe report on their own; run them without "
+                                            "--docs-only or --restore-state")
+                report, code = lib.doctor_prompt_probe_report(root, lib.load_config(root),
+                                                              prompts=args.prompts, probe=args.probe)
+                print(json.dumps(report, indent=2, sort_keys=True))
+                return code
             restored = None
             if args.restore_state:
                 target = Path(args.restore_state).expanduser().resolve()

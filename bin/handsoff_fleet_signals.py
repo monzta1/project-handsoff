@@ -414,8 +414,16 @@ class SignalCache:
             if isinstance(root, str) and isinstance(value, dict):
                 clean[root] = {"github": value.get("github") if isinstance(value.get("github"), dict) else None,
                                "beakon": value.get("beakon") if isinstance(value.get("beakon"), dict) else None}
+        # #433: a restart before a repository's reported reset keeps its
+        # backoff, so Fleet never fetches it early.
+        stored = payload.get("backoff") if isinstance(payload, dict) else None
+        backoff = {}
+        for identity, until in (stored.items() if isinstance(stored, dict) else ()):
+            if isinstance(identity, str) and isinstance(until, (int, float)) and not isinstance(until, bool):
+                backoff[identity] = float(until)
         with self._lock:
             self._data = clean
+            self.backoff = backoff
             self.loaded_at = utcnow()
 
     def get(self, root: Path | str) -> dict:
@@ -495,7 +503,7 @@ class SignalCache:
     def _persist(self, data: dict[str, dict]) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            lib.atomic_write_json(self.path, {"schema": 1, "projects": data})
+            lib.atomic_write_json(self.path, {"schema": 1, "projects": data, "backoff": dict(self.backoff)})
         except OSError as exc:
             sys.stderr.write(f"HANDSOFF_FLEET_WARNING: fleet signals cache {self.path} was not written "
                              f"({type(exc).__name__})\n")

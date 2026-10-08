@@ -49,7 +49,7 @@ EXTRACTED_FROM_THE_MONOLITH = [m for m in LAYERS if m != "handsoff_mutation"]
 
 STDLIB_OK = {
     "__future__", "json", "os", "re", "copy", "datetime", "pathlib", "hashlib",
-    "uuid", "fcntl", "math", "shlex", "tomllib", "subprocess", "fnmatch",
+    "uuid", "fcntl", "math", "shlex", "stat", "tomllib", "subprocess", "fnmatch",
     "sysconfig", "contextlib", "shutil", "threading", "ast", "tempfile", "sys", "time",
 }
 
