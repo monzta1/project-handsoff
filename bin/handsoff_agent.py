@@ -1171,13 +1171,10 @@ def _terminalize_runner_io_failure(root: Path, session_id: str, process, *, stop
         )
 
 
-#: #408: a lone `&` (not `&&`, `|&`, `2>&1`, `<&` or `&>`), a `wait` or
-#: `disown` command word, and `setsid --fork`, read from unquoted text only.
-_LONE_AMPERSAND = re.compile(r"(?<![&>|<])&(?![&>])")
-_COMMAND_WORD = r"(?:^|[;&|(){}\n])\s*"
-_WAIT = re.compile(_COMMAND_WORD + r"wait\b")
-_DISOWN = re.compile(_COMMAND_WORD + r"disown\b")
-_SETSID_FORK = re.compile(_COMMAND_WORD + r"setsid\s+(?:-\w*f\w*|--fork)\b")
+#: #408: shell operators inside one shlex punctuation token (`&;`, `2>&1`),
+#: longest first; the separators end a simple command, the rest redirect.
+_SHELL_OPERATOR = re.compile(r"&&|\|\||;;|\|&|&>>|&>|>&|<&|>>|<<|<>|>\||[;&|()<>]")
+_SEPARATORS = {";", ";;", "&&", "||", "|", "|&", "&", "(", ")"}
 _SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 _BACKGROUND_ID = re.compile(r"\bID:\s*([A-Za-z0-9_.-]+)")
 _DONE_STATUS = r"(?:completed|failed|killed|exited|stopped)"
@@ -1187,55 +1184,125 @@ _TASK_NOTIFICATION = re.compile(r"<task-notification>(.*?)</task-notification>",
 _TASK_ID = re.compile(r"<(?:task|shell|bash)[-_]id>\s*([A-Za-z0-9_.-]+)\s*</(?:task|shell|bash)[-_]id>")
 
 
-def _unquoted(command: str) -> str:
-    """#408: the command with quoted text and escaped characters blanked, so
-    `printf 'a & b'` has no `&` left to read."""
-    out, quote, escaped = [], None, False
-    for char in command:
-        if escaped:
-            out.append(" ")
-            escaped = False
-        elif char == "\\" and quote != "'":
-            out.append(" ")
-            escaped = True
-        elif quote:
-            quote = None if char == quote else quote
-            out.append(" ")
-        elif char in "'\"":
-            quote = char
-            out.append(" ")
-        else:
-            out.append(char)
-    return "".join(out)
+class _Script:
+    """#408: the text a `_ShellLexer` reads, one character at a time. An
+    unquoted newline reads as `;` (it ends a command), `#` starts a comment
+    only at a word start, and a comment stops before its newline."""
+
+    def __init__(self, text: str):
+        self.text, self.pos, self.lexer = text, 0, None
+
+    def read(self, _size: int = 1) -> str:
+        state = self.lexer.state
+        if state == "c":
+            self.lexer.operator = True  # the token being read is unquoted punctuation
+        if self.pos >= len(self.text):
+            return ""
+        char = self.text[self.pos]
+        self.pos += 1
+        if state in ("'", '"', "\\"):
+            return char
+        if char == "\n":
+            return ";"
+        self.lexer.commenters = "" if state == "a" else "#"
+        return char
+
+    def readline(self) -> str:
+        end = self.text.find("\n", self.pos)
+        self.pos = len(self.text) if end < 0 else end
+        return ""
+
+    def close(self) -> None:
+        pass
 
 
-def _shell_body(command: str) -> str:
-    """A `bash -lc '...'` wrapper (how Codex reports a command) is unwrapped
-    once, so the script it runs is what is read."""
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        return command
-    if len(words) == 3 and Path(words[0]).name in _SHELLS and words[1].startswith("-") and "c" in words[1]:
-        return words[2]
-    return command
+class _ShellLexer(shlex.shlex):
+    """#408: shlex in POSIX mode with punctuation characters, which also says
+    whether each token was an unquoted operator (`'&'` and `\\&` are words)."""
+
+    def __init__(self, text: str):
+        script = _Script(text)
+        super().__init__(script, posix=True, punctuation_chars=True)
+        script.lexer = self
+        self.whitespace_split = True
+        self.operator = False
+
+    def read_token(self):
+        self.operator = False
+        return super().read_token()
+
+
+def _simple_commands(script: str):
+    """#408: (words, separator) for each simple command, redirections and
+    their targets dropped. Raises ValueError for text shlex cannot read."""
+    lexer, words, redirect = _ShellLexer(script), [], False
+    while (token := lexer.get_token()) is not None:
+        if not lexer.operator:
+            if not redirect:
+                words.append(token)
+            redirect = False
+            continue
+        for operator in _SHELL_OPERATOR.findall(token):
+            if operator in _SEPARATORS:
+                yield words, operator
+                words, redirect = [], False
+            else:
+                if words and words[-1].isdigit():
+                    words.pop()  # the descriptor of `2>&1`
+                redirect = True
+    yield words, None
+
+
+def _outstanding(script: str) -> int:
+    """#408: how many processes `script` leaves running when it returns.
+    Each simple command ended by `&` is a job and `$!` names the latest.
+    `wait` collects every job not disowned, `wait $!` the latest, `wait %N`
+    job N, any other operand nothing; `disown` keeps a job running but out
+    of the wait set. `nohup`/`setsid` with `&`, `setsid -f`, and a nested
+    `bash -c` that leaves work running are outstanding whatever waits."""
+    jobs: list[dict] = []
+    pinned = 0
+    for words, separator in _simple_commands(script):
+        if not words:
+            continue
+        name, operands = Path(words[0]).name, words[1:]
+        if separator == "&":
+            jobs.append({"waitable": name not in ("nohup", "setsid"), "collected": False})
+            continue
+        if name == "setsid" and any(word == "--fork" or (word.startswith("-") and not word.startswith("--")
+                                                          and "f" in word) for word in operands):
+            pinned += 1
+        elif name in _SHELLS and len(operands) >= 2 and operands[0].startswith("-") \
+                and not operands[0].startswith("--") and "c" in operands[0]:
+            pinned += _outstanding(operands[1])
+        elif name in ("wait", "disown"):
+            if not operands:
+                chosen = jobs if name == "wait" else jobs[-1:]
+            elif name == "disown" and operands in (["-a"], ["-r"]):
+                chosen = jobs
+            else:
+                chosen = []
+                for operand in operands:
+                    if operand == "$!":
+                        chosen += jobs[-1:]
+                    elif re.fullmatch(r"%[1-9][0-9]*", operand) and int(operand[1:]) <= len(jobs):
+                        chosen.append(jobs[int(operand[1:]) - 1])
+            for job in chosen:
+                if name == "disown":
+                    job["waitable"] = False
+                elif job["waitable"]:
+                    job["collected"] = True
+    return pinned + sum(1 for job in jobs if not job["collected"])
 
 
 def _detaches(command: str) -> bool:
-    """#408: the command leaves a process running after it returns: a lone
-    `&` outside quotes with no later `wait` to collect it (or one disowned
-    before the wait), or `setsid --fork`."""
-    text = _unquoted(_shell_body(command))
-    if _SETSID_FORK.search(text):
-        return True
-    last = None
-    for match in _LONE_AMPERSAND.finditer(text):
-        last = match.start()
-    if last is None:
+    """#408: the command leaves a process running after it returns. A
+    command shlex cannot read is not background work, so it never exempts
+    a failure from the review budget."""
+    try:
+        return _outstanding(command) > 0
+    except ValueError:
         return False
-    tail = text[last:]
-    collected = _WAIT.search(tail)
-    return collected is None or _DISOWN.search(tail[:collected.start()]) is not None
 
 
 class _BackgroundWork:

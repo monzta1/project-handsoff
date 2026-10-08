@@ -131,6 +131,27 @@ class BackgroundRuleTests(HandsoffTestCase):
                 work.feed(_tool_use("toolu_7", "Bash", command=command))
                 self.assertEqual(work.outstanding, ["toolu_7"])
 
+    def test_jobs_are_tracked_through_wait_disown_comments_and_quotes(self):
+        for command, outstanding in (
+                ("sleep 90 & sleep 0 & wait $!", True),  # wait $! collects only sleep 0
+                ("printf done # run tests & review", False),  # a comment starts nothing
+                ("sleep 90 & wait", False),
+                ("sleep 90 & disown; wait", True),
+                ("a & b & wait %1", True),  # b is never collected
+                ("a & b & wait %1 %2", False),
+                ("sleep 90 & disown %1\nwait", True),
+                ("sleep 90 &\nwait", False),
+                ("nohup sleep 90 & wait", True),
+                ("echo \"#x\" &", True),
+                ("echo a#b", False),
+                ("echo 'unbalanced &", False),  # unparseable: never background
+                ("bash -lc 'sleep 90 & sleep 0 & wait $!'", True)):
+            with self.subTest(command=command):
+                self.assertEqual(runtime._detaches(command), outstanding)
+                work = runtime._BackgroundWork()
+                work.feed(_tool_use("toolu_9", "Bash", command=command))
+                self.assertEqual(work.outstanding, ["toolu_9"] if outstanding else [])
+
     def test_a_run_in_background_task_is_outstanding_until_the_stream_reports_it_finished(self):
         notified = _event("user", {"type": "text", "text": (
             "<task-notification>\n<task-id>bash_1</task-id>\n<status>completed</status>\n"
