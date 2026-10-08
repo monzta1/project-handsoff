@@ -566,8 +566,6 @@ def _review_retention_refusal(root: Path, cfg: dict, status: dict, acceptance: d
     binding = review.get("reviewed_binding") if isinstance(review, dict) else None
     if not isinstance(binding, dict) or not binding.get("digest") or not binding.get("specs_hash"):
         return "the review records no reviewed binding"
-    if status.get("live_verification_id"):
-        return "a live verification is bound to the previous acceptance"
     if digest_before != digest_after:
         paths = _changed_paths_since(root, cfg, digest_before)
         return ("a command edited the tree while it ran"
@@ -614,9 +612,23 @@ def _retain_or_invalidate(root: Path, cfg: dict, status: dict, acceptance: dict,
     closed = [a for a in status.get("review_attempts") or [] if isinstance(a, dict) and a.get("closed_at")]
     if closed and closed[-1].get("disposition") == "approved" and closed[-1].get("acceptance_hash") == previous:
         closed[-1]["acceptance_hash"] = current
+    # A live verification is evidence with its own binding (the acceptance it
+    # ran against), never part of the review: when that acceptance moved, the
+    # live run alone is stale and is re-run with verify-live.
+    live_cleared = None
+    if status.get("live_verification_id") and previous != current:
+        live_cleared = status["live_verification_id"]
+        status["live_verification_id"] = None
+        if int(status.get("phase_number") or 0) >= 8:
+            # Phase 8 stands on the live run; the run waits at Phase 7 for it
+            status["phase_number"] = 7
+            status["phase"] = lib.PHASES[7]
+            status["status"] = "in_progress"
+            status["progress"] = min(status.get("progress", 0), 90)
+            status["next_action"] = lib.NEXT_ACTION_DEFAULTS[7]
     return {"retained": True, "digest": binding["digest"], "specs_hash": binding["specs_hash"],
             "design_hash": binding.get("design_hash"), "previous_acceptance_hash": previous,
-            "acceptance_hash": current}
+            "acceptance_hash": current, "live_verification_cleared": live_cleared}
 
 
 def _retention_events(outcome: dict | None) -> list[dict]:
@@ -625,7 +637,8 @@ def _retention_events(outcome: dict | None) -> list[dict]:
     return [{"kind": "review_retained",
              "message": "Re-verification of the reviewed tree kept the review",
              **{key: outcome[key] for key in ("digest", "specs_hash", "design_hash",
-                                              "previous_acceptance_hash", "acceptance_hash")}}]
+                                              "previous_acceptance_hash", "acceptance_hash",
+                                              "live_verification_cleared")}}]
 
 
 def _approval_edit_guard(status: dict, revoke: bool) -> bool:

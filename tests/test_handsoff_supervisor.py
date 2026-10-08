@@ -2033,7 +2033,11 @@ class TestAgentRuntimeAdapter(HandsoffTestCase):
         self.assertFalse(kwargs["shell"])
         self.assertTrue(kwargs["start_new_session"])
         self.assertEqual(kwargs["cwd"], str(self.tmp))
-        self.assertEqual(calls[0], ("prompt and task", 12))
+        # #409: an implementer's task ends with its session deadline section
+        sent, sent_timeout = calls[0]
+        self.assertEqual(sent_timeout, 12)
+        self.assertTrue(sent.startswith("prompt and task\n\n# Session deadline\n\n"))
+        self.assertIn("with a 12-second timeout", sent)
 
         failed = FakeProcess()
         failed.returncode = 9
@@ -2283,8 +2287,11 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "host_session_id": None, "amendment_id": None,
             # #168: usage per session; a fake process reports none.
             "usage": {"source": "not reported", "tokens_in": None, "tokens_out": None, "tokens_total": None},
+            # #409: an implementer's session records its halfway mark
+            "halfway_at": session["halfway_at"],
         })
         self.assertIsNotNone(session["running_at"])
+        self.assertIsNotNone(session["halfway_at"])
         self.assertIsNotNone(session["ended_at"])
         # #420: the completed session leaves the pointer and stays the role's latest session
         self.assertNotIn("implementer", status["current_agent_sessions"])

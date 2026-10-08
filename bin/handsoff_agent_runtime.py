@@ -1272,9 +1272,13 @@ def transition_agent_session(root: Path, session_id: str, state: str,
                              *, exit_code: int | None = None,
                              failure: dict | None = None, usage: dict | None = None,
                              reported_model: str | None = None,
-                             apply: dict | None = None) -> dict:
+                             apply: dict | None = None,
+                             halfway_at: str | None = None) -> dict:
     """Apply a session-ID-matched lifecycle-only update under the lock.
-    `apply` (#359) records a concurrent implementer's apply-back outcome."""
+    `apply` (#359) records a concurrent implementer's apply-back outcome.
+    `halfway_at` (#409) rides the transition to running, in the same commit."""
+    if halfway_at is not None and (state != "running" or not isinstance(halfway_at, str)):
+        raise HandsoffError("halfway_at is recorded on the transition to running only")
     if not isinstance(session_id, str) or not AGENT_SESSION_ID_PATTERN.fullmatch(session_id):
         raise HandsoffError("agent session id is invalid")
     if state not in AGENT_SESSION_STATES - {"launching"}:
@@ -1339,6 +1343,8 @@ def transition_agent_session(root: Path, session_id: str, state: str,
         updated["state"] = state
         if state == "running":
             updated["running_at"] = now
+            if halfway_at is not None:
+                updated["halfway_at"] = halfway_at
             if role == "reviewer":
                 warnings = proposed.setdefault("warnings", [])
                 if "a reviewer is live; do not edit the tree" not in warnings:

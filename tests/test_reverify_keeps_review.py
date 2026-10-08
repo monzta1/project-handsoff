@@ -118,6 +118,37 @@ class ReverifyKeepsReviewTests(HandsoffTestCase):
         self.assertIn("REVIEW_RETAINED", result.stdout)
         self._assert_retained(before)
 
+    def test_verify_after_verify_live_keeps_review_phase_and_deployment_approval(self):
+        toml = self.tmp / "handsoff.toml"
+        self._reach_phase_6()
+        toml.write_text(re.sub(r"(?m)^live_commands = \[\]", 'live_commands = ["true"]', toml.read_text()))
+        advanced = self.advance_to(7, implemented_by="test-implementer")
+        self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+        approved = run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+        live = run(["verify-live", "--by", "test-monitor"], cwd=self.tmp)
+        self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
+        before = self.read_status()
+        live_id = before["live_verification_id"]
+        self.assertTrue(live_id)
+        result = run(["verify", "--criterion", "REQ-001", "--by", "test-implementer", "--no-cache"], cwd=self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(json.loads(result.stdout)["review"]["retained"])
+        after = self.read_status()
+        self.assertEqual(after["phase_number"], 7)
+        self.assertEqual(after["reviewed_by"], "test-reviewer")
+        self.assertEqual(after["review"]["reviewed_binding"], before["review"]["reviewed_binding"])
+        self.assertIsNotNone(after["deployment_approved"])
+        self.assertEqual(after["deployment_approved"]["acceptance_hash"], after["review"]["acceptance_hash"])
+        # the live run was bound to the previous acceptance: it alone is stale
+        self.assertIsNone(after["live_verification_id"])
+        retained = [e for e in self._events() if e.get("kind") == "review_retained"]
+        self.assertEqual(retained[-1]["live_verification_cleared"], live_id)
+        # and re-running it is enough to reach Phase 8; no re-review, no re-approval
+        again = run(["verify-live", "--by", "test-monitor"], cwd=self.tmp)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertTrue(self.read_status()["live_verification_id"])
+
     def test_failed_recheck_rolls_back(self):
         self._reach_phase_6(command=self.flaky)
         self.marker.write_text("fail now")

@@ -174,8 +174,8 @@ AGENT_SESSION_OPTIONAL_FIELDS = {"packet_id", "design_hash", "tier", "phase_numb
                                  # #405 #406: the rules set a reviewer launched under; adoption
                                  # compares it with the current one. Absent on older sessions.
                                  "rules_entries",
-                                 # #409: when the half-timeout warning fired, once
-                                 "half_timeout_warned_at",
+                                 # #409: the halfway mark the task stated, from launch time and timeout
+                                 "halfway_at",
                                  # #413: a stopped implementer's kept workspace: pending until
                                  # implementer-apply or implementer-discard decides it
                                  "workspace_disposition"}

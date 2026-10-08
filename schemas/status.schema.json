@@ -1144,7 +1144,7 @@
               "type": "object",
               "additionalProperties": {"type": ["string", "null"]}
             },
-            "half_timeout_warned_at": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+            "halfway_at": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
             "workspace_disposition": {"enum": ["pending", "applied", "discarded", null]},
             "quarantined_result": {
               "type": "object",

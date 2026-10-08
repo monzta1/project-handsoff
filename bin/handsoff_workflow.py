@@ -754,6 +754,10 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                 errors.append("live gate: acceptance changed since live verification")
             elif record.get("config_hash") != config_hash(cfg):
                 errors.append("live gate: workflow policy changed since live verification; run it again")
+            elif (record.get("env") or {}) != dict(cfg.get("check_env") or {}):
+                # #410: config_hash is blind to [checks].env; the live record
+                # carries the table it ran under, as every reader's does
+                errors.append("live gate: [checks].env changed since live verification; run it again")
             else:
                 live_rules_errors = rules_binding_errors(root, cfg, record, "live gate")
                 if live_rules_errors:

@@ -322,6 +322,13 @@ def _tracked_paths(root: Path) -> set[str] | None:
     return {x.decode("utf-8", "replace") for x in listed.split(b"\0") if x}
 
 
+def _repository_prefix(prefix: object) -> str:
+    """#412: a [checks].source_paths value as a repository-relative prefix:
+    './src' and 'src/' are 'src', and '.', './' or '' are the whole
+    repository (returned as '', which every path is under)."""
+    return "/".join(part for part in str(prefix).replace("\\", "/").split("/") if part not in {"", "."})
+
+
 def untracked_scratch_drift(root: Path, cfg: dict, changed: list[str] | None, *,
                             truncated: bool = False) -> dict:
     """#412: drift whose changed paths are ALL untracked and outside every
@@ -335,9 +342,10 @@ def untracked_scratch_drift(root: Path, cfg: dict, changed: list[str] | None, *,
     tracked = _tracked_paths(root)
     if tracked is None:
         return none
-    sources = [prefix.strip("/") for prefix in (cfg or {}).get("check_source_paths") or []]
+    sources = [_repository_prefix(prefix) for prefix in (cfg or {}).get("check_source_paths") or []]
     for path in changed:
-        if path in tracked or any(path == prefix or path.startswith(prefix + "/") for prefix in sources):
+        if path in tracked or any(prefix == "" or path == prefix or path.startswith(prefix + "/")
+                                  for prefix in sources):
             return none
     present = [path for path in changed if (Path(root) / path).exists()]
     return {"untracked_scratch": True, "untracked_paths": list(changed),

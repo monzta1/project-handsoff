@@ -116,3 +116,20 @@ class UntrackedScratchDriftTests(HandsoffTestCase):
         self.assertIn("changed paths: src/new_module.py", message)
         self.assertNotIn("untracked scratch", message)
         self.assertNotIn("git clean", message)
+
+    def test_dot_relative_and_whole_repository_source_paths_still_count_as_source(self):
+        toml = self.tmp / "handsoff.toml"
+        original = toml.read_text()
+        (self.tmp / "src" / "new_module.py").write_text("y = 1\n")
+        for form, probe in (('"./src"', None), ('"src/"', None), ('"."', "tests/_probe.py"),
+                            ('"./"', "tests/_probe.py")):
+            with self.subTest(source_path=form):
+                toml.write_text(original.replace("[checks]\n", f"[checks]\nsource_paths = [{form}]\n", 1))
+                if probe:
+                    (self.tmp / probe).parent.mkdir(exist_ok=True)
+                    (self.tmp / probe).write_text("z = 1\n")
+                drift, message = self._drift()
+                self.assertFalse(drift["untracked_scratch"])
+                self.assertIn("src/new_module.py", message)
+                self.assertNotIn("untracked scratch", message)
+                self.assertNotIn("git clean", message)

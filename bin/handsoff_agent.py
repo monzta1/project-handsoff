@@ -1340,52 +1340,39 @@ def _process_pid(process) -> int | None:
     return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
 
 
-class _HalfTimeoutWarning:
-    """#409: warn once, at half the session timeout, that a role still
-    running has used half its time: a line on the launcher's stderr and
-    `half_timeout_warned_at` on the session, so Mission Control and the
-    Supervisor see a role that is spending its clock on test runs. Best
-    effort: nothing here changes the child's lifecycle."""
+#: #409: the roles whose task states the session's deadline and halfway mark
+DEADLINE_ROLES = frozenset({"reviewer", "implementer"})
 
-    def __init__(self, root: Path, session_id: str, role: str, process, timeout: float, *,
-                 stream=None):
-        self.root = root
-        self.session_id = session_id
-        self.role = role
-        self.process = process
-        self.timeout = float(timeout)
-        self.stream = stream
-        self.fired = 0
-        self.timer = None
 
-    def warn(self) -> None:
-        if self.fired or self.process.poll() is not None:
-            return
-        self.fired += 1
-        minutes = self.timeout / 120
-        print(f"HANDSOFF_TIMEOUT_WARNING: {self.role} session {self.session_id} has used half of its "
-              f"{self.timeout:g}-second timeout; about {minutes:.0f} minutes remain. Stop running "
-              "suites, rely on the VERIFIED section and report.", file=self.stream or sys.stderr, flush=True)
-        try:
-            _record_session_fields(self.root, self.session_id,
-                                   {"half_timeout_warned_at": datetime.now(timezone.utc).isoformat()},
-                                   event_kind="agent_session_half_timeout",
-                                   event_message=f"{self.role} session used half its timeout",
-                                   timeout_seconds=self.timeout)
-        except (lib.HandsoffError, OSError, ValueError):
-            pass
+def _utc_stamp(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def start(self) -> None:
-        try:
-            self.timer = threading.Timer(self.timeout / 2, self.warn)
-            self.timer.daemon = True
-            self.timer.start()
-        except Exception:
-            self.timer = None
 
-    def cancel(self) -> None:
-        if self.timer is not None:
-            self.timer.cancel()
+def session_deadline_section(launched_at: datetime, timeout: float) -> tuple[str, str]:
+    """#409: a headless role's input is closed at launch, so nothing can
+    reach it once it runs. The task states up front when the session ends
+    and where its halfway mark falls, both UTC from the launch time and the
+    timeout. Returns the section and the halfway mark the host records."""
+    deadline = launched_at + timedelta(seconds=float(timeout))
+    halfway = launched_at + timedelta(seconds=float(timeout) / 2)
+    text = (f"# Session deadline\n\n"
+            f"This session was launched at {_utc_stamp(launched_at)} with a {float(timeout):g}-second "
+            f"timeout. Its wall-clock deadline is {_utc_stamp(deadline)} and its halfway mark is "
+            f"{_utc_stamp(halfway)} (UTC). No message can reach you while you run, so no warning will "
+            "come: when tests are long, deliver your result before the halfway mark.")
+    return text, halfway.astimezone(timezone.utc).isoformat()
+
+
+def _with_session_deadline(spec: LaunchSpec, timeout: float,
+                           *, now=None) -> tuple[LaunchSpec, str | None]:
+    """#409: append the deadline section to a reviewer's or implementer's
+    task. Returns the halfway mark, which the transition to running records
+    on the session in the same commit."""
+    if spec.role not in DEADLINE_ROLES:
+        return spec, None
+    launched_at = now() if now else datetime.now(timezone.utc)
+    section, halfway_at = session_deadline_section(launched_at, timeout)
+    return dataclasses.replace(spec, stdin=f"{spec.stdin.rstrip()}\n\n{section}\n"), halfway_at
 
 
 class _LiveBeacon:
@@ -1716,6 +1703,7 @@ def _execute_started_session(spec: LaunchSpec, root: Path, session: dict, cwd: s
                              popen_factory, beacon_interval: float) -> int:
     capture_supervisor = spec.role == "supervisor"
     session_id = session["session_id"]
+    spec, halfway_at = _with_session_deadline(spec, timeout)  # #409
     child_env = (_reviewer_environment(os.environ.copy(), spec.env_overrides)
                  if spec.role == "reviewer" else os.environ.copy())
     child_env[MANAGED_ROLE_ENV] = spec.role
@@ -1756,19 +1744,17 @@ def _execute_started_session(spec: LaunchSpec, root: Path, session: dict, cwd: s
     beacon = _LiveBeacon(root, session_id, spec.role, process, beacon_interval,
                          per_session=isinstance(session.get("workspace"), dict))
     beacon.start()
-    half_timeout = _HalfTimeoutWarning(root, session_id, spec.role, process, timeout)  # #409
-    half_timeout.start()
     try:
         result = _run_managed_process(
             spec, root, session_id, process, timeout, capture_supervisor, portable_output,
             repository_digest_before=repository_digest_before,
             beacon=beacon, workspace=isinstance(session.get("workspace"), dict),
+            halfway_at=halfway_at,
         )
         if spec.env_overrides and spec.role == "reviewer":
             shutil.rmtree(spec.cwd, ignore_errors=True)
         return result
     finally:
-        half_timeout.cancel()
         beacon.finish()
         portable_output.finish()
 
@@ -1777,7 +1763,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                          timeout: int, capture_supervisor: bool,
                          portable_output: _PortableOutput,
                          repository_digest_before: str | None = None,
-                         beacon: _LiveBeacon | None = None, workspace: bool = False) -> int:
+                         beacon: _LiveBeacon | None = None, workspace: bool = False,
+                         halfway_at: str | None = None) -> int:
     """The lifecycle of an already-started child: exactly one terminal
     transition on every path, no payload data recorded."""
     supervisor_requests: list[dict] = []
@@ -1857,7 +1844,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 items[-1]["tests_executed"] = "no"
             lib.record_session_result(root, session_id, kind, items[-1])
     try:
-        lib.transition_agent_session(root, session_id, "running")
+        lib.transition_agent_session(root, session_id, "running", halfway_at=halfway_at)
     except Exception:
         _stop_process_group(process)
         raise

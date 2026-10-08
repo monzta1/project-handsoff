@@ -155,6 +155,31 @@ class ChecksEnvTests(HandsoffTestCase):
         self.assertEqual(record["kind"], "live")
         self.assertEqual(record["env"], {"HANDSOFF_PROBE": "live"})
 
+    def test_changing_env_after_verify_live_stales_the_live_gate(self):
+        self.configure(["true"], env={"HANDSOFF_PROBE": "live"}, live=[self.command("live")])
+        self.init("Env fixture")
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(7, implemented_by="impl-1", reviewed_by="rev-1")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        approved = run(["deployment-gate", "--approve", "--by", "moncy"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+        live = run(["verify-live", "--by", "monitor"], cwd=self.tmp)
+        self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
+        status = dict(self.read_status(), phase_number=8, phase=lib.PHASES[8], progress=100, status="complete")
+        cfg = lib.load_config(self.tmp)
+        records, problems = lib.load_verifications(self.tmp, cfg)
+
+        def live_errors(cfg):
+            return [e for e in lib.compute_errors(status, self.read_acceptance(), cfg, verifications=records,
+                                                  verification_problems=problems, root=self.tmp)
+                    if e.startswith("live gate")]
+
+        self.assertEqual(live_errors(cfg), [])
+        toml = self.tmp / "handsoff.toml"
+        toml.write_text(toml.read_text().replace('HANDSOFF_PROBE = "live"', 'HANDSOFF_PROBE = "other"', 1))
+        self.assertEqual(live_errors(lib.load_config(self.tmp)),
+                         ["live gate: [checks].env changed since live verification; run it again"])
+
     def test_an_accepted_regression_run_passes_the_table_to_the_command_and_records_it(self):
         # named test paths, so the gate can tell the focused check from the group
         (self.tmp / "tests").mkdir(exist_ok=True)

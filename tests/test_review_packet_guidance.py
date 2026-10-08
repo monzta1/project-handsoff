@@ -7,9 +7,11 @@ import re
 import shutil
 import sys
 import tempfile
-import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
+from tests.guards import guard
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 from tests.fixture_state import write_version_pin
 
@@ -130,38 +132,81 @@ class ReviewPacketGuidanceTests(HandsoffTestCase):
             lib.load_config(self.tmp)
 
 
-class _Running:
+class _Input:
     def __init__(self):
-        self.exited = False
+        self.written = ""
+
+    def write(self, text):
+        self.written += text
+
+    def close(self):
+        return None
+
+
+class _Finished:
+    """A child that exits at once, keeping what the launcher wrote to it."""
+    pid = None
+    returncode = 0
+
+    def __init__(self):
+        self.stdin = _Input()
+        self.stdout = io.StringIO("")
+        self.stderr = io.StringIO("")
+
+    def wait(self, timeout=None):
+        return self.returncode
 
     def poll(self):
-        return 0 if self.exited else None
+        return self.returncode
+
+    def communicate(self, input=None, timeout=None):
+        self.stdin.written += input or ""
+        return "", ""
+
+    def terminate(self):
+        return None
+
+    def kill(self):
+        return None
 
 
-class HalfTimeoutWarningTests(HandsoffTestCase):
-    def test_the_warning_fires_once_at_half_the_timeout(self):
-        self.init("Warning fixture")
-        stream = io.StringIO()
-        process = _Running()
-        warning = agent._HalfTimeoutWarning(self.tmp, "hs-" + "0" * 32, "reviewer", process, 0.4, stream=stream)
-        warning.start()
-        time.sleep(0.1)
-        self.assertEqual(stream.getvalue(), "", "nothing before half the timeout")
-        time.sleep(0.4)
-        warning.warn()  # a second call never warns again
-        warning.cancel()
-        lines = [line for line in stream.getvalue().splitlines() if line.startswith("HANDSOFF_TIMEOUT_WARNING:")]
-        self.assertEqual(len(lines), 1, stream.getvalue())
-        self.assertIn("half of its 0.4-second timeout", lines[0])
-        self.assertEqual(warning.fired, 1)
+class SessionDeadlineTests(HandsoffTestCase):
+    def test_the_section_states_the_deadline_and_halfway_mark_from_launch_time_and_timeout(self):
+        launched = datetime(2026, 10, 8, 9, 0, 0, tzinfo=timezone.utc)
+        text, halfway_at = agent.session_deadline_section(launched, 3600)
+        self.assertIn("launched at 2026-10-08T09:00:00Z with a 3600-second timeout", text)
+        self.assertIn("deadline is 2026-10-08T10:00:00Z", text)
+        self.assertIn("halfway mark is 2026-10-08T09:30:00Z (UTC)", text)
+        self.assertIn("deliver your result before the halfway mark", text)
+        self.assertEqual(halfway_at, "2026-10-08T09:30:00+00:00")
 
-    def test_no_warning_for_a_session_that_already_ended(self):
-        stream = io.StringIO()
-        process = _Running()
-        process.exited = True
-        warning = agent._HalfTimeoutWarning(self.tmp, "hs-" + "1" * 32, "implementer", process, 0.1, stream=stream)
-        warning.start()
-        time.sleep(0.3)
-        warning.cancel()
-        self.assertEqual(stream.getvalue(), "")
-        self.assertEqual(warning.fired, 0)
+    @guard
+    def test_the_stderr_warning_is_gone(self):
+        self.assertFalse(hasattr(agent, "_HalfTimeoutWarning"))
+        self.assertNotIn("HANDSOFF_TIMEOUT_WARNING", (BIN / "handsoff_agent.py").read_text(encoding="utf-8"))
+
+    def test_the_task_carries_the_deadline_and_the_session_records_the_halfway_mark(self):
+        self.init("Deadline fixture")
+        for role in ("implementer", "reviewer"):
+            with self.subTest(role=role):
+                process = _Finished()
+                spec = agent.LaunchSpec(role, "codex", "default", ("/bin/codex", "exec", "-"),
+                                        str(self.tmp), "Do the assigned task.")
+                before = datetime.now(timezone.utc)
+                try:
+                    agent.execute_launch(spec, timeout=1200, popen_factory=mock.Mock(return_value=process),
+                                         beacon_interval=0.01)
+                except agent.AgentLaunchError:
+                    pass  # a reviewer that prints no verdict fails after its task was written
+                after = datetime.now(timezone.utc)
+                status = self.read_status()
+                session = next(s for s in status["agent_sessions"].values()
+                               if s.get("role") == role and s.get("halfway_at"))
+                halfway = datetime.fromisoformat(session["halfway_at"])
+                self.assertLessEqual(before + timedelta(seconds=600), halfway)
+                self.assertLessEqual(halfway, after + timedelta(seconds=600))
+                launched = halfway - timedelta(seconds=600)
+                expected, _ = agent.session_deadline_section(launched, 1200)
+                self.assertTrue(process.stdin.written.startswith("Do the assigned task."))
+                self.assertIn(expected, process.stdin.written)
+                self.assertIn(f"halfway mark is {halfway.strftime('%Y-%m-%dT%H:%M:%SZ')}", process.stdin.written)
