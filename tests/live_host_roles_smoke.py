@@ -38,6 +38,10 @@ with tempfile.TemporaryDirectory(prefix="handsoff-live-host-") as tmp:
     assert report["ok"] is True and report["engine"]["version"] == expected_version, report["engine"]
 
     run("supervisor", "--root", str(project), "init", "Live host smoke", "--item", "#1")
+    # #418: an --item run starts with no placeholder criterion; add the one
+    # the rest of this smoke works on before advancing to Phase 2
+    run("supervisor", "--root", str(project), "criterion-add", "REQ-001", "--type", "primary_fix", "--verification", "manual",
+        "--requirement", "[#1] Tagged to the registered issue", "--test", "manual check")
     refused = run("agent", "--root", str(project), "inspect", "supervisor", "--task", "live", check=False)
     assert refused.returncode != 0 and "host-driven" in (refused.stdout + refused.stderr), refused
 
