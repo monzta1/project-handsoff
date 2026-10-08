@@ -592,7 +592,9 @@ def validate_acceptance_schema(acceptance: dict) -> list[str]:
     elif not isinstance(acceptance["feature"], str) or not acceptance["feature"].strip():
         errors.append("acceptance: 'feature' must be a non-empty string")
     criteria = acceptance.get("criteria")
-    if not isinstance(criteria, list) or not criteria:
+    # #418: a run whose scope was named by --item starts with an empty
+    # registry; design-propose and advance 2 refuse it until criteria exist.
+    if not isinstance(criteria, list) or (not criteria and acceptance.get("work_items_explicit") is not True):
         errors.append("acceptance: 'criteria' must be a non-empty array")
         return errors
     seen_ids = set()
@@ -627,7 +629,7 @@ def validate_acceptance_schema(acceptance: dict) -> list[str]:
         if "authored_by" in c and c["authored_by"] is not None:
             if not isinstance(c["authored_by"], str) or not c["authored_by"].strip():
                 errors.append(f"acceptance: criterion {cid} 'authored_by' must be a non-empty string or null")
-    if not any(isinstance(c, dict) and c.get("type") == "primary_fix" for c in criteria):
+    if criteria and not any(isinstance(c, dict) and c.get("type") == "primary_fix" for c in criteria):
         errors.append("acceptance: at least one primary_fix criterion is required")
     work_items = acceptance.get("work_items")
     if work_items is not None:

@@ -15,7 +15,7 @@ from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, approve_design
 sys.path.insert(0, str(BIN))
 import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
-from tests.fixture_state import write_version_pin
+from tests.fixture_state import seed_placeholder, write_version_pin
 
 
 KINDS = ["design_approve", "design_reject", "deployment_approve", "deployment_revoke", "deployment_hold",
@@ -390,6 +390,7 @@ class DesignApprovalGateReasonTests(LaunchRoleHttpTests):
     def _reviewed_with_unscoped_item(self):
         started = run(["init", "Approve with an unscoped item", "--item", "#1 Scoped item"], cwd=self.tmp)
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        seed_placeholder(self.tmp)  # #418
         authored = run(["criterion-update", "REQ-001", "--requirement",
                         "[#1] Dashboard approval fixture has a real acceptance criterion"], cwd=self.tmp)
         self.assertEqual(authored.returncode, 0, authored.stdout + authored.stderr)

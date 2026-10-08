@@ -12,6 +12,7 @@ from pathlib import Path
 
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 from tests.guards import guard
+from tests.fixture_state import seed_placeholder
 
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
@@ -114,6 +115,7 @@ class ReportPostingFixture(HandsoffTestCase):
         that test reading a mid-run ledger as it always has."""
         r = run(["init", "Ship the story", "--item", "#40 first story", "--item", "#41 second story"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        seed_placeholder(self.tmp)  # #418
         run(["criterion-update", "REQ-001", "--requirement", "[#40] the story works end to end and " + "x" * 200,
              "--test", "true"], cwd=self.tmp)
         toml = self.tmp / "handsoff.toml"

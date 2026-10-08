@@ -157,26 +157,29 @@ class ReaffirmAfterARulesChangeTests(HandsoffTestCase):
         self.assertIsNotNone(status.get("review"))
         recorded = status["review"]["rules_hash"]
         real_entries = lib.rules_set_entries
-        bumped = {**real_entries(self.tmp), "engine:version": "v9.9.9"}
+        # #406: the engine version is no longer an entry, so an engine rule
+        # file stands in for the engine-side change a release install makes
+        changed = "engine:reviewer-launch-phase-1.json"
+        bumped = {**real_entries(self.tmp), changed: "0" * 64}
         with patch_engine("rules_set_entries", return_value=bumped):
             errors = lib.rules_binding_errors(self.tmp, self.cfg, status["review"], "review gate")
             self.assertEqual(len(errors), 1)
-            self.assertIn("engine:version", errors[0])
+            self.assertIn(changed, errors[0])
             import io, contextlib
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 rc = supervisor.cmd_record_review(self._args())
             self.assertEqual(rc, 0, out.getvalue())
-            self.assertIn("INDEPENDENT_REVIEW_REAFFIRMED: rules set changed (engine:version)", out.getvalue())
+            self.assertIn(f"INDEPENDENT_REVIEW_REAFFIRMED: rules set changed ({changed})", out.getvalue())
             after = self.read_status()
             self.assertNotEqual(after["review"]["rules_hash"], recorded)
-            self.assertEqual(after["review"]["rules_entries"]["engine:version"], "v9.9.9")
+            self.assertEqual(after["review"]["rules_entries"][changed], "0" * 64)
             self.assertEqual(lib.rules_binding_errors(self.tmp, self.cfg, after["review"], "review gate"), [])
         events = [json.loads(l) for l in (self.tmp / "handsoff-events.jsonl").read_text().splitlines() if l.strip()]
         reaffirmed = [e for e in events if e["kind"] == "review_reaffirmed"]
         self.assertEqual(len(reaffirmed), 1)
-        self.assertEqual(reaffirmed[0]["rules_changed"], ["engine:version"])
-        self.assertIn("after the rules set changed (engine:version)", reaffirmed[0]["message"])
+        self.assertEqual(reaffirmed[0]["rules_changed"], [changed])
+        self.assertIn(f"after the rules set changed ({changed})", reaffirmed[0]["message"])
 
     def test_a_current_review_with_an_unchanged_set_still_has_nothing_to_reaffirm(self):
         self._record_review()

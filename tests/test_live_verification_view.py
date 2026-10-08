@@ -165,14 +165,13 @@ class LiveVerificationViewTests(HandsoffTestCase):
             f"while not os.path.exists({str(hold)!r}):\n    time.sleep(0.1)\n"))
         self._set_live_commands([wait_cmd])
         toml = self.tmp / "handsoff.toml"
-        # The review certifies its rules set and handsoff.toml is part of it
-        # (#170): the edit above staled the review, so the same reviewer
-        # re-binds it (#179, Lane A) before the deployment approval, which
-        # binds the config hash, is given again.
+        # #406: [checks].live_commands is run mechanics, outside the rules
+        # set the review certifies (#170), so the edit above leaves the
+        # review bound: there is nothing to reaffirm (it used to stale it).
         reaffirmed = run(["record-review", "--by", "reviewer-1", "--reaffirm", "--tests-executed", "yes",
                           "--symptom-reproduced", "not_applicable"], cwd=self.tmp)
-        self.assertEqual(reaffirmed.returncode, 0, reaffirmed.stdout + reaffirmed.stderr)
-        self.assertIn("rules set changed (handsoff.toml)", reaffirmed.stdout)
+        self.assertEqual(reaffirmed.returncode, 1, reaffirmed.stdout + reaffirmed.stderr)
+        self.assertIn("review is current; nothing to reaffirm", reaffirmed.stdout)
         reapproved = run(["deployment-gate", "--approve", "--by", "owner"], cwd=self.tmp)
         self.assertEqual(reapproved.returncode, 0, reapproved.stdout + reapproved.stderr)
         outcome = {}

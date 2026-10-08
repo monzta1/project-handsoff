@@ -59,6 +59,24 @@ def force_acceptance(root, cfg, acceptance, anchor=False):
     return acceptance
 
 
+def seed_placeholder(root):
+    """#418: `init --item` no longer seeds the placeholder REQ-001. A fixture
+    that drives that criterion adds it through a real commit, exactly as init
+    used to write it (untagged, primary_fix, failing, no evidence)."""
+    root = Path(root)
+    cfg = lib.load_config(root)
+    status = lib.load_unique_json(lib.status_path(root, cfg))
+    acceptance = lib.load_unique_json(lib.acceptance_path(root, cfg))
+    acceptance["criteria"].append({
+        "id": "REQ-001", "type": "primary_fix", "requirement": lib.PLACEHOLDER_REQUIREMENT,
+        "verification": "automated", "tests": list(lib.PLACEHOLDER_TESTS), "evidence": [], "state": "failing",
+    })
+    lib.sync_coverage(status, acceptance)
+    lib.commit(root, cfg, status=status, acceptance=acceptance, event_kind="fixture_state",
+               event_message="fixture seeded the placeholder criterion init --item no longer writes")
+    return acceptance
+
+
 def compatible_pin():
     """The project pin that accepts the engine in this checkout.
 

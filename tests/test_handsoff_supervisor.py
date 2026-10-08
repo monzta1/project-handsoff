@@ -28,7 +28,7 @@ from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tests.engine_patch import patch_engine
-from tests.fixture_state import force_acceptance, write_version_pin
+from tests.fixture_state import force_acceptance, seed_placeholder, write_version_pin
 from tests.guards import guard
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -4635,6 +4635,7 @@ class TestSmallFixLane(HandsoffTestCase):
     def test_init_persists_lane_and_full_design_gate_is_skipped_only_after_confirmation(self):
         r = run(["init", "small change", "--item", "#47", "--lane", "small-fix"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        seed_placeholder(self.tmp)  # #418
         sys.path.insert(0, str(BIN))
         import handsoff_lib as lib
         status, acceptance = self.read_status(), self.read_acceptance()
@@ -4655,6 +4656,7 @@ class TestSmallFixLane(HandsoffTestCase):
             result = subprocess.run(command, cwd=self.tmp, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(run(["init", "#47 small", "--item", "#47", "--lane", "small-fix"], cwd=self.tmp).returncode, 0)
+        seed_placeholder(self.tmp)  # #418
         r = run(["criterion-update", "REQ-001", "--requirement", "[#47] Targeted behavior",
                  "--test", "true", "--state", "failing"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

@@ -20,7 +20,7 @@ import handsoff_lib as lib  # noqa: E402
 ROOT = BIN.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import shard  # noqa: E402
-from tests.fixture_state import write_version_pin
+from tests.fixture_state import seed_placeholder, write_version_pin
 from tests.guards import guard
 
 RED_ON_MAIN = ("test_governance_cross", "test_live_verification_view", "test_packaging",
@@ -85,6 +85,7 @@ class ImplementerFillTests(HandsoffTestCase):
     def test_phase_5_fills_every_required_item_and_a_late_item_is_still_refused_at_8(self):
         r = run(["init", "Lane C items", "--item", "#176 the gate"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        seed_placeholder(self.tmp)  # #418
         r = run(["criterion-update", "REQ-001", "--requirement", "[#176] the gate fires the same for every run"], cwd=self.tmp)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         # a second item arrives by tag only, with no delivery record of its own

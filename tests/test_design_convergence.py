@@ -8,7 +8,7 @@ import shutil
 import sys
 sys.path.insert(0, str(BIN))
 import handsoff_lib as lib  # noqa: E402
-from tests.fixture_state import force_status, write_version_pin
+from tests.fixture_state import force_status, seed_placeholder, write_version_pin
 
 
 class TestDesignConvergence(HandsoffTestCase):
@@ -23,6 +23,7 @@ class TestDesignConvergence(HandsoffTestCase):
 
     def _phase_two(self, item="#1"):
         self.assertEqual(run(["init", "Convergence fixture", "--item", item], self.tmp).returncode, 0)
+        seed_placeholder(self.tmp)  # #418
         self.assertEqual(run(["criterion-update", "REQ-001", "--requirement",
                               "[ #1 ] persists a record"], self.tmp).returncode, 0)
         result = run(["advance", "2", "10"], self.tmp)
