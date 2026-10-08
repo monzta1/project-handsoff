@@ -367,8 +367,10 @@ class TestBoundedCancellationAndHygiene(HandsoffTestCase):
             project_root=str(self.tmp.resolve()),
         )
         import handsoff_broker
+        from tests.test_session_artifacts import _both_refuse
+        # #405: the adoption replay must refuse too, or the verdict is kept.
         with mock.patch.object(handsoff_broker, "dispatch_reviewer_result",
-                               side_effect=lib.HandsoffError("no managed Architect identity")):
+                               side_effect=lib.HandsoffError("no managed Architect identity")), _both_refuse():
             with self.assertRaisesRegex(runtime.AgentLaunchError, "no managed Architect identity"):
                 runtime.execute_launch(spec, popen_factory=mock.Mock(return_value=_FakeProcess(approved)),
                                        beacon_interval=0.01)
