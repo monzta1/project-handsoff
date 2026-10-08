@@ -20,7 +20,7 @@ Phase 1 (Orient), status in_progress, progress 5.
 - not reported
 
 ### Work items
-- issue-40: in_progress
+- issue-40: done
 - issue-41: unscoped
 
 ### Validate
