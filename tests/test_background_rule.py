@@ -146,6 +146,9 @@ class BackgroundRuleTests(HandsoffTestCase):
                 ("nohup sleep 90 &", True),
                 ("sleep 90 & wait '$!'; true", True),  # a quoted '$!' is literal: wait fails, sleep runs on
                 ('sleep 90 & wait "$!"', False),  # double quotes still expand $!
+                ("sleep 90 & wait \\$!; true", True),  # an escaped \\$! is literal too
+                ('bash -c "sleep 90 & wait \\$!"', False),  # inside double quotes the nested shell gets $!
+                ("bash -c 'sleep 90 & wait \\$!'", True),  # inside single quotes the nested shell gets \\$!
                 ("echo \"#x\" &", True),
                 ("echo a#b", False),
                 ("echo 'unbalanced &", False),  # unparseable: never background

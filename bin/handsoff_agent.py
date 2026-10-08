@@ -1253,6 +1253,37 @@ def _simple_commands(script: str):
     yield words, None
 
 
+def _mark_literal_pid(script: str) -> str:
+    """#408: replace the forms of `$!` the shell passes literally (`'$!'`
+    and, outside double quotes, `\\$!`) with a word no rule matches. Inside
+    double quotes bash turns `\\$!` into `$!` (shlex does not), so it is
+    unescaped here for the nested shell."""
+    out, i, quote = [], 0, None
+    while i < len(script):
+        char = script[i]
+        if quote is None and script.startswith("'$!'", i):
+            out.append("__literal_dollar_bang__")
+            i += 4
+            continue
+        if char == "\\" and quote != "'":
+            if quote is None and script.startswith("\\$!", i):
+                out.append("__literal_dollar_bang__")
+                i += 3
+                continue
+            if quote == '"' and script.startswith("\\$!", i):
+                out.append("$!")  # bash unescapes \\$ inside double quotes; shlex does not
+                i += 3
+                continue
+            out.append(script[i:i + 2])
+            i += 2
+            continue
+        if char in "'\"" and quote in (None, char):
+            quote = None if quote == char else char
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def _outstanding(script: str) -> int:
     """#408: how many processes `script` leaves running when it returns.
     Each simple command ended by `&` is a job and `$!` names the latest.
@@ -1263,9 +1294,10 @@ def _outstanding(script: str) -> int:
     outstanding whatever waits. A single-quoted `'$!'` collects nothing."""
     jobs: list[dict] = []
     pinned = 0
-    # A single-quoted '$!' is literal text, not the latest job; POSIX shlex
-    # drops the quotes, so mark it before tokenizing (it collects nothing).
-    script = script.replace("'$!'", "__literal_dollar_bang__")
+    # A single-quoted '$!' and an escaped \\$! are literal text, not the
+    # latest job; POSIX shlex drops the quoting, so mark them before
+    # tokenizing (they collect nothing).
+    script = _mark_literal_pid(script)
     for words, separator in _simple_commands(script):
         if not words:
             continue
