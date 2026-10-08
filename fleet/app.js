@@ -263,7 +263,7 @@ function projectCard(project) {
     ${Array.isArray(project.claimed_twice) && project.claimed_twice.length ? `<p class="claimed-twice">CLAIMED TWICE: ${esc(project.claimed_twice.map((n) => "#" + n).join(", "))} is also listed by another live run</p>` : ""}
     ${decisions.length ? `<p class="decisions-flag">${decisions.length} DECISION${decisions.length === 1 ? "" : "S"} WAITING: ${esc(decisions.map((item) => item.label).join(", "))}</p>` : ""}
     ${signalsStrip(project)}
-    <div class="project-meta"><span>${crew}</span>${sessionStateTag(project)}${hostWaitTag(project)}<span>${ownerLabel}</span><span class="engine-meta">${engine.text}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
+    <div class="project-meta"><span>${crew}</span>${hostWaitTag(project)}${sessionStateTag(project)}<span>${ownerLabel}</span><span class="engine-meta">${engine.text}</span><span>UPDATED ${esc(relative(project.updated_at || project.registered_at))}</span>${timing(project)}</div>
     <p class="root">${esc(project.root)}</p>
     <div class="project-actions">
       ${link}
