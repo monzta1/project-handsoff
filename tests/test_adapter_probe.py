@@ -129,7 +129,8 @@ class ProbeClassificationTests(unittest.TestCase):
         event = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": GOOD.strip()}]}})
         kind, result, runner = self.probe(completed(0, event + "\n"), adapter="claude")
         call = runner.calls[0]
-        self.assertEqual(call["argv"][0], "/bin/echo")
+        # /bin/echo resolves through /bin -> /usr/bin on Linux CI
+        self.assertEqual(os.path.realpath(call["argv"][0]), os.path.realpath("/bin/echo"))
         self.assertEqual(call["argv"][1:2], ["-p"])
         self.assertIn("stream-json", call["argv"])
         self.assertEqual(call["argv"][call["argv"].index("--max-turns") + 1], "1")

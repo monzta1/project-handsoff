@@ -136,8 +136,12 @@ def migrate_project(root: Path, *, dry_run: bool) -> dict:
     if prompts.is_dir():
         signatures = _runtime_signatures()
         prompt_entry = _classify_runtime_path(root, "prompts", signatures, identity)
-        if prompt_entry["classification"] == "copied-runtime" and "prompts" not in parts:
-            parts.append("prompts")
+        if prompt_entry["classification"] == "copied-runtime":
+            # moved with the runtime: nothing is left behind to declare (E1
+            # CI: declaring overrides for prompts that were then moved was
+            # masked by the engine prompt standing in, which P0.4 now refuses)
+            if "prompts" not in parts:
+                parts.append("prompts")
         else:
             # Once the runtime manifest is moved, every project prompt left
             # behind is an override, even when it happened to match the old

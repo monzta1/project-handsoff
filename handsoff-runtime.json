@@ -5,7 +5,7 @@
     "bin/handsoff_agent_runtime.py": "c4aa150ac843867e8826b2755596daacd2792b9f622b7c7add4891d5f42aba51",
     "bin/handsoff_analyzer.py": "5ff494f22c6675fa23c2a894f6688f8ece47ba8f9d9446ee7bd813e42c4eb89e",
     "bin/handsoff_broker.py": "08e194410c8c060df472dcd6fee6d050c1ed412709fc451be2b624f809490040",
-    "bin/handsoff_cli.py": "0229aaa68a0b2e70985a6a51e09ca535e6be84468b4a906a7fc11a468470286b",
+    "bin/handsoff_cli.py": "d84fc2e528e9df46e127aea2a8eab81cec05c2b05ed4a07730f932cca36bd41f",
     "bin/handsoff_close_transaction.py": "c86290d7b27c2e7666d95a4901658fc777a0cb95166eb53610bfe434fd8f12df",
     "bin/handsoff_cohorts.py": "d7b253993955ab7dce8f65aa2d3b8a33420ba5f3a84c8a84c03fcd51d4b50e35",
     "bin/handsoff_config.py": "66e944aa817fbce14a44420249b9cb0eee34d7c7eb061729dc6fc178bd82e897",
