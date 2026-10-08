@@ -1170,6 +1170,13 @@ def cmd_status(args) -> int:
                                     verification_problems=verification_problems, root=root)
         # #41: the same activity reading the dashboard snapshot carries.
         liveness = lib.liveness_view(status, root, cfg)
+        # P1.10: the stall warning is derived from the one session-state
+        # projection, as the dashboard does, before its transition is recorded,
+        # so a fresh session heartbeat clears it here too.
+        session_states = status_session_projection(root, cfg, status)
+        if session_states is not None:
+            liveness = {**liveness, "stall_warning": projection.projected_stall_warning(
+                session_states, liveness["stall_warning"])}
         warning = liveness["stall_warning"]
         lib.record_stall_transition(root, cfg, warning)
         activity = liveness.get("activity_note")
@@ -1182,8 +1189,6 @@ def cmd_status(args) -> int:
             performance = refresh_performance_state(root, status=status, cfg=cfg, lock_held=True)
         except (lib.HandsoffError, OSError, ValueError, runtime_control.RuntimeControlError):
             performance = {}
-    # P1.10: outside the lock, after reconcile_gone_sessions above
-    session_states = status_session_projection(root, cfg, status)
     progress_shown = lib.progress_view(status, acceptance, cfg)  # #415
     print(__import__("json").dumps({
         "performance_pause": performance.get("pause"),

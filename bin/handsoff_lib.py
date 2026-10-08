@@ -7060,13 +7060,15 @@ VERIFIED_GUIDANCE = (
 )
 
 
-def _record_tree_current(record: dict, criteria_by_id: dict, digest: str, entries) -> bool:
+def _record_tree_current(record: dict, criteria_by_id: dict, digest: str, entries,
+                         only: list[str] | None = None) -> bool:
     """P1.2: a checks record's tree half still holds: every criterion it
-    names that declares paths has the scoped digest it recorded, and, when
-    any it names declares none, the whole-repository digest is unchanged."""
+    names (or, with `only`, each of those) that declares paths has the
+    scoped digest it recorded, and, when any declares none, the
+    whole-repository digest is unchanged."""
     scoped = record.get("scope_digests") if isinstance(record.get("scope_digests"), dict) else {}
     whole_needed = False
-    for cid in record.get("criteria") or []:
+    for cid in (record.get("criteria") or []) if only is None else only:
         criterion = criteria_by_id.get(cid)
         if cid in scoped and isinstance(criterion, dict) and criterion.get("paths"):
             if scoped[cid] != scoped_digest(entries(), criterion["paths"]):
@@ -7074,6 +7076,34 @@ def _record_tree_current(record: dict, criteria_by_id: dict, digest: str, entrie
         else:
             whole_needed = True
     return not whole_needed or record.get("repository_digest") == digest
+
+
+def _covered_criteria_reason(command: str, mine: list, criteria_by_id: dict, specs: dict, digest: str,
+                             entries, env: dict, config_digest: str) -> str | None:
+    """P1.2: a command's binding covers every automated criterion that lists
+    it, and verify writes one record per criterion, so the newest record
+    alone speaks for one of them. Each covered criterion's own newest record
+    for the command must have passed and still hold: its tree half, env,
+    configuration and spec. None when all do, else the first reason."""
+    covered = [cid for cid, criterion in criteria_by_id.items()
+               if command in (criterion.get("tests") or []) and "checks" in required_evidence_kinds(criterion)]
+    for cid in covered:
+        own = next(((record, result) for record, result in reversed(mine)
+                    if cid in (record.get("criteria") or [])), None)
+        if own is None:
+            return f"criterion not verified ({cid})"
+        record, result = own
+        if not check_result_reusable(result):
+            return f"failed ({cid})"
+        if not _record_tree_current(record, criteria_by_id, digest, entries, only=[cid]):
+            return f"stale tree ({cid})"
+        if (record.get("env") or {}) != env:
+            return f"changed env ({cid})"
+        if record.get("config_hash") != config_digest:
+            return f"changed configuration ({cid})"
+        if (record.get("criterion_hashes") or {}).get(cid) != specs.get(cid):
+            return f"changed criterion ({cid})"
+    return None
 
 
 def verified_commands(root: Path, cfg: dict) -> list[dict]:
@@ -7131,6 +7161,9 @@ def verified_commands(root: Path, cfg: dict) -> list[dict]:
             reason = "changed configuration"
         elif any(specs.get(cid) != spec for cid, spec in (record.get("criterion_hashes") or {}).items()):
             reason = "changed criterion"
+        if reason is None:
+            reason = _covered_criteria_reason(command, mine, criteria_by_id, specs, digest, entries_once,
+                                              env, config_digest)
         rows.append({"command": command, "reusable": reason is None, "reason": reason,
                      "run_id": record.get("run_id"), "at": record.get("at")})
     return rows

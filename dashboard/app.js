@@ -1205,12 +1205,13 @@ function renderCriteria(criteria) {
     <div class="criterion">
       <span class="criterion-index">${String(index + 1).padStart(2, "0")}</span>
       <div>
-        <h3>${escapeHtml(criterion.requirement)}</h3>
+        <h3>${escapeHtml(criterion.requirement)}</h3>${criterion.outcome ? `
+        <p class="criterion-outcome">Outcome: ${escapeHtml(criterion.outcome)}</p>` : ""}
         <div class="criterion-meta">
           <span>${escapeHtml(criterion.id)}</span>
           <span>${escapeHtml(String(criterion.type || "").replaceAll("_", " "))}</span>
           <span>${escapeHtml(String(criterion.verification || "").replaceAll("_", " + "))}</span>
-          <span>${(criterion.evidence || []).length} evidence</span>${baselineLabel(criterion) ? `<span class="criterion-baseline">${escapeHtml(baselineLabel(criterion))}</span>` : ""}${repeatLabel(criterion) ? `<span class="criterion-repeat">${escapeHtml(repeatLabel(criterion))}</span>` : ""}
+          <span>${(criterion.evidence || []).length} evidence</span>${(criterion.evidence_classes || []).length ? `<span class="criterion-classes">classes: ${escapeHtml(criterion.evidence_classes.join(", "))}</span>` : ""}${baselineLabel(criterion) ? `<span class="criterion-baseline">${escapeHtml(baselineLabel(criterion))}</span>` : ""}${repeatLabel(criterion) ? `<span class="criterion-repeat">${escapeHtml(repeatLabel(criterion))}</span>` : ""}
         </div>
       </div>
       <span class="criterion-state ${escapeHtml(criterion.state)}">${escapeHtml(String(criterion.state || "unknown").replaceAll("_", " "))}</span>

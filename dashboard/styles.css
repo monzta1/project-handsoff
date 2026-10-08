@@ -401,6 +401,7 @@ body.input-is-required .mission-state { color: var(--amber); border-color: rgba(
 .criterion { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 13px 0; border-top: 1px solid var(--line); }
 .criterion-index { color: var(--faint); font: 700 11px/1.6 var(--mono); }
 .criterion h3 { margin: 0 0 6px; font-size: 13.5px; line-height: 1.5; font-weight: 500; }
+.criterion-outcome { margin: 0 0 6px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .criterion-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; color: var(--faint); font: 500 11px/1.4 var(--mono); }
 .criterion-state { min-width: 88px; padding: 6px 9px; border-radius: 5px; text-align: center; border: 1px solid var(--line); color: var(--muted); font: 700 10px/1.2 var(--sans); letter-spacing: .06em; text-transform: uppercase; }
 .criterion-state.passing { color: var(--emerald); border-color: rgba(70, 224, 161, .3); background: var(--emerald-soft); }

@@ -137,6 +137,26 @@ class TestSharedCommand(ScopedFixture):
         self._verify_all()
         self.assertEqual((self._launches("shared"), self._launches("c")), (3, 1))
 
+    def test_reuse_guidance_checks_every_criterion_the_shared_command_covers(self):
+        """verify writes one record per criterion, REQ-003's last; a change
+        under REQ-002's path must still make the shared command not
+        reusable (review finding 3)."""
+        shared, c = self._command("shared"), self._command("c")
+        self._build({"REQ-001": (c, ["src/c"]), "REQ-002": (shared, ["src/a"]), "REQ-003": (shared, ["src/b"])},
+                    [shared, c])
+        self._verify_all()
+
+        def standing():
+            return {row["command"]: (row["reusable"], row["reason"])
+                    for row in lib.verified_commands(self.tmp, lib.load_config(self.tmp))}
+
+        self.assertEqual(standing(), {shared: (True, None), c: (True, None)})
+        self._write("src/a/mod.py", "VALUE = 'a2'\n")
+        self.assertEqual(self._drift()["stale"], ["REQ-002"])
+        self.assertEqual(standing(), {shared: (False, "stale tree (REQ-002)"), c: (True, None)})
+        self._verify_all()
+        self.assertEqual(standing(), {shared: (True, None), c: (True, None)})
+
 
 class TestPathsEditedAfterEvidence(ScopedFixture):
     def test_editing_paths_resets_the_criterion_until_reverified(self):

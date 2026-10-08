@@ -5,6 +5,7 @@ the Fleet cards all read it, and the stall warning is derived from it."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -261,6 +262,23 @@ class StatusProjectionTests(HandsoffTestCase):
         self.assertEqual(snap["status"]["session_projection"]["state"], "connected_no_output")
         self.assertIsNone(snap["status"]["stall_warning"])
         self.assertIsNone(snap["activity"]["stall_warning"])
+
+    def test_status_derives_its_stall_warning_from_the_projection(self):
+        """An old beacon with a fresh session heartbeat: `status` reports the
+        dashboard's state and, like it, no stall warning (review finding 2)."""
+        self.commit([session(A, "running", self.ago(40))], {"implementer": A})
+        self.beacon(A, os.getpid(), at=self.now - timedelta(minutes=30))
+        self.heartbeat(A, datetime.now(timezone.utc).isoformat())
+        shown = json.loads(run(["status"], cwd=self.tmp).stdout)
+        self.assertEqual(shown["session_projection"]["state"], "connected_no_output")
+        self.assertIsNone(shown["stall_warning"])
+        self.assertIsNone(shown["activity"]["stall_warning"])
+        self.assertIsNone(self.dashboard_reader()["status"]["stall_warning"])
+        # the stale reading still warns through status
+        self.heartbeat(A, self.ago(30))
+        shown = json.loads(run(["status"], cwd=self.tmp).stdout)
+        self.assertEqual(shown["session_projection"]["state"], "stale_heartbeat")
+        self.assertTrue(shown["stall_warning"])
 
     def test_the_derivation_keeps_the_run_reading_only_without_live_sessions(self):
         fresh = {"state": "active_output", "sessions": [{"state": "active_output", "role": "implementer",
