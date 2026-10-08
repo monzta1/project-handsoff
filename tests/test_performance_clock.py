@@ -437,7 +437,7 @@ class ALateResultIsQuarantined(HandsoffTestCase):
 
     def _session(self, role):
         status = self.read_status()
-        sid = status["current_agent_sessions"][role]
+        sid = lib.role_session_ids(status)[role]  # #420: an ended session leaves the pointer
         return status, sid, status["agent_sessions"][sid]
 
     def test_a_reviewer_verdict_in_a_paused_episode_is_held_not_dispatched(self, lose_record=False):

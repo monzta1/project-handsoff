@@ -2004,7 +2004,7 @@ FAILURE_CATEGORIES = (
     "reviewer_modified_project",
     "network", "target_service", "external_timeout", "dispatch_failed", "no_artifact",
     "protocol_silence", "model_identity_mismatch", "protocol_refused",
-    "ownership_violation",
+    "ownership_violation", "background_abandoned", "process_gone",
 )
 
 
@@ -2032,6 +2032,8 @@ _FAILURE_REASON_LABELS = {
     "model_identity_mismatch": "provider reported a different model than requested",
     "protocol_refused": "managed role structured result was refused by validation",
     "ownership_violation": "concurrent implementer workspace could not be applied within its ownership",
+    "background_abandoned": "session ended its turn with background work outstanding and no protocol result",
+    "process_gone": "the session's recorded process is gone",
 }
 
 

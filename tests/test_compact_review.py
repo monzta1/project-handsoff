@@ -358,7 +358,7 @@ class ACompactSessionRecordsNoTests(HandsoffTestCase):
             except runtime.AgentLaunchError as exc:
                 error = exc  # the dispatch outcome is record-review's to decide, not this test's
         status = self.read_status()
-        session = status["agent_sessions"][status["current_agent_sessions"]["reviewer"]]
+        session = status["agent_sessions"][lib.role_session_ids(status)["reviewer"]]  # #420
         self.assertIs(session.get("compact"), True, f"launch ended with: {error}")
         self.assertEqual(session["result"]["payload"]["tests_executed"], "no")
 

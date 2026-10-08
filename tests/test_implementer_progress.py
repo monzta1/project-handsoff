@@ -80,7 +80,7 @@ class ImplementerProgressTests(HandsoffTestCase):
 
     def _session(self):
         status = self.read_status()
-        sid = status["current_agent_sessions"]["implementer"]
+        sid = lib.role_session_ids(status)["implementer"]  # #420: an ended session leaves the pointer
         return sid, status["agent_sessions"][sid], (status.get("agent_failures") or {}).get(sid), status
 
     def test_two_done_then_the_budget_leaves_the_account_on_the_ledger(self):

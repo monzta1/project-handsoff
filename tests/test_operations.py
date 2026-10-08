@@ -375,7 +375,7 @@ class TestBoundedCancellationAndHygiene(HandsoffTestCase):
                 runtime.execute_launch(spec, popen_factory=mock.Mock(return_value=_FakeProcess(approved)),
                                        beacon_interval=0.01)
         status = self.read_status()
-        session = status["agent_sessions"][status["current_agent_sessions"]["reviewer"]]
+        session = status["agent_sessions"][lib.role_session_ids(status)["reviewer"]]  # #420
         failure = status["agent_failures"][session["session_id"]]
         self.assertEqual(failure["category"], "dispatch_failed")
         self.assertIn("no managed Architect identity", failure["reason"])

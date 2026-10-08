@@ -219,7 +219,7 @@ class RulesSetTests(HandsoffTestCase):
             code, error, out = autoadopt.launch(self, stdout=autoadopt.APPROVED, stderr="", returncode=0)
         self.assertIsNone(error, out)
         status = self.read_status()
-        sid = status["current_agent_sessions"]["reviewer"]
+        sid = lib.role_session_ids(status)["reviewer"]  # #420: an ended session leaves the pointer
         self.assertIsNotNone(status["agent_sessions"][sid]["result"]["adopted_at"])
         return sid
 

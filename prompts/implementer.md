@@ -5,6 +5,9 @@ The launcher allows exactly the configured check commands, verify, and record-sy
 Work inside the managed token ceiling. Read only files implicated by the
 approved criteria, keep command output bounded, and avoid repeating searches
 whose result is already known.
+Run every command in the foreground: never start a background command or a
+detached process and end your turn to wait for it. The session ends when the
+turn ends, so work left running is lost.
 
 The briefing is authoritative for process rules; the diff is the evidence, not the story.
 

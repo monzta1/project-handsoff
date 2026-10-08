@@ -127,7 +127,7 @@ class SessionArtifactBehaviourTests(HandsoffTestCase):
 
     def _session(self, role):
         status = self.read_status()
-        sid = status["current_agent_sessions"][role]
+        sid = lib.role_session_ids(status)[role]  # #420: an ended session leaves the pointer
         return sid, status["agent_sessions"][sid], (status.get("agent_failures") or {}).get(sid)
 
     def test_result_is_persisted_before_dispatch_and_kept_on_dispatch_failure(self):

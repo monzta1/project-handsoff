@@ -229,7 +229,9 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     ensure_no_launched_regression,
     event_log_chain_errors,
     implementer_admission,
+    implementer_ownership_refusal,
     implementer_workspace_dir,
+    latest_terminal_session_id,
     ledger_engine_identity,
     live_agent_sessions,
     live_implementer_sessions,
@@ -241,6 +243,7 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     progress_summary,
     read_session_liveness,
     remove_implementer_workspace,
+    role_session_ids,
     runtime_identity,
     session_liveness_path,
     stale_manifest_refusal,
@@ -3050,7 +3053,7 @@ def record_quality_finding(root: Path, *, session_id: str, finding_code: str,
         _assert_agent_telemetry_integrity(root, cfg, status)
         session = (status.get("agent_sessions") or {}).get(session_id)
         if not isinstance(session, dict) or session.get("state") != "completed" \
-                or (status.get("current_agent_sessions") or {}).get(session.get("role")) != session_id:
+                or role_session_ids(status).get(session.get("role")) != session_id:
             raise HandsoffError("quality findings require the current completed session")
         findings = list(status.get("agent_quality_findings") or [])
         if len(findings) >= MAX_QUALITY_FINDINGS:
@@ -3179,10 +3182,18 @@ def reserve_agent_replacement(root: Path, *, from_session_id: str,
         # before the role's current one; it is still replaced by its own id.
         owned_source = isinstance(source, dict) and source.get("role") == "implementer" \
             and bool(source.get("owned_paths"))
-        if not isinstance(source, dict) or (current.get(source.get("role")) != from_session_id
+        # #420: an ended source is no longer the pointer; it is still the
+        # role's latest unsuperseded session until a replacement exists.
+        if not isinstance(source, dict) or (role_session_ids(status).get(source.get("role")) != from_session_id
                                             and not owned_source):
             raise HandsoffError("replacement lost the current-session CAS")
         role = source["role"]
+        if role == "implementer":
+            # #407: a replacement is an implementer launch like any other
+            refusal = implementer_ownership_refusal(status, source.get("owned_paths"),
+                                                    except_session_id=from_session_id)
+            if refusal:
+                raise HandsoffError(refusal)
         # Repository identity and availability belong to this exact CAS
         # moment, so derive both while the same lock protects the source.
         repository = snapshotter(root)
@@ -3654,6 +3665,43 @@ def orchestration_task(role: str, status: dict, *, objective: str | None = None)
     return text
 
 
+def host_supervised(cfg: dict | None) -> bool:
+    """#407: the run's Supervisor is the host, so automatic recovery and
+    orchestration never launch an Implementer; the Supervisor does."""
+    return isinstance(cfg, dict) and (cfg.get("agents") or {}).get("supervisor") == HOST_AGENT_ADAPTER
+
+
+DASHBOARD_LAUNCH_ACTORS = ("Mission Control Orchestrator", "Mission Control Watchdog")
+DASHBOARD_LAUNCH_REASONS = ("orchestration", "recovery", "operator_launch")
+
+
+def dashboard_launch_record(actor: str, reason: str, role: str, task: str,
+                            owned_paths: list[str] | None) -> dict:
+    """#407: the dashboard_launch event fields. The task is recorded only as
+    its sha256; the raw text is never persisted."""
+    if actor not in DASHBOARD_LAUNCH_ACTORS:
+        raise HandsoffError("dashboard launch actor is invalid")
+    if reason not in DASHBOARD_LAUNCH_REASONS:
+        raise HandsoffError("dashboard launch reason is invalid")
+    paths = [str(path)[:256] for path in (owned_paths or [])][:32]
+    return {"actor": actor, "reason": reason, "role": role,
+            "task_sha256": hashlib.sha256(str(task or "").encode("utf-8")).hexdigest(),
+            "owned_paths": paths}
+
+
+def record_dashboard_launch(root: Path, actor: str, reason: str, role: str, task: str,
+                            owned_paths: list[str] | None = None) -> dict:
+    """#407: log a dashboard-initiated launch before it is attempted: one
+    event and one printed line naming actor, reason, role, task digest and
+    owned paths. A refused launch is still logged as attempted."""
+    record = dashboard_launch_record(actor, reason, role, task, owned_paths)
+    with project_lock(root):
+        append_event(root, load_config(root), "dashboard_launch",
+                     f"{actor} launches the {role} ({reason})", **record)
+    print("HANDSOFF_DASHBOARD_LAUNCH: " + json.dumps(record, sort_keys=True), flush=True)
+    return record
+
+
 def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
     """Return the next role only for an already-managed, decision-free chain.
 
@@ -3684,7 +3732,8 @@ def managed_handoff_role(status: dict, cfg: dict | None = None) -> str | None:
         live = any(isinstance(item, dict) and item.get("state") in AGENT_SESSION_LIVE_STATES
                    and item.get("role") == asker for item in (status.get("agent_sessions") or {}).values())
         if asker in SELECTABLE_AGENT_ROLES and not live \
-                and not (cfg is not None and cfg.get("agents", {}).get(asker) == HOST_AGENT_ADAPTER):
+                and not (cfg is not None and cfg.get("agents", {}).get(asker) == HOST_AGENT_ADAPTER) \
+                and not (asker == "implementer" and host_supervised(cfg)):  # #407
             return asker
     if any(isinstance(item, dict) and item.get("state") in {"awaiting_approval", "accepted", "launched"}
            for item in status.get("regression_requests") or []):
@@ -4037,6 +4086,8 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
             if isinstance(session, dict) and session.get("state") in AGENT_SESSION_LIVE_STATES:
                 session["state"] = "failed"
                 session["ended_at"] = now.isoformat()
+                if (proposed.get("current_agent_sessions") or {}).get(session.get("role")) == sid:
+                    proposed["current_agent_sessions"].pop(session.get("role"))  # #420
                 session["exit_code"] = None if assessment["state"] == "protocol_silent" else -1
                 category = "protocol_silence" if assessment["state"] == "protocol_silent" else "presumed_lost"
                 proposed.setdefault("agent_failures", {})[sid] = {
@@ -4085,8 +4136,10 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
                      if entry.get("recovery_id") == rid), None)
         if not item or item.get("state") not in {"reserved", "launched"}:
             raise HandsoffError("recovery attempt lost its terminal compare-and-set")
-        current = (proposed.get("current_agent_sessions") or {}).get(role)
-        item["to_session_id"] = current if isinstance(current, str) else None
+        # #420: the replacement has usually ended (and left the pointer) by now
+        current = role_session_ids(proposed).get(role)
+        item["to_session_id"] = current if isinstance(current, str) \
+            and current != item.get("from_session_id") else None
         item["launched_at"] = item.get("launched_at") or now.isoformat()
         item["ended_at"] = ended.isoformat()
         item["state"] = "recovered" if ok else "failed"
@@ -4148,8 +4201,25 @@ def stall_warning(status: dict, cfg: dict, *, now: datetime | None = None,
     return None
 
 
+#: #416: the group a project with no [[regressions]] still has
+DEFAULT_REGRESSION_GROUP = "full"
+
+
+def effective_regression_groups(cfg: dict) -> list[dict]:
+    """#416: the configured [[regressions]] groups unchanged; when none is
+    configured, one group named full running every [checks].commands entry.
+    It exists only for regression-request and regress --group: it is not in
+    cfg["regressions"], so it never gates a focused check or changes the
+    verification config hash."""
+    groups = cfg.get("regressions") or []
+    if groups:
+        return list(groups)
+    commands = list(cfg.get("check_commands") or [])
+    return [{"name": DEFAULT_REGRESSION_GROUP, "commands": commands}] if commands else []
+
+
 def regression_group(cfg: dict, name: str) -> dict:
-    item = next((entry for entry in cfg.get("regressions", []) if entry.get("name") == name), None)
+    item = next((entry for entry in effective_regression_groups(cfg) if entry.get("name") == name), None)
     if item is None:
         raise HandsoffError(f"unknown regression group: {name}")
     return item
@@ -7774,6 +7844,64 @@ def release_run_dashboard(root: Path, *, timeout: float = 2.0, wait: float = 5.0
             "reason": f"run-owned dashboard on port {port} shut down"}
 
 
+def _session_beacon(root: Path, session_id: str) -> dict | None:
+    """The project beacon or the session's own (#359), when it names this session."""
+    beacon = read_live_beacon(root)
+    if not isinstance(beacon, dict) or beacon.get("session_id") != session_id:
+        beacon = read_live_beacon(root, session_id=session_id)
+    return beacon if isinstance(beacon, dict) and beacon.get("session_id") == session_id else None
+
+
+def session_never_started(root: Path, session: dict, cfg: dict, now: datetime | None = None) -> bool:
+    """#420: a live-state session that never recorded a process (no beacon,
+    so no pid) and is older than the stall window. Its launcher is gone, so
+    there is no process to prove or stop, and run-close may cancel it."""
+    if not isinstance(session, dict) or session.get("state") not in AGENT_SESSION_LIVE_STATES:
+        return False
+    if _session_beacon(root, session.get("session_id")) is not None:
+        return False
+    age = _minutes_since(session.get("started_at"), now or datetime.now(timezone.utc))
+    return age is not None and age >= float(cfg.get("stall_minutes", 10))
+
+
+def reconcile_gone_sessions(root: Path) -> list[str]:
+    """#420: on a status read, a live-state session whose recorded process
+    is gone is failed (process_gone). The pid must no longer exist AND its
+    beacon must be stale: the launcher refreshes the beacon until it records
+    the ending itself, so a child that just exited is never pre-empted."""
+    root = Path(root).resolve()
+    now = datetime.now(timezone.utc)
+    with project_lock(root):
+        cfg = load_config(root)
+        status = load_unique_json(status_path(root, cfg))
+        gone = []
+        for session in live_agent_sessions(status):
+            beacon = _session_beacon(root, session["session_id"])
+            pid = beacon.get("pid") if beacon else None
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+                continue
+            age = _seconds_since(beacon.get("beacon_at"), now)
+            if age is None or age <= LIVE_BEACON_FRESH_SECONDS:
+                continue
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                gone.append((session["session_id"], session.get("state")))
+            except OSError:
+                continue
+    failure = {"category": "process_gone", "reason": _FAILURE_REASON_LABELS["process_gone"],
+               "tail_sha256": hashlib.sha256(b"").hexdigest()}
+    reconciled = []
+    for session_id, state in gone:
+        try:
+            transition_agent_session(root, session_id, "failed" if state == "running" else "failed_to_start",
+                                     failure=failure)
+        except HandsoffError:
+            continue  # it ended, or moved on, between the read and the write
+        reconciled.append(session_id)
+    return reconciled
+
+
 def _terminate_owned_session_process(root: Path, session: dict, *, wait: float = 2.0) -> dict:
     """Stop only the process group proven by the current fresh session beacon."""
     session_id = session.get("session_id")
@@ -7881,6 +8009,10 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
             raise HandsoffError("active managed sessions require explicit cancel confirmation")
         stopped = []
         for session in live:
+            if session_never_started(root, session, cfg):
+                # #420: nothing to prove or stop; the session is cancelled below
+                stopped.append({"session_id": session["session_id"], "pid": None, "signal": "never_started"})
+                continue
             stopped.append(terminate_process(root, session))
 
         proposed = deepcopy(status)
@@ -7889,7 +8021,8 @@ def close_run(root: Path, *, by: str, reason: str, expected_updated_at: str | No
             sid = session["session_id"]
             target = proposed["agent_sessions"][sid]
             if target.get("state") in AGENT_SESSION_LIVE_STATES:
-                target["state"] = "cancelled"
+                # #420: a session still launching never ran, so it ends failed_to_start
+                target["state"] = "failed_to_start" if target.get("state") == "launching" else "cancelled"
                 target["ended_at"] = now
                 target["exit_code"] = 130
                 if proposed.get("current_agent_sessions", {}).get(target.get("role")) == sid:

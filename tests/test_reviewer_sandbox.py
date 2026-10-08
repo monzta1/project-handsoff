@@ -194,7 +194,7 @@ class ReviewerGuardAndBrokerTests(HandsoffTestCase):
         with self.assertRaisesRegex(runtime.AgentLaunchError, "modified the project tree"):
             runtime.execute_launch(self._reviewer_spec(), popen_factory=factory, beacon_interval=0.01)
         status = self.read_status()
-        session = status["agent_sessions"][status["current_agent_sessions"]["reviewer"]]
+        session = status["agent_sessions"][runtime.lib.role_session_ids(status)["reviewer"]]  # #420
         self.assertEqual(session["state"], "failed")
         self.assertEqual(status["agent_failures"][session["session_id"]]["category"],
                          "reviewer_modified_project")

@@ -2286,7 +2286,9 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
         })
         self.assertIsNotNone(session["running_at"])
         self.assertIsNotNone(session["ended_at"])
-        self.assertEqual(status["current_agent_sessions"]["implementer"], self._sid(1))
+        # #420: the completed session leaves the pointer and stays the role's latest session
+        self.assertNotIn("implementer", status["current_agent_sessions"])
+        self.assertEqual(self.lib.role_session_ids(status)["implementer"], self._sid(1))
         events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
         lifecycle = [event["kind"] for event in events if event["kind"].startswith("agent_session_")]
         self.assertEqual(lifecycle, [
@@ -11060,7 +11062,7 @@ class TestFailureClassification(unittest.TestCase):
         # and a digest -- nothing else.
         self.assertEqual(set(result), {"category", "reason", "tail_sha256"})
         self.assertIn(result["category"], lib.FAILURE_CATEGORIES)
-        self.assertEqual(len(lib.FAILURE_CATEGORIES), 23)
+        self.assertEqual(len(lib.FAILURE_CATEGORIES), 25)  # #408 background_abandoned, #420 process_gone
         closed_set_reasons = {
             "cancelled": "run was cancelled",
             "timeout": "runner exceeded its timeout",
@@ -11085,6 +11087,8 @@ class TestFailureClassification(unittest.TestCase):
             "model_identity_mismatch": "provider reported a different model than requested",
             "protocol_refused": "managed role structured result was refused by validation",
             "ownership_violation": lib._FAILURE_REASON_LABELS["ownership_violation"],
+            "background_abandoned": lib._FAILURE_REASON_LABELS["background_abandoned"],
+            "process_gone": lib._FAILURE_REASON_LABELS["process_gone"],
         }
         self.assertEqual(set(lib.FAILURE_CATEGORIES), set(closed_set_reasons))
         self.assertEqual(set(lib._FAILURE_REASON_LABELS), set(lib.FAILURE_CATEGORIES))
@@ -11240,7 +11244,7 @@ class TestAgentReplacement(HandsoffTestCase):
             self.runtime.execute_launch(spec, timeout=1, popen_factory=mock.Mock(return_value=process))
         self.assertEqual((process.terminated, process.killed), (1, 1))
         status = self.read_status()
-        session_id = status["current_agent_sessions"]["implementer"]
+        session_id = self.lib.role_session_ids(status)["implementer"]  # #420
         self.assertEqual(status["agent_sessions"][session_id]["state"], "timed_out")
         events = [json.loads(line) for line in (self.tmp / "handsoff-events.jsonl").read_text().splitlines()]
         terminal = [e for e in events if e.get("session_id") == session_id
@@ -11274,8 +11278,8 @@ class TestAgentReplacement(HandsoffTestCase):
         self.assertEqual([r["handoff"]["state"] for r in status["agent_replacements"]],
                          ["failed", "recovered"])
         self.assertEqual(len(status["agent_replacements"]), 2)
-        self.assertEqual(status["agent_sessions"][status["current_agent_sessions"]["implementer"]]["state"],
-                         "completed")
+        self.assertEqual(status["agent_sessions"][self.lib.role_session_ids(status)["implementer"]]["state"],
+                         "completed")  # #420
 
     def test_blocked_recovery_preflight_stops_before_reservation_or_retry(self):
         self._policy("implementer", [

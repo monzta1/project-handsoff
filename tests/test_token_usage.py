@@ -82,7 +82,7 @@ class UsageOnSessionTests(HandsoffTestCase):
 
     def _session(self):
         status = self.read_status()
-        sid = status["current_agent_sessions"]["reviewer"]
+        sid = lib.role_session_ids(status)["reviewer"]  # #420: an ended session leaves the pointer
         return sid, status["agent_sessions"][sid]
 
     def _events(self):

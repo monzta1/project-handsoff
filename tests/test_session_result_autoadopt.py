@@ -144,7 +144,7 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
 
     def _session(self, role="reviewer"):
         status = self.read_status()
-        sid = status["current_agent_sessions"][role]
+        sid = lib.role_session_ids(status)[role]  # #420: an ended session leaves the pointer
         return status, sid, status["agent_sessions"][sid], (status.get("agent_failures") or {}).get(sid)
 
     def _events(self, kind):
@@ -477,7 +477,7 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         self._launch(self._spec("architect", "claude"), stdout=json.dumps(event) + "\n",
                      stderr=BUDGET, returncode=1)
         status, questions = self._open_questions()
-        sid = status["current_agent_sessions"]["architect"]
+        sid = lib.role_session_ids(status)["architect"]  # #420
         self.assertEqual([(q["text"], q["session_id"]) for q in questions], [("Which path, assistant?", sid)])
 
     def test_a_raw_question_before_budget_exhaustion_is_recorded_once(self):
@@ -486,7 +486,7 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         question = self._question("Which path, raw?")
         self._launch(self._spec("architect"), stdout="", stderr=question + "\n" + BUDGET, returncode=1)
         status, questions = self._open_questions()
-        sid = status["current_agent_sessions"]["architect"]
+        sid = lib.role_session_ids(status)["architect"]  # #420
         self.assertEqual([(q["text"], q["session_id"]) for q in questions], [("Which path, raw?", sid)])
         # the same question on both streams is one record for the launch
         self._fresh()
@@ -494,7 +494,7 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         self._launch(self._spec("architect"), stdout=question + "\n", stderr=question + "\n" + BUDGET,
                      returncode=1)
         status, questions = self._open_questions()
-        sid = status["current_agent_sessions"]["architect"]
+        sid = lib.role_session_ids(status)["architect"]  # #420
         self.assertEqual([(q["text"], q["session_id"]) for q in questions], [("Which path, raw?", sid)])
 
     def test_a_question_before_long_stderr_diagnostics_is_recorded_once(self):
@@ -505,7 +505,7 @@ class SessionResultAutoAdoptTests(HandsoffTestCase):
         self._launch(self._spec("architect"), stdout="", stderr=question + "\n" + diagnostics + BUDGET,
                      returncode=1)
         status, questions = self._open_questions()
-        sid = status["current_agent_sessions"]["architect"]
+        sid = lib.role_session_ids(status)["architect"]  # #420
         self.assertEqual([(q["text"], q["session_id"]) for q in questions], [("Which path, early?", sid)])
 
     # REQ-007

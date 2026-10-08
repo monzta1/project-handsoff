@@ -50,6 +50,7 @@ from handsoff_agent_runtime import (
     default_agent_adapter,
     design_review_budget,
     live_implementer_sessions,
+    role_session_ids,
 )
 
 
@@ -381,7 +382,38 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
                         events: list[dict] | None = None,
                         now: datetime | None = None, root: Path | None = None) -> dict:
     """`root` lets the assessment consult the live beacon (#86); callers
-    without a root (pure tests, older call sites) keep the timestamp rule."""
+    without a root (pure tests, older call sites) keep the timestamp rule.
+
+    #407: under a host Supervisor a lost or stopped implementer is reported,
+    never replaced: the state is not_applicable, the reason host_supervised,
+    and lost_session_id names it. The Supervisor relaunches it with a task."""
+    host = (cfg.get("agents") or {}).get("supervisor") == HOST_AGENT_ADAPTER
+    held: list[str] = []
+    result = _recovery_assessment(status, cfg, liveness, events, now, root, host, held)
+    if host and result.get("state") not in {"not_applicable", "active"} \
+            and result.get("assigned_role") == "implementer":
+        result.update(state="not_applicable", reason="host_supervised")
+    elif held and result.get("state") == "not_applicable":
+        # the lost implementer set aside below, when nothing else is recovered
+        result.update(reason="host_supervised", assigned_role="implementer", lost_session_id=held[-1])
+    elif host and result.get("state") == "not_applicable" \
+            and result.get("reason") == "assigned session is terminal but not recoverable" \
+            and result.get("assigned_role") == "implementer":
+        # an implementer that ended in a recoverable failure (process_gone
+        # inside the grace window) or was stopped is reported, not replaced
+        sid = role_session_ids(status).get("implementer")
+        ended = (status.get("agent_sessions") or {}).get(sid) if isinstance(sid, str) else None
+        failure = (status.get("agent_failures") or {}).get(sid) or {}
+        if isinstance(ended, dict) and (ended.get("state") == "cancelled" or (
+                ended.get("state") in {"failed", "timed_out", "failed_to_start"}
+                and failure.get("category") in RECOVERABLE_FAILURE_CATEGORIES)):
+            result.update(reason="host_supervised", lost_session_id=sid)
+    return result
+
+
+def _recovery_assessment(status: dict, cfg: dict, liveness: dict | None,
+                         events: list[dict] | None, now: datetime | None,
+                         root: Path | None, host: bool = False, held: list | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     recovery = cfg.get("recovery") or DEFAULT_CONFIG["recovery"]
     role = assigned_role(status)
@@ -415,7 +447,9 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
         result["reason"] = "host_role"
         return result
     sessions = status.get("agent_sessions") or {}
-    current = status.get("current_agent_sessions") or {}
+    # #420: an ended session leaves current_agent_sessions; each role's live
+    # pointer, else its latest unsuperseded terminal session, is assessed.
+    current = {role: sid for role, sid in role_session_ids(status).items() if sid}
     phase = int(status.get("phase_number", 1) or 1)
 
     def session_signal(item: dict) -> tuple[str, float | None, float, str] | None:
@@ -496,6 +530,9 @@ def recovery_assessment(status: dict, cfg: dict, liveness: dict | None = None,
             result.update(alive)
             return result
         if silent is not None and silent >= threshold:
+            if host and current_role == "implementer" and held is not None:
+                held.append(candidate_id)  # #407: reported, never replaced; a reviewer still is
+                continue
             stamp = candidate.get("ended_at") or candidate.get("running_at") \
                 or candidate.get("started_at") or ""
             candidates.append((stamp, current_role, candidate_id, state_name, silent, threshold, reason))
@@ -892,6 +929,7 @@ RECOVERABLE_FAILURE_CATEGORIES = {
     "auth_failure", "rate_limit", "context_exhaustion", "timeout",
     "runtime_environment", "process_crash", "non_zero_exit", "presumed_lost", "external_timeout",
     "no_artifact", "protocol_silence",
+    "background_abandoned", "process_gone",  # #408, #420
 }
 
 

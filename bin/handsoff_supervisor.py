@@ -868,6 +868,10 @@ def _read_design_take_up(path: Path) -> dict:
 def cmd_status(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
+    try:
+        lib.reconcile_gone_sessions(root)  # #420: a gone process never stays live
+    except (lib.HandsoffError, OSError, ValueError):
+        pass  # the read below reports what is wrong
     with lib.project_lock(root):
         try:
             status, acceptance, verifications, verification_problems = _load_all(root, cfg)
@@ -5373,7 +5377,7 @@ def cmd_recover(args) -> int:
             events = lib.read_events(root, cfg)
             assessment = lib.recovery_assessment(status, cfg, lib.read_session_liveness(root), events, root=root)
             used = {e.get("session_id") for e in events if e.get("kind") == "recovery_auto_confirmed"}
-            current_ids = [v for v in (status.get("current_agent_sessions") or {}).values() if isinstance(v, str)]
+            current_ids = [v for v in lib.role_session_ids(status).values() if isinstance(v, str)]  # #420
             already = next((cid for cid in current_ids if cid in used), None)
             if already and (assessment.get("lost_session_id") in (None, already)):
                 print(f"SHIP_FEATURE_BLOCKED: automatic retry already used for {already}")

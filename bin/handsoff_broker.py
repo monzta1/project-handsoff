@@ -618,7 +618,7 @@ def _reviewer_result_request(root: Path, session_id: str, result: dict, actor: s
     cfg = lib.load_config(root)
     status = lib.load_unique_json(lib.status_path(root, cfg))
     sessions = status.get("agent_sessions") or {}
-    current = status.get("current_agent_sessions") or {}
+    current = lib.role_session_ids(status)  # #420: an ended reviewer is no longer the pointer
     session = sessions.get(session_id)
     if not isinstance(session, dict) or session.get("role") != "reviewer" \
             or current.get("reviewer") != session_id \

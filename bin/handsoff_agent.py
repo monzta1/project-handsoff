@@ -662,6 +662,11 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             phase = int(run_status.get("phase_number") or 0) or None
         except (ValueError, TypeError):
             phase = None
+    if role == "implementer" and isinstance(run_status, dict):
+        # #407: refused here, before any scratch, session or reservation
+        refusal = lib.implementer_ownership_refusal(run_status, owned_paths)
+        if refusal:
+            raise lib.HandsoffError(refusal)
     effective_model_policy = lib.validate_model_policy(
         (run_status or {}).get("model_policy", cfg.get("model_policy", lib.DEFAULT_MODEL_POLICY))
     )
@@ -1165,6 +1170,100 @@ def _terminalize_runner_io_failure(root: Path, session_id: str, process, *, stop
         )
 
 
+_BACKGROUND_ID = re.compile(r"\bID:\s*([A-Za-z0-9_.-]+)")
+_DONE_STATUS = r"(?:completed|failed|killed|exited|stopped)"
+_BACKGROUND_DONE = re.compile(r"<status>\s*" + _DONE_STATUS + r"\s*</status>|"
+                              r"\bstatus:\s*" + _DONE_STATUS + r"\b", re.IGNORECASE)
+_TASK_NOTIFICATION = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
+_TASK_ID = re.compile(r"<(?:task|shell|bash)[-_]id>\s*([A-Za-z0-9_.-]+)\s*</(?:task|shell|bash)[-_]id>")
+
+
+class _BackgroundWork:
+    """#408: background work a managed role started, read from its streamed
+    events: only a tool call the stream marks run_in_background (shell text
+    is never parsed, so a mis-read command can never exempt a failure from
+    the review budget). A background call is closed when the stream reports
+    it finished: the background task notification, or a BashOutput/TaskOutput
+    poll or KillShell result saying so. `outstanding` is what was still
+    running at the session's last turn."""
+
+    def __init__(self):
+        self._open: dict[str, str] = {}
+        self._aliases: dict[str, str] = {}
+        self._polls: dict[str, tuple[str, str]] = {}
+
+    @property
+    def outstanding(self) -> list[str]:
+        return sorted(self._open)
+
+    def feed(self, line: str) -> None:
+        text = line.strip()
+        if not text.startswith("{"):
+            return
+        try:
+            event = json.loads(text)
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "system" and isinstance(event.get("task_id"), str) \
+                and isinstance(event.get("status"), str) and re.fullmatch(_DONE_STATUS, event["status"]):
+            self._close(event["task_id"])  # the stream's own task notification
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            self._notifications(content)
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                self._tool_use(block)
+            elif isinstance(block, dict) and block.get("type") == "tool_result":
+                self._tool_result(block)
+            elif isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                self._notifications(block["text"])
+
+    def _tool_use(self, block: dict) -> None:
+        call_id = str(block.get("id") or "")
+        name = block.get("name")
+        args = block.get("input") if isinstance(block.get("input"), dict) else {}
+        target = next((args[key] for key in ("bash_id", "shell_id", "task_id")
+                       if isinstance(args.get(key), str)), None)
+        if args.get("run_in_background") is True:
+            self._open[call_id] = "background"
+        elif name in ("BashOutput", "TaskOutput") and target:
+            self._polls[call_id] = ("poll", target)
+        elif name in ("KillShell", "KillBash", "TaskStop") and target:
+            self._polls[call_id] = ("kill", target)
+
+    def _tool_result(self, block: dict) -> None:
+        call_id = str(block.get("tool_use_id") or "")
+        body = block.get("content")
+        if isinstance(body, list):
+            body = "\n".join(str(part.get("text") or "") for part in body if isinstance(part, dict))
+        body = body if isinstance(body, str) else ""
+        if self._open.get(call_id) == "background":
+            match = _BACKGROUND_ID.search(body)
+            if match:
+                self._aliases[match.group(1)] = call_id
+        kind, target = self._polls.pop(call_id, (None, None))
+        if (kind == "kill" and block.get("is_error") is not True) \
+                or (kind == "poll" and _BACKGROUND_DONE.search(body)):
+            self._close(target)
+        self._notifications(body)
+
+    def _notifications(self, text: str) -> None:
+        """Claude reports a finished background task as a
+        `<task-notification>` naming its id and a terminal status."""
+        for note in _TASK_NOTIFICATION.findall(text):
+            task = _TASK_ID.search(note)
+            if task and _BACKGROUND_DONE.search(note):
+                self._close(task.group(1))
+
+    def _close(self, target: str) -> None:
+        key = self._aliases.get(target, target)
+        if self._open.get(key) == "background":
+            self._open.pop(key)
+
+
 class _ChunkReader:
     """#41: read a child's text pipe as output ARRIVES, not in 4096-character
     blocks. `TextIOWrapper.read(n)` blocks until n characters or EOF, so a
@@ -1603,6 +1702,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
     raised_questions: set[str] = set()  # #345: one record per question per launch
     stdout_tail = [""]
     stderr_tail = [""]
+    background = _BackgroundWork()  # #408
+    progress_done = [0]  # #408: the Implementer's result is a criterion reported done
     # #168: the adapter's own usage, watched per streamed line on both
     # streams, independent of the bounded tails above.
     usage_watcher = lib.UsageWatcher(spec.adapter)
@@ -1728,12 +1829,15 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         usage_watcher.feed(line)
+                        background.feed(line)
                         record_model()
                         enforce_ceiling()
                         if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
                             question_lines[0] += 1
                         _parse_operation_line(line, root, session_id, spec.role)
-                        _parse_progress_line(line, root, session_id, spec.role)
+                        progress = _parse_progress_line(line, root, session_id, spec.role)
+                        if progress and progress.get("state") == "done":
+                            progress_done[0] += 1
                         if capture_supervisor:
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                             persist_new(supervisor_requests, "supervisor_request")
@@ -1752,6 +1856,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         discarding = True
                 if pending and not discarding:
                     usage_watcher.feed(pending)
+                    background.feed(pending)
                     record_model()
                     enforce_ceiling()
                     if _raise_question_line(root, spec.role, session_id, pending, question_errors, raised_questions):
@@ -2101,6 +2206,20 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
             failure=lib.classify_runtime_failure(orchestration_noop=True, role=spec.role),
         )
         raise AgentLaunchError(protocol_errors[0], session_id)
+    no_result = question_lines[0] == 0 and (
+        (spec.role in {"reviewer", "architect", "supervisor"} and not reviewer_results and not architect_results
+         and not architect_declines and not supervisor_requests)
+        or (spec.role == "implementer" and progress_done[0] == 0))
+    if background.outstanding and no_result:
+        # #408: a clean exit with no result while background work it started
+        # was still running: the turn ended the session. Recoverable, and no
+        # review round is spent (the open attempt is reused on relaunch). An
+        # Implementer's workspace is never applied as a completed session.
+        failure = {"category": "background_abandoned",
+                   "reason": lib._FAILURE_REASON_LABELS["background_abandoned"],
+                   "tail_sha256": hashlib.sha256((stdout_tail[0] + stderr_tail[0]).encode()).hexdigest()}
+        end_session("failed", exit_code=0, failure=failure)
+        raise AgentLaunchError(failure["reason"], session_id)
     if capture_supervisor and not supervisor_requests and question_lines[0] == 0:
         end_session(
             "failed", exit_code=1,
@@ -2531,23 +2650,25 @@ def _claude_logical_lines(line: str) -> list[str]:
 PROGRESS_PREFIX = "HANDSOFF_PROGRESS:"
 
 
-def _parse_progress_line(line: str, root: Path, session_id: str, role: str) -> None:
+def _parse_progress_line(line: str, root: Path, session_id: str, role: str) -> dict | None:
     """#215: persist a valid per-criterion progress claim from the
     Implementer on its session; a malformed line is a protocol warning and
-    never a failure; another role's line is ignored."""
+    never a failure; another role's line is ignored. Returns the valid claim
+    (#408: a `done` claim is the Implementer's result)."""
     if role != "implementer" or not line.startswith(PROGRESS_PREFIX):
-        return
+        return None
     try:
         record = lib.validate_progress_line(json.loads(line[len(PROGRESS_PREFIX):].strip()))
     except (ValueError, TypeError):
         record = None
     if record is None:
         lib.count_operation_warning(root, session_id, role, "protocol_warnings")
-        return
+        return None
     try:
         lib.record_session_progress(root, session_id, record)
     except Exception:
-        return  # telemetry never turns a child outcome into a failure
+        pass  # telemetry never turns a child outcome into a failure
+    return record
 
 
 def _parse_operation_line(line: str, root: Path, session_id: str, role: str) -> None:
