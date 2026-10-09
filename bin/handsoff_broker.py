@@ -26,6 +26,7 @@ HUMAN_ONLY_COMMANDS = {
     "design-approve", "deployment-gate", "design-review-authorize", "design-review-escalate",
     "review-cap-override", "recovery-acknowledge", "regression-decide", "regression-finalize",
     "amendment-approve", "question-answer",
+    "owner-accept",  # P2.1: an owner's observation is never a managed role's
 }
 _SUPERVISOR_HOST_CAPABILITY = object()
 

@@ -1200,13 +1200,29 @@ function renderDesignDocument(snapshot) {
   }
 }
 
+// P2.2: the negative-path matrix an elevated criterion carries, one row per
+// dimension; a missing dimension reads "missing", the gate's own word.
+const NEGATIVE_PATH_DIMENSIONS = ["unauthorized", "malformed_input", "duplicate", "timeout_retry",
+  "stale_data", "partial_failure", "rollback"];
+
+function negativePathMatrix(criterion) {
+  const matrix = criterion?.negative_paths || {};
+  if (criterion?.risk !== "elevated" && !Object.keys(matrix).length) return "";
+  const rows = NEGATIVE_PATH_DIMENSIONS.map((dimension) => `
+          <tr><th>${escapeHtml(dimension.replaceAll("_", " "))}</th><td>${escapeHtml(matrix[dimension] || "missing")}</td></tr>`).join("");
+  return `
+        <table class="criterion-negative-paths" aria-label="Negative paths">
+          <caption>Risk ${escapeHtml(criterion?.risk || "normal")} · negative paths</caption>${rows}
+        </table>`;
+}
+
 function renderCriteria(criteria) {
   $("criteria-list").innerHTML = criteria.length ? criteria.map((criterion, index) => `
     <div class="criterion">
       <span class="criterion-index">${String(index + 1).padStart(2, "0")}</span>
       <div>
         <h3>${escapeHtml(criterion.requirement)}</h3>${criterion.outcome ? `
-        <p class="criterion-outcome">Outcome: ${escapeHtml(criterion.outcome)}</p>` : ""}
+        <p class="criterion-outcome">Outcome: ${escapeHtml(criterion.outcome)}</p>` : ""}${negativePathMatrix(criterion)}
         <div class="criterion-meta">
           <span>${escapeHtml(criterion.id)}</span>
           <span>${escapeHtml(String(criterion.type || "").replaceAll("_", " "))}</span>

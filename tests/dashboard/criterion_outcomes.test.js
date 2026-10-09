@@ -22,7 +22,7 @@ function renderCriteriaList(criteria) {
   const context = { $: (id) => (id === "criteria-list" ? list : null), String,
     baselineLabel: logic.baselineLabel, repeatLabel: logic.repeatLabel };
   vm.createContext(context);
-  vm.runInContext(["escapeHtml", "renderCriteria"].map(slice).join("\n"), context);
+  vm.runInContext(["escapeHtml", "negativePathMatrix", "renderCriteria"].map(slice).join("\n"), context);
   vm.runInContext(`renderCriteria(${JSON.stringify(criteria)});`, context);
   return list.innerHTML;
 }

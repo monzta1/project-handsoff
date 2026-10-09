@@ -15,7 +15,7 @@ command, under the host's capability, on the project root the session was
 launched for. The base fields on every request: `actor` (the session's
 actor), `project_root` (must equal the launch root), `action` (always
 `workflow`), `command` (one of the table). Commands that only a person
-runs are refused whatever the fields: `amendment-approve`, `deployment-gate`, `design-approve`, `design-review-authorize`, `design-review-escalate`, `question-answer`, `recovery-acknowledge`, `regression-decide`, `regression-finalize`, `review-cap-override`.
+runs are refused whatever the fields: `amendment-approve`, `deployment-gate`, `design-approve`, `design-review-authorize`, `design-review-escalate`, `owner-accept`, `question-answer`, `recovery-acknowledge`, `regression-decide`, `regression-finalize`, `review-cap-override`.
 
 ```
 HANDSOFF_BROKER_REQUEST: {"actor": "codex-implementer", "project_root": "/abs/root", "action": "workflow", "command": "verify", "by": "codex-implementer", "criteria": ["REQ-001"]}

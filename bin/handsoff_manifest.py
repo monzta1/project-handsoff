@@ -36,6 +36,7 @@ RUNTIME_FILES = (
     "bin/handsoff_resources.py",
     "bin/handsoff_schema.py",
     "bin/handsoff_ledger.py",
+    "bin/handsoff_defects.py",
     "bin/handsoff_checkpoint.py",
     "bin/handsoff_queue.py",
     "bin/handsoff_routing.py",

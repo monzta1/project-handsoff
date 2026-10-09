@@ -127,6 +127,28 @@
               }
             },
             "description": "P1.2: project-relative globs the criterion's evidence depends on; its scoped digest covers the matching repository entries"
+          },
+          "risk": {
+            "enum": [
+              "normal",
+              "elevated"
+            ],
+            "description": "P2.2: absent means normal; an elevated criterion needs every negative_paths dimension before Phase 3"
+          },
+          "negative_paths": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": false,
+            "properties": {
+              "unauthorized": {"type": "string", "minLength": 1, "maxLength": 512},
+              "malformed_input": {"type": "string", "minLength": 1, "maxLength": 512},
+              "duplicate": {"type": "string", "minLength": 1, "maxLength": 512},
+              "timeout_retry": {"type": "string", "minLength": 1, "maxLength": 512},
+              "stale_data": {"type": "string", "minLength": 1, "maxLength": 512},
+              "partial_failure": {"type": "string", "minLength": 1, "maxLength": 512},
+              "rollback": {"type": "string", "minLength": 1, "maxLength": 512}
+            },
+            "description": "P2.2: each dimension's test description, or 'not_applicable: REASON'"
           }
         }
       }

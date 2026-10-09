@@ -268,10 +268,10 @@ from handsoff_workflow import (  # noqa: E402,F401
     CRITERION_ADD_FIELDS,
     CRITERION_OPTIONAL_ADD_FIELDS,
     CRITERION_SETTABLE_STATES,
-    CRITERION_TYPES,
-    CRITERION_UPDATE_FIELDS,
-    CriteriaTransactionError,
-    GATE_PROGRESS_WEIGHTS,
+    CRITERION_TYPES, CRITERION_RISKS, NEGATIVE_PATH_DIMENSIONS, NEGATIVE_PATH_NOT_APPLICABLE,  # P2.2
+    CRITERION_UPDATE_FIELDS, MAX_NEGATIVE_PATH_CHARS, negative_path_errors, negative_path_reason_missing,
+    CriteriaTransactionError, observation_confirmation, observation_gate_errors, observation_window_current,
+    GATE_PROGRESS_WEIGHTS, owner_acceptance_criteria, owner_acceptance_errors,  # P2.1 P2.3
     MAX_CRITERIA_TRANSACTION_OPERATIONS,
     MAX_CRITERION_PATHS,
     MAX_OUTCOME_CHARS,

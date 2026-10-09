@@ -138,6 +138,10 @@ operation_grace_seconds = 120
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+    "python3 -m unittest tests.test_escaped_defects -v",
+    "python3 -m unittest tests.test_negative_paths -v",
+    "python3 -m unittest tests.test_observation_window -v",
+    "python3 -m unittest tests.test_owner_acceptance -v",
     "python3 -m unittest tests.test_handover_checkpoints -v",
     "python3 -m unittest tests.test_workflow_sandbox -v",
     "python3 -m unittest tests.test_qa_reports -v",

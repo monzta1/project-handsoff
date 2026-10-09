@@ -486,6 +486,8 @@ GOVERNANCE_CONFIG_KEYS = (
     "max_autonomous_design_reviews", "small_fix_max_criteria",
     "small_fix_max_changed_lines", "small_fix_max_files",
     "require_design_approval",
+    # P2.3, P2.1
+    "observation_minutes", "owner_acceptance", "owners",
 )
 
 
@@ -503,6 +505,9 @@ _LEGACY_OPTIONAL_GOVERNANCE_KEYS = {
     "small_fix_max_changed_lines": DEFAULT_SMALL_FIX_MAX_CHANGED_LINES,
     "small_fix_max_files": DEFAULT_SMALL_FIX_MAX_FILES,
     "require_design_approval": True,  # #159
+    "observation_minutes": 0,  # P2.3
+    "owner_acceptance": "off",  # P2.1
+    "owners": [],  # P2.1
 }
 
 
@@ -985,6 +990,9 @@ HANDSOFF_GENERATED_NAMES = frozenset({
     LIVE_BEACON_FILE, OUTPUT_LIVENESS_FILE, DESIGN_EVIDENCE_FILE, PREFLIGHT_FILE,
     LIVE_INFLIGHT_FILE,
     ".handsoff-selfcheck", ".handsoff-archive", VERIFY_INFLIGHT_DIR, ANALYSIS_DIR,
+    # The escaped-defect ledger is tracked, but recording a defect must never
+    # stale the evidence of the run that found it.
+    "handsoff-defects.jsonl",
     "__pycache__", ".git",
 })
 

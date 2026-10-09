@@ -32,6 +32,13 @@ import handsoff_regress as regress  # noqa: E402
 import handsoff_release_runtime as release_runtime  # noqa: E402
 import handsoff_runtime_control as runtime_control  # noqa: E402
 import handsoff_tranche as tranche  # noqa: E402
+try:  # REQ-001: the ledger module lands beside this wiring; absent, the defect commands refuse
+    import handsoff_defects as defects  # noqa: E402
+except ImportError:  # pragma: no cover - only before bin/handsoff_defects.py exists
+    defects = None
+
+#: P2.1: set in a managed role's environment (handsoff_agent.MANAGED_ROLE_ENV)
+MANAGED_ROLE_ENV = "HANDSOFF_MANAGED_SESSION_ROLE"
 
 # One inventory for the command line, broker, and Mission Control. A command
 # may only be exposed to the Pilot when it is explicitly classified here;
@@ -111,6 +118,10 @@ OPERATION_REGISTRY = {
     "run-reopen": {"class": "operator-facing", "surface": "operator-actions-panel"},
     "advance": {"class": "agent-only", "surface": "phase-rail"},
     "deployment-gate": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    # P2.1: human-only; the broker refuses it for managed roles
+    "owner-accept": {"class": "operator-facing", "surface": "operator-actions-panel"},
+    # REQ-001: the escaped-defect ledger (record, decline, close, list)
+    "defect": {"class": "agent-only", "surface": "criteria-list"},
     "monitor-poll": {"class": "automatic", "surface": "live-status"},
     "evidence-refresh-plan": {"class": "diagnostic", "surface": "verification-list"},
     "performance-status": {"class": "diagnostic", "surface": "metrics-panel"},
@@ -1191,6 +1202,10 @@ def cmd_status(args) -> int:
             performance = refresh_performance_state(root, status=status, cfg=cfg, lock_held=True)
         except (lib.HandsoffError, OSError, ValueError, runtime_control.RuntimeControlError):
             performance = {}
+        try:
+            inherited = inherited_regressions_view(root, cfg, status, acceptance)  # REQ-001
+        except lib.HandsoffError as exc:
+            inherited = [{"error": str(exc)}]
     progress_shown = lib.progress_view(status, acceptance, cfg)  # #415
     print(__import__("json").dumps({
         "performance_pause": performance.get("pause"),
@@ -1261,6 +1276,14 @@ def cmd_status(args) -> int:
         # #422: an open human pause names itself; a caller that polls status
         # (Sentinel's resume) must not conclude that none is open.
         "human_pause": human_pause_view(status),
+        # REQ-001: open defects this run overlaps and has neither adopted nor
+        # declined; advance 3 refuses while any is listed
+        "inherited_regressions": inherited,
+        # P2.3: the post-deployment observation window, when one is open or failed
+        "observation": status.get("observation"),
+        # P2.1: owner acceptance records and the criteria that still need one
+        "owner_acceptance": status.get("owner_acceptance"),
+        "owner_acceptance_required": lib.owner_acceptance_criteria(status, acceptance, cfg),
         # #415: the progress status, the board and the first HTML all show
         # (lib.progress_view), whether it was set in this phase or derived,
         # and every work item with how it becomes implemented and done
@@ -1296,6 +1319,8 @@ def status_criteria(acceptance: dict) -> list[dict]:
     return [{"id": c.get("id"), "state": c.get("state"), "verification": c.get("verification"),
              "outcome": c.get("outcome"), "evidence_classes": list(c.get("evidence_classes") or []),
              "paths": list(c.get("paths") or []),
+             # P2.2: risk (absent is normal) and the negative-path matrix
+             "risk": c.get("risk") or "normal", "negative_paths": dict(c.get("negative_paths") or {}),
              "required_evidence": sorted(lib.required_evidence_kinds(c))}
             for c in acceptance.get("criteria", []) if isinstance(c, dict)]
 
@@ -1472,8 +1497,11 @@ def _advance_preview_errors(root: Path, cfg: dict, status: dict, acceptance: dic
     if phase == 6 and proposed.get("lane") == "review":
         proposed["status"] = "review_complete"
     proposed["_preserve_progress"] = True
-    return lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
-                              verification_problems=verification_problems, root=root)
+    errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
+                                verification_problems=verification_problems, root=root)
+    if phase == 3:
+        errors = errors + defect_gate_errors(root, cfg, proposed, acceptance)  # REQ-001
+    return errors
 
 
 def _multi_step_refusal(root: Path, cfg: dict, status: dict, acceptance: dict,
@@ -1697,6 +1725,8 @@ def cmd_advance(args) -> int:
 
         errors = lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems, root=root)
+        if args.phase == 3:
+            errors = errors + defect_gate_errors(root, cfg, proposed, acceptance)  # REQ-001
         if errors:
             # A blocked attempt to LEAVE Phase 2 specifically because design
             # approval is missing/stale IS the state machine telling us the
@@ -2347,6 +2377,164 @@ def cmd_deployment_gate(args) -> int:
                   by=args.by, acceptance_hash=acceptance_digest, design_hash=design_digest)
     print("DEPLOYMENT_APPROVED")
     return 0
+
+
+MAX_OWNER_ACCEPT_CHARS = 1024
+
+
+def cmd_owner_accept(args) -> int:
+    """P2.1: a listed owner records that they observed the criterion's
+    business outcome in a named environment. Human-only: the broker refuses
+    it and a managed role's session refuses it here, and the record binds
+    to the current acceptance hash."""
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    if os.environ.get(MANAGED_ROLE_ENV):
+        print("OWNER_ACCEPT_BLOCKED\n- owner-accept is human-only; a managed role may not record it")
+        return 1
+    if cfg.get("owner_acceptance", "off") == "off":
+        print("OWNER_ACCEPT_BLOCKED\n- owner acceptance is off; set [workflow] owner_acceptance = \"high_risk\" "
+              "and [workflow] owners to use it")
+        return 1
+    by = (args.by or "").strip()
+    if by.casefold() not in {owner.casefold() for owner in cfg.get("owners") or []}:
+        print(f"OWNER_ACCEPT_BLOCKED\n- {by or '(empty)'} is not one of [workflow] owners "
+              f"({', '.join(cfg.get('owners') or [])})")
+        return 1
+    texts = {"environment": args.environment, "path": args.path, "input": args.input,
+             "expected": args.expected, "observed": args.observed}
+    bad = [name for name, value in texts.items()
+           if not isinstance(value, str) or not value.strip() or len(value) > MAX_OWNER_ACCEPT_CHARS]
+    if bad:
+        print(f"OWNER_ACCEPT_BLOCKED\n- --{' --'.join(bad)} must be non-empty and at most "
+              f"{MAX_OWNER_ACCEPT_CHARS} characters")
+        return 1
+    artifact = None
+    if args.artifact is not None:
+        candidate = Path(args.artifact).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        if not candidate.is_file():
+            print(f"OWNER_ACCEPT_BLOCKED\n- --artifact {args.artifact} is not a file")
+            return 1
+        artifact = args.artifact
+    with lib.project_lock(root):
+        status, acceptance, records, verification_problems = _load_all(root, cfg)
+        audit_errors = _audit_errors(root, cfg, status, records, verification_problems)
+        if audit_errors:
+            return _print_audit_block(audit_errors)
+        if _criterion(acceptance, args.criterion) is None:
+            print(f"OWNER_ACCEPT_BLOCKED\n- unknown criterion {args.criterion}")
+            return 1
+        stamp = datetime.now(timezone.utc).isoformat()
+        accepted = dict(status.get("owner_acceptance") or {})
+        accepted[args.criterion] = {
+            **{name: value.strip() for name, value in texts.items()},
+            "artifact": artifact, "by": by, "at": stamp,
+            "acceptance_hash": lib.acceptance_hash(acceptance.get("criteria", [])),
+        }
+        status["owner_acceptance"] = accepted
+        status["updated_at"] = stamp
+        lib.commit(root, cfg, status=status, event_kind="owner_accepted",
+                   event_message=f"Owner acceptance of {args.criterion} recorded",
+                   criterion=args.criterion, by=by, environment=texts["environment"].strip())
+    print("OWNER_ACCEPTED")
+    return 0
+
+
+def _defects_module():
+    """REQ-001: the escaped-defect ledger (bin/handsoff_defects.py)."""
+    if defects is None:
+        raise lib.HandsoffError("the escaped-defect ledger module (handsoff_defects) is not installed")
+    return defects
+
+
+def defect_run_id(status: dict, events: list[dict]) -> str:
+    """REQ-001: this run's identity on the defect ledger, from the feature
+    and its initialized event, so a later run of the same feature differs."""
+    return "run-" + lib.feature_hash(status, events)[:16]
+
+
+def defect_cited(acceptance: dict, defect_id: str) -> bool:
+    """REQ-001: a run adopts a defect when a criterion's requirement cites its id."""
+    pattern = re.compile(rf"(?<![\w-]){re.escape(defect_id)}(?![\w-])")
+    return any(isinstance(c, dict) and pattern.search(str(c.get("requirement") or ""))
+               for c in acceptance.get("criteria", []))
+
+
+def inherited_regressions_view(root: Path, cfg: dict, status: dict, acceptance: dict) -> list[dict]:
+    """REQ-001: the open defects this run inherits and has neither adopted
+    nor declined; empty when the ledger module is absent."""
+    if defects is None:
+        return []
+    run_id = defect_run_id(status, lib.read_events(root, cfg))
+    return list(defects.inherited_regressions(root, acceptance, run_id))
+
+
+def defect_gate_errors(root: Path, cfg: dict, status: dict, acceptance: dict) -> list[str]:
+    """REQ-001: what an advance to Phase 3 meets from the defect ledger. An
+    unreadable ledger refuses too: an inherited regression it hides would
+    otherwise pass silently."""
+    try:
+        return inherited_regression_errors(inherited_regressions_view(root, cfg, status, acceptance))
+    except lib.HandsoffError as exc:
+        return [f"defect gate: the escaped-defect ledger cannot be read ({exc}); repair handsoff-defects.jsonl"]
+
+
+def inherited_regression_errors(inherited: list[dict]) -> list[str]:
+    """REQ-001: the phase-3 refusal, one line per unresolved defect."""
+    return [f"defect gate: inherited regression {item.get('id')} ({item.get('issue')}: {item.get('summary')}) "
+            f"overlaps this run; adopt it in a criterion requirement that cites {item.get('id')} or decline it "
+            f"for this run with handsoff_supervisor.py defect decline --id {item.get('id')} --reason TEXT --by ACTOR"
+            for item in inherited]
+
+
+def cmd_defect(args) -> int:
+    root = lib.resolve_root(args.root)
+    cfg = lib.load_config(root)
+    try:
+        module = _defects_module()
+        if args.action == "list":
+            print(json.dumps({"defects": module.load_defects(root)}, indent=2))
+            return 0
+        if not (args.by or "").strip():
+            print("DEFECT_BLOCKED\n- --by must be a non-empty string")
+            return 1
+        with lib.project_lock(root):
+            if args.action == "record":
+                defect = module.record_defect(root, {
+                    "issue": args.issue, "control": args.control, "summary": args.summary,
+                    "regression": args.regression, "paths": list(args.path or []), "by": args.by,
+                }, lock_held=True)
+                if lib.status_path(root, cfg).is_file():  # a defect may be recorded between runs
+                    lib.commit(root, cfg, event_kind="defect_recorded",
+                               event_message=f"Escaped defect {defect.get('id')} recorded",
+                               defect=defect.get("id"), by=args.by)
+                print(json.dumps({"recorded": defect}, indent=2))
+                return 0
+            status, acceptance = _load(root, cfg)
+            run_id = defect_run_id(status, lib.read_events(root, cfg))
+            if args.action == "decline":
+                defect = module.decide_defect(root, args.id, "decline", args.reason, args.by, run_id=run_id, lock_held=True)
+                lib.commit(root, cfg, event_kind="defect_declined",
+                           event_message=f"Escaped defect {args.id} declined for this run",
+                           defect=args.id, by=args.by, reason=args.reason, defect_run=run_id)
+                print(json.dumps({"declined": defect}, indent=2))
+                return 0
+            # close: only once a run that adopted the defect reached Phase 8
+            if int(status.get("phase_number", 0) or 0) != 8 or not defect_cited(acceptance, args.id):
+                print(f"DEFECT_BLOCKED\n- defect {args.id} closes only once a run that adopted it (a criterion "
+                      "requirement citing it) reached Phase 8")
+                return 1
+            defect = module.decide_defect(root, args.id, "close",
+                                          f"adopted by run {run_id}, which reached Phase 8", args.by, run_id=run_id, lock_held=True)
+            lib.commit(root, cfg, event_kind="defect_closed", event_message=f"Escaped defect {args.id} closed",
+                       defect=args.id, by=args.by, defect_run=run_id)
+            print(json.dumps({"closed": defect}, indent=2))
+            return 0
+    except lib.HandsoffError as exc:
+        print(f"DEFECT_BLOCKED\n- {exc}")
+        return 1
 
 
 def cmd_design_reject(args) -> int:
@@ -5599,8 +5787,10 @@ def cmd_verify_live(args) -> int:
             status["verification_head"] = record["hash"]
             if ok:
                 status["live_verification_id"] = record["run_id"]
+            observation_event = _advance_observation_window(status, acceptance, cfg, record)  # P2.3
             status["updated_at"] = datetime.now(timezone.utc).isoformat()
             lib.commit(root, cfg, status=status,
+                      extra_events=[observation_event] if observation_event else None,
                       event_kind="live_checks_run", event_message="Ran configured live checks",
                       ok=ok, run_id=record["run_id"], by=args.by)
     finally:
@@ -5610,6 +5800,44 @@ def cmd_verify_live(args) -> int:
             pass
     print(__import__("json").dumps({"ok": ok, "run_id": record["run_id"], "results": results}, indent=2))
     return 0 if ok else 1
+
+
+def _advance_observation_window(status: dict, acceptance: dict, cfg: dict, record: dict) -> dict | None:
+    """P2.3: what one live run does to the post-deployment window. With
+    [checks].observation_minutes above 0, a success with no current open
+    window (none yet, failed, or stale) opens one bound to this run, the
+    acceptance hash and the config hash; a success on a current window
+    leaves it to the gate, which reads the run as its confirmation once it
+    is at or after closes_at. A failure while a window is open closes it as
+    failed with a rollback note. Returns the event to record, or None."""
+    minutes = cfg.get("observation_minutes") or 0
+    if not minutes:
+        return None
+    window = status.get("observation")
+    if record.get("ok") is True:
+        if lib.observation_window_current(window, acceptance.get("criteria", []), cfg):
+            return None
+        opened = datetime.fromisoformat(str(record.get("at")).replace("Z", "+00:00"))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        status["observation"] = {
+            "state": "open", "minutes": minutes,
+            "opened_at": opened.isoformat(), "closes_at": (opened + timedelta(minutes=minutes)).isoformat(),
+            "acceptance_hash": record.get("acceptance_hash"), "config_hash": record.get("config_hash"),
+            "live_id": record.get("run_id"), "rollback": None,
+        }
+        return {"kind": "observation_window_opened", "run_id": record.get("run_id"),
+                "message": f"Observation window opened until {status['observation']['closes_at']}"}
+    if isinstance(window, dict) and window.get("state") == "open":
+        window["state"] = "failed"
+        window["rollback"] = {
+            "at": record.get("at"), "run_id": record.get("run_id"),
+            "note": "live verification failed inside the observation window; roll back or fix the "
+                    "deployment, then a successful verify-live opens a fresh window",
+        }
+        return {"kind": "observation_window_failed", "run_id": record.get("run_id"),
+                "message": "Observation window failed: live verification failed; roll back or fix"}
+    return None
 
 
 def _sync_registry_from_criteria(acceptance: dict, cfg: dict) -> bool:
@@ -5633,6 +5861,21 @@ def _print_unverifiable_test_warnings(acceptance: dict, cfg: dict) -> None:
                 print(f"WARNING: criterion {criterion.get('id')} test {test!r} matches no [checks].commands entry; verify will refuse it")
 
 
+def _negative_path_entries(values: list[str] | None) -> dict:
+    """P2.2: --negative-path DIMENSION=TEXT entries as a matrix; a repeated
+    dimension or an entry without '=' is refused."""
+    matrix: dict = {}
+    for value in values or []:
+        dimension, sep, text = str(value).partition("=")
+        dimension = dimension.strip()
+        if not sep or not dimension:
+            raise lib.HandsoffError(f"--negative-path {value!r} must be DIMENSION=TEXT")
+        if dimension in matrix:
+            raise lib.HandsoffError(f"--negative-path repeats dimension {dimension}")
+        matrix[dimension] = text.strip()
+    return matrix
+
+
 def cmd_criterion_update(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -5649,8 +5892,9 @@ def cmd_criterion_update(args) -> int:
         if criterion is None:
             print(f"SHIP_FEATURE_BLOCKED: unknown criterion {args.criterion}")
             return 1
-        if all(getattr(args, field, None) is None for field in ("requirement", "verification", "type", "test", "state", "baseline", "repeat", "seed_env", "mutation_target", "mutation_symbol", "outcome", "evidence_class", "path")) \
-                and not getattr(args, "no_evidence_classes", False) and not getattr(args, "no_paths", False):
+        if all(getattr(args, field, None) is None for field in ("requirement", "verification", "type", "test", "state", "baseline", "repeat", "seed_env", "mutation_target", "mutation_symbol", "outcome", "evidence_class", "path", "risk", "negative_path")) \
+                and not getattr(args, "no_evidence_classes", False) and not getattr(args, "no_paths", False) \
+                and not getattr(args, "no_negative_paths", False):
             print("SHIP_FEATURE_BLOCKED: criterion-update requires at least one change")
             return 1
         # P1.1: outcome, evidence_classes and paths; an empty outcome or a
@@ -5668,6 +5912,21 @@ def cmd_criterion_update(args) -> int:
             scope_fields["evidence_classes"] = getattr(args, "evidence_class", None) or None
         if getattr(args, "path", None) is not None or getattr(args, "no_paths", False):
             scope_fields["paths"] = getattr(args, "path", None) or None
+        # P2.2: risk normal is the default and is stored as absent; matrix
+        # entries merge into the existing matrix, --no-negative-paths clears it
+        if getattr(args, "risk", None) is not None:
+            scope_fields["risk"] = None if args.risk == "normal" else args.risk
+        if getattr(args, "no_negative_paths", False) and getattr(args, "negative_path", None):
+            print("SHIP_FEATURE_BLOCKED: pass either --negative-path or --no-negative-paths, not both")
+            return 1
+        if getattr(args, "negative_path", None) is not None or getattr(args, "no_negative_paths", False):
+            try:
+                entries = _negative_path_entries(getattr(args, "negative_path", None))
+            except lib.HandsoffError as exc:
+                print(f"SHIP_FEATURE_BLOCKED: {exc}")
+                return 1
+            existing = criterion.get("negative_paths") if isinstance(criterion.get("negative_paths"), dict) else {}
+            scope_fields["negative_paths"] = {**existing, **entries} if entries else None
         fields = {field: getattr(args, field) for field in ("requirement", "verification", "type", "state")
                   if getattr(args, field) is not None}
         if args.test is not None:
@@ -5825,6 +6084,15 @@ def cmd_criterion_add(args) -> int:
                              ("paths", args.path)):
             if value is not None:
                 fields[field] = value
+        # P2.2: likewise, and risk normal (the default) is never stored
+        if getattr(args, "risk", None) == "elevated":
+            fields["risk"] = "elevated"
+        if getattr(args, "negative_path", None):
+            try:
+                fields["negative_paths"] = _negative_path_entries(args.negative_path)
+            except lib.HandsoffError as exc:
+                print(f"SHIP_FEATURE_BLOCKED: {exc}")
+                return 1
         problems = lib.validate_criterion_fields(fields, require_all=True,
                                                  check_commands=list(cfg.get("check_commands", [])))
         if problems:
@@ -7985,6 +8253,40 @@ def build_parser() -> argparse.ArgumentParser:
     live = sub.add_parser("verify-live")
     live.add_argument("--by", required=True)
 
+    owner_accept = sub.add_parser("owner-accept", help="P2.1: a listed owner records the business outcome they "
+                                  "observed for a criterion (human-only; [workflow] owner_acceptance)")
+    owner_accept.add_argument("--criterion", required=True)
+    owner_accept.add_argument("--environment", required=True, help="where it was observed")
+    owner_accept.add_argument("--path", required=True, help="the user path walked")
+    owner_accept.add_argument("--input", required=True, help="what was entered")
+    owner_accept.add_argument("--expected", required=True)
+    owner_accept.add_argument("--observed", required=True)
+    owner_accept.add_argument("--artifact", default=None, help="optional file: a screenshot, an export")
+    owner_accept.add_argument("--by", required=True, help="one of [workflow] owners")
+
+    defect = sub.add_parser("defect", help="REQ-001: the escaped-defect ledger; an open defect is an "
+                            "inherited regression for every later run that overlaps its paths")
+    defect_actions = defect.add_subparsers(dest="action", required=True)
+    defect_record = defect_actions.add_parser("record", help="append an open defect")
+    defect_record.add_argument("--issue", required=True, help="the issue reference, e.g. #431")
+    defect_record.add_argument("--control", required=True,
+                               help="the control that let it escape: requirement, implementation, test_selection, "
+                                    "environment, reviewer_visibility, live_verification, deployment, "
+                                    "handsoff_integrity")
+    defect_record.add_argument("--summary", required=True)
+    defect_record.add_argument("--regression", required=True, help="the regression test that would catch it")
+    defect_record.add_argument("--path", action="append", default=None,
+                               help="a project-relative glob it lives in; repeatable; none overlaps every run")
+    defect_record.add_argument("--by", required=True)
+    defect_decline = defect_actions.add_parser("decline", help="decline an inherited defect for this run only")
+    defect_decline.add_argument("--id", required=True)
+    defect_decline.add_argument("--reason", required=True)
+    defect_decline.add_argument("--by", required=True)
+    defect_close = defect_actions.add_parser("close", help="close a defect a run adopted, once that run reached Phase 8")
+    defect_close.add_argument("--id", required=True)
+    defect_close.add_argument("--by", required=True)
+    defect_actions.add_parser("list", help="print the ledger as JSON")
+
     heartbeat = sub.add_parser("heartbeat", help="record a liveness signal for a run doing long "
                                "background work, without advancing phase or progress")
     heartbeat.add_argument("--by", required=True)
@@ -8067,6 +8369,12 @@ def build_parser() -> argparse.ArgumentParser:
     criterion.add_argument("--path", action="append", dest="path",
                            help="P1.2: a project-relative glob the evidence depends on; repeatable, replaces the list")
     criterion.add_argument("--no-paths", action="store_true", help="P1.2: clear the declared paths")
+    criterion.add_argument("--risk", choices=lib.CRITERION_RISKS,
+                           help="P2.2: elevated needs a full negative-path matrix before Phase 3; normal clears it")
+    criterion.add_argument("--negative-path", action="append", dest="negative_path", metavar="DIMENSION=TEXT",
+                           help="P2.2: one matrix entry, a test description or 'not_applicable: REASON'; "
+                                "repeatable, merged into the existing matrix")
+    criterion.add_argument("--no-negative-paths", action="store_true", help="P2.2: clear the matrix")
     criterion.add_argument("--revoke-approval", action="store_true")
 
     criterion_add = sub.add_parser("criterion-add")
@@ -8091,6 +8399,10 @@ def build_parser() -> argparse.ArgumentParser:
                                     "(checks, manual, browser, workflow); repeatable")
     criterion_add.add_argument("--path", action="append", dest="path",
                                help="P1.2: a project-relative glob the evidence depends on; repeatable")
+    criterion_add.add_argument("--risk", choices=lib.CRITERION_RISKS,
+                               help="P2.2: elevated needs a full negative-path matrix before Phase 3")
+    criterion_add.add_argument("--negative-path", action="append", dest="negative_path", metavar="DIMENSION=TEXT",
+                               help="P2.2: one matrix entry, a test description or 'not_applicable: REASON'; repeatable")
     criterion_add.add_argument("--revoke-approval", action="store_true")
 
     criterion_remove = sub.add_parser("criterion-remove")
@@ -8344,6 +8656,8 @@ def main() -> int:
         "watch": cmd_watch,
         "recovery-acknowledge": cmd_recovery_acknowledge,
         "verify-live": cmd_verify_live,
+        "owner-accept": cmd_owner_accept,  # P2.1
+        "defect": cmd_defect,  # REQ-001
         "heartbeat": cmd_heartbeat,
         "background-wait-start": cmd_background_wait_start,
         "background-wait-end": cmd_background_wait_end,
