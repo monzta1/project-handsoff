@@ -264,13 +264,17 @@ class StubLedger:
         return [d for d in self.open if d["id"] not in cited
                 and not any(x.get("run_id") == run_id for x in d["decisions"])]
 
-    def decide_defect(self, root, defect_id, action, reason, by, run_id=None):
+    def decide_defect(self, root, defect_id, action, reason, by, run_id=None, *, lock_held=False):
+        assert lock_held, "the supervisor holds the project lock around a decision"
         self.calls.append((action, defect_id, reason, by, run_id))
         defect = next(d for d in self.open if d["id"] == defect_id)
         defect["decisions"].append({"action": action, "run_id": run_id, "reason": reason, "by": by})
         return defect
 
-    def record_defect(self, root, fields):
+    def record_defect(self, root, fields, *, lock_held=False):
+        assert lock_held, "the supervisor holds the project lock around a record"
+        # the real module takes the recorder as `by` and refuses anything else
+        assert set(fields) <= {"issue", "control", "summary", "regression", "paths", "by"}, fields
         self.calls.append(("record", fields))
         return {"id": "D-0002", **fields}
 
@@ -354,7 +358,7 @@ class TestPhase3DefectGateWiring(NegativePathFixture):
             self.assertEqual(code, 0, out)
         self.assertEqual(stub.calls[-1], ("record", {"issue": "#432", "control": "implementation", "summary": "s",
                                                     "regression": "r", "paths": ["src/*.py"],
-                                                    "recorded_by": "host"}))
+                                                    "by": "host"}))
         with mock.patch.object(supervisor, "defects", None):
             code, out = self._call(["defect", "list"])
             self.assertEqual(code, 1)
