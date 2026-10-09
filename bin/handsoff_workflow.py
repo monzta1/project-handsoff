@@ -41,7 +41,9 @@ from handsoff_core import (
 from handsoff_config import (
     AGENT_ROLES, EVIDENCE_CLASSES, normalized_test_footprint, required_evidence_kinds,
 )
-from handsoff_routing import adaptive_deployment_approval_required
+from handsoff_routing import (
+    adaptive_deployment_approval_required, adaptive_risk_policy, classify_adaptive_risk,
+)
 from handsoff_ledger import (
     VERIFICATION_REQUIREMENTS, _design_errors, _design_review_errors, _last_hash,
     config_hash, criterion_work_item, criterion_work_item_id, derive_work_item_registry,
@@ -702,6 +704,8 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
     if phase >= 3 and full_design_required(status, acceptance, cfg):
         errors.extend(_design_review_errors(status, acceptance, cfg))
         errors.extend(_design_errors(status, acceptance, cfg, root))
+    if phase >= 3:
+        errors.extend(negative_path_errors(acceptance))  # P2.2
     # #42: an open amendment pins the run to the phase and progress it was
     # opened at, forward and back, until it is approved or escalated.
     errors.extend(amendment_freeze_errors(status))
@@ -798,6 +802,8 @@ def compute_errors(status: dict, acceptance: dict, cfg: dict, *, now: datetime |
                     errors.extend(live_rules_errors)  # #170
                 elif approval.get("at") and record.get("at", "") <= approval.get("at", ""):
                     errors.append("live gate: live verification must occur after deployment approval")
+        errors.extend(observation_gate_errors(status, acceptance, cfg, verifications, now))  # P2.3
+        errors.extend(owner_acceptance_errors(status, acceptance, cfg))  # P2.1
 
     design_round = int(status.get("design_round", 0) or 0)
     review_round = int(status.get("review_round", 0) or 0)
@@ -1055,11 +1061,31 @@ CRITERION_UPDATE_FIELDS = ("requirement", "verification", "tests", "type", "stat
                            # P1.1: the observable outcome, the evidence classes
                            # required on top of the policy, and the paths the
                            # evidence depends on (P1.2). All three are spec.
-                           "outcome", "evidence_classes", "paths")
+                           "outcome", "evidence_classes", "paths",
+                           # P2.2: the criterion's risk and its negative-path
+                           # matrix, both spec, so the hash binds them
+                           "risk", "negative_paths")
 
 
 #: P1.1: the optional criterion fields criterion-add and an add operation accept.
-CRITERION_OPTIONAL_ADD_FIELDS = ("mutation_target", "mutation_symbol", "outcome", "evidence_classes", "paths")
+CRITERION_OPTIONAL_ADD_FIELDS = ("mutation_target", "mutation_symbol", "outcome", "evidence_classes", "paths",
+                                 "risk", "negative_paths")
+
+
+#: P2.2: a criterion's risk; absent means normal.
+CRITERION_RISKS = ("normal", "elevated")
+
+
+#: P2.2: the dimensions an elevated criterion's negative-path matrix covers.
+NEGATIVE_PATH_DIMENSIONS = ("unauthorized", "malformed_input", "duplicate", "timeout_retry",
+                            "stale_data", "partial_failure", "rollback")
+
+
+#: P2.2: the prefix of an entry that declares a dimension does not apply.
+NEGATIVE_PATH_NOT_APPLICABLE = "not_applicable"
+
+
+MAX_NEGATIVE_PATH_CHARS = 512
 
 
 MAX_OUTCOME_CHARS = 512
@@ -1120,6 +1146,69 @@ def _criterion_scope_errors(fields: dict, check_commands: list[str] | None) -> l
             errors.append("'paths' must be project-relative, without '..'")
         elif len(set(paths)) != len(paths):
             errors.append("'paths' must not repeat a glob")
+    return errors
+
+
+def _criterion_risk_errors(fields: dict) -> list[str]:
+    """P2.2: risk and negative_paths. Either may be null in an update
+    (clearing it). This checks shape only; whether an elevated criterion's
+    matrix is complete is the phase-3 gate's question
+    (negative_path_errors), so a matrix can be written one dimension at a
+    time."""
+    errors: list[str] = []
+    risk = fields.get("risk")
+    if risk is not None and risk not in CRITERION_RISKS:
+        errors.append(f"'risk' must be one of {', '.join(CRITERION_RISKS)}")
+    matrix = fields.get("negative_paths")
+    if matrix is None:
+        return errors
+    if not isinstance(matrix, dict) or not matrix:
+        errors.append("'negative_paths' must be a non-empty object from dimension to test description")
+        return errors
+    unknown = sorted(str(key) for key in matrix if key not in NEGATIVE_PATH_DIMENSIONS)
+    if unknown:
+        errors.append(f"'negative_paths' has unknown dimension(s) {', '.join(unknown)}; "
+                      f"known: {', '.join(NEGATIVE_PATH_DIMENSIONS)}")
+    for dimension, text in matrix.items():
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_NEGATIVE_PATH_CHARS:
+            errors.append(f"'negative_paths.{dimension}' must be a non-empty string of at most "
+                          f"{MAX_NEGATIVE_PATH_CHARS} characters (a test description or "
+                          f"'{NEGATIVE_PATH_NOT_APPLICABLE}: REASON')")
+    return errors
+
+
+def negative_path_reason_missing(text: object) -> bool:
+    """P2.2: a not_applicable entry with no reason after the colon."""
+    if not isinstance(text, str) or not text.strip().startswith(NEGATIVE_PATH_NOT_APPLICABLE):
+        return False
+    rest = text.strip()[len(NEGATIVE_PATH_NOT_APPLICABLE):]
+    return not rest.startswith(":") or not rest[1:].strip()
+
+
+def negative_path_errors(acceptance: dict) -> list[str]:
+    """P2.2: the phase-3 gate. An elevated criterion names every dimension
+    of its negative-path matrix, each a test description or
+    'not_applicable: REASON'. A normal criterion (risk absent) is never
+    judged here."""
+    errors: list[str] = []
+    for criterion in acceptance.get("criteria", []) if isinstance(acceptance, dict) else []:
+        if not isinstance(criterion, dict) or criterion.get("risk") != "elevated":
+            continue
+        cid = criterion.get("id")
+        matrix = criterion.get("negative_paths") if isinstance(criterion.get("negative_paths"), dict) else {}
+        missing = [dimension for dimension in NEGATIVE_PATH_DIMENSIONS
+                   if not isinstance(matrix.get(dimension), str) or not matrix[dimension].strip()]
+        if missing:
+            errors.append(f"negative-path gate: {cid} is risk elevated and its negative_paths matrix "
+                          f"lacks {' '.join(missing)}; add each with handsoff_supervisor.py "
+                          f"criterion-update {cid} --negative-path DIMENSION=TEXT")
+        reasonless = [dimension for dimension in NEGATIVE_PATH_DIMENSIONS
+                      if negative_path_reason_missing(matrix.get(dimension))]
+        if reasonless:
+            errors.append(f"negative-path gate: {cid} marks {' '.join(reasonless)} "
+                          f"{NEGATIVE_PATH_NOT_APPLICABLE} without a reason; write it as "
+                          f"'{NEGATIVE_PATH_NOT_APPLICABLE}: REASON' with handsoff_supervisor.py "
+                          f"criterion-update {cid} --negative-path DIMENSION=TEXT")
     return errors
 
 
@@ -1197,6 +1286,7 @@ def validate_criterion_fields(fields: dict, *, require_all: bool = False,
                       "'mutation_target' and 'mutation_symbol': the function whose loss its "
                       "tests must detect, chosen at design time and bound to the criterion hash")
     errors.extend(_criterion_scope_errors(fields, check_commands))  # P1.1
+    errors.extend(_criterion_risk_errors(fields))  # P2.2
     return errors
 
 
@@ -1313,7 +1403,8 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
                 raise CriteriaTransactionError(
                     position, op, spec.get("id") if isinstance(spec, dict) else None,
                     "an add criterion has id, type, requirement, verification, tests, and "
-                    "optionally mutation_target, mutation_symbol, outcome, evidence_classes and paths",
+                    "optionally mutation_target, mutation_symbol, outcome, evidence_classes, paths, "
+                    "risk and negative_paths",
                 )
             criterion_id = spec.get("id")
             problems = validate_criterion_fields(spec, require_all=True,
@@ -1337,7 +1428,7 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
             # change the hash of every criterion this path touches.
             for field in sorted(optional_add):
                 if spec.get(field):
-                    criterion[field] = list(spec[field]) if isinstance(spec[field], list) else spec[field]
+                    criterion[field] = deepcopy(spec[field])
             _transaction_test_gate(position, op, criterion, cfg, root)
             criteria.append(criterion)
             if criterion["type"] == "primary_fix":
@@ -1425,12 +1516,12 @@ def plan_criteria_transaction(acceptance: dict, cfg: dict, operations: list[dict
             else:
                 criterion.pop(field, None)
             spec_changed = True
-        for field in ("outcome", "evidence_classes", "paths"):
-            # P1.1: spec fields; null clears, and the key is never stored as null
+        for field in ("outcome", "evidence_classes", "paths", "risk", "negative_paths"):
+            # P1.1, P2.2: spec fields; null clears, and the key is never stored as null
             if field not in fields:
                 continue
             if fields[field]:
-                criterion[field] = list(fields[field]) if isinstance(fields[field], list) else fields[field]
+                criterion[field] = deepcopy(fields[field])
             else:
                 criterion.pop(field, None)
             spec_changed = True
@@ -1518,6 +1609,120 @@ def ci_gate_errors(status: dict) -> list[str]:
     check = watch.get("failed_check") or "a check"
     link = f" ({watch['url']})" if isinstance(watch.get("url"), str) else ""
     return [f"CI: {check} failed on PR #{watch.get('pr')}{link}; rerun or push, then ci-watch --pr {watch.get('pr')} again"]
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def observation_window_current(window: object, criteria: list[dict], cfg: dict) -> bool:
+    """P2.3: an open window still bound to the current acceptance and
+    workflow policy. A stale one never satisfies the gate."""
+    return isinstance(window, dict) and window.get("state") == "open" \
+        and window.get("acceptance_hash") == acceptance_hash(criteria) \
+        and window.get("config_hash") == config_hash(cfg)
+
+
+def observation_confirmation(window: dict, verifications: list[dict]) -> dict | None:
+    """P2.3: the successful live run, other than the one that opened the
+    window, recorded at or after it closes under the same bindings."""
+    closes = _parse_stamp(window.get("closes_at"))
+    if closes is None:
+        return None
+    for record in verifications or []:
+        if record.get("kind") != "live" or record.get("ok") is not True \
+                or record.get("run_id") == window.get("live_id"):
+            continue
+        at = _parse_stamp(record.get("at"))
+        if at is not None and at >= closes \
+                and record.get("acceptance_hash") == window.get("acceptance_hash") \
+                and record.get("config_hash") == window.get("config_hash"):
+            return record
+    return None
+
+
+def observation_gate_errors(status: dict, acceptance: dict, cfg: dict,
+                            verifications: list[dict] | None, now: datetime) -> list[str]:
+    """P2.3: with [checks].observation_minutes above 0, Phase 8 waits for a
+    second successful verify-live at or after the window opened by the
+    first closes. Off (0) adds nothing."""
+    minutes = cfg.get("observation_minutes") or 0
+    if not minutes:
+        return []
+    window = status.get("observation")
+    if not isinstance(window, dict):
+        return [f"observation gate: Phase 8 requires a {minutes:g}-minute post-deployment observation "
+                "window; a successful live run opens it: handsoff_supervisor.py verify-live --by ACTOR"]
+    if window.get("state") == "failed":
+        rollback = window.get("rollback") or {}
+        return [f"observation gate: the observation window failed (live run {rollback.get('run_id')} "
+                f"failed at {rollback.get('at')}); roll back or fix the deployment and a successful "
+                "live run opens a fresh window: handsoff_supervisor.py verify-live --by ACTOR"]
+    if not observation_window_current(window, acceptance.get("criteria", []), cfg):
+        return ["observation gate: the observation window is stale (acceptance or workflow policy changed "
+                "since it opened); a successful live run opens a fresh one: "
+                "handsoff_supervisor.py verify-live --by ACTOR"]
+    if observation_confirmation(window, verifications or []) is not None:
+        return []
+    closes = _parse_stamp(window.get("closes_at"))
+    left = int((closes - now).total_seconds()) if closes is not None else 0
+    if left > 0:
+        return [f"observation gate: the observation window closes at {window.get('closes_at')} "
+                f"({left // 60} min {left % 60} s left); once it closes run "
+                "handsoff_supervisor.py verify-live --by ACTOR"]
+    return [f"observation gate: the observation window closed at {window.get('closes_at')}; "
+            "confirm the deployment held with handsoff_supervisor.py verify-live --by ACTOR"]
+
+
+def owner_acceptance_criteria(status: dict, acceptance: dict, cfg: dict) -> list[str]:
+    """P2.1: the criteria an owner must accept before Phase 8. Empty unless
+    [workflow] owner_acceptance is high_risk and the run is high risk:
+    every elevated criterion, or the primary criterion when only the run's
+    risk class requires a human gate."""
+    if cfg.get("owner_acceptance", "off") != "high_risk":
+        return []
+    criteria = [c for c in acceptance.get("criteria", []) if isinstance(c, dict)]
+    elevated = [c.get("id") for c in criteria if c.get("risk") == "elevated"]
+    if elevated:
+        return elevated
+    risk_class = status.get("risk_class") if isinstance(status, dict) else None
+    try:
+        gated = bool(risk_class) and adaptive_risk_policy(cfg)[classify_adaptive_risk(risk_class)]["human_gate_required"]
+    except (HandsoffError, KeyError):
+        gated = False
+    if not gated:
+        return []
+    return [c.get("id") for c in criteria if c.get("type") == "primary_fix"][:1]
+
+
+def owner_acceptance_errors(status: dict, acceptance: dict, cfg: dict) -> list[str]:
+    """P2.1: each required criterion carries an owner-accept record by a
+    listed owner, bound to the current acceptance hash."""
+    required = owner_acceptance_criteria(status, acceptance, cfg)
+    if not required:
+        return []
+    records = status.get("owner_acceptance") if isinstance(status.get("owner_acceptance"), dict) else {}
+    owners = [str(owner).strip().casefold() for owner in cfg.get("owners") or []]
+    current = acceptance_hash(acceptance.get("criteria", []))
+    errors: list[str] = []
+    for cid in required:
+        record = records.get(cid)
+        if not isinstance(record, dict):
+            reason = "the run is high risk and a listed owner has not accepted it"
+        elif str(record.get("by") or "").strip().casefold() not in owners:
+            reason = f"it was accepted by {record.get('by')} who is not in [workflow] owners"
+        elif record.get("acceptance_hash") != current:
+            reason = "the acceptance registry changed since it was accepted"
+        else:
+            continue
+        errors.append(f"owner acceptance gate: Phase 8 requires owner acceptance of {cid} ({reason}); "
+                      f"a listed owner runs handsoff_supervisor.py owner-accept --criterion {cid} "
+                      "--environment ENV --path PATH --input TEXT --expected TEXT --observed TEXT --by OWNER")
+    return errors
 
 
 def pending_design_decline(status: dict) -> dict | None:

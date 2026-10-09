@@ -25,6 +25,11 @@ deployment_requires_explicit_approval = true
 # Control button) once the independent design review has approved; that
 # review stays mandatory. Default true.
 require_design_approval = true
+# P2.1: "high_risk" makes Phase 8 wait, on a high-risk run, for owner-accept by
+# one of the human identities in owners (for example owners = ["moncy"]).
+# Off by default; changing it is a policy change and revokes approvals.
+owner_acceptance = "off"
+owners = []
 
 [execution]
 # Safe is the portable default. Only an explicitly named local dogfood
@@ -88,6 +93,9 @@ reviewer = 0
 commands = []
 live_commands = []
 timeout_seconds = 600
+# P2.3: minutes between the first successful verify-live and a second one
+# before Phase 8 (a post-deployment observation window); 0 turns it off.
+observation_minutes = 0
 # P1.4: a criterion whose paths include a .github/workflows/ file needs
 # workflow evidence, written only by `workflow-check`, which runs the plain
 # argv commands listed in a workflow_commands array here (for example a

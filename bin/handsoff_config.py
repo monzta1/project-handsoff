@@ -199,6 +199,13 @@ DEFAULT_CONFIG = {
     "check_env": {},
     "check_concurrency": 1,
     "check_source_paths": [],  # #412: [checks].source_paths
+    # P2.3: [checks].observation_minutes, the post-deployment window between
+    # two successful verify-live runs before Phase 8; 0 is off
+    "observation_minutes": 0,
+    # P2.1: [workflow] owner_acceptance (off or high_risk) and the human
+    # identities [workflow] owners that may record owner-accept
+    "owner_acceptance": "off",
+    "owners": [],
     "test_wall_clock_minutes": 20,  # #409: [agent_budget].test_wall_clock_minutes
     "tickets": [],
     "design_evidence": [],
@@ -411,6 +418,14 @@ DEFAULT_TEST_WALL_CLOCK_MINUTES = 20  # #409
 MAX_CHECK_ENV_ENTRIES = 32
 MAX_CHECK_ENV_VALUE_CHARS = 1024
 MAX_CHECK_CONCURRENCY = 8
+
+
+#: P2.3: the longest [checks].observation_minutes, one week.
+MAX_OBSERVATION_MINUTES = 10080
+
+
+#: P2.1: [workflow] owner_acceptance values; off is the default.
+OWNER_ACCEPTANCE_MODES = ("off", "high_risk")
 CHECK_ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 CHECK_ENV_CREDENTIAL_WORDS = ("TOKEN", "SECRET", "PASSWORD", "KEY")
 
@@ -605,6 +620,19 @@ def load_config(root: Path) -> dict:
         if not isinstance(value, bool):
             raise HandsoffError(f"handsoff.toml: workflow.{key} must be boolean")
         cfg[key] = value
+    owner_acceptance = workflow.get("owner_acceptance", "off")
+    if owner_acceptance not in OWNER_ACCEPTANCE_MODES:
+        raise HandsoffError("handsoff.toml: workflow.owner_acceptance must be one of "
+                            + ", ".join(OWNER_ACCEPTANCE_MODES))
+    cfg["owner_acceptance"] = owner_acceptance
+    owners = workflow.get("owners", [])
+    if not isinstance(owners, list) or not all(isinstance(owner, str) and owner.strip() and len(owner) <= 128
+                                               for owner in owners) \
+            or len({owner.strip().casefold() for owner in owners}) != len(owners):
+        raise HandsoffError("handsoff.toml: workflow.owners must be a list of distinct non-empty identities")
+    if owner_acceptance == "high_risk" and not owners:
+        raise HandsoffError("handsoff.toml: workflow.owner_acceptance = \"high_risk\" needs workflow.owners")
+    cfg["owners"] = [owner.strip() for owner in owners]
     waived = not cfg["deployment_requires_explicit_approval"] or not cfg["require_design_approval"]
     if waived and cfg["execution_profile"] != "dogfood":
         raise HandsoffError(
@@ -811,6 +839,12 @@ def load_config(root: Path) -> dict:
             isinstance(item, str) and item.strip() and not item.startswith(("/", "../")) for item in source_paths):
         raise HandsoffError("handsoff.toml: checks.source_paths must be a list of repository-relative paths")
     cfg["check_source_paths"] = list(source_paths)
+    observation = checks.get("observation_minutes", 0)
+    if not isinstance(observation, (int, float)) or isinstance(observation, bool) \
+            or not math.isfinite(observation) or not 0 <= observation <= MAX_OBSERVATION_MINUTES:
+        raise HandsoffError("handsoff.toml: checks.observation_minutes must be a number from 0 to "
+                            f"{MAX_OBSERVATION_MINUTES}")
+    cfg["observation_minutes"] = observation  # P2.3
     for key in ("files", "exclude"):
         value = documentation.get(key, [])
         if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
