@@ -691,6 +691,22 @@ def _changed_since(cwd: Path | str, commit_sha: str, pathspecs: list[str] | None
     return sorted(set(changed))
 
 
+def _session_changed_paths(root: Path, cfg: dict, session: dict) -> list[str]:
+    """E3 review: the paths a failed implementer session changed, for its
+    failure checkpoint: its workspace's change set when it ran in one, else
+    the project tree's changes since HEAD. Never raises; [] when unknown."""
+    try:
+        if isinstance(session.get("workspace"), dict) and session["workspace"].get("path") \
+                and Path(session["workspace"]["path"]).is_dir():
+            return implementer_workspace_changes(cfg, session)
+        state = {cfg["status_file"], cfg["acceptance_file"], cfg["event_log"], cfg["verification_log"]}
+        return [path for path in _changed_since(root, "HEAD")
+                if not any(part.startswith(".handsoff") for part in path.split("/"))
+                and path not in state and not any(path.startswith(name + ".") for name in state)]
+    except Exception:  # noqa: BLE001  the account is best effort, never a failure of its own
+        return []
+
+
 def _workspace_manifest_path(workspace: dict) -> Path:
     """The seed record beside the worktree, outside it and the project."""
     return Path(workspace["path"] + ".seed.json")
@@ -1486,8 +1502,13 @@ def transition_agent_session(root: Path, session_id: str, state: str,
                 if role == "implementer" and state != "cancelled":
                     # P1.6: a budget, timeout or runtime failure leaves its account
                     from handsoff_checkpoint import failure_checkpoint, push_checkpoint
+                    checkpoint_failure = failure
+                    if not failure.get("changed_paths"):
+                        # E3 review: a runtime failure names no paths, so the
+                        # account reads what the session actually changed
+                        checkpoint_failure = {**failure, "changed_paths": _session_changed_paths(root, cfg, updated)}
                     failure_record = push_checkpoint(
-                        updated, failure_checkpoint(updated, failure, failure.get("progress_summary")),
+                        updated, failure_checkpoint(updated, checkpoint_failure, failure.get("progress_summary")),
                         "failure", now)
             if role == "reviewer":
                 warnings = proposed.setdefault("warnings", [])

@@ -197,6 +197,31 @@ class HandoverCheckpointTests(HandsoffTestCase):
                                             requested_model="m", resolution_source="configured")
         self.assertNotIn("checkpoints", reviewer)
 
+    def test_a_failure_without_an_agent_checkpoint_records_the_files_it_changed(self):
+        """E3 review: a budget failure names no paths, so the failure
+        checkpoint reads the session's actual changes from the tree."""
+        import subprocess
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        if not (self.tmp / ".git").exists():
+            subprocess.run(["git", "init", "-q"], cwd=self.tmp, check=True)
+        subprocess.run([*git, "add", "-A"], cwd=self.tmp, check=True, capture_output=True)
+        subprocess.run([*git, "commit", "-qm", "base", "--allow-empty"], cwd=self.tmp, check=True, capture_output=True)
+
+        class _Writes(_FakeProcess):
+            def __init__(inner, root):
+                (root / "changed-before-budget.txt").write_text("partial work\n")
+                super().__init__("", stderr="token budget exhausted\n", returncode=1)
+        factory = mock.Mock(side_effect=lambda *a, **k: _Writes(self.tmp))
+        with self.assertRaises(runtime.AgentLaunchError):
+            runtime.execute_launch(self._spec(), popen_factory=factory, beacon_interval=0.01)
+        status = self.read_status()
+        sid = lib.role_session_ids(status)["implementer"]
+        failure = status["agent_sessions"][sid]["checkpoints"][0]
+        self.assertEqual(failure["source"], "failure")
+        self.assertIn("changed-before-budget.txt", failure["files_changed"])
+        self.assertFalse(any(path.startswith(".handsoff") or path.startswith("handsoff-")
+                             for path in failure["files_changed"]), failure["files_changed"])
+
     def test_a_false_claim_and_invalidated_evidence_both_stay_unfinished(self):
         """[P1.6] completion authority is the current acceptance, never the checkpoint."""
         sid, _ = self._fail_once()

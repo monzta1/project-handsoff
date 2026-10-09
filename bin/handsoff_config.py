@@ -391,10 +391,17 @@ def normalize_public_origins(value, label: str) -> list[str]:
         if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path not in {"", "/"} \
                 or parts.query or parts.fragment or parts.username or parts.password:
             raise HandsoffError(f"{label} entry {item!r} must be scheme://host[:port] with no path")
-        port = parts.port
+        try:
+            port = parts.port
+        except ValueError:
+            raise HandsoffError(f"{label} entry {item!r} has an invalid port") from None
+        if port == 0:
+            # E3 review: port 0 is not a reachable origin, and treating it as
+            # absent let localhost:0 match a plain localhost entry
+            raise HandsoffError(f"{label} entry {item!r} has port 0, which is not a valid origin port")
         default = 443 if parts.scheme == "https" else 80
         host = parts.hostname.lower()
-        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port and port != default else "")
+        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port is not None and port != default else "")
         if canonical not in result:
             result.append(canonical)
     return result

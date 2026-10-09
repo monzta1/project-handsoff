@@ -114,6 +114,14 @@ class TestAddingReports(QaFixture):
             lib.load_config(self.tmp)
         self.assertIn("qa.targets", str(raised.exception))
 
+    def test_port_zero_never_matches_a_portless_origin(self):
+        """E3 review: localhost:0 used to normalise to localhost."""
+        self.allow("http://localhost")
+        self._refused(self.add(target="http://localhost:0/login"), "not an allowlisted [qa].targets origin")
+        with self.assertRaises(lib.HandsoffError) as raised:
+            lib.normalize_public_origins(["http://localhost:0"], "handsoff.toml: qa.targets")
+        self.assertIn("port 0", str(raised.exception))
+
     def test_a_malformed_report_is_refused(self):
         self.allow(LOCAL)
         self.report_file.write_text(json.dumps({"steps": "not a list"}))
