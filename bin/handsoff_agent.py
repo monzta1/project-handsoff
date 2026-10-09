@@ -1855,10 +1855,22 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
 
     def persist_new(items, kind):
         if items:
-            if kind == "review" and spec.compact_scope:
-                # #388: a compact reviewer had no suite to run, whatever it wrote.
-                items[-1]["tests_executed"] = "no"
             lib.record_session_result(root, session_id, kind, items[-1])
+
+    #: #440: Codex's stderr is a transcript that echoes the prompt it was
+    #: given; a verdict line from the launch's own input is not the reviewer's.
+    prompt_review_lines = {text.strip() for text in (spec.stdin or "").splitlines()
+                           if text.strip().startswith(REVIEW_RESULT_PREFIX)}
+
+    def parse_review(line: str, into: list[dict]) -> None:
+        start = len(into)
+        _parse_reviewer_line(line, into, protocol_errors, recovered_results, root)
+        if spec.compact_scope:
+            # #388: a compact reviewer had no suite to run, whatever it wrote.
+            # #440: applied as parsed, not when persisted, so the stderr copy
+            # of a stdout verdict compares equal and stays one verdict.
+            for item in into[start:]:
+                item["tests_executed"] = "no"
     try:
         lib.transition_agent_session(root, session_id, "running", halfway_at=halfway_at)
     except Exception:
@@ -1936,7 +1948,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                             _parse_supervisor_line(line, supervisor_requests, protocol_errors)
                             persist_new(supervisor_requests, "supervisor_request")
                         if spec.role == "reviewer":
-                            _parse_reviewer_line(line, reviewer_results, protocol_errors, recovered_results, root)
+                            parse_review(line, reviewer_results)
                             persist_new(reviewer_results, "review")
                         if spec.role == "architect":
                             _parse_architect_request_line(line, architect_requests, protocol_errors)
@@ -1960,7 +1972,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                         _parse_supervisor_line(pending, supervisor_requests, protocol_errors)
                         persist_new(supervisor_requests, "supervisor_request")
                     if spec.role == "reviewer":
-                        _parse_reviewer_line(pending, reviewer_results, protocol_errors, recovered_results, root)
+                        parse_review(pending, reviewer_results)
                         persist_new(reviewer_results, "review")
                     if spec.role == "architect":
                         _parse_architect_request_line(pending, architect_requests, protocol_errors)
@@ -1994,7 +2006,8 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         # reviewer verdict there is kept whole for the failure path.
         if _raise_question_line(root, spec.role, session_id, line, question_errors, raised_questions):
             question_lines[0] += 1
-        if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX):
+        if spec.role == "reviewer" and line.startswith(REVIEW_RESULT_PREFIX) \
+                and line.strip() not in prompt_review_lines:
             stderr_review_lines.append(line)
 
     def collect_stderr_verdicts() -> None:
@@ -2012,7 +2025,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 # #114: Codex can repeat its final message on stderr; an
                 # identical verdict there is the same verdict, not a second.
                 parsed: list[dict] = []
-                _parse_reviewer_line(line, parsed, protocol_errors, recovered_results, root)
+                parse_review(line, parsed)
                 reviewer_results.extend(item for item in parsed if item not in reviewer_results)
                 persist_new(reviewer_results, "review")
 
