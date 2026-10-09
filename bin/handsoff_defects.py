@@ -22,6 +22,7 @@ differently.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -156,7 +157,7 @@ def _find(root: Path, defect_id: str) -> dict:
     raise HandsoffError(f"defect: no defect {defect_id!r} in {DEFECTS_FILE}")
 
 
-def record_defect(root: Path, fields: dict) -> dict:
+def record_defect(root: Path, fields: dict, *, lock_held: bool = False) -> dict:
     """Append one open defect; returns it as `load_defects` would show it."""
     if not isinstance(fields, dict):
         raise HandsoffError("defect: fields must be an object")
@@ -178,7 +179,8 @@ def record_defect(root: Path, fields: dict) -> dict:
         "at": _now(),
     }
     root = Path(root).resolve()
-    with project_lock(root):
+    # E4 live proof: the CLI already holds the (non-reentrant) project lock
+    with (contextlib.nullcontext() if lock_held else project_lock(root)):
         _read_lines(root)  # refuse to append to a ledger that no longer parses
         _append(root, line)
     return _find(root, line["id"])
@@ -221,7 +223,8 @@ def _current_run(root: Path) -> tuple[dict, dict]:
     return found[0], found[1]
 
 
-def decide_defect(root: Path, defect_id: str, action: str, reason, by: str, run_id=None) -> dict:
+def decide_defect(root: Path, defect_id: str, action: str, reason, by: str, run_id=None, *,
+                  lock_held: bool = False) -> dict:
     """Decline a defect for one run, or close it.
 
     `decline` needs the run id and a reason; the defect stays open, so a
@@ -237,7 +240,7 @@ def decide_defect(root: Path, defect_id: str, action: str, reason, by: str, run_
     actor = _text({"by": by}, "by")
     root = Path(root).resolve()
     line = {"kind": "decision", "defect_id": defect_id, "action": action, "by": actor, "at": _now()}
-    with project_lock(root):
+    with (contextlib.nullcontext() if lock_held else project_lock(root)):
         defect = _find(root, defect_id)
         if defect["state"] == "closed":
             raise HandsoffError(f"defect: {defect_id} is already closed")

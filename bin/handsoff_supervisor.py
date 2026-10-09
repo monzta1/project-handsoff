@@ -2504,8 +2504,8 @@ def cmd_defect(args) -> int:
             if args.action == "record":
                 defect = module.record_defect(root, {
                     "issue": args.issue, "control": args.control, "summary": args.summary,
-                    "regression": args.regression, "paths": list(args.path or []), "recorded_by": args.by,
-                })
+                    "regression": args.regression, "paths": list(args.path or []), "by": args.by,
+                }, lock_held=True)
                 if lib.status_path(root, cfg).is_file():  # a defect may be recorded between runs
                     lib.commit(root, cfg, event_kind="defect_recorded",
                                event_message=f"Escaped defect {defect.get('id')} recorded",
@@ -2515,7 +2515,7 @@ def cmd_defect(args) -> int:
             status, acceptance = _load(root, cfg)
             run_id = defect_run_id(status, lib.read_events(root, cfg))
             if args.action == "decline":
-                defect = module.decide_defect(root, args.id, "decline", args.reason, args.by, run_id=run_id)
+                defect = module.decide_defect(root, args.id, "decline", args.reason, args.by, run_id=run_id, lock_held=True)
                 lib.commit(root, cfg, event_kind="defect_declined",
                            event_message=f"Escaped defect {args.id} declined for this run",
                            defect=args.id, by=args.by, reason=args.reason, defect_run=run_id)
@@ -2527,7 +2527,7 @@ def cmd_defect(args) -> int:
                       "requirement citing it) reached Phase 8")
                 return 1
             defect = module.decide_defect(root, args.id, "close",
-                                          f"adopted by run {run_id}, which reached Phase 8", args.by, run_id=run_id)
+                                          f"adopted by run {run_id}, which reached Phase 8", args.by, run_id=run_id, lock_held=True)
             lib.commit(root, cfg, event_kind="defect_closed", event_message=f"Escaped defect {args.id} closed",
                        defect=args.id, by=args.by, defect_run=run_id)
             print(json.dumps({"closed": defect}, indent=2))

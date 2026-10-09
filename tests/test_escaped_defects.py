@@ -235,3 +235,29 @@ class Digest(LedgerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefectCommandEndToEnd(unittest.TestCase):
+    """E4 live proof: the CLI wiring and the ledger module agreed only in
+    their own tests; drive the real `defect record` command through to the
+    inherited regression and the phase-3 gate."""
+
+    def setUp(self):
+        from tests.test_handsoff_supervisor import HandsoffTestCase  # noqa: F401  (fixture helpers)
+        self.root = Path(tempfile.mkdtemp(prefix="handsoff-test-defects-cli-")).resolve()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        shutil.copy2(Path(BIN).parent / "handsoff.toml", self.root / "handsoff.toml")
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+
+    def cli(self, *argv):
+        return subprocess.run([sys.executable, str(Path(BIN) / "handsoff_supervisor.py"), "--root", str(self.root),
+                               *argv], capture_output=True, text=True, cwd=self.root)
+
+    def test_record_then_a_new_run_inherits_it(self):
+        recorded = self.cli("defect", "record", "--issue", "#8", "--control", "test_selection",
+                            "--summary", "escaped", "--regression", "keep the docstring",
+                            "--path", "stats/**", "--by", "pilot")
+        self.assertEqual(recorded.returncode, 0, recorded.stdout + recorded.stderr)
+        defect = json.loads(recorded.stdout)["recorded"]
+        self.assertEqual(defect["recorded_by"], "pilot")
+        self.assertEqual([d["id"] for d in defects.load_defects(self.root)], [defect["id"]])
