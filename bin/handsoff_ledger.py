@@ -52,6 +52,7 @@ from handsoff_config import (  # noqa: F401
     DEFAULT_SMALL_FIX_MAX_CRITERIA,
     DEFAULT_SMALL_FIX_MAX_FILES,
     FEATURES,
+    criterion_workflow_paths,
     load_config,
     required_evidence_kinds,
 )
@@ -289,6 +290,39 @@ def criterion_scope_digests(criteria: list[dict], entries: dict[str, str | None]
             if isinstance(c, dict) and c.get("id") and isinstance(c.get("paths"), list) and c["paths"]}
 
 
+def workflow_digest(criterion: dict, entries: dict[str, str | None]) -> str:
+    """P1.4: the digest a criterion's workflow evidence binds to: the
+    scoped digest of its workflow files (criterion_workflow_paths)."""
+    return scoped_digest(entries, criterion_workflow_paths(criterion))
+
+
+def _workflow_drift(root: Path, acceptance: dict, verifications: list[dict],
+                    current_entries: dict, result: dict) -> None:
+    """P1.4: a criterion's newest workflow record is stale once its
+    workflow files no longer have the digest the harness ran on."""
+    for criterion in acceptance.get("criteria", []):
+        if not isinstance(criterion, dict) or "workflow" not in required_evidence_kinds(criterion):
+            continue
+        cid = criterion.get("id")
+        record = next((candidate for candidate in reversed(verifications)
+                       if candidate.get("kind") == "workflow" and candidate.get("ok") is True
+                       and cid in candidate.get("criteria", [])
+                       and candidate.get("criterion_hashes", {}).get(cid) == criterion_spec_hash(criterion)), None)
+        if record is None:
+            continue
+        if (record.get("scope_digests") or {}).get(cid) == workflow_digest(criterion, current_entries):
+            continue
+        patterns = criterion_workflow_paths(criterion)
+        old_entries = _snapshot_entries(root, record.get("repository_digest"))
+        changed = ([path for path in _changed_entries(old_entries, current_entries) if path_in_scope(path, patterns)]
+                   if old_entries is not None else [])
+        result["workflow_stale"].append(cid)
+        result["invalidated"].append({"criterion": cid, "changed_paths": changed[:32],
+                                      "reason": "workflow files changed"})
+        result["refresh_commands"].append(
+            f"handsoff_supervisor.py workflow-check --criterion {cid} --by ACTOR")
+
+
 def _snapshot_entries(root: Path, digest: str | None) -> dict | None:
     snapshot_path = root / ".handsoff-digests" / f"{digest}.json"
     if not digest or not snapshot_path.is_file():
@@ -338,7 +372,7 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
     result = {"current_digest": current_digest, "current": [], "stale": [],
               "unknown": [], "refresh_commands": [], "changed_paths": [],
               "changed_paths_truncated": False, "changed_paths_note": None,
-              "invalidated": []}
+              "invalidated": [], "workflow_stale": []}
     for criterion in acceptance.get("criteria", []):
         cid = criterion.get("id")
         if "checks" not in required_evidence_kinds(criterion):  # P1.1
@@ -389,6 +423,7 @@ def evidence_drift(root: Path, cfg: dict, acceptance: dict,
             result["invalidated"].append({"criterion": cid, "changed_paths": (changed or [])[:32]})
             result["refresh_commands"].append(
                 f"handsoff_supervisor.py verify --criterion {cid} --by ACTOR")
+    _workflow_drift(root, acceptance, verifications, current_entries, result)  # P1.4
     result.update(untracked_scratch_drift(root, cfg, result["changed_paths"],
                                           truncated=result["changed_paths_truncated"]))
     return result

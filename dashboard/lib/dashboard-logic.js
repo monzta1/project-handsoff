@@ -273,6 +273,20 @@ function designEvidenceDetail(artifact) {
   return parts.join(" · ") || "No measurement recorded.";
 }
 
+// P1.5: QA reports no other actor has mapped to a criterion. They are
+// untrusted side records and count toward no gate.
+function pendingQaReports(status) {
+  return (Array.isArray(status?.qa_reports) ? status.qa_reports : [])
+    .filter((report) => report && typeof report === "object"
+      && !(Array.isArray(report.mapped) && report.mapped.length));
+}
+
+function qaReportDetail(report) {
+  const findings = Number.isInteger(report?.findings) ? report.findings : 0;
+  return `${report?.target || "unknown target"} · by ${report?.author || "unknown"} · `
+    + `${findings} finding${findings === 1 ? "" : "s"} · awaiting qa-report map by another actor`;
+}
+
 function eventDetail(event) {
   if (String(event?.kind || "") === "design_evidence_recorded") {
     return [
@@ -985,6 +999,8 @@ if (typeof module !== "undefined" && module.exports) {
     DESIGN_EVIDENCE_STATES,
     designEvidenceState,
     designEvidenceDetail,
+    pendingQaReports,
+    qaReportDetail,
     profileSourceLabel,
     LIVE_STATES,
     liveStateLabel,

@@ -2073,6 +2073,37 @@
         "started_at",
         "watched_by"
       ]
+    },
+    "qa_reports": {
+      "description": "P1.5: untrusted QA reports (full record in .handsoff-qa/<id>.json); evidence only once mapped by another actor",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "author", "target", "added_at", "findings", "report_sha256", "mapped"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^qa-[0-9a-f]{12}$"},
+          "author": {"type": "string", "minLength": 1},
+          "target": {"type": "string", "minLength": 1},
+          "added_at": {"type": "string", "format": "date-time"},
+          "findings": {"type": "integer", "minimum": 0},
+          "report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "mapped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["criterion", "by", "run_id", "at"],
+              "properties": {
+                "criterion": {"type": "string"},
+                "by": {"type": "string", "minLength": 1},
+                "run_id": {"type": "string"},
+                "at": {"type": "string", "format": "date-time"}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

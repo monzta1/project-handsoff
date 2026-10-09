@@ -108,7 +108,8 @@
               "enum": [
                 "checks",
                 "manual",
-                "browser"
+                "browser",
+                "workflow"
               ]
             },
             "description": "P1.1: evidence kinds required on top of the verification policy; checks needs tests among [checks].commands; mutation is policy-only (automated_and_mutation)"

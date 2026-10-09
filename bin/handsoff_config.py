@@ -187,6 +187,12 @@ DEFAULT_CONFIG = {
     # accepted. Fleet reads HANDSOFF_PUBLIC_ORIGINS instead (no project).
     "public_origins": [],
     "live_check_commands": [],
+    # P1.4: [checks].workflow_commands, plain argv run by workflow-check (a
+    # disposable-repository harness for .github/workflows changes)
+    "workflow_commands": [],
+    # P1.5: [qa].targets, the exact origins a QA report may name; empty
+    # means no QA report is accepted until the project configures one
+    "qa_targets": [],
     "check_timeout_seconds": 600,
     # #410: [checks].env, applied to every verification command and recorded
     # with its evidence, and [checks].concurrency for verify --all
@@ -385,10 +391,17 @@ def normalize_public_origins(value, label: str) -> list[str]:
         if parts.scheme not in {"http", "https"} or not parts.hostname or parts.path not in {"", "/"} \
                 or parts.query or parts.fragment or parts.username or parts.password:
             raise HandsoffError(f"{label} entry {item!r} must be scheme://host[:port] with no path")
-        port = parts.port
+        try:
+            port = parts.port
+        except ValueError:
+            raise HandsoffError(f"{label} entry {item!r} has an invalid port") from None
+        if port == 0:
+            # E3 review: port 0 is not a reachable origin, and treating it as
+            # absent let localhost:0 match a plain localhost entry
+            raise HandsoffError(f"{label} entry {item!r} has port 0, which is not a valid origin port")
         default = 443 if parts.scheme == "https" else 80
         host = parts.hostname.lower()
-        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port and port != default else "")
+        canonical = f"{parts.scheme}://{host}" + (f":{port}" if port is not None and port != default else "")
         if canonical not in result:
             result.append(canonical)
     return result
@@ -763,6 +776,20 @@ def load_config(root: Path) -> dict:
             assert_plain_command(command)
         except HandsoffError as exc:
             raise HandsoffError(f"handsoff.toml: checks.live_commands[{index}]: {exc}") from exc
+    workflow_commands = checks.get("workflow_commands", [])
+    if not isinstance(workflow_commands, list) or not all(isinstance(cmd, str) and cmd.strip()
+                                                          for cmd in workflow_commands):
+        raise HandsoffError("handsoff.toml: checks.workflow_commands must be an array of non-empty command strings")
+    for index, command in enumerate(workflow_commands):
+        try:
+            assert_plain_command(command)  # P1.4: plain argv, like live_commands
+        except HandsoffError as exc:
+            raise HandsoffError(f"handsoff.toml: checks.workflow_commands[{index}]: {exc}") from exc
+    cfg["workflow_commands"] = list(workflow_commands)
+    qa_table = raw.get("qa", {})
+    if not isinstance(qa_table, dict) or set(qa_table) - {"targets"}:
+        raise HandsoffError("handsoff.toml: qa must be a table whose only key is targets")
+    cfg["qa_targets"] = normalize_public_origins(qa_table.get("targets", []), "handsoff.toml: qa.targets")
     implementer_commands = implementer.get("commands", [])
     if not isinstance(implementer_commands, list) or not all(isinstance(cmd, str) and cmd.strip() for cmd in implementer_commands):
         raise HandsoffError("handsoff.toml: implementer.commands must be an array of non-empty command strings")
@@ -1229,19 +1256,42 @@ VERIFICATION_REQUIREMENTS = {
 #: P1.1: the evidence classes a criterion may declare on top of its policy.
 #: Mutation stays policy-only (automated_and_mutation), since its proof
 #: needs the declared target and symbol.
-EVIDENCE_CLASSES = ("checks", "manual", "browser")
+EVIDENCE_CLASSES = ("checks", "manual", "browser", "workflow")
+
+#: P1.4: a criterion path under this directory is a CI workflow file.
+WORKFLOW_DIRECTORY = ".github/workflows"
+
+
+def criterion_workflow_paths(criterion: dict) -> list[str]:
+    """P1.4: the workflow files a criterion's workflow evidence binds to:
+    its paths under .github/workflows/, or the whole directory when it
+    declares evidence_classes workflow without naming one."""
+    if not isinstance(criterion, dict):
+        return []
+    paths = []
+    for pattern in criterion.get("paths") or []:
+        normal = "/".join(part for part in str(pattern).replace("\\", "/").split("/") if part not in {"", "."})
+        if normal == WORKFLOW_DIRECTORY or normal.startswith(WORKFLOW_DIRECTORY + "/"):
+            paths.append(pattern)
+    if not paths and "workflow" in (criterion.get("evidence_classes") or []):
+        paths = [WORKFLOW_DIRECTORY]
+    return paths
 
 
 def required_evidence_kinds(criterion: dict) -> set[str]:
     """P1.1: every evidence kind a criterion needs before it passes: its
     verification policy's kinds plus its declared evidence_classes. A
-    criterion without evidence_classes needs exactly its policy's kinds."""
+    criterion without evidence_classes needs exactly its policy's kinds.
+    P1.4: a criterion whose paths include a .github/workflows/ file also
+    needs workflow evidence, so checks alone never satisfy it."""
     if not isinstance(criterion, dict):
         return set()
     required = set(VERIFICATION_REQUIREMENTS.get(criterion.get("verification"), set()))
     classes = criterion.get("evidence_classes")
     if required and isinstance(classes, list):
         required |= {kind for kind in classes if kind in EVIDENCE_CLASSES}
+    if required and criterion_workflow_paths(criterion):
+        required.add("workflow")
     return required
 
 # #300: moved down from handsoff_lib so handsoff_evidence can use the ONE

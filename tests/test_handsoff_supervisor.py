@@ -2289,7 +2289,10 @@ class TestAgentRuntimeTelemetry(HandsoffTestCase):
             "usage": {"source": "not reported", "tokens_in": None, "tokens_out": None, "tokens_total": None},
             # #409: an implementer's session records its halfway mark
             "halfway_at": session["halfway_at"],
+            # P1.6: an implementer launch writes its launch checkpoint
+            "checkpoints": session["checkpoints"],
         })
+        self.assertEqual([c["source"] for c in session["checkpoints"]], ["launch"])
         self.assertIsNotNone(session["running_at"])
         self.assertIsNotNone(session["halfway_at"])
         self.assertIsNotNone(session["ended_at"])
@@ -6265,8 +6268,10 @@ class TestOutputLiveness(HandsoffTestCase):
             self.assertEqual(status_after[key], status_before[key], key)
         self.assertEqual(self.read_acceptance(), acceptance_before)
         new_events = self._events()[events_before:]
+        # P1.6: an implementer launch also records its launch checkpoint
         self.assertEqual([event["kind"] for event in new_events],
-                         ["agent_session_launching", "agent_session_running", "agent_session_completed"])
+                         ["checkpoint_recorded", "agent_session_launching", "agent_session_running",
+                          "agent_session_completed"])
         persisted = "\n".join(path.read_text() for path in (
             self.tmp / "handsoff-status.json", self.tmp / "handsoff-events.jsonl",
             self.lib.output_liveness_path(self.tmp)))
