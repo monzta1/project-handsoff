@@ -51,7 +51,8 @@ test("shard grid exposes state, counts, and bounded server-provided rows", () =>
 test("dashboard progress is fed by the shared versioned five-shard inventory", () => {
   assert.match(regressionRunner, /INVENTORY_SCHEMA_VERSION = 1/);
   assert.match(regressionRunner, /INVENTORY_VIEWS = \("local", "ci", "release", "dashboard"\)/);
-  assert.match(regressionRunner, /snapshot\["inventory"\] = state\["inventory"\]/);
+  // #448: the snapshot names the inventory; its id lists stay in the inventory file.
+  assert.match(regressionRunner, /snapshot\["inventory"\] = _compact_inventory\(state\["inventory"\]\)/);
   assert.match(regressionRunner, /snapshot\["inventory_id"\]/);
   assert.match(regressionRunner, /DEFAULT_SHARDS = 5/);
   assert.match(regressionRunner, /def balanced_shards\(/);

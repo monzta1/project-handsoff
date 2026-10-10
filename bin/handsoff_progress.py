@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -49,9 +50,27 @@ def progress_path(root: Path) -> Path:
     return Path(root) / PROGRESS_FILE
 
 
+def transient_replace(path: Path, payload: bytes) -> None:
+    """#448: atomically replace a side-telemetry file, without fsync or a .bak.
+
+    Progress files are rebuilt by the next run and are never evidence, so a
+    crash may lose the last write but never leaves a torn file: readers see
+    the previous complete bytes or the new ones."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    try:
+        tmp.write_bytes(bytes(payload))
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _atomic_write(path: Path, payload: dict) -> None:
     rendered = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-    lib.durable_replace(path, rendered.encode("utf-8"))
+    transient_replace(path, rendered.encode("utf-8"))
 
 
 @contextmanager
@@ -209,7 +228,18 @@ def read(root: Path, *, run_id: str | None = None, request_id: str | None = None
                 "command_sha256": command_hash, "execution_id": execution_id}
     if any(value is not None and payload.get(key) != value for key, value in expected.items()):
         return None
-    if payload.get("state") not in STATES or not isinstance(payload.get("execution_id"), str):
+    age = _fresh_age(payload, now)
+    if age is None:
+        return None
+    payload["age_seconds"] = max(round(age, 3), 0)
+    payload["units"] = list(payload.get("units") or [])[:MAX_VISIBLE_UNITS]
+    payload["visible_unit_count"] = len(payload["units"])
+    return payload
+
+
+def _fresh_age(payload: dict, now: datetime | None) -> float | None:
+    if not isinstance(payload, dict) or payload.get("state") not in STATES \
+            or not isinstance(payload.get("execution_id"), str):
         return None
     reference = _parse(payload.get("finished_at") if payload.get("state") in TERMINAL_STATES
                        else payload.get("heartbeat_at"))
@@ -217,12 +247,14 @@ def read(root: Path, *, run_id: str | None = None, request_id: str | None = None
         return None
     age = ((now or datetime.now(timezone.utc)) - reference).total_seconds()
     ceiling = TERMINAL_RETENTION_SECONDS if payload.get("state") in TERMINAL_STATES else STALE_SECONDS
-    if age > ceiling:
-        return None
-    payload["age_seconds"] = max(round(age, 3), 0)
-    payload["units"] = list(payload.get("units") or [])[:MAX_VISIBLE_UNITS]
-    payload["visible_unit_count"] = len(payload["units"])
-    return payload
+    return None if age > ceiling else age
+
+
+def is_fresh(payload: dict, now: datetime | None = None) -> bool:
+    """#448: read()'s freshness rule on an already-parsed payload, without I/O
+    or mutation, so a caller holding a cached parse can re-judge it as time
+    passes."""
+    return _fresh_age(payload, now) is not None
 
 
 def from_ci(run_id: str, ci: dict, *, now: datetime | None = None) -> dict | None:

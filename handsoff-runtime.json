@@ -11,7 +11,7 @@
     "bin/handsoff_cohorts.py": "d7b253993955ab7dce8f65aa2d3b8a33420ba5f3a84c8a84c03fcd51d4b50e35",
     "bin/handsoff_config.py": "072bbda12aedf7da87267c93e1513f53df269d77d18a8534ebaaaa977ef492f3",
     "bin/handsoff_core.py": "af6cf957468942a76a920b466c518247f8fb34b8cce5d235894e193c89ef72dd",
-    "bin/handsoff_dashboard.py": "9f1f36c4cc3154aa9ba3330211198414e6aa6302f2e144fc7d2fb9e303637b28",
+    "bin/handsoff_dashboard.py": "83319b667d08e93e84ff7fe00130347b7e8feffbcb5fa0f2d702d2c28326fbc8",
     "bin/handsoff_defects.py": "2a4b73705868f3dd0aee7d6fc13f0155bb663de7d7390731ab776a8150d2e0ea",
     "bin/handsoff_evidence.py": "f165222647ec17f947547507f4a12c0fab4e199d5140ca08319800895ad1539d",
     "bin/handsoff_evidence_routing.py": "87bcb9fa4ec29bd832350506ff508dde89e4eca2c834f783c410bb21c46ddfb8",
@@ -24,10 +24,10 @@
     "bin/handsoff_observability.py": "aee306d90814351bea0df8bd2372a1fe5dd3aa335bcb208b4bf52820a21e1e87",
     "bin/handsoff_ollama.py": "0e5b32532c7e7052acd227e76f6c92d3c86d044e44edc6ecd2b15ab649f248ac",
     "bin/handsoff_preflight.py": "31483bc4c2e853967c127fee6dc0fc7ed00f7012187394554d24c3280790acb5",
-    "bin/handsoff_progress.py": "1cd5066f46c393b9360e0d1baec453a103505aa24a59a61b40332dd8bfae9a9e",
+    "bin/handsoff_progress.py": "c1f570f5d9183c3b8775a81ff32e4bc472f3adfda2b2607da577c69975c6ab72",
     "bin/handsoff_projection.py": "2bba85d074514ae2dd716de8bdd7e0e7dd15af00b8e3e1a04d1156ac8a038100",
     "bin/handsoff_queue.py": "ffd84c7a868797f27eaae30ec0860c8136b675db4c7f7ea291ef7a2885f0267c",
-    "bin/handsoff_regress.py": "d2c7fcba1d068f63eeb2dc72c21e557af480d98cd4032330d0712285658d8a5b",
+    "bin/handsoff_regress.py": "0f22bc568d9eb1d15938bc2b713a4363413eaf62f198a1b1e74f11f8134af1be",
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",
     "bin/handsoff_release_transaction.py": "672f9b59ec31bdbf7755ae3541dd13dd28b8b9797b1404f727fa0a8cf4a1d5e5",
     "bin/handsoff_resources.py": "7ed15d221d01ae48bb014c292cbae9b0e784fc4cc9eb61912d3c94a7877f6444",
@@ -79,5 +79,5 @@
     "templates/handsoff.toml": "8a22c2e6e73ab1b9a4b0e1a33ed59971f8d827bdae59f8fd2686c96431fe73ca"
   },
   "schema": 1,
-  "version": "v0.5.18"
+  "version": "v0.5.19"
 }
