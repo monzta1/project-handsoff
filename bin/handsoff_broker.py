@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,6 +30,42 @@ HUMAN_ONLY_COMMANDS = {
     "owner-accept",  # P2.1: an owner's observation is never a managed role's
 }
 _SUPERVISOR_HOST_CAPABILITY = object()
+#: #445: how much of a failed workflow command's output its error carries.
+MAX_WORKFLOW_OUTPUT_TAIL = 600
+
+
+class BrokeredWorkflowError(lib.HandsoffError):
+    """#445: a brokered workflow command exited non-zero. The message names
+    the status and the command's output, because the status alone ("exited
+    with status 1") never said why criteria-apply refused. Stderr comes
+    first and is never displaced by stdout; stdout fills what room is left,
+    because the supervisor CLI prints its SHIP_FEATURE_BLOCKED refusal there."""
+    def __init__(self, returncode: int, stderr: str, stdout: str = ""):
+        self.returncode = returncode
+        self.stderr_tail = " ".join(stderr.split())[-MAX_WORKFLOW_OUTPUT_TAIL:]
+        self.stdout_tail = " ".join(stdout.split())[-MAX_WORKFLOW_OUTPUT_TAIL:]
+        self.output_tail = self.tail(MAX_WORKFLOW_OUTPUT_TAIL)
+        message = f"brokered workflow command exited with status {returncode}"
+        super().__init__(f"{message}: {self.output_tail}" if self.output_tail else message)
+
+    def tail(self, limit: int) -> str:
+        """At most `limit` characters: stderr's tail, then stdout's in the rest."""
+        err, out = self.stderr_tail, self.stdout_tail
+        if not err:
+            return out[-limit:]
+        if not out or len(err) >= limit - 1:
+            return err[-limit:]
+        return f"{err} {out[-(limit - len(err) - 1):]}"
+
+
+def _relay(captured, stream) -> str:
+    """#445: hand the host the output it used to inherit, and keep its text."""
+    captured.seek(0)
+    text = captured.read().decode("utf-8", errors="replace")
+    if text:
+        stream.write(text)
+        stream.flush()
+    return text
 
 #: #217: the exact field sets of every HANDSOFF_BROKER_REQUEST command the broker
 #: dispatches, (required, optional); playbook/protocol.md is derived from this
@@ -471,21 +508,30 @@ def execute_request(root: Path, request: dict, *, capability: object,
         )
     if action == "workflow":
         argv = _workflow_argv(root, request)
-        process = workflow_popen(
-            argv, cwd=str(root), stdin=None, stdout=None, stderr=None,
-            text=True, shell=False, start_new_session=True,
-        )
         timeout = lib.load_config(root)["check_timeout_seconds"]
-        try:
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            agent_runtime._stop_process_group(process)
-            raise lib.HandsoffError(f"brokered workflow command timed out after {timeout} seconds") from exc
-        except KeyboardInterrupt as exc:
-            agent_runtime._stop_process_group(process)
-            raise lib.HandsoffError("brokered workflow command cancelled") from exc
+        # #445: output goes to files, not pipes: wait() keeps its timeout and
+        # cancel handling and a chatty command cannot fill a pipe and stall.
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            process = workflow_popen(
+                argv, cwd=str(root), stdin=None, stdout=out, stderr=err,
+                text=True, shell=False, start_new_session=True,
+            )
+
+            def relay() -> tuple[str, str]:
+                return _relay(err, sys.stderr), _relay(out, sys.stdout)
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                agent_runtime._stop_process_group(process)
+                relay()
+                raise lib.HandsoffError(f"brokered workflow command timed out after {timeout} seconds") from exc
+            except KeyboardInterrupt as exc:
+                agent_runtime._stop_process_group(process)
+                relay()
+                raise lib.HandsoffError("brokered workflow command cancelled") from exc
+            stderr_text, stdout_text = relay()
         if returncode:
-            raise lib.HandsoffError(f"brokered workflow command exited with status {returncode}")
+            raise BrokeredWorkflowError(returncode, stderr_text, stdout_text)
         return 0
     raise lib.HandsoffError("broker action must be workflow, launch_role, or quality_finding")
 
