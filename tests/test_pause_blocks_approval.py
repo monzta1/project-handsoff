@@ -81,7 +81,9 @@ class PauseBlocksApprovalTests(HandsoffTestCase):
         self.assertTrue(request["required"])
         self.assertEqual(request["kind"], "approval_blocked_by_pause")
         message = request["message"]
-        self.assertEqual(message, dashboard.approval_blocked_by_pause_message(pause))
+        # #466: served with the run's root filled in, so the command runs as printed
+        self.assertEqual(message, dashboard.approval_blocked_by_pause_message(pause, self.tmp))
+        self.assertNotIn("<root>", message)
         for part in ("Sentinel", pause["since"], "human-pause-end"):
             self.assertIn(part, message)
         # no AUTHORIZE DEPLOYMENT control: the button shows only for deployment_approval,

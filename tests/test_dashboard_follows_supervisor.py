@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from tests.guards import guard
 from tests.fixture_state import write_version_pin
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
 
@@ -435,6 +436,7 @@ class ScratchRunFixture(unittest.TestCase):
                          str(root.resolve()))
 
 
+@guard
 class PrintedCommandsRun(DeploymentGateCase):
     """REQ-002: the closed set of command templates the dashboard and the
     supervisor print for a human, each filled and parsed by the stable CLI."""

@@ -74,7 +74,7 @@
     "rules/reviewer-packet-finding-length.json": "2992e4d53add447243de01939fec8500d6f9d8515ca75cf4842087ac4ef9efdb",
     "rules/reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
     "schemas/acceptance.schema.json": "c60d458fd22d275395af86ad3d51742c82886055c6f0868d8858bd11ea399bec",
-    "schemas/snapshot.schema.json": "aa3418ba2079d8932b0a7afc327b24529687749dac7468ac47279500dccd8450",
+    "schemas/snapshot.schema.json": "e5ef94f31786df86218dde3d54dbb55a7afcb9ca64e48515883253570611b891",
     "schemas/status.schema.json": "d561e0deb76cdf6867a07e1257d4cf0eae7890419a46581f0556d4140bf23037",
     "templates/handsoff.toml": "8a22c2e6e73ab1b9a4b0e1a33ed59971f8d827bdae59f8fd2686c96431fe73ca"
   },

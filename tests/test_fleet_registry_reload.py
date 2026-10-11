@@ -15,11 +15,13 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from unittest import mock
 
 from tests.fixture_state import force_status, write_version_pin
 from tests.test_handsoff_supervisor import BIN, ROOT, HandsoffTestCase, normalize_fixture_config, run
 
 sys.path.insert(0, str(BIN))
+import handsoff_dashboard as dashboard  # noqa: E402
 import handsoff_fleet as fleet  # noqa: E402
 import handsoff_lib as lib  # noqa: E402
 
@@ -127,7 +129,7 @@ class NoApprovalPhase7Tests(HandsoffTestCase):
         status = self.read_status()
         status.update(phase_number=7, phase=lib.PHASES[7], status="in_progress", deployment_approved=None,
                       next_action=lib.NEXT_ACTION_DEFAULTS[7])
-        force_status(self.tmp, cfg, status)
+        force_status(self.tmp, cfg, status, anchor=True)  # #466: the gate reads the event chain
         return cfg
 
     def card(self):
@@ -153,7 +155,11 @@ class NoApprovalPhase7Tests(HandsoffTestCase):
     def test_required_the_card_keeps_today_text_and_the_authorize_deployment_decision(self):
         cfg = self.phase7(required=True)
         self.assertTrue(lib.adaptive_deployment_approval_required(self.read_status(), cfg))
-        card = self.card()
+        # #466: the offer follows the gate; this skeletal Phase 7 fixture has no
+        # reviews, so the gate's own refusals are stubbed to none here (the
+        # gate-offer agreement is pinned in tests.test_dashboard_follows_supervisor).
+        with mock.patch.object(dashboard.supervisor, "deployment_approval_refusals", return_value=[]):
+            card = self.card()
         self.assertEqual(card["next_action"], lib.NEXT_ACTION_DEFAULTS[7])
         self.assertIn("deployment_approve", [item.get("kind") for item in card["decisions"]])
         self.assertEqual(card["state"], "waiting")
