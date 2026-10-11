@@ -956,6 +956,14 @@ function ciNote(ci) {
   return typeof ci.note === "string" && ci.note ? ci.note : "";
 }
 
+// #442: the deadline in force for a regression request. Once accepted, the
+// launch deadline regression-run enforces; before that, the approval expiry.
+function regressionDeadline(request) {
+  if (!request) return { label: "Expires", at: null };
+  if (request.accept_expires_at) return { label: "Launch by", at: request.accept_expires_at };
+  return { label: "Expires", at: request.expires_at || null };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     baselineLabel,
@@ -1045,6 +1053,7 @@ if (typeof module !== "undefined" && module.exports) {
     ciCellLabel,
     ciTicked,
     ciNote,
+    regressionDeadline,
     progressSummaryLabel,
     adaptiveRoutingView,
     adaptiveRoutingModelLabel,

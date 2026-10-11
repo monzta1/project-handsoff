@@ -736,6 +736,10 @@
             "type": "string",
             "format": "date-time"
           },
+          "accept_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
           "decided_by": {
             "type": [
               "string",

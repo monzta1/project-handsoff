@@ -3187,10 +3187,16 @@ def cmd_regression_decide(args) -> int:
             item["state"] = decision
         item["decided_by"] = actor
         item["decided_at"] = now.isoformat()
+        if decision == "accepted":
+            # #442: the launch deadline regression-run enforces, stored so
+            # status and Mission Control show it instead of expires_at.
+            item["accept_expires_at"] = (
+                now + timedelta(minutes=cfg["regression_gate"]["launch_window_minutes"])).isoformat()
         status["updated_at"] = now.isoformat()
         lib.commit(root, cfg, status=status, event_kind=f"regression_{decision}",
                    event_message=f"Regression request {decision}", request_id=item["request_id"], by=actor)
-    print(f"REGRESSION_{decision.upper()}: {item['request_id']}")
+    launch_by = f" (launch by {item['accept_expires_at']})" if decision == "accepted" else ""
+    print(f"REGRESSION_{decision.upper()}: {item['request_id']}{launch_by}")
     return 0 if decision in {"accepted", "declined"} else 1
 
 
@@ -3228,8 +3234,11 @@ def cmd_regression_run(args) -> int:
             print("REGRESSION_BLOCKED: request has not been accepted" + _launched_regression_hint(item))
             return 1
         now = datetime.now(timezone.utc)
-        accepted_at = datetime.fromisoformat(item["decided_at"])
-        launch_deadline = accepted_at + timedelta(minutes=cfg["regression_gate"]["launch_window_minutes"])
+        if item.get("accept_expires_at"):  # #442: the deadline status shows
+            launch_deadline = datetime.fromisoformat(item["accept_expires_at"])
+        else:  # accepted before #442 stored it
+            launch_deadline = datetime.fromisoformat(item["decided_at"]) + timedelta(
+                minutes=cfg["regression_gate"]["launch_window_minutes"])
         if now > launch_deadline or not _same_regression_bindings(item, root, cfg, acceptance, status):
             item["state"] = "expired" if now > launch_deadline else "invalidated"
             item["completed_at"] = now.isoformat()
