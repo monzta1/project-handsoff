@@ -15,8 +15,8 @@
     "bin/handsoff_defects.py": "2a4b73705868f3dd0aee7d6fc13f0155bb663de7d7390731ab776a8150d2e0ea",
     "bin/handsoff_evidence.py": "f165222647ec17f947547507f4a12c0fab4e199d5140ca08319800895ad1539d",
     "bin/handsoff_evidence_routing.py": "87bcb9fa4ec29bd832350506ff508dde89e4eca2c834f783c410bb21c46ddfb8",
-    "bin/handsoff_fleet.py": "3730c62f2f0eba92be31941f3687214e85a0b5b9dc857b63071b6bc4db67067e",
-    "bin/handsoff_fleet_signals.py": "ceafc09f9f756b127e9e114f01ea9bf7c00a27e48e0446f7007c296150531aba",
+    "bin/handsoff_fleet.py": "4d3962cc55d6c52ec55a10218b149b73220f089ba3d6b95aff7a0cf09c18158b",
+    "bin/handsoff_fleet_signals.py": "de88870a88e4b9c3a18040eda7cff99223a4f28bd46bbbc3988326f57c57fe70",
     "bin/handsoff_ledger.py": "90b949ec831556a858f6b606d9dfcc2a5217ae685678c02903e5b341651a6ff8",
     "bin/handsoff_lib.py": "ac973cd0a067876f370e1111420b228b014f47c73a90a656c941882df34cce8a",
     "bin/handsoff_manifest.py": "a6a17520b18d2402fc743b45837eeabd2ffb00306d2c7d25f14343b97fd3e8e5",
@@ -48,11 +48,11 @@
     "dashboard/regression.html": "8d97de2a33210dea66bf151ba282d2f789f1ec7a46af22cc386175ecfcb61b52",
     "dashboard/regression.js": "3e0fd2637c6ddb7d5719ad705cc5142ad84e36b3c45624e944b7eac357bee337",
     "dashboard/styles.css": "d1c3e59afc5a32cc74b2c64cc49db63eaba76ebf6ef810dfaa501cd635a6f610",
-    "fleet/app.js": "cac71d137d71fb2fd7599567462c721a3dfd8ba34ca5a4a182176947e4975809",
-    "fleet/index.html": "f4b2431d1d4b0059c4d9954feface3111f9f3067ffec334a1952d01430d8ebd0",
+    "fleet/app.js": "37dbe53b17003dd9a6346ada2e90ede3bed533d1ace34c5cfc23fa5bbca446d4",
+    "fleet/index.html": "acea5dc1b746f12b184c9287b68c0d89e0c2a68a08bf433059f0451f6e80943f",
     "fleet/metrics.html": "2c1561ee3f6d3e4119f97d24d5a99157dfd48d077a0c254e8030b35896537102",
     "fleet/metrics.js": "9c1d75ac1f2526e36081b2f2a552258b65ee27e9b7a293f07224d9ec400bd56f",
-    "fleet/styles.css": "e9a1430672979a9c352e0d7c8419ba7ddfe86c769287e36dea5f5a6936d34c7c",
+    "fleet/styles.css": "39d8c63de00ca7a95ce630e26e1dc37fb8a1d47b8140adc60b7a65954d3eac51",
     "playbook/INDEX.md": "1946baea7236426119168a9fa3a4231a0aec2547f1fc3241ad6e7bbac4b69c61",
     "playbook/crews.md": "f3116cc83c93b975542d94cfdef361f4c5a6011376cc3a03db54d2ab5e830d5f",
     "playbook/index.json": "d3a4dce1521d72ca809a23a431433fafb235a0920904150fb6b1cb0ecbd87b06",
@@ -79,5 +79,5 @@
     "templates/handsoff.toml": "8a22c2e6e73ab1b9a4b0e1a33ed59971f8d827bdae59f8fd2686c96431fe73ca"
   },
   "schema": 1,
-  "version": "v0.5.21"
+  "version": "v0.5.22"
 }

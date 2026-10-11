@@ -1093,6 +1093,30 @@ def engine_block(path: Path | None = None, issues: "signals_module.IssueCache | 
     return {**facts, "latest": latest, "behind": behind, "projects": projects}
 
 
+def sentinel_queue_block(signals: "signals_module.SignalCache | None" = None,
+                         issues: "signals_module.IssueCache | None" = None) -> dict:
+    """#453: Sentinel's queue as the signal refresh last read it, every item
+    titled from the issue cache when the cache holds that issue. Reads the
+    caches only; never touches Sentinel's files."""
+    reader = getattr(signals, "sentinel_queue", None)  # a test double without it reads empty
+    view = reader() if callable(reader) else {"fetched_at": None, "note": None, "repos": {}}
+    titles: dict[str, dict] = {}
+    for entry in (issues.snapshot().values() if issues is not None else ()):
+        identity = signals_module.repo_identity(entry.get("repo"))
+        if identity is None:
+            continue
+        known = titles.setdefault(identity, {})
+        for issue in entry.get("issues") or []:
+            if isinstance(issue, dict) and isinstance(issue.get("number"), int) and isinstance(issue.get("title"), str):
+                known[issue["number"]] = issue["title"]
+    for repo, entry in (view.get("repos") or {}).items():
+        known = titles.get(signals_module.repo_identity(repo)) or {}
+        for item in [entry.get("running")] + list(entry.get("queued") or []) + list(entry.get("rig") or []):
+            if isinstance(item, dict) and item.get("number") in known:
+                item["title"] = known[item["number"]]
+    return view
+
+
 def _probe_owners(roots: list[Path]) -> list[dict | None]:
     """#393: every registered root's owner probe at once (each is a loopback
     request with its own short timeout), in registry order."""
@@ -1133,6 +1157,7 @@ def _build_fleet(path: Path | None = None, public_base: str | None = None,
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "projects": projects,
             "engine": {**FLEET_ENGINE, "install_blocked": install_blocked(path, states),  # #161, #216
                        **engine_block(path, issues)},  # #373
+            "sentinel_queue": sentinel_queue_block(signals, issues),  # #453
             "decisions": decisions, "counts": {state: sum(item["state"] == state for item in projects)
                                                  for state in ("running", "host_working", "quiet", "waiting", "stalled", "failed", "offline", "complete", "closed", "idle", "orphaned")}}
 
