@@ -1194,7 +1194,8 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
         try:
             cfg = lib.load_config(root)
         except lib.HandsoffError as exc:
-            return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
+            return {"initialized": False, "generated_at": generated_at, "root": str(root),
+                    "error": supervisor.human_command(str(exc), root)}
 
     status_file = lib.status_path(root, cfg)
     acceptance_file = lib.acceptance_path(root, cfg)
@@ -1271,7 +1272,8 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
             except (OSError, ValueError):
                 tranche_proposal = None
     except (lib.HandsoffError, OSError) as exc:
-        return {"initialized": False, "generated_at": generated_at, "root": str(root), "error": str(exc)}
+        return {"initialized": False, "generated_at": generated_at, "root": str(root),
+                "error": supervisor.human_command(str(exc), root)}
 
     criteria = [dict(c) for c in acceptance.get("criteria", [])]
     for criterion in criteria:
@@ -1432,7 +1434,11 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
               "note": f"CI view unavailable: {exc}"} if isinstance(status.get("ci"), dict) else None
     universal_progress = _test_progress(root, status, events, current_regression or last_regression,
                                         ci, regression_progress)
-    return {
+    # #466: one boundary for the whole served snapshot. A gate refusal,
+    # blocker, banner or clears-with line reaches the page from many paths,
+    # so every string is normalized here, not field by field; a role's own
+    # transcript stays as it printed it.
+    return supervisor.humanize_commands({
         "initialized": True,
         "ci": ci,
         "test_progress": universal_progress,
@@ -1564,7 +1570,7 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
         # record written before the verification cache existed.
         "verifications": [{**record, "executed": record.get("executed"), "reused_from": record.get("reused_from")}
                           for record in reversed(verifications[-8:])],
-    }
+    }, root, verbatim=frozenset({"agent_output"}))
 
 
 #: #318: consecutive 60-second ticks the served root must be absent before a
@@ -1850,6 +1856,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _json_response(self, status: HTTPStatus, value: dict) -> None:
+        # #466: a POST's refusal or result is read by a human, as the snapshot is
+        value = supervisor.humanize_commands(value, self.server.project_root,
+                                             verbatim=frozenset({"agent_output"}))
         payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
         self._headers(status, "application/json; charset=utf-8", len(payload))
         self.wfile.write(payload)

@@ -449,30 +449,55 @@ _SCRIPT_COMMAND_PATTERN: re.Pattern | None = None
 
 
 def _script_command_pattern() -> re.Pattern:
-    """#466: the engine-internal spelling of a supervisor command in gate
-    messages, hints and the clears-with builder (`handsoff_supervisor.py
-    <verb>`), only where a real verb follows; `bin/handsoff_supervisor.py`
-    (a path, or a managed role's launcher form) is never matched."""
+    """#466: every engine-internal spelling of a supervisor command in gate
+    messages, hints and the clears-with builder, only where a real verb
+    follows: `handsoff_supervisor.py <verb>`, the launcher form `python3
+    bin/handsoff_supervisor.py <verb>` (with or without `python3`, `./`),
+    and a backticked bare `supervisor <verb>` hint. An absolute path to the
+    script and `handsoff supervisor` itself are never matched."""
     global _SCRIPT_COMMAND_PATTERN
     if _SCRIPT_COMMAND_PATTERN is None:
         verbs = next(action.choices for action in build_parser()._actions
                      if isinstance(action, argparse._SubParsersAction))
         alternatives = "|".join(sorted(map(re.escape, verbs), key=len, reverse=True))
+        verb = rf"(?=(?:{alternatives})(?![\w-]))"
         _SCRIPT_COMMAND_PATTERN = re.compile(
-            rf"(?<![\w/.-])handsoff_supervisor\.py (?=(?:{alternatives})(?![\w-]))")
+            rf"(?<![\w/.-])(?:python3? +)?(?:(?:\./)?bin/)?handsoff_supervisor\.py +{verb}"
+            rf"|(?<=`)supervisor +{verb}")
     return _SCRIPT_COMMAND_PATTERN
+
+
+#: #466: the actor placeholder engine hints carry (`--by ACTOR`); a human
+#: reads `<you>`, the same shape as `<pilot>` and `<why>`.
+_ACTOR_PLACEHOLDER = re.compile(r"(?<![\w<-])ACTOR(?![\w>-])")
 
 
 def human_command(template: str, root) -> str:
     """#466: what a human runs as printed through the installed CLI.
     `{root}` becomes the run's absolute root, shell-quoted (`<root>` only
-    when the caller has no root to name), and every engine-internal
-    `handsoff_supervisor.py <verb>` becomes `handsoff supervisor --root
-    <root> <verb>`. Any text may pass through: what is not a command is
-    returned unchanged."""
+    when the caller has no root to name), every engine-internal spelling
+    (see _script_command_pattern) becomes `handsoff supervisor --root
+    <root> <verb>`, and the ACTOR placeholder becomes `<you>`. Any text may
+    pass through: what is not a command is returned unchanged."""
     filled = shlex.quote(str(Path(root).resolve())) if root is not None else "<root>"
     prefix = f"handsoff supervisor --root {filled} "
-    return _script_command_pattern().sub(lambda _match: prefix, template.replace("{root}", filled))
+    text = _script_command_pattern().sub(lambda _match: prefix, template.replace("{root}", filled))
+    return _ACTOR_PLACEHOLDER.sub("<you>", text)
+
+
+def humanize_commands(value, root, *, verbatim: frozenset = frozenset()):
+    """#466: human_command over every string in a JSON-shaped value (dict
+    values and list items, never keys), so a snapshot or report served to a
+    human names no command a human cannot run as printed. A key in
+    `verbatim` keeps its subtree unchanged (a role's own transcript)."""
+    if isinstance(value, str):
+        return human_command(value, root)
+    if isinstance(value, dict):
+        return {key: item if key in verbatim else humanize_commands(item, root, verbatim=verbatim)
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [humanize_commands(item, root, verbatim=verbatim) for item in value]
+    return value
 
 
 def performance_auto_resume_decision(events: list[dict]) -> dict | None:

@@ -41,7 +41,10 @@ import handsoff_supervisor as supervisor  # noqa: E402
 
 #: the 2026-10-11 banner command, verbatim with its placeholders filled
 OLD_RESUME_COMMAND = 'handsoff performance-resume --by Pilot --reason "reevaluated"'
-PLACEHOLDERS = {"<pilot>": "Pilot", "<why>": "reevaluated", "ACTOR": "Pilot", "TEXT": "reevaluated"}
+PLACEHOLDERS = {"<pilot>": "Pilot", "<why>": "reevaluated", "<you>": "Pilot", "ACTOR": "Pilot",
+                "TEXT": "reevaluated"}
+#: the engine's actor placeholder, as a whole token
+ACTOR_TOKEN = re.compile(r"(?<![\w<-])ACTOR(?![\w>-])")
 
 
 #: a human's choices in a printed command, token by token
@@ -503,6 +506,154 @@ class PrintedCommandsRun(DeploymentGateCase):
         command = message.split("End it with ", 1)[1].split(", then", 1)[0]
         parsed = parse_stable(command)
         self.assertEqual((parsed.command, parsed.root), ("human-pause-end", str(self.tmp.resolve())))
+
+
+def served_strings(value, path="$"):
+    """(path, text) for every string value in a served JSON value."""
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from served_strings(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from served_strings(item, f"{path}[{index}]")
+
+
+class EveryServedStringRunsAsPrinted(DeploymentGateCase):
+    """Review attempt 2: a baseline-gate error reached supervisor.attention
+    in the engine's spelling (`handsoff_supervisor.py verify --criterion
+    REQ-001 --expect-fail --by ACTOR`), and app.js renders it verbatim. The
+    class, not the instance: every string the dashboard serves, in every
+    gate-refusal state, names commands as the installed CLI runs them."""
+
+    drift = StaleEvidenceAtTheGate.drift
+
+    def failing_first(self):
+        toml = self.tmp / "handsoff.toml"
+        text = toml.read_text()
+        toml.write_text(text.replace("failing_first = false", "failing_first = true")
+                        if "failing_first = false" in text else text + "\n[features]\nfailing_first = true\n")
+        self.assertTrue(lib.load_config(self.tmp)["features"]["failing_first"])
+
+    def assert_every_string_runs_as_printed(self, value):
+        commands = []
+        for path, text in served_strings(value):
+            self.assertNotIn("handsoff_supervisor.py", text, path)
+            self.assertIsNone(ACTOR_TOKEN.search(text), f"{path}: {text}")
+            commands += printed_commands(text)
+        self.assert_names_runnable_verify_or_any(commands)
+        return commands
+
+    def assert_names_runnable_verify_or_any(self, commands):
+        for command in commands:
+            try:
+                parsed = parse_stable(fill_placeholders(command))
+            except SystemExit:
+                self.fail(f"not runnable as printed: {command}")
+            self.assertEqual(parsed.root, str(self.tmp.resolve()), command)
+
+    def baseline_gate(self):
+        self.phase7(approval_required=False, host="Sentinel")
+        self.failing_first()
+
+    def stale_evidence(self):
+        self.phase7(approval_required=False, host="Sentinel")
+        self.drift()
+
+    def live_gate(self):
+        self.phase7(approval_required=False, host="Sentinel")
+        approved = run(["deployment-gate", "--approve", "--by", "Pilot"], cwd=self.tmp)
+        self.assertEqual(approved.returncode, 0, approved.stdout + approved.stderr)
+        refused = run(["advance", "8", "100"], cwd=self.tmp)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+
+    def review_gate(self):
+        run(["init", "Dashboard follows supervisor #466"], cwd=self.tmp)
+        self.set_criterion_state("passing", resolved=True)
+        reached = self.advance_to(5, implemented_by="impl-1")
+        self.assertEqual(reached.returncode, 0, reached.stdout + reached.stderr)
+        refused = run(["advance", "6", "60"], cwd=self.tmp)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+
+    def performance_pause(self):
+        self.phase7(approval_required=True)
+        self.failing_first()
+        self.pause()
+
+    def scan(self):
+        snapshot = self.snapshot()
+        self.assertTrue(snapshot["initialized"], snapshot.get("error"))
+        return self.assert_every_string_runs_as_printed(snapshot)
+
+    def test_the_baseline_gate_snapshot(self):
+        self.baseline_gate()
+        self.assertTrue(self.scan())
+
+    def test_the_stale_evidence_snapshot(self):
+        self.stale_evidence()
+        self.assertTrue(self.scan())
+
+    def test_the_live_gate_snapshot(self):
+        self.live_gate()
+        self.scan()
+
+    def test_the_review_gate_snapshot(self):
+        self.review_gate()
+        self.scan()
+
+    def test_the_performance_pause_snapshot(self):
+        self.performance_pause()
+        self.assertTrue(self.scan())
+
+    def test_the_reported_baseline_gate_attention_end_to_end(self):
+        """The reported line, from the gate to the page (the snapshot, the
+        served JSON of a view-only server) and through the installed CLI."""
+        self.baseline_gate()
+        expected = (f"handsoff supervisor --root {shlex.quote(str(self.tmp.resolve()))} "
+                    "verify --criterion REQ-001 --expect-fail --by <you>")
+        snapshot = self.snapshot()
+        attention = [line for line in snapshot["supervisor"]["attention"] if "baseline gate" in line]
+        self.assertTrue(attention, snapshot["supervisor"]["attention"])
+        self.assertIn(expected, attention[0])
+        parsed = parse_stable(fill_placeholders(printed_commands(attention[0])[0]))
+        self.assertEqual((parsed.command, parsed.expect_fail, parsed.root),
+                         ("verify", True, str(self.tmp.resolve())))
+        self.assertIn("REQ-001", str(parsed.criterion))
+        port = self.serve(view_only=True)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request("GET", "/api/dashboard")
+        served = json.loads(connection.getresponse().read())
+        connection.close()
+        self.assertTrue(any(expected in line for line in served["supervisor"]["attention"]),
+                        served["supervisor"]["attention"])
+        self.assert_every_string_runs_as_printed(served)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._dispatch_supervisor(["--root", str(self.tmp), "validate"])
+        text = out.getvalue()
+        self.assertIn("baseline gate", text)
+        self.assertIn(expected, text)
+        self.assertNotIn("handsoff_supervisor.py", text)
+        self.assertIsNone(ACTOR_TOKEN.search(text), text)
+
+    def test_the_normalizer_rewrites_every_engine_spelling_once(self):
+        root = shlex.quote(str(self.tmp.resolve()))
+        prefix = f"handsoff supervisor --root {root} "
+        for text, printed in (
+                ("run handsoff_supervisor.py verify --by ACTOR", f"run {prefix}verify --by <you>"),
+                ("python3 bin/handsoff_supervisor.py verify --all", f"{prefix}verify --all"),
+                ("./bin/handsoff_supervisor.py advance 6 60", f"{prefix}advance 6 60"),
+                ("see `supervisor recover --by ACTOR`", f"see `{prefix}recover --by <you>`"),
+                ("/opt/x/bin/handsoff_supervisor.py verify", "/opt/x/bin/handsoff_supervisor.py verify"),
+                ("MAX_AGENT_ACTOR_LENGTH and the supervisor status", "MAX_AGENT_ACTOR_LENGTH and the supervisor status")):
+            with self.subTest(text=text):
+                self.assertEqual(supervisor.human_command(text, self.tmp), printed)
+                self.assertEqual(supervisor.human_command(printed, self.tmp), printed, "idempotent")
+        self.assertEqual(supervisor.humanize_commands(
+            {"a": ["handsoff_supervisor.py verify"], "agent_output": {"t": "handsoff_supervisor.py verify"}},
+            self.tmp, verbatim=frozenset({"agent_output"})),
+            {"a": [f"{prefix}verify"], "agent_output": {"t": "handsoff_supervisor.py verify"}})
 
 
 if __name__ == "__main__":
