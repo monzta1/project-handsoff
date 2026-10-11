@@ -173,7 +173,6 @@ class CommitIsTheOnlyWayAStatusReachesTheDisk(unittest.TestCase):
         ("handsoff_lib.run_design_evidence", "design_evidence_path(root)"),
         ("handsoff_lib.write_dashboard_owner", "path"),
         ("handsoff_regress._write", "inventory_path(root)"),
-        ("handsoff_regress._write", "progress_path(root)"),
         ("handsoff_regress.main", "inventory_path(root)"),
         ("handsoff_supervisor._load_close_transaction", "path"),
         ("handsoff_supervisor._runtime_write", "path"),

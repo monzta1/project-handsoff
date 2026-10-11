@@ -275,16 +275,12 @@ def _regression_progress(root: Path, request: dict | None) -> dict | None:
     """
     if not isinstance(request, dict):
         return None
-    path = root / ".handsoff-regression.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    payload = _json_by_stat(root / ".handsoff-regression.json")
     if not isinstance(payload, dict) \
             or payload.get("request_id") != request.get("request_id") \
             or payload.get("command_sha256") != request.get("command_sha256"):
         return None
-    return payload
+    return dict(payload)
 
 
 def _test_progress(root: Path, status: dict, events: list[dict], request: dict | None,
@@ -316,14 +312,61 @@ def _test_progress(root: Path, status: dict, events: list[dict], request: dict |
     return max(candidates, key=lambda item: str(item.get("started_at") or ""))
 
 
+# #448: the SSE signature used to json.loads the 1.8 MB regression file every
+# 0.2 s per client. A parse is now reused until the file's (mtime_ns, size)
+# changes; freshness is re-judged against the clock on every call, so a
+# silent execution still expires without a write.
+_JSON_CACHE: dict[str, tuple[tuple[int, int], object]] = {}
+_JSON_CACHE_LOCK = threading.Lock()
+# Every connected client reads one signature per tick (#448).
+SSE_POLL_SECONDS = 1.0
+SSE_SIGNATURE_TTL = 0.9
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _json_by_stat(path: Path, stat: os.stat_result | None = None):
+    """The parsed JSON at `path`, reused while (st_mtime_ns, st_size) holds.
+
+    Returns None when the file is missing or unparseable. The cached object
+    is shared: callers must not mutate it."""
+    try:
+        stat = stat or path.stat()
+    except OSError:
+        return None
+    key = (stat.st_mtime_ns, stat.st_size)
+    # Held through the parse, so concurrent readers of one unchanged file
+    # (every SSE client, /api/regression) cost one json.loads between them.
+    with _JSON_CACHE_LOCK:
+        cached = _JSON_CACHE.get(str(path))
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        _JSON_CACHE[str(path)] = (key, payload)
+        return payload
+
+
+def _test_progress_fresh(root: Path) -> bool:
+    payload = _json_by_stat(root / test_progress.PROGRESS_FILE)
+    return isinstance(payload, dict) and test_progress.is_fresh(payload, _utcnow())
+
+
 def _legacy_regression_fresh(root: Path) -> bool:
     path = root / ".handsoff-regression.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        payload["heartbeat_at"] = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
-    except (OSError, ValueError):
+        stat = path.stat()
+    except OSError:
         return False
-    return test_progress.from_legacy_regression("sse-freshness", payload) is not None
+    payload = _json_by_stat(path, stat)
+    if not isinstance(payload, dict):
+        return False
+    view = dict(payload, heartbeat_at=datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat())
+    return test_progress.from_legacy_regression("sse-freshness", view, now=_utcnow()) is not None
 
 
 def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
@@ -369,9 +412,31 @@ def _artifact_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
         # Freshness itself is observable state. This flips when a silent
         # execution reaches 30 seconds (or a terminal summary reaches ten
         # minutes), so SSE invalidates without requiring another file write.
-        signature.append(("__test_progress_fresh__", 1 if test_progress.read(root) else 0, 0))
+        signature.append(("__test_progress_fresh__", 1 if _test_progress_fresh(root) else 0, 0))
         signature.append(("__legacy_regression_fresh__", 1 if _legacy_regression_fresh(root) else 0, 0))
         return tuple(signature)
+
+
+class _SharedSignature:
+    """#448: one `_artifact_signature` per SSE tick, shared by every client.
+
+    Each client used to compute its own signature five times a second. A
+    value younger than SSE_SIGNATURE_TTL is returned as is; otherwise one
+    caller recomputes it while the others wait on the lock and reuse it."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._lock = threading.Lock()
+        self._value: tuple | None = None
+        self._at = float("-inf")
+
+    def get(self) -> tuple:
+        with self._lock:
+            now = time.monotonic()
+            if self._value is None or now - self._at >= SSE_SIGNATURE_TTL:
+                self._value = _artifact_signature(self.root)
+                self._at = now
+            return self._value
 
 
 def _phase_view(current: int, run_complete: bool, current_name: str | None = None, closed: bool = False,
@@ -1425,6 +1490,7 @@ class DashboardServer(ThreadingHTTPServer):
         # Only a request carrying it may record a shadow routing approval.
         self.pilot_token = lib.new_dashboard_run_token()
         self.stopping = False
+        self.shared_signature = _SharedSignature(root)
         # #318: consecutive ticks on which the served root was absent. A
         # single stat is not evidence a directory is gone for good, so the
         # server retires only after ORPHAN_ROOT_MISSING_TICKS of them.
@@ -1680,15 +1746,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _serve_events(self) -> None:
         self._sse_headers()
-        signature = _artifact_signature(self.server.project_root)
+        signature = self.server.shared_signature.get()
         last_keepalive = time.monotonic()
         self.wfile.write(b"retry: 1000\n")
         self._send_event("ready", {"connected": True})
         while not self.server.stopping:
-            time.sleep(0.2)
+            # #448: one shared signature per second, not one per client
+            # every 0.2 s; stopping is still noticed within 0.2 s.
+            deadline = time.monotonic() + SSE_POLL_SECONDS
+            while not self.server.stopping and time.monotonic() < deadline:
+                time.sleep(min(0.2, max(deadline - time.monotonic(), 0)))
             if self.server.stopping:
                 break
-            current = _artifact_signature(self.server.project_root)
+            current = self.server.shared_signature.get()
             if current != signature:
                 signature = current
                 self._send_event("invalidate", {"changed": True})

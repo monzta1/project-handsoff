@@ -362,6 +362,11 @@ commands = [
   "python3 -m unittest tests.test_role_reasoning -v",
   "node --test tests/dashboard/budget_divergence.test.js",
   "node --test tests/dashboard/role_reasoning.test.js",
+  "python3 -m unittest tests.test_regression_io.ThrottledProgressWrites -v",
+  "python3 -m unittest tests.test_regression_io.LeanProgressFiles -v",
+  "python3 -m unittest tests.test_regression_io.CheapDashboardSignature -v",
+  "python3 -m unittest tests.test_regression_io.SharedSseSignature -v",
+  "python3 -m unittest tests.test_regression_io.ShardPriority -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

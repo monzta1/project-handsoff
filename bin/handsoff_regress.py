@@ -4,11 +4,14 @@
     handsoff_regress.py --root R --group python-full
     handsoff_regress.py --root R --command "python3 -m unittest tests.test_x -v"
 
-Progress is written atomically to `<root>/.handsoff-regression.json` after
-every test line, so the dashboard's /regression page (and /api/regression)
-can show a battery while it runs: totals, pass/fail/error/skip counts, the
-test in flight, recent failures, elapsed time, and the final exit code. The
-file is Handsoff side state (never part of the repository digest).
+Progress is written to `<root>/.handsoff-regression.json` at most once a
+second, plus at every command and shard boundary and the end of the run
+(#448), so the dashboard's /regression page (and /api/regression) can show a
+battery while it runs: totals, pass/fail/error/skip counts, the test in
+flight, recent failures, elapsed time, and the final exit code. While the run
+is live the file carries counts only; the terminal write adds the inventory
+and each shard's test ids. The file is Handsoff side state (never part of the
+repository digest), written without fsync or a .bak copy.
 
 Supported unittest commands are collected once into a schema-versioned
 inventory.  That exact inventory is the contract read by local, CI, release,
@@ -116,6 +119,12 @@ def count_event(entry: dict, event: dict) -> None:
 NODE_LINE = re.compile(r"^(?P<not>not )?ok (?P<num>\d+) - (?P<name>.*?)(?: # (?P<directive>SKIP|TODO).*)?$")
 MAX_RECENT = 64
 DEFAULT_SHARDS = 5
+# #448: at most one progress write per second per execution, plus forced
+# writes at command and shard boundaries and the end of the run.
+PROGRESS_INTERVAL_SECONDS = 1.0
+# #448: shard workers run below the interactive desktop. On Linux the default
+# best-effort I/O priority follows CPU niceness, so this lowers both.
+SHARD_NICENESS = 10
 
 
 class RegressionInventoryError(RuntimeError):
@@ -368,7 +377,70 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _write(root: Path, state: dict) -> None:
+def _running_view(state: dict) -> dict:
+    """#448: the running progress file keeps counts, never the id lists.
+
+    The id lists are what made every rewrite ~1.8 MB and grow with the run.
+    They stay in memory (and in the inventory file and the returned results),
+    and the terminal write carries the full record."""
+    if state.get("finished_at"):
+        return state
+    view = {key: value for key, value in state.items() if key != "inventory"}
+    commands = []
+    for entry in state.get("commands") or []:
+        row = {key: value for key, value in entry.items() if key not in ("test_ids", "shards")}
+        row["shards"] = [{key: value for key, value in shard.items()
+                          if key not in ("test_ids", "completed_test_ids")}
+                         for shard in entry.get("shards") or []]
+        commands.append(row)
+    view["commands"] = commands
+    return view
+
+
+class _ProgressWriter:
+    """#448: one execution's side-file writer.
+
+    `lock` is the single lock every state mutation, recount, serialization and
+    write holds. A per-test write is throttled to one per
+    PROGRESS_INTERVAL_SECONDS; a skipped one leaves the writer dirty for the
+    trailing flush. The inventory is rewritten only when its content changes.
+    """
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.lock = threading.RLock()
+        self.last_flush = float("-inf")
+        self.dirty = False
+        self.stale = False
+        self.inventory_sha: str | None = None
+
+    def write(self, state: dict, *, throttle: bool = False) -> None:
+        with self.lock:
+            if self.stale:
+                raise StaleRegressionExecution(
+                    f"regression execution {state.get('execution_id')!r} was superseded"
+                )
+            if throttle and time.monotonic() - self.last_flush < PROGRESS_INTERVAL_SECONDS:
+                self.dirty = True
+                return
+            try:
+                _write(self.root, state, writer=self)
+            except StaleRegressionExecution:
+                self.stale = True
+                raise
+            self.last_flush = time.monotonic()
+            self.dirty = False
+
+    def flush_if_dirty(self, state: dict) -> None:
+        """The trailing flush: still throttled, so it never adds a second
+        write inside one interval; it is called every quarter interval, so a
+        deferred count lands within 1.25 intervals."""
+        with self.lock:
+            if self.dirty and not self.stale:
+                self.write(state, throttle=True)
+
+
+def _write(root: Path, state: dict, *, writer: _ProgressWriter | None = None) -> None:
     # Publish through the identity-fenced normalized file first.  A retry may
     # have replaced this execution; in that case this writer must not restore
     # stale legacy state or manufacture a terminal success.
@@ -377,8 +449,26 @@ def _write(root: Path, state: dict) -> None:
             f"regression execution {state.get('execution_id')!r} was superseded"
         )
     if isinstance(state.get("inventory"), dict):
-        lib.atomic_write_json(inventory_path(root), state["inventory"])
-    lib.atomic_write_json(progress_path(root), state)
+        digest = hashlib.sha256(
+            json.dumps(state["inventory"], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if writer is None or writer.inventory_sha != digest:
+            lib.atomic_write_json(inventory_path(root), state["inventory"])
+            if writer is not None:
+                writer.inventory_sha = digest
+    # Side telemetry, rebuilt by the next run: no fsync, no .bak (#448).
+    test_progress.transient_replace(
+        progress_path(root),
+        (json.dumps(_running_view(state), indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+
+
+def _compact_inventory(inventory: dict) -> dict:
+    """The normalized snapshot names the inventory; the id lists live in the inventory file."""
+    return {key: inventory.get(key) for key in (
+        "schema_version", "inventory_id", "group", "state", "test_count", "shard_count",
+        "test_ids_sha256",
+    )}
 
 
 def _publish_normalized(root: Path, state: dict) -> bool:
@@ -448,7 +538,7 @@ def _publish_normalized(root: Path, state: dict) -> bool:
     snapshot["worker_count"] = active_command.get("worker_count") if isinstance(active_command, dict) else 0
     snapshot["fallback_reason"] = active_command.get("fallback_reason") if isinstance(active_command, dict) else None
     if isinstance(state.get("inventory"), dict):
-        snapshot["inventory"] = state["inventory"]
+        snapshot["inventory"] = _compact_inventory(state["inventory"])
         snapshot["inventory_id"] = state["inventory"].get("inventory_id")
         snapshot["inventory_test_count"] = state["inventory"].get("test_count")
     if state.get("finished_at"):
@@ -646,7 +736,7 @@ def _new_shard(index: int, test_ids: list[str] | None) -> dict:
             "started_at": None, "finished_at": None, "exit_code": None, "timed_out": False,
             "done": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
             "current": None, "failures": [], "log": None, "output_sha256": None, "output_bytes": 0,
-            "isolation": None, "cleanup": None}
+            "isolation": None, "cleanup": None, "priority": None}
 
 
 def _isolated_worker(root: Path, command_index: int, shard_index: int) -> tuple[Path, dict, dict[str, str]]:
@@ -688,8 +778,22 @@ def _isolated_worker(root: Path, command_index: int, shard_index: int) -> tuple[
                     "service_id": identity, "port_base": port_base}, env
 
 
+def _niced(run_spec, shell: bool) -> tuple[object, bool, int | None]:
+    """#448: launch the workload already niced, so nothing runs at full
+    priority first and every descendant inherits it. No preexec_fn: the
+    workers are started from threads. Without a nice executable the spec is
+    unchanged and the applied priority is None."""
+    nice = shutil.which("nice")
+    if not nice:
+        return run_spec, shell, None
+    prefix = [nice, "-n", str(SHARD_NICENESS)]
+    if shell:
+        return [*prefix, "/bin/sh", "-c", run_spec], False, SHARD_NICENESS
+    return [*prefix, *run_spec], False, SHARD_NICENESS
+
+
 def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, shard: dict,
-                timeout: int, command_index: int, lock: threading.Lock) -> None:
+                timeout: int, command_index: int, writer: _ProgressWriter) -> None:
     log_path = Path(tempfile.gettempdir()) / (
         f"handsoff-regress-{os.getpid()}-{command_index}-{shard['index']}.log"
     )
@@ -710,11 +814,16 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
         except (OSError, ProcessLookupError):
             pass
 
-    shard["started_at"] = _now()
+    lock = writer.lock
+    with lock:
+        shard["started_at"] = _now()
     try:
         worker_root, isolation, worker_env = _isolated_worker(root, command_index, shard["index"])
         isolation_base = worker_root.parent
-        shard["isolation"] = isolation
+        run_spec, shell, priority = _niced(run_spec, shell)
+        with lock:
+            shard["isolation"] = isolation
+            shard["priority"] = priority
         env.update(worker_env)
         process = subprocess.Popen(run_spec, shell=shell, cwd=str(worker_root), stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, env=env, start_new_session=True)
@@ -734,7 +843,7 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
                     count_event(shard, event)
                     _recount_entry(entry)
                     state["totals"] = _totals(state)
-                    _write(root, state)
+                    writer.write(state, throttle=True)
         code = process.wait()
         timer.cancel()
         code = 124 if timed_out.is_set() else code
@@ -744,7 +853,8 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
     finally:
         if isolation_base is not None:
             shutil.rmtree(isolation_base, ignore_errors=True)
-            shard["cleanup"] = "removed" if not isolation_base.exists() else "failed"
+            with lock:
+                shard["cleanup"] = "removed" if not isolation_base.exists() else "failed"
     raw = log_path.read_bytes() if log_path.is_file() else b""
     with lock:
         if shard.get("test_ids") is not None:
@@ -764,18 +874,18 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
         shard["output_bytes"] = len(raw)
         _recount_entry(entry)
         state["totals"] = _totals(state)
-        _write(root, state)
+        writer.write(state)
 
 
 def _complete_empty_shard(root: Path, *, state: dict, entry: dict, shard: dict,
-                          command_index: int, lock: threading.Lock) -> None:
+                          command_index: int, writer: _ProgressWriter) -> None:
     """Record an explicit zero-test worker without invoking unittest discover."""
     log_path = Path(tempfile.gettempdir()) / (
         f"handsoff-regress-{os.getpid()}-{command_index}-{shard['index']}.log"
     )
     log_path.write_text("HANDSOFF: empty inventory shard\n", encoding="utf-8")
     raw = log_path.read_bytes()
-    with lock:
+    with writer.lock:
         shard.update({
             "started_at": _now(), "finished_at": _now(), "exit_code": 0,
             "log": str(log_path), "output_sha256": hashlib.sha256(raw).hexdigest(),
@@ -783,7 +893,7 @@ def _complete_empty_shard(root: Path, *, state: dict, entry: dict, shard: dict,
         })
         _recount_entry(entry)
         state["totals"] = _totals(state)
-        _write(root, state)
+        writer.write(state)
 
 
 def _validate_completed_shards(entry: dict, expected_ids: list[str], expected_count: int) -> None:
@@ -811,7 +921,7 @@ def _merged_result(command: str, entry: dict, started: float) -> dict:
         summaries.append({key: shard.get(key) for key in (
             "index", "label", "test_count", "test_ids", "completed_test_ids", "inventory_error",
             "done", "passed", "failed", "errors", "skipped", "exit_code", "timed_out",
-            "output_sha256", "output_bytes", "isolation", "cleanup"
+            "output_sha256", "output_bytes", "isolation", "cleanup", "priority"
         )})
     merged = b"".join(chunks)
     decoded = merged.decode("utf-8", "replace")
@@ -825,8 +935,10 @@ def _merged_result(command: str, entry: dict, started: float) -> dict:
 
 
 def run_command(root: Path, command: str, state: dict, *, timeout: int, command_index: int = 1,
-                max_shards: int = DEFAULT_SHARDS, command_inventory: dict | None = None) -> dict:
+                max_shards: int = DEFAULT_SHARDS, command_inventory: dict | None = None,
+                writer: _ProgressWriter | None = None) -> dict:
     started = time.monotonic()
+    writer = writer or _ProgressWriter(root)
     argv = _verbose_argv(command)
     all_tests = _all_tests_command(argv)
     eligible = bool(_unittest_names(argv)) or all_tests
@@ -872,36 +984,37 @@ def run_command(root: Path, command: str, state: dict, *, timeout: int, command_
         else:
             sequential = shlex.join(argv) if eligible else command
             specs.append((sequential, True, shard))
-    state["commands"].append(entry)
-    state["current_command"] = command
-    _write(root, state)
-    lock = threading.Lock()
+    with writer.lock:
+        state["commands"].append(entry)
+        state["current_command"] = command
+        writer.write(state)
     for shard in entry["shards"]:
         if shard.get("test_ids") == []:
             _complete_empty_shard(root, state=state, entry=entry, shard=shard,
-                                  command_index=command_index, lock=lock)
+                                  command_index=command_index, writer=writer)
     if specs:
         with ThreadPoolExecutor(max_workers=len(specs), thread_name_prefix="handsoff-regression") as pool:
             futures = [pool.submit(_run_worker, root, spec, shell=shell, state=state, entry=entry, shard=shard,
-                                   timeout=timeout, command_index=command_index, lock=lock)
+                                   timeout=timeout, command_index=command_index, writer=writer)
                        for spec, shell, shard in specs]
             for future in futures:
                 future.result()
-    if ids is not None:
-        try:
-            _validate_completed_shards(entry, ids, max_shards if use_shards else 1)
-        except RegressionInventoryError as exc:
-            entry["inventory_error"] = str(exc)
-            # Keep all worker outcomes, but make the command terminal failure.
-            if entry["shards"]:
-                entry["shards"][0]["exit_code"] = entry["shards"][0].get("exit_code") or 2
-                entry["shards"][0]["inventory_error"] = str(exc)
-    result = _merged_result(command, entry, started)
-    entry["finished_at"] = _now()
-    entry["exit_code"] = result["exit_code"]
-    entry["current"] = None
-    state["totals"] = _totals(state)
-    _write(root, state)
+    with writer.lock:
+        if ids is not None:
+            try:
+                _validate_completed_shards(entry, ids, max_shards if use_shards else 1)
+            except RegressionInventoryError as exc:
+                entry["inventory_error"] = str(exc)
+                # Keep all worker outcomes, but make the command terminal failure.
+                if entry["shards"]:
+                    entry["shards"][0]["exit_code"] = entry["shards"][0].get("exit_code") or 2
+                    entry["shards"][0]["inventory_error"] = str(exc)
+        result = _merged_result(command, entry, started)
+        entry["finished_at"] = _now()
+        entry["exit_code"] = result["exit_code"]
+        entry["current"] = None
+        state["totals"] = _totals(state)
+        writer.write(state)
     return result
 
 
@@ -941,39 +1054,54 @@ def run_battery_results(root: Path, label: str, commands: list[str], *, timeout:
              "planned_commands": list(commands), "worker_limit": max_shards,
              "inventory": None, "collection_error": None, "check_env": check_env}
     heartbeat_stop = threading.Event()
+    writer = _ProgressWriter(root)
 
     def keep_alive() -> None:
-        while not heartbeat_stop.wait(test_progress.HEARTBEAT_SECONDS):
-            test_progress.heartbeat(root, normalized["execution_id"])
+        # #448: the trailing flush lands counts parsed since the last throttled
+        # write even while the next test runs for minutes.
+        last_heartbeat = time.monotonic()
+        while not heartbeat_stop.wait(PROGRESS_INTERVAL_SECONDS / 4):
+            try:
+                writer.flush_if_dirty(state)
+            except StaleRegressionExecution:
+                return
+            if time.monotonic() - last_heartbeat >= test_progress.HEARTBEAT_SECONDS:
+                test_progress.heartbeat(root, normalized["execution_id"])
+                last_heartbeat = time.monotonic()
 
     heartbeat_thread = threading.Thread(target=keep_alive, name="handsoff-regression-heartbeat", daemon=True)
     heartbeat_thread.start()
-    _write(root, state)
+    writer.write(state)
     try:
         try:
-            state["inventory"] = collect_inventory(root, label, commands, shard_count=max_shards)
-            _write(root, state)
+            inventory = collect_inventory(root, label, commands, shard_count=max_shards)
+            with writer.lock:
+                state["inventory"] = inventory
+                writer.write(state)
         except RegressionInventoryError as exc:
-            state["collection_error"] = str(exc)
-            state["finished_at"] = _now()
-            state["exit_code"] = 2
-            state["current_command"] = None
-            state["totals"] = {"total": None, "done": 0, "passed": 0, "failed": 0,
-                               "errors": 1, "skipped": 0}
-            _write(root, state)
+            with writer.lock:
+                state["collection_error"] = str(exc)
+                state["finished_at"] = _now()
+                state["exit_code"] = 2
+                state["current_command"] = None
+                state["totals"] = {"total": None, "done": 0, "passed": 0, "failed": 0,
+                                   "errors": 1, "skipped": 0}
+                writer.write(state)
             return [{"command": "inventory collection", "exit_code": 2, "timed_out": False,
                      "duration_s": 0.0, "truncated": False, "output_bytes": 0,
                      "output_sha256": hashlib.sha256(b"").hexdigest(),
                      "output_tail": str(exc), "shards": []}]
         command_plans = state["inventory"]["commands"]
         results = [run_command(root, command, state, timeout=timeout, command_index=index,
-                               max_shards=max_shards, command_inventory=command_plans[index - 1])
+                               max_shards=max_shards, command_inventory=command_plans[index - 1],
+                               writer=writer)
                    for index, command in enumerate(commands, 1)]
         worst = next((result["exit_code"] for result in results if result["exit_code"] != 0), 0)
-        state["finished_at"] = _now()
-        state["exit_code"] = worst
-        state["current_command"] = None
-        _write(root, state)
+        with writer.lock:
+            state["finished_at"] = _now()
+            state["exit_code"] = worst
+            state["current_command"] = None
+            writer.write(state)
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=1)
