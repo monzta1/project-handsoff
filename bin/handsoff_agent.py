@@ -3020,8 +3020,9 @@ def _performance_refusal(root: Path, operation: str) -> str | None:
         return None
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Launch a configured Handsoff role")
+def main(prog: str | None = None) -> int:
+    # #443: the CLI passes prog="handsoff agent" so usage reads as runnable.
+    parser = argparse.ArgumentParser(prog=prog, description="Launch a configured Handsoff role")
     parser.add_argument("--root", default=None)
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("inspect", "launch"):

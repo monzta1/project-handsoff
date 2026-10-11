@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import functools
 import hashlib
 import json
 import re
@@ -428,7 +429,7 @@ def _dispatch_supervisor(args: list[str]) -> int:
             raise lib.HandsoffError("--root requires a project path")
         root_value = args[index + 1]
     lib.validate_runtime_integrity(lib.resolve_root(root_value))
-    return _dispatch(handsoff_supervisor.main, args)
+    return _dispatch(functools.partial(handsoff_supervisor.main, prog="handsoff supervisor"), args)
 
 
 def _passthrough(argv: list[str]) -> int | None:
@@ -444,8 +445,8 @@ def _passthrough(argv: list[str]) -> int | None:
             if argv[1] == "supervisor":
                 return _dispatch_supervisor(argv[2:])
             if argv[1] == "agent":
-                return _dispatch(handsoff_agent.main, argv[2:])
-            return _dispatch(handsoff_fleet.main, argv[2:])
+                return _dispatch(functools.partial(handsoff_agent.main, prog="handsoff agent"), argv[2:])
+            return _dispatch(functools.partial(handsoff_fleet.main, prog="handsoff fleet"), argv[2:])
         except lib.HandsoffError as exc:
             print(f"HANDSOFF_BLOCKED: {exc}", file=sys.stderr)
             return 1
@@ -517,8 +518,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _commands_reference() -> str:
-    """Render both parser trees so the reference cannot drift from argparse."""
-    parsers = [("handsoff", build_parser()), ("supervisor", handsoff_supervisor.build_parser())]
+    """Render both parser trees so the reference cannot drift from argparse.
+    #443: the supervisor tree gets its runnable prog, so each usage line
+    reads `handsoff supervisor <verb>` rather than `handsoff <verb>`."""
+    parsers = [("handsoff", build_parser()),
+               ("supervisor", handsoff_supervisor.build_parser(prog="handsoff supervisor"))]
     output = []
     for prefix, parser in parsers:
         actions = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
@@ -611,9 +615,9 @@ def main() -> int:
         elif args.command == "supervisor":
             return _dispatch_supervisor(args.args)
         elif args.command == "agent":
-            return _dispatch(handsoff_agent.main, args.args)
+            return _dispatch(functools.partial(handsoff_agent.main, prog="handsoff agent"), args.args)
         elif args.command == "fleet":
-            return _dispatch(handsoff_fleet.main, args.args)
+            return _dispatch(functools.partial(handsoff_fleet.main, prog="handsoff fleet"), args.args)
         else:
             call = ["--root", args.root] if args.root else []
             call += ["dashboard", "--host", args.host, "--port", str(args.port)]

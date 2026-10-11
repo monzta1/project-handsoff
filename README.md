@@ -24,7 +24,7 @@ One versioned engine in its own environment; a project keeps only
 `handsoff.toml` and `.handsoff-version`.
 
 ```bash
-python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.5.28/project_handsoff-0.5.28-py3-none-any.whl
+python3 -m pip install https://github.com/monzta1/project-handsoff/releases/download/v0.5.29/project_handsoff-0.5.29-py3-none-any.whl
 handsoff init /absolute/path/to/project
 handsoff doctor /absolute/path/to/project
 ```
@@ -113,4 +113,5 @@ do. Never a downgrade, never over local changes, never a token.
 - [docs/FIELD-PROOF.md](docs/FIELD-PROOF.md), [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md),
   [docs/METRICS-SITE.md](docs/METRICS-SITE.md): the live proofs, the tunnel,
   the public metrics site.
-- `handsoff commands`: the full command reference, generated from the parser.
+- `handsoff commands`: the full command reference, generated from the parser;
+  every usage line runs as printed (supervisor verbs read `handsoff supervisor <verb>`).
