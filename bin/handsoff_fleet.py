@@ -572,6 +572,10 @@ def _owner_view(root: Path) -> dict | None:
             and answer.get("root_sha256") == expected_root
         result.update({"health": "healthy" if matched else "stale",
                        "reason": "ownership verified" if matched else "live ownership mismatch"})
+        # #456: a verified view-only server is the run's dashboard too; the
+        # card labels its link so nobody expects it to launch anything.
+        if matched and answer.get("view_only") is True:
+            result["view_only"] = True
     except (OSError, ValueError, TypeError):
         result.update({"health": "stale", "reason": "owned dashboard is not responding"})
     return result

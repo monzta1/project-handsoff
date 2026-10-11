@@ -8262,7 +8262,7 @@ def new_dashboard_run_token() -> str:
 
 
 def write_dashboard_owner(root: Path, *, pid: int, host: str, port: int, run_token: str,
-                          root_sha256: str, feature: str | None) -> Path:
+                          root_sha256: str, feature: str | None, view_only: bool = False) -> Path:
     """Write the pointer file for a run-owned server. Identifiers, integers,
     and timestamps only; the token is a random handle, not a credential
     for anything beyond stopping this one loopback server."""
@@ -8276,6 +8276,7 @@ def write_dashboard_owner(root: Path, *, pid: int, host: str, port: int, run_tok
         "run_token": run_token,
         "root_sha256": root_sha256,
         "feature": feature,
+        **({"view_only": True} if view_only else {}),  # #456
     })
     return path
 

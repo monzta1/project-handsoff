@@ -1473,14 +1473,20 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
 ORPHAN_ROOT_MISSING_TICKS = 2
 #: #407: who a dashboard-initiated launch names in its dashboard_launch event
 ORCHESTRATOR_ACTOR, WATCHDOG_ACTOR = lib.DASHBOARD_LAUNCH_ACTORS
+VIEW_ONLY_LAUNCH_REFUSAL = "this dashboard is view-only; it never launches a role"
 
 
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], root: Path, *,
-                 run_token: str | None = None, root_sha256: str | None = None):
+                 run_token: str | None = None, root_sha256: str | None = None,
+                 view_only: bool = False):
         self.project_root = root
+        # #456: a view-only server registers as the run's dashboard (same
+        # token and root binding) beside a host that drives the run itself,
+        # so it starts no background thread and never launches a role.
+        self.view_only = bool(view_only)
         # #40: an owned server keeps its own ownership values in memory
         # from launch; the pointer file on disk is never consulted to
         # answer /api/ownership or to authorize /api/shutdown.
@@ -1498,6 +1504,8 @@ class DashboardServer(ThreadingHTTPServer):
         self._stop_lock = threading.Lock()
         self._watchdog_stop = threading.Event()
         super().__init__(address, DashboardHandler)
+        if self.view_only:
+            return
         cfg = lib.load_config(root)
         recovery = cfg.get("recovery", {})
         if recovery.get("enabled") and recovery.get("dashboard_watchdog"):
@@ -1594,7 +1602,9 @@ class DashboardServer(ThreadingHTTPServer):
         a machine reviewer is never recorded under the Pilot's name.
         `launched_by` (#407) is the (actor, reason) of a dashboard-initiated
         launch, logged as a dashboard_launch event and a printed line."""
-        refusal = supervisor.performance_mutation_refusal(self.project_root, "launch_agent")
+        if DashboardServer.is_view_only(self):
+            raise lib.HandsoffError(VIEW_ONLY_LAUNCH_REFUSAL)
+        refusal =supervisor.performance_mutation_refusal(self.project_root, "launch_agent")
         if refusal:
             raise lib.HandsoffError(refusal)
         if launched_by is not None:
@@ -1625,7 +1635,9 @@ class DashboardServer(ThreadingHTTPServer):
 
     def _orchestrate_once(self):
         """Advance approved design state, then optionally hand off one role."""
-        cfg = lib.load_config(self.project_root)
+        if DashboardServer.is_view_only(self):
+            return  # #456: a view-only server never orchestrates
+        cfg =lib.load_config(self.project_root)
         with lib.project_lock(self.project_root):
             status = lib.load_unique_json(lib.status_path(self.project_root, cfg))
         objective = self._take_first_launch()
@@ -1653,6 +1665,8 @@ class DashboardServer(ThreadingHTTPServer):
         cfg = lib.load_config(self.project_root)
         interval = cfg.get("recovery", {}).get("poll_seconds", 30)
         while not self._watchdog_stop.wait(interval):
+            if DashboardServer.is_view_only(self):
+                return  # #456: a view-only server never runs a recovery pass
             try:
                 def launcher(role, owned_paths=None):
                     task = (f"Resume trusted Handsoff state as {role}; read status, acceptance, and event log "
@@ -1667,6 +1681,11 @@ class DashboardServer(ThreadingHTTPServer):
         self._watchdog_stop.set()
         super().server_close()
 
+    def is_view_only(self) -> bool:
+        """#456. Read defensively: tests drive these methods on stand-ins
+        built without __init__, which must keep their pre-#456 behaviour."""
+        return getattr(self, "view_only", False) is True
+
     @property
     def owned_by_run(self) -> bool:
         return bool(self.run_token) and bool(self.root_sha256)
@@ -1674,7 +1693,10 @@ class DashboardServer(ThreadingHTTPServer):
     def ownership_view(self) -> dict:
         if not self.owned_by_run:
             return {"owned": False}
-        return {"owned": True, "run_token": self.run_token, "root_sha256": self.root_sha256}
+        view = {"owned": True, "run_token": self.run_token, "root_sha256": self.root_sha256}
+        if self.view_only:
+            view["view_only"] = True
+        return view
 
     def shutdown_matches(self, run_token, root_sha256) -> bool:
         """Both bindings must match the in-memory values; constant-time
@@ -2066,6 +2088,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response(HTTPStatus.OK, {"ok": True, "kind": kind})
                 return
             if path == "/api/launch-role":
+                if self.server.view_only:
+                    self._json_response(HTTPStatus.CONFLICT, {"ok": False, "error": VIEW_ONLY_LAUNCH_REFUSAL})
+                    return
                 if set(requested) != {"action_id", "role", "task"} or not all(isinstance(requested.get(k), str) for k in requested):
                     raise lib.HandsoffError("launch role requires action_id, role, and task")
                 task = requested["task"]
@@ -2339,26 +2364,32 @@ def _owner_feature(root: Path) -> str | None:
 
 
 def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
-          owned_by_run: bool = False) -> int:
+          owned_by_run: bool = False, view_only: bool = False) -> int:
+    if owned_by_run and view_only:
+        raise lib.HandsoffError("--view-only and --owned-by-run are exclusive; choose one")
     if host not in lib.DASHBOARD_LOOPBACK_HOSTS:
         raise lib.HandsoffError("dashboard binds to localhost only; use an authenticated reverse proxy for remote access")
     if not ASSET_ROOT.is_dir():
         raise lib.HandsoffError(f"dashboard assets are missing at {ASSET_ROOT}")
     # #40: only a server launched with --owned-by-run mints ownership
     # values; without the flag nothing is written and no release call can
-    # ever target this server.
-    run_token = lib.new_dashboard_run_token() if owned_by_run else None
-    root_sha256 = lib.dashboard_root_sha256(root) if owned_by_run else None
-    server = DashboardServer((host, port), root, run_token=run_token, root_sha256=root_sha256)
+    # ever target this server. #456: --view-only registers the same way,
+    # marked view_only, so Fleet links to it.
+    registered = owned_by_run or view_only
+    run_token = lib.new_dashboard_run_token() if registered else None
+    root_sha256 = lib.dashboard_root_sha256(root) if registered else None
+    server = DashboardServer((host, port), root, run_token=run_token, root_sha256=root_sha256,
+                             view_only=view_only)
     actual_host, actual_port = server.server_address[:2]
     browser_host = "127.0.0.1" if actual_host in {"0.0.0.0", "::"} else actual_host
     url = f"http://{browser_host}:{actual_port}/"
     print(f"HANDSOFF_DASHBOARD: {url}")
     print(f"PROJECT_ROOT: {root}")
-    if owned_by_run:
+    if registered:
         owner_path = lib.write_dashboard_owner(
             root, pid=os.getpid(), host=host, port=actual_port, run_token=run_token,
             root_sha256=root_sha256, feature=_owner_feature(root),
+            view_only=view_only,  # #456: Fleet labels a view-only server's link
         )
         print(f"HANDSOFF_DASHBOARD_OWNER: {owner_path}")
     print("Press Ctrl-C to stop.")
@@ -2370,7 +2401,7 @@ def serve(root: Path, host: str = "127.0.0.1", port: int = 8765, open_browser: b
         print("\nHANDSOFF_DASHBOARD_STOPPED")
     finally:
         server.server_close()
-        if owned_by_run:
+        if registered:
             # Only while the file still carries this server's token; a
             # different token means a newer server on this root owns it.
             try:
@@ -2386,12 +2417,15 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true")
-    parser.add_argument("--owned-by-run", action="store_true",
-                        help="mark this server as owned by the current run so completion releases its port")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--owned-by-run", action="store_true",
+                      help="mark this server as owned by the current run so completion releases its port")
+    mode.add_argument("--view-only", action="store_true",
+                      help="register as the run's dashboard but never orchestrate, recover or launch a role")
     args = parser.parse_args()
     try:
         return serve(lib.resolve_root(args.root), args.host, args.port, not args.no_open,
-                     owned_by_run=args.owned_by_run)
+                     owned_by_run=args.owned_by_run, view_only=args.view_only)
     except lib.HandsoffError as exc:
         print(f"SHIP_FEATURE_BLOCKED: {exc}")
         return 1
