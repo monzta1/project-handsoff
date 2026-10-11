@@ -362,6 +362,32 @@ class StableDashboardCommandTests(unittest.TestCase):
         self.assertEqual(forwarded, [["--root", "/tmp/p", "dashboard", "--host", "127.0.0.1", "--port", "8801",
                                       "--no-open", "--owned-by-run"]])
 
+    def test_view_only_is_forwarded_to_the_supervisor(self):
+        """#459: REFERENCE documents --view-only on the stable command."""
+        forwarded = []
+        with mock.patch.object(cli, "_dispatch_supervisor", side_effect=lambda call: forwarded.append(call) or 0), \
+                mock.patch.object(sys, "argv", ["handsoff", "dashboard", "--root", "/tmp/p", "--port", "0",
+                                                "--no-open", "--view-only"]):
+            self.assertEqual(cli.main(), 0)
+        self.assertEqual(forwarded, [["--root", "/tmp/p", "dashboard", "--host", "127.0.0.1", "--port", "0",
+                                      "--no-open", "--view-only"]])
+
+    def test_view_only_and_owned_by_run_together_exit_2_without_dispatch(self):
+        with mock.patch.object(cli, "_dispatch_supervisor") as dispatch, \
+                mock.patch.object(sys, "argv", ["handsoff", "dashboard", "--owned-by-run", "--view-only"]), \
+                mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit) as raised:
+                cli.main()
+        self.assertEqual(raised.exception.code, 2)
+        dispatch.assert_not_called()
+
+    def test_neither_flag_forwards_neither(self):
+        forwarded = []
+        with mock.patch.object(cli, "_dispatch_supervisor", side_effect=lambda call: forwarded.append(call) or 0), \
+                mock.patch.object(sys, "argv", ["handsoff", "dashboard", "--root", "/tmp/p"]):
+            self.assertEqual(cli.main(), 0)
+        self.assertEqual(forwarded, [["--root", "/tmp/p", "dashboard", "--host", "127.0.0.1", "--port", "8765"]])
+
 
 class PassthroughCommandTests(unittest.TestCase):
     """v0.3.14 regression: the supervisor/agent/fleet passthrough must return

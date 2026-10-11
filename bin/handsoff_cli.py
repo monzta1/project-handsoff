@@ -508,7 +508,11 @@ def build_parser() -> argparse.ArgumentParser:
     dash.add_argument("--no-open", action="store_true")
     # #72: a run-owned dashboard is what Fleet links to and what releases its
     # port on completion; the stable command must be able to start one.
-    dash.add_argument("--owned-by-run", action="store_true")
+    # #459: --view-only is forwarded too, exclusive with --owned-by-run as in
+    # the supervisor's own dashboard parser.
+    mode = dash.add_mutually_exclusive_group()
+    mode.add_argument("--owned-by-run", action="store_true")
+    mode.add_argument("--view-only", action="store_true")
     return parser
 
 
@@ -617,6 +621,8 @@ def main() -> int:
                 call.append("--no-open")
             if args.owned_by_run:
                 call.append("--owned-by-run")
+            if args.view_only:
+                call.append("--view-only")
             return _dispatch_supervisor(call)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
