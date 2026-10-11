@@ -45,3 +45,7 @@ with the number.
   the limit, not at it: one tool-heavy turn went 8,487 past the whole ceiling,
   which no protocol reserve can cover (a reserve carves from below it). State
   a bound's granularity; never call a per-turn bound a cap.
+- A managed role's sandbox cannot read the host's scratchpad: an Architect
+  told to emit "the proposal saved at /tmp/.../design.json" raised a blocking
+  question (#445). Hand a host draft over with `launch architect --draft
+  FILE`; the engine refuses a task naming a file outside the root.

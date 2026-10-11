@@ -83,6 +83,15 @@ MAX_AGENT_TASK_BYTES = 16 * 1024
 #: #203: how long an output reader may keep draining after the child exited.
 READER_DRAIN_SECONDS = 60
 MAX_REPLACEMENT_INPUT_BYTES = 64 * 1024
+#: #445: a host-drafted proposal reaches the Architect inline, never as a
+#: path its sandbox may not read. The serialized draft is capped, and a
+#: launch carrying one leaves room under MAX_REPLACEMENT_INPUT_BYTES for the
+#: trusted handoff a replacement appends to the original input.
+HOST_DRAFT_HEADING = "# Host-drafted design proposal"
+DRAFT_MAX_BYTES = 16 * 1024
+DRAFT_MAX_FILE_BYTES = 64 * 1024
+REPLACEMENT_HANDOFF_RESERVE_BYTES = 16 * 1024
+_TASK_PATH_TOKEN = re.compile(r"(?<![\w.~/-])(~?/[^\s'\"`<>()\[\]{},;]+)")
 MAX_SUPERVISOR_REQUESTS = 8
 IMPLEMENTATION_REVIEW_PACKET_HEADING = "# Implementation review delta"
 #: #397: the engine-built packet every Phase-5 reviewer launch carries.
@@ -244,6 +253,54 @@ def _role_prompt(root: Path, role: str) -> str:
     return item["text"].rstrip()
 
 
+def load_host_draft(path: str | Path) -> str:
+    """#445: read the host's drafted proposal on the host, validate it, and
+    return the exact JSON the Architect receives inline. ensure_ascii=False
+    keeps its prompt size equal to its UTF-8 size, which is what is capped."""
+    source = Path(path).expanduser()
+    try:
+        with source.open("rb") as handle:
+            raw = handle.read(DRAFT_MAX_FILE_BYTES + 1)
+    except OSError as exc:
+        raise lib.HandsoffError(f"--draft {source} cannot be read: {exc.strerror or exc}") from exc
+    if len(raw) > DRAFT_MAX_FILE_BYTES:
+        raise lib.HandsoffError(f"--draft {source} exceeds {DRAFT_MAX_FILE_BYTES} bytes")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise lib.HandsoffError(f"--draft {source} is not UTF-8 JSON: {exc}") from exc
+    try:
+        cleaned = lib.validate_design_proposal(value)
+    except lib.HandsoffError as exc:
+        raise lib.HandsoffError(f"--draft {source}: {exc}") from exc
+    text = json.dumps(cleaned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    size = len(text.encode("utf-8"))
+    if size > DRAFT_MAX_BYTES:
+        raise lib.HandsoffError(
+            f"--draft {source} serializes to {size} UTF-8 bytes; the cap is {DRAFT_MAX_BYTES}")
+    return text
+
+
+def architect_task_outside_path(root: Path, task: str) -> str | None:
+    """#445: the first absolute path in an Architect task that names an
+    existing file outside the project root, or None. Such a file is one the
+    Architect's sandbox may not read (another session's scratchpad), so the
+    launch is refused and the host hands the draft over with --draft."""
+    root = Path(root).resolve()
+    for match in _TASK_PATH_TOKEN.finditer(task):
+        token = match.group(1).rstrip(".:!?")
+        try:
+            candidate = Path(token).expanduser()
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if resolved != root and root not in resolved.parents:
+            return token
+    return None
+
+
 DESIGN_EVIDENCE_ROLES = ("architect", "reviewer")
 DESIGN_REVIEW_PACKET_HEADING = "# Delta review packet"
 
@@ -325,7 +382,8 @@ def applicable_implementation_review_packet(root: Path, role: str, *, compact: b
     return lib.implementation_review_packet(root, cfg, compact=compact, diff=diff)
 
 
-def build_role_input(root: Path, role: str, task: str, topic: str | None = None) -> str:
+def build_role_input(root: Path, role: str, task: str, topic: str | None = None,
+                     draft: str | None = None) -> str:
     """Build the in-memory role prompt without persisting the assigned task.
 
     #38: the Architect and the Reviewer also receive a `# Design evidence`
@@ -336,7 +394,10 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
 
     #36: a Phase-2 Reviewer whose stored delta packet matches the current
     design gets `# Delta review packet` (canonical JSON) in front of the
-    role prompt; a missing or mismatched packet changes nothing."""
+    role prompt; a missing or mismatched packet changes nothing.
+
+    #445: an Architect launched with a host draft gets it inline under
+    `# Host-drafted design proposal`, just before its task."""
     if role not in lib.SELECTABLE_AGENT_ROLES:
         raise lib.HandsoffError("role must be architect, implementer, or reviewer")
     if not isinstance(task, str) or not task.strip():
@@ -347,7 +408,15 @@ def build_role_input(root: Path, role: str, task: str, topic: str | None = None)
     cfg = lib.load_config(root)
     implementation_delta = implementation_review_delta_packet(root, cfg, role)
     briefing = lib.briefing_section(root, cfg, topic)
-    text = f"{_role_prompt(root, role)}\n\n# Assigned task\n\n{task}"
+    draft_section = ""
+    if draft is not None:
+        if role != "architect":
+            raise lib.HandsoffError("--draft applies to architect launches only")
+        draft_section = (f"{HOST_DRAFT_HEADING}\n\nThe host drafted this proposal and it is here in "
+                         "full: there is no file to open for it. Check it against the project, revise "
+                         "what the evidence requires, and emit the result as your one "
+                         f"HANDSOFF_DESIGN_PROPOSAL line.\n\n{draft}\n\n")
+    text = f"{_role_prompt(root, role)}\n\n{draft_section}# Assigned task\n\n{task}"
     if role in {"implementer", "reviewer"}:
         status_file = lib.status_path(root, cfg)
         acceptance_file = lib.acceptance_path(root, cfg)
@@ -670,11 +739,14 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
                       inspection: bool = False, amendment: bool = False, topic: str | None = None,
                       owned_paths: list[str] | None = None,
                       compact_scope: list[dict] | None = None,
-                      work_items: list[str] | None = None) -> LaunchSpec:
+                      work_items: list[str] | None = None,
+                      draft: str | Path | None = None) -> LaunchSpec:
     root = root.resolve()
     lib.validate_runtime_integrity(root)
     if role not in lib.SELECTABLE_AGENT_ROLES:
         raise lib.HandsoffError("role must be architect, implementer, or reviewer")
+    if draft is not None and role != "architect":
+        raise lib.HandsoffError("--draft applies to architect launches only")
     if work_items:
         # #415: refused here, before any scratch, session or reservation
         if role != "implementer":
@@ -697,6 +769,14 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
         owned_paths = None
     if not isinstance(task, str) or not task.strip():
         raise lib.HandsoffError("task must be a non-empty string")
+    if role == "architect":
+        # #445: refused before any scratch, session or reservation
+        outside = architect_task_outside_path(root, task)
+        if outside is not None:
+            raise lib.HandsoffError(
+                f"architect task names {outside} outside the project root; "
+                "pass a host draft with --draft FILE")
+    draft_text = load_host_draft(draft) if draft is not None else None
     cfg = lib.load_config(root)
     # #167: rules distilled from run history refuse first, before an
     # adapter is resolved or a session reserved: a refusal costs nothing.
@@ -832,7 +912,18 @@ def build_launch_spec(root: Path, role: str, task: str, *, which=shutil.which, s
             f"reviewer launch refused before session reservation: {isolation['reason']} "
             f"(adapter={adapter}, enforcement={isolation['enforcement']}, decision={isolation['decision']})"
         )
-    stdin = build_compact_role_input(root, task, scope) if scope else build_role_input(root, role, task, topic)
+    stdin = (build_compact_role_input(root, task, scope) if scope
+             else build_role_input(root, role, task, topic, draft=draft_text))
+    if draft_text is not None:
+        # #445: a replacement appends its handoff to this input and refuses
+        # past MAX_REPLACEMENT_INPUT_BYTES, so the draft launch leaves room.
+        budget = MAX_REPLACEMENT_INPUT_BYTES - REPLACEMENT_HANDOFF_RESERVE_BYTES
+        size = len(stdin.encode("utf-8"))
+        if size > budget:
+            raise lib.HandsoffError(
+                f"architect input with --draft is {size} UTF-8 bytes; the budget is {budget} "
+                f"({MAX_REPLACEMENT_INPUT_BYTES} replacement limit less a "
+                f"{REPLACEMENT_HANDOFF_RESERVE_BYTES}-byte handoff reserve)")
     implementation_delta = implementation_review_delta_packet(root, cfg, role)
     packet = applicable_design_review_packet(root, cfg, role)
     criteria_count = 0
@@ -2351,6 +2442,13 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
         for request in architect_requests:
             try:
                 code = broker.execute_architect_criteria(root, request, capability=broker._SUPERVISOR_HOST_CAPABILITY)
+            except broker.BrokeredWorkflowError as exc:
+                # #445: the reason holds 200 characters, so the output tail,
+                # which says why criteria-apply refused, gets them first.
+                _end_protocol_refused(
+                    end_session,
+                    f"Architect criteria-apply exited {exc.returncode}: {exc.output_tail[-160:] or 'no output'}",
+                    session_id)
             except lib.HandsoffError as exc:
                 _end_protocol_refused(end_session, f"Architect criteria request rejected: {str(exc)[:160]}", session_id)
             if code != 0:
@@ -2936,6 +3034,10 @@ def main() -> int:
         command.add_argument("--compact-scope", action="append", default=None, metavar="PATH:START-END",
                              help="reviewer only, repeatable: review only these line ranges; the "
                                   "reviewer sees nothing else and cannot run tests")
+        command.add_argument("--draft", default=None, metavar="FILE",
+                             help="architect only: a design proposal the host drafted (JSON, the "
+                                  "six proposal keys); read here and handed to the Architect inline, "
+                                  "so it never needs a path outside the project")
         if name == "launch":
             command.add_argument("--item", action="append", default=None, metavar="ID",
                                  help="implementer only, repeatable: an existing work item id this "
@@ -2970,7 +3072,7 @@ def main() -> int:
                                  inspection=args.command == "inspect", amendment=bool(getattr(args, "amendment", None)),
                                  topic=args.topic, owned_paths=args.owns,
                                  compact_scope=parse_compact_scope(args.compact_scope),
-                                 work_items=getattr(args, "item", None))
+                                 work_items=getattr(args, "item", None), draft=args.draft)
         if getattr(args, "amendment", None):
             spec = dataclasses.replace(spec, amendment_id=args.amendment)
         if args.command == "inspect":

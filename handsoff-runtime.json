@@ -1,10 +1,10 @@
 {
   "files": {
     "bin/handsoff_adapters.py": "9761cf16afe4475559c69bd528010454b04f9598d78a92fd48e48a9759fac7ee",
-    "bin/handsoff_agent.py": "e1e593e315356006a1b95434fb1f444cbdb7bbd0ad2e53edf18249d6e26d12e6",
+    "bin/handsoff_agent.py": "9a54d5ae7424067f77fc0b3526060e15a608cbbd51bad7a7018f6b516c49d18f",
     "bin/handsoff_agent_runtime.py": "ac20444c2f276aaa75d1109240ce0d970967165f66cb725dd1542b834b538e5e",
     "bin/handsoff_analyzer.py": "5ff494f22c6675fa23c2a894f6688f8ece47ba8f9d9446ee7bd813e42c4eb89e",
-    "bin/handsoff_broker.py": "64b888c11c2e7f5c428be61207fef8614666bb83dfe350078a0db562cdbb522b",
+    "bin/handsoff_broker.py": "1b6d563864939effdc86f0a5bf22012907246d5e46ecb1a9d6e066099c5eeb22",
     "bin/handsoff_checkpoint.py": "624f3bc4ba55c8e6605a211f9ac31ca31902d7ec392cf116099cfd70fcf256ce",
     "bin/handsoff_cli.py": "d84fc2e528e9df46e127aea2a8eab81cec05c2b05ed4a07730f932cca36bd41f",
     "bin/handsoff_close_transaction.py": "c86290d7b27c2e7666d95a4901658fc777a0cb95166eb53610bfe434fd8f12df",
@@ -58,7 +58,7 @@
     "playbook/index.json": "d3a4dce1521d72ca809a23a431433fafb235a0920904150fb6b1cb0ecbd87b06",
     "playbook/landing.md": "6c962055e11abf17cef84f94e500912d2549038f1595010c62832ad16cd99d43",
     "playbook/lanes.md": "23cebe0e14e7b7e928538f8c10cca25761a9288af723748693e3634af3dc742a",
-    "playbook/lessons-agents.md": "44406794b3218c6c49dc50adebabfdcd89edba15c86385d87bed8d4293d90e8e",
+    "playbook/lessons-agents.md": "d70e0b8befc96adc57b1bf1300a664f781d74077e1a7fed1328830881a18dfe6",
     "playbook/lessons-binding.md": "01e7360a49ede0e7917e468060385129916763cf63e20ebdfa902655eae36bdf",
     "playbook/lessons-evidence.md": "ff2b6b81cf2c7a2d13fd4b1a51ea3d4fd30b511caa3ac5cd19eb58719ac2a1ce",
     "playbook/lessons-lane.md": "5ae613127bff42bddb7cfe810afc267235ea3c266961c66137380b8a03011f35",
@@ -79,5 +79,5 @@
     "templates/handsoff.toml": "8a22c2e6e73ab1b9a4b0e1a33ed59971f8d827bdae59f8fd2686c96431fe73ca"
   },
   "schema": 1,
-  "version": "v0.5.20"
+  "version": "v0.5.21"
 }

@@ -170,6 +170,7 @@ commands = [
     "python3 -m unittest tests.test_worktree_pin -v",
     "python3 -m unittest tests.test_background_rule -v",
     "python3 -m unittest tests.test_launch_authority -v",
+    "python3 -m unittest tests.test_architect_draft -v",
     "python3 -m unittest tests.test_pause_blocks_approval -v",
     "python3 -m unittest tests.test_symptom_auto -v",
     "python3 -m unittest tests.test_init_scope -v",
