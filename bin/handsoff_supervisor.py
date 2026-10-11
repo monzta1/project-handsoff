@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -430,7 +431,7 @@ def refresh_performance_state(
         "forecast_total_seconds": forecast_total, "forecast_remaining_seconds": forecast_remaining,
         "forecast_variance_seconds": (forecast_total - 120 * 60) if forecast_total is not None else None,
         "bottleneck": bottleneck, "breaches": history["breaches"],
-        "pause": performance_pause_view(episode, active_seconds),
+        "pause": performance_pause_view(episode, active_seconds, root),
         "auto_resume": _auto_resume_view(validated_auto_resume_decision(root, cfg)),
         "auto_resumed": auto_resumed,
     }
@@ -438,7 +439,17 @@ def refresh_performance_state(
 
 #: #414: the ledger event carrying the Pilot's standing auto-resume decision
 PERFORMANCE_AUTO_RESUME_EVENT = "performance_auto_resume_decided"
-PERFORMANCE_RESUME_COMMAND = 'handsoff performance-resume --by <pilot> --reason "<why>"'
+#: #466: printed for a human, so it runs as printed through the installed
+#: CLI: the supervisor prefix, the run's root (filled by human_command), and
+#: placeholders only for what the human chooses.
+PERFORMANCE_RESUME_COMMAND = 'handsoff supervisor --root {root} performance-resume --by <pilot> --reason "<why>"'
+
+
+def human_command(template: str, root) -> str:
+    """#466: `template` with `{root}` replaced by the run's absolute root,
+    shell-quoted; `<root>` only when the caller has no root to name."""
+    filled = shlex.quote(str(Path(root).resolve())) if root is not None else "<root>"
+    return template.replace("{root}", filled)
 
 
 def performance_auto_resume_decision(events: list[dict]) -> dict | None:
@@ -467,9 +478,10 @@ def _auto_resume_view(standing: dict | None) -> dict | None:
     return {"decision_id": standing.get("decision_id"), "by": standing.get("by"), "at": standing.get("at")}
 
 
-def performance_pause_view(episode: dict, active_seconds: float) -> dict | None:
+def performance_pause_view(episode: dict, active_seconds: float, root=None) -> dict | None:
     """#414: what status and Mission Control show while paused: since when,
-    the active time that tripped it, and the command that resumes it."""
+    the active time that tripped it, and the command that resumes it, naming
+    this run's root (#466)."""
     if episode.get("state") != "paused_for_performance_review":
         return None
     try:  # the active time at the pause, which is what tripped it
@@ -478,7 +490,8 @@ def performance_pause_view(episode: dict, active_seconds: float) -> dict | None:
     except runtime_control.RuntimeControlError:
         pass
     return {"episode_id": episode["episode_id"], "since": episode.get("paused_at"),
-            "active_seconds": active_seconds, "resume_command": PERFORMANCE_RESUME_COMMAND}
+            "active_seconds": active_seconds,
+            "resume_command": human_command(PERFORMANCE_RESUME_COMMAND, root)}
 
 
 def _auto_resume_performance(root: Path, cfg: dict, history: dict, events: list[dict], now: datetime,

@@ -877,7 +877,9 @@ function renderOperations(operations = {}, actions = []) {
   // decision the run is waiting on; listing it here too put two AUTHORIZE
   // DESIGN buttons on screen.
   const ALERT_KINDS = { design_approval: "design_approve", deployment_approval: "deployment_approve",
-                        amendment_approval: "amendment_approve", design_review_budget: "design_review_authorize" };
+                        amendment_approval: "amendment_approve", design_review_budget: "design_review_authorize",
+                        // #466: the performance pause banner carries Resume
+                        performance_pause: "performance_resume" };
   const carriedByAlert = state.inputRequired ? ALERT_KINDS[state.inputKind] : null;
   const decisions = actions.filter((action) => !ROUTINE_KINDS.has(action.kind) && action.kind !== carriedByAlert);
   const routine = actions.filter((action) => ROUTINE_KINDS.has(action.kind));
@@ -1655,20 +1657,57 @@ function renderClocks() {
 
 // #414: a performance pause is shown up front, not only in the metrics
 // panel: since when, the active time that tripped it, and the resume command.
-function renderPerformancePause(performance) {
+// #466: the banner carries the Resume control itself (a required reason, sent
+// as the bound performance_resume operator action); the command stays beside
+// it, root-qualified, for a Pilot at a terminal.
+function renderPerformancePause(performance, actions = []) {
   const banner = $("performance-pause-banner");
   if (!banner) return;
   const pause = performance && performance.pause;
   banner.classList.toggle("hidden", !pause);
-  banner.textContent = pause
+  const text = pause
     ? `PAUSED FOR PERFORMANCE REVIEW since ${pause.since || "unknown"} · active ${metricDuration(pause.active_seconds)} · resume: ${pause.resume_command}`
     : "";
+  const resume = pause ? actions.find((action) => action.kind === "performance_resume") : null;
+  let label = banner.querySelector(".performance-pause-text");
+  if (!label) {
+    banner.textContent = "";
+    label = document.createElement("span");
+    label.className = "performance-pause-text";
+    banner.append(label);
+  }
+  label.textContent = text;
+  let controls = banner.querySelector(".performance-pause-controls");
+  if (!resume) {
+    if (controls) controls.remove();
+    return;
+  }
+  // Snapshots arrive every few seconds; keep the typed reason while the
+  // bound action id is unchanged.
+  if (controls && controls.dataset.actionId === resume.action_id) return;
+  if (controls) controls.remove();
+  controls = document.createElement("span");
+  controls.className = "performance-pause-controls";
+  controls.dataset.actionId = resume.action_id;
+  const reason = document.createElement("input");
+  reason.type = "text";
+  reason.maxLength = 512;
+  reason.placeholder = "Reason required";
+  reason.setAttribute("aria-label", "Reason for Resume");
+  reason.dataset.reasonFor = resume.kind;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "performance-resume-button";
+  button.textContent = "RESUME";
+  button.addEventListener("click", () => executeOperatorAction(resume, reason.value || "", button));
+  controls.append(reason, button);
+  banner.append(controls);
 }
 
 function renderMetrics(metrics) {
   if (!metrics) return;
   const performance = state.performance || null;
-  renderPerformancePause(performance);
+  renderPerformancePause(performance, state.operatorActions || []);
   const currentPhase = String(state.phaseNumber ?? "");
   state.clocks = { startedAt: metrics.started_at || null, endedAt: metrics.ended_at || null, phaseStartedAt: metrics.phase_started_at || null,
     asleepSeconds: metrics.asleep_seconds || 0, phaseAsleepSeconds: (metrics.phase_asleep_seconds || {})[currentPhase] || 0 };
@@ -1895,6 +1934,7 @@ function render(snapshot) {
   renderOperation(snapshot.runtime?.operation || null);
   state.phaseNumber = snapshot.status?.phase_number ?? null;
   state.performance = snapshot.performance || null;
+  state.operatorActions = snapshot.operator_actions || [];
   renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);

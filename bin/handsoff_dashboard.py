@@ -574,7 +574,7 @@ def _active_role(status: dict, input_request: dict) -> str | None:
 #: turn is the only one that may interrupt them.
 DECISION_TURNS = {
     "design_approval": "pilot", "deployment_approval": "pilot", "amendment_approval": "pilot",
-    "approval_blocked_by_pause": "pilot",
+    "approval_blocked_by_pause": "pilot", "performance_pause": "pilot",
     "regression_approval": "pilot", "design_review_budget": "pilot", "question": "pilot",
     "escalation": "pilot",
     "amendment_review": "reviewer",
@@ -585,10 +585,24 @@ PREAUTHORIZATION_PATTERN = re.compile(r"pre-?authori[sz]", re.IGNORECASE)
 PREAUTHORIZATION_EXCERPT_CHARS = 160
 
 
-def approval_blocked_by_pause_message(pause: dict) -> str:
+#: #466: printed for a human, so it runs as printed: the supervisor prefix
+#: and the run's root (filled by supervisor.human_command).
+HUMAN_PAUSE_END_COMMAND = "handsoff supervisor --root {root} human-pause-end --by <pilot>"
+
+
+def approval_blocked_by_pause_message(pause: dict, root=None) -> str:
     """#422: why deployment approval cannot be taken, and how to clear it."""
+    command = supervisor.human_command(HUMAN_PAUSE_END_COMMAND, root)
     return (f"Approval blocked: human pause open by {pause.get('by')} since {pause.get('since')}. "
-            "End it with handsoff_supervisor.py human-pause-end --by ACTOR, then authorize deployment.")
+            f"End it with {command}, then authorize deployment.")
+
+
+def performance_pause_message(pause: dict) -> str:
+    """#466: the run is paused for performance review; Resume (or the
+    printed command) is the human action, and nothing else is offered."""
+    active = _duration_words(pause.get("active_seconds"))
+    return (f"Paused for performance review since {pause.get('since') or 'unknown'} after {active} "
+            f"of active run time. Resume to continue: {pause.get('resume_command')}")
 
 
 def _decision_turn(kind: str | None) -> str | None:
@@ -654,7 +668,8 @@ def _decision_headline(input_request: dict) -> tuple[str, str]:
 
 def _input_request(status: dict, cfg: dict, root: Path | None = None,
                    acceptance: dict | None = None,
-                   verifications: list[dict] | None = None) -> dict:
+                   verifications: list[dict] | None = None,
+                   performance: dict | None = None) -> dict:
     """Translate an explicit workflow pause into a dashboard alert.
 
     Supervisors record user-dependent pauses as status=blocked with the exact
@@ -665,12 +680,16 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     if isinstance(status.get("run_closed"), dict):
         return {"required": False, "kind": None, "message": None, "blockers": [], "request_id": None,
                 "amendment_id": None, "amendment_decision": None, "question_id": None,
-                "question_cards": [], "turn": None, "preauthorized": None, "amendment_round": None}
+                "question_cards": [], "turn": None, "preauthorized": None, "amendment_round": None,
+                "performance_episode": None, "deployment_approval_offered": False}
     workflow_status = str(status.get("status") or "")
     regression = next((item for item in reversed(status.get("regression_requests") or [])
                        if item.get("state") == "awaiting_approval"), None)
     phase = int(status.get("phase_number", 1) or 1)
     next_action = str(status.get("next_action") or "Pilot authorization is required before the mission can continue.")
+    # #466: a performance pause refuses every gate but performance-resume, so
+    # while it holds the only human action offered is Resume.
+    performance_pause = (performance or {}).get("pause") if isinstance((performance or {}).get("pause"), dict) else None
     awaiting_approval = (
         lib.adaptive_deployment_approval_required(status, cfg)
         and phase == 7
@@ -680,6 +699,16 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     # #422: the same wait behind an open human pause names the pause and the
     # command that ends it, instead of a control the gate would refuse.
     approval_blocked_by_pause = awaiting_approval and isinstance(status.get("human_pause"), dict)
+    # #466: deployment-gate --approve records an approval at Phase 7 whether
+    # or not the project requires one, and a host such as Sentinel waits for
+    # it (status ready_to_deploy, no approval). Where the project does not
+    # require it the dashboard still offers the control the gate would take,
+    # without holding the run on it; a required approval keeps its request.
+    optional_approval_offered = (
+        phase == 7 and not awaiting_approval and not status.get("deployment_approved")
+        and not isinstance(status.get("human_pause"), dict) and performance_pause is None
+        and not lib.amendment_decision_refusal(status, "deployment approval")
+    )
     drift = (lib.evidence_drift(root, cfg, acceptance, verifications)
              if root is not None and acceptance is not None and verifications is not None
              else {"stale": [], "refresh_commands": []})
@@ -717,10 +746,14 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     # refusing because it checks `input_required.kind`. The run genuinely
     # cannot proceed without the Pilot, so it is input required.
     required = bool(regression) or workflow_status == "blocked" or approval_missing or design_approval_missing \
-        or older_signal or bool(amendment) or bool(questions) or budget_exhausted or approval_blocked_by_pause
+        or older_signal or bool(amendment) or bool(questions) or budget_exhausted or approval_blocked_by_pause \
+        or performance_pause is not None
     escalation = status.get("escalation") if isinstance(status.get("escalation"), dict) else None
     blockers: list[str] = []
-    if regression:
+    if performance_pause is not None:
+        kind = "performance_pause"
+        message = performance_pause_message(performance_pause)
+    elif regression:
         kind = "regression_approval"
         message = (f"Full regression '{regression.get('group')}' requested. Review its exact commands "
                    "and choose Accept or Decline; it will not run until accepted.")
@@ -756,7 +789,7 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
             message = f"{message}: {questions[0].get('text')}"
     elif approval_blocked_by_pause:
         kind = "approval_blocked_by_pause"
-        message = approval_blocked_by_pause_message(status["human_pause"])
+        message = approval_blocked_by_pause_message(status["human_pause"], root)
     elif approval_missing and evidence_stale:
         kind = "evidence_drift"
         message = (f"Automated evidence for {', '.join(drift['stale'])} is stale; run "
@@ -781,7 +814,10 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     turn = _decision_turn(kind) if required else None
     # A standing pre-authorization only ever stands in for the Pilot's own
     # turn; a reviewer's or the Architect's pending step is theirs to take.
-    preauthorized = _standing_preauthorization(root, cfg) if required and turn == "pilot" else None
+    # A pilot note never resumes a performance pause (#414: only
+    # performance-resume or the standing auto-resume decision does).
+    preauthorized = (_standing_preauthorization(root, cfg)
+                     if required and turn == "pilot" and kind != "performance_pause" else None)
     amendment_round = _amendment_round(root, cfg, amendment) if amendment else None
     return {"required": required, "kind": kind if required else None,
             "message": message if required else None,
@@ -791,7 +827,10 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
             "amendment_decision": amendment_decision,
             "question_id": questions[0].get("question_id") if questions else None,
             "question_cards": lib.question_cards(status) if questions else [],
-            "turn": turn, "preauthorized": preauthorized, "amendment_round": amendment_round}
+            "turn": turn, "preauthorized": preauthorized, "amendment_round": amendment_round,
+            "performance_episode": performance_pause.get("episode_id") if performance_pause else None,
+            "deployment_approval_offered": (required and kind == "deployment_approval")
+                                           or bool(optional_approval_offered)}
 
 
 class _ThreadCaptureStdout:
@@ -890,6 +929,7 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
         "recover": "recover", "review_cap_override": "review-cap-override",
         "pause": "human-pause-start", "resume": "human-pause-end",
         "run_close": "run-close", "run_reopen": "run-reopen",
+        "performance_resume": "performance-resume",
     }
 
     def add(kind, label, consequence, *, reason=False, tone="primary", confirmation=False):
@@ -908,7 +948,12 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
         })
 
     kind = input_request.get("kind")
-    if kind == "design_approval":
+    if kind == "performance_pause":
+        # #466: the one action the pause allows; it launches nothing, so a
+        # view-only server takes it too.
+        add("performance_resume", "Resume", "Ends the performance pause and opens a new run episode",
+            reason=True)
+    elif kind == "design_approval":
         add("design_approve", "Authorize design", "Opens Phase 3 for the exact reviewed design")
         add("design_reject", "Request design revision", "Returns the design to the Architect and Reviewer", reason=True, tone="danger")
     elif kind == "deployment_approval":
@@ -933,6 +978,11 @@ def _operator_actions(status: dict, cfg: dict, input_request: dict) -> list[dict
         pass
     elif kind == "amendment_revision":
         add("amendment_escalate", "Escalate to redesign", "Closes the amendment and returns to full design", reason=True, tone="danger")
+    if kind != "deployment_approval" and input_request.get("deployment_approval_offered"):
+        # #466: not required by this project, still taken by the gate and
+        # awaited by a host such as Sentinel.
+        add("deployment_approve", "Authorize deployment",
+            "Records the deployment approval (optional for this project; a host waiting at the gate continues)")
     escalation = status.get("escalation") or {}
     if escalation.get("kind") in {"recovery_exhausted", "recovery_paused"}:
         add("recovery_acknowledge", "Acknowledge recovery hold", "Clears the exhausted recovery hold", reason=True)
@@ -965,6 +1015,10 @@ def _operation_binding(status: dict, input_request: dict) -> str:
         "amendment_hash": (status.get("amendment") or {}).get("amendment_hash"),
         "regression": (lib.active_regression_request(status) or {}).get("command_sha256"),
     }
+    # #466: a Resume is bound to the paused episode it ends; a pause that
+    # ends without status changing still retires the displayed ids.
+    if input_request.get("performance_episode"):
+        seed["performance_episode"] = input_request["performance_episode"]
     return hashlib.sha256(json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
 
 
@@ -1202,7 +1256,15 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
     # next launch selects, with any refusal named) reviewer profile.
     design_reviewer_selection = lib.design_reviewer_selection_view(cfg, status, acceptance)
     audit_healthy = not gate_errors and not audit_errors
-    input_request = _input_request(status, cfg, root, acceptance, verifications)
+    metrics = lib.build_run_metrics(status, events, verifications)
+    try:
+        performance = supervisor.refresh_performance_state(
+            root, status=status, events=events, metrics=metrics, cfg=cfg,
+        )
+    except (lib.HandsoffError, OSError, ValueError) as exc:
+        performance = {"state": "unavailable", "block_new_work": False, "error": str(exc)}
+    # #466: read before the request, so a performance pause is the request
+    input_request = _input_request(status, cfg, root, acceptance, verifications, performance)
     operator_actions = _operator_actions(status, cfg, input_request)
     operations_inventory = lib.operation_inventory(status, acceptance, cfg, root,
                                                     _operation_binding(status, input_request))
@@ -1310,13 +1372,6 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
         item["from_profile"] = session_view(sessions.get(replacement.get("from_session_id")))
         item["to_profile"] = session_view(sessions.get(replacement.get("to_session_id")))
         replacements.append(item)
-    metrics = lib.build_run_metrics(status, events, verifications)
-    try:
-        performance = supervisor.refresh_performance_state(
-            root, status=status, events=events, metrics=metrics, cfg=cfg,
-        )
-    except (lib.HandsoffError, OSError, ValueError) as exc:
-        performance = {"state": "unavailable", "block_new_work": False, "error": str(exc)}
     engine_identity, engine_error = _engine_identity(root)  # #185
     host = lib.host_identity(status, events)  # #186
     host_wait = lib.host_wait_view(status, events, cfg, pilot_input_required=bool(input_request.get("required")))  # #194
@@ -2033,6 +2088,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 elif kind == "deployment_approve":
                     code, gate_reason = _run_gate(supervisor.cmd_deployment_gate, argparse.Namespace(
                         root=root_arg, approve=True, revoke=False, auto=False, by=pilot, reason=None))
+                elif kind == "performance_resume":
+                    # #466: the CLI's own resume, bound to the current pause
+                    code, gate_reason = _run_gate(supervisor.cmd_performance_resume, argparse.Namespace(
+                        root=root_arg, by=pilot, reason=reason, evidence_hash=None))
                 elif kind in {"deployment_hold", "pause"}:
                     code = supervisor.cmd_human_pause_start(argparse.Namespace(
                         root=root_arg, by=pilot, note=reason or "Pilot held the mission in Mission Control"))
@@ -2299,9 +2358,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise lib.HandsoffError("deployment approval payload must be empty")
                 snapshot = build_snapshot(self.server.project_root)
                 input_request = snapshot.get("input_required") or {}
-                if input_request.get("kind") != "deployment_approval":
+                # #466: the same offer the operator action carries, required or optional
+                if input_request.get("kind") != "deployment_approval" \
+                        and not input_request.get("deployment_approval_offered"):
                     # #422: a pause that blocks the approval says so.
-                    blocked = input_request.get("kind") == "approval_blocked_by_pause"
+                    blocked = input_request.get("kind") in {"approval_blocked_by_pause", "performance_pause"}
                     self._json_response(
                         HTTPStatus.CONFLICT,
                         {"ok": False, "error": input_request.get("message") if blocked
