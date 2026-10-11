@@ -544,5 +544,209 @@ class IsolatedWorkerHead(unittest.TestCase):
         self.assertTrue(all(row["cleanup"] == "removed" for row in results[0]["shards"]))
 
 
+BROKEN_CLASS = "tests.test_alpha.TestBroken"
+BROKEN_IDS = [f"{BROKEN_CLASS}.test_one", f"{BROKEN_CLASS}.test_two"]
+
+
+def run_all_fixture(modules: dict[str, str]) -> tuple[list[dict], dict]:
+    """#450: run `python3 tests/shard.py --all` over a scratch project holding
+    `modules` and return the results and the terminal progress record."""
+    root = Path(tempfile.mkdtemp(prefix="handsoff-fixture-error-"))
+    try:
+        (root / "tests").mkdir()
+        (root / "tests" / "__init__.py").write_text("")
+        shutil.copy(ROOT / "tests" / "shard.py", root / "tests" / "shard.py")
+        for name, body in modules.items():
+            (root / "tests" / f"{name}.py").write_text(textwrap.dedent(body))
+        results = regress.run_battery_results(
+            root, "python-full", ["python3 tests/shard.py --all"], timeout=120,
+        )
+        return results, json.loads((root / regress.PROGRESS_FILE).read_text())
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+SETUP_CLASS_ERROR = {"test_alpha": '''
+    import unittest
+
+    class TestBroken(unittest.TestCase):
+        @classmethod
+        def setUpClass(cls):
+            raise RuntimeError("fixture exploded")
+
+        def test_one(self):
+            pass
+
+        def test_two(self):
+            pass
+
+    class TestFine(unittest.TestCase):
+        def test_ok(self):
+            pass
+'''}
+
+
+class FixtureErrorReporting(unittest.TestCase):
+    """#450: a setUpClass/setUpModule ERROR is counted and listed with its traceback."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.results, cls.state = run_all_fixture(SETUP_CLASS_ERROR)
+        cls.command = cls.state["commands"][0]
+
+    def test_fixture_lines_parse_in_both_python_shapes(self):
+        for line, fixture, scope, result in (
+            ("setUpClass (tests.test_release_wheel.ReproducibleBuildTest) ... ERROR",
+             "setUpClass", "tests.test_release_wheel.ReproducibleBuildTest", "ERROR"),
+            ("setUpModule (tests.test_release_wheel) ... ERROR", "setUpModule", "tests.test_release_wheel", "ERROR"),
+            ("setUpClass (pkg.Class) ... FAIL", "setUpClass", "pkg.Class", "FAIL"),
+            ("tearDownClass (pkg.Class) ... ERROR", "tearDownClass", "pkg.Class", "ERROR"),
+            ("setUpClass (pkg.Class) ... skipped 'no network'", "setUpClass", "pkg.Class", "skipped 'no network'"),
+        ):
+            event, pending = regress.parse_line(line, "pkg.Other.test_waiting")
+            self.assertEqual(event, {"name": f"{fixture} ({scope})", "result": result,
+                                     "fixture": fixture, "scope": scope})
+            self.assertEqual(pending, "pkg.Other.test_waiting")
+
+    def test_count_event_counts_one_error_and_accounts_only_its_own_scope(self):
+        shard = regress._new_shard(1, ["pkg.Class.test_a", "pkg.Class.test_b", "pkg.ClassB.test_c"])
+        shard["completed_test_ids"].append("pkg.Class.test_a")
+        event, _ = regress.parse_line("setUpClass (pkg.Class) ... ERROR", None)
+        regress.count_event(shard, event, shard["test_ids"])
+        self.assertEqual(shard["errors"], 1)
+        self.assertEqual(shard["blocked_test_ids"], ["pkg.Class.test_b"])
+        self.assertEqual(shard["done"], 1)
+        self.assertEqual(shard["failures"], [{"name": "setUpClass (pkg.Class)", "kind": "ERROR",
+                                              "fixture": "setUpClass", "scope": "pkg.Class", "excerpt": None}])
+        teardown, _ = regress.parse_line("tearDownClass (pkg.ClassB) ... ERROR", None)
+        regress.count_event(shard, teardown, shard["test_ids"])
+        self.assertEqual((shard["errors"], shard["done"], shard["blocked_test_ids"]), (2, 1, ["pkg.Class.test_b"]))
+
+    def test_shard_command_and_totals_count_the_error(self):
+        self.assertNotEqual(self.results[0]["exit_code"], 0)
+        self.assertGreaterEqual(self.state["totals"]["errors"], 1)
+        self.assertGreaterEqual(self.command["errors"], 1)
+        errored = [shard for shard in self.command["shards"] if shard["errors"]]
+        self.assertTrue(errored)
+        self.assertEqual(sum(shard["errors"] for shard in self.command["shards"]), self.command["errors"])
+
+    def test_failure_names_the_fixture_with_a_traceback_excerpt(self):
+        fixtures = [f for f in self.command["failures"] if f.get("fixture")]
+        self.assertTrue(fixtures, self.command["failures"])
+        for failure in fixtures:
+            self.assertEqual(failure["kind"], "ERROR")
+            self.assertEqual(failure["name"], f"setUpClass ({BROKEN_CLASS})")
+            self.assertEqual(failure["scope"], BROKEN_CLASS)
+            self.assertIn("RuntimeError: fixture exploded", failure["excerpt"])
+            self.assertIn("Traceback", failure["excerpt"])
+            self.assertLessEqual(len(failure["excerpt"]), regress.EXCERPT_MAX_CHARS)
+
+    def test_excerpt_is_bounded(self):
+        body = "\n".join(f"  frame {n}" for n in range(200))
+        log = ("=" * 70 + "\nERROR: setUpClass (pkg.Class)\n" + "-" * 70
+               + f"\nTraceback (most recent call last):\n{body}\nRuntimeError: boom\n\n" + "-" * 70 + "\nRan 0 tests\n")
+        excerpt = regress._fixture_excerpt(log, "setUpClass (pkg.Class)")
+        self.assertEqual(len(excerpt.splitlines()), regress.EXCERPT_MAX_LINES)
+        self.assertTrue(excerpt.endswith("RuntimeError: boom"))
+        self.assertIsNone(regress._fixture_excerpt(log, "setUpClass (pkg.Other)"))
+
+
+class FixtureInventoryAccounting(unittest.TestCase):
+    """#450: a recorded fixture outcome accounts for its tests; INVENTORY
+    fires only for tests missing for another reason, and names them."""
+
+    def test_setupclass_error_accounts_for_its_tests(self):
+        results, state = run_all_fixture(SETUP_CLASS_ERROR)
+        command = state["commands"][0]
+        self.assertEqual([f for f in command["failures"] if f["kind"] == "INVENTORY"], [])
+        self.assertNotIn("inventory_error", command)
+        self.assertTrue(all(shard["inventory_error"] is None for shard in command["shards"]))
+        self.assertTrue(all(shard["inventory_error"] is None for shard in results[0]["shards"]))
+        blocked = sorted(test_id for shard in command["shards"] for test_id in shard["blocked_test_ids"])
+        self.assertEqual(blocked, BROKEN_IDS)
+        self.assertEqual(state["totals"]["done"], state["totals"]["total"])
+
+    def test_setupclass_skip_accounts_for_its_tests(self):
+        results, state = run_all_fixture({"test_alpha": '''
+            import unittest
+
+            class TestBroken(unittest.TestCase):
+                @classmethod
+                def setUpClass(cls):
+                    raise unittest.SkipTest("not here")
+
+                def test_one(self):
+                    pass
+
+                def test_two(self):
+                    pass
+        '''})
+        command = state["commands"][0]
+        self.assertEqual(results[0]["exit_code"], 0, results[0]["output_tail"])
+        self.assertEqual(command["failures"], [])
+        self.assertEqual((command["skipped"], command["errors"]), (2, 0))
+        self.assertTrue(all(shard["inventory_error"] is None for shard in command["shards"]))
+
+    def test_tests_missing_without_a_fixture_outcome_still_record_inventory(self):
+        results, state = run_all_fixture({"test_alpha": '''
+            import os, unittest
+
+            class TestExit(unittest.TestCase):
+                def test_a(self):
+                    pass
+
+                def test_b(self):
+                    os._exit(0)
+
+                def test_c(self):
+                    pass
+        '''})
+        command = state["commands"][0]
+        missing = "tests.test_alpha.TestExit.test_b"
+        inventory = [f for f in command["failures"] if f["kind"] == "INVENTORY"]
+        self.assertEqual(len(inventory), 1, command["failures"])
+        self.assertEqual(inventory[0]["missing"], [missing])
+        self.assertEqual(inventory[0]["missing_count"], 1)
+        self.assertIn(missing, inventory[0]["detail"])
+        shard = next(s for s in command["shards"] if s["index"] == inventory[0]["shard"])
+        self.assertEqual(shard["inventory_error"], inventory[0]["detail"])
+        self.assertNotEqual(results[0]["exit_code"], 0)
+
+    def test_inventory_missing_list_is_bounded(self):
+        with self.assertRaises(regress.RegressionInventoryError) as caught:
+            regress._exact_ids([f"t.{n:02d}" for n in range(30)], [], "shard 1")
+        self.assertEqual(len(caught.exception.missing), 30)
+        shard = regress._new_shard(1, [f"t.{n:02d}" for n in range(30)])
+        self.assertEqual(regress._accounted_ids(shard), [])
+
+
+class ShardFooterNumber(unittest.TestCase):
+    """#450: tests/shard.py --all names the same 1-based shard as the worker label."""
+
+    def test_footer_prints_the_one_based_shard_and_the_index(self):
+        import contextlib
+        import io
+        sys.path.insert(0, str(ROOT / "tests"))
+        import shard as shard_cli
+        out = io.StringIO()
+        with mock.patch.object(shard_cli, "all_modules", return_value=["test_alpha"]), \
+                mock.patch.object(shard_cli.subprocess, "run",
+                                  return_value=subprocess.CompletedProcess([], 0)), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(shard_cli.run_all_shard(["tests.test_alpha.T.test_x"], 3, 5), 0)
+        self.assertIn("shard 4 of 5 (--index 3): 1 tests OK", out.getvalue())
+
+    def test_merged_log_header_and_footer_agree_for_every_worker(self):
+        results, state = run_all_fixture(SETUP_CLASS_ERROR)
+        tail = results[0]["output_tail"]
+        for shard in state["commands"][0]["shards"]:
+            if not shard["test_count"]:
+                continue
+            n = shard["index"]
+            self.assertEqual(shard["label"], f"Worker {n}")
+            section = tail.split(f"===== shard {n} of 5 =====", 1)[1].split("===== shard", 1)[0]
+            self.assertIn(f"\nshard {n} of 5 (--index {n - 1}): ", section)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
