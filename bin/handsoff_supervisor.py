@@ -936,6 +936,10 @@ def cmd_init(args) -> int:
         print(f"SHIP_FEATURE_BLOCKED: {foreign[0]} is an issue of {foreign[0].split('#')[0]}, not of this "
               f"run's repository {own_repo}; a run's issue items belong to its own repository")
         return 1
+    # #446: landing needs gh; warn now, never refuse (Phases 1-5 do not use it).
+    gh_warning = lib.github_cli_warning(lib.github_cli_readiness(own_repo, root))
+    if gh_warning:
+        print(f"HANDSOFF_PREFLIGHT_WARNING: {gh_warning}")
     sp, ap = lib.status_path(root, cfg), lib.acceptance_path(root, cfg)
     now = datetime.now(timezone.utc).isoformat()
     # Locked for the same reason advance/deployment-gate are: init writes
