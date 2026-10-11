@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import signal
+import shlex
 import shutil
 import socket
 import subprocess
@@ -8428,6 +8429,113 @@ def _dashboard_port_refuses(host: str, port: int, *, wait: float) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.05)
+
+
+# --------------------------------------------------------------------------
+# #444: a run-owned dashboard that dies leaves its pointer file behind (only
+# a clean exit removes it) and nothing inside the dead process can notice.
+# status, recover/watch and Fleet check the file from outside: the pid with
+# signal 0 only, and the endpoint's ownership answer. A dead one is ledgered
+# once and the Pilot is told the command that restarts it.
+# --------------------------------------------------------------------------
+
+
+def owner_pid_alive(pid: int) -> bool:
+    """Signal 0 only: existence, never delivery. A pid owned by another
+    user (PermissionError) is alive."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def run_is_open(status: dict) -> bool:
+    return status.get("status") not in {"complete", "closed"} and not isinstance(status.get("run_closed"), dict)
+
+
+def dashboard_restart_line(root: Path, pid, host, port, view_only: bool) -> str:
+    """The Pilot's way back: a command naming this root, so it targets the
+    affected run from any working directory, in the mode the record had."""
+    mode = "--view-only" if view_only else "--owned-by-run"
+    return (f"The run-owned dashboard (pid {pid}, {host}:{port}) is not running; restart it: "
+            f"handsoff supervisor --root {shlex.quote(str(Path(root).resolve()))} dashboard "
+            f"{mode} --port {port} --no-open")
+
+
+def _probe_dashboard_ownership(host: str, port: int) -> dict | None:
+    try:
+        return _dashboard_json_request(f"{_dashboard_base_url(host, port)}/api/ownership", timeout=1.0)
+    except (OSError, ValueError):
+        return None
+
+
+def owned_dashboard_state(root: Path, status: dict, *, pid_alive=owner_pid_alive,
+                          probe=_probe_dashboard_ownership) -> dict | None:
+    """None when there is nothing of this open run's to judge: a closed or
+    complete run, no or unreadable owner file, or a file bound to another
+    root. Otherwise {state: live|down, pid, host, port, view_only, reason,
+    required_action}; down when the pid is gone or the endpoint does not
+    answer as this record's owner. Does network I/O: call outside the lock."""
+    if not run_is_open(status):
+        return None
+    try:
+        record = json.loads(dashboard_owner_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    expected_sha = dashboard_root_sha256(root)
+    if not isinstance(record, dict) or record.get("root_sha256") != expected_sha:
+        return None
+    pid, port = record.get("pid"), record.get("port")
+    if not (type(pid) is int and pid >= 1 and type(port) is int and 1 <= port <= 65535):
+        return None
+    host = record.get("host") if record.get("host") in DASHBOARD_LOOPBACK_HOSTS else "127.0.0.1"
+    view_only = record.get("view_only") is True
+    reason = None
+    if not pid_alive(pid):
+        reason = "pid_gone"
+    else:
+        answer = probe(host, port)
+        if not isinstance(answer, dict):
+            reason = "not_responding"
+        elif not (answer.get("owned") is True and answer.get("run_token") == record.get("run_token")
+                  and answer.get("root_sha256") == expected_sha):
+            reason = "ownership_mismatch"
+    return {"state": "down" if reason else "live", "pid": pid, "host": host, "port": port,
+            "view_only": view_only, "reason": reason,
+            "required_action": dashboard_restart_line(root, pid, host, port, view_only) if reason else None}
+
+
+def record_dashboard_down_transition(root: Path, cfg: dict, state: dict | None) -> str | None:
+    """Ledger a dead owned dashboard once per pid+port, and its verified
+    return once. Caller holds project_lock. Status is re-read here, and a
+    run that closed after the probe gets nothing. Returns the event kind."""
+    status = load_unique_json(status_path(root, cfg))
+    if not isinstance(state, dict) or not run_is_open(status):
+        return None
+    reported = status.get("dashboard_down_reported")
+    if state["state"] == "down":
+        if isinstance(reported, dict) and (reported.get("pid"), reported.get("port")) == (state["pid"], state["port"]):
+            return None
+        status["dashboard_down_reported"] = {"pid": state["pid"], "host": state["host"], "port": state["port"],
+                                             "reported_at": datetime.now(timezone.utc).isoformat()}
+        commit(root, cfg, status=status, event_kind="owned_dashboard_down",
+               event_message=f"Run-owned dashboard pid {state['pid']} on {state['host']}:{state['port']} "
+                             f"is not running ({state['reason']})",
+               pid=state["pid"], host=state["host"], port=state["port"], reason=state["reason"],
+               required_action=state["required_action"])
+        return "owned_dashboard_down"
+    if state["state"] == "live" and isinstance(reported, dict):
+        status["dashboard_down_reported"] = None
+        commit(root, cfg, status=status, event_kind="owned_dashboard_restored",
+               event_message=f"Run-owned dashboard pid {state['pid']} on {state['host']}:{state['port']} is serving",
+               pid=state["pid"], port=state["port"])
+        return "owned_dashboard_restored"
+    return None
 
 
 def release_run_dashboard(root: Path, *, timeout: float = 2.0, wait: float = 5.0) -> dict:

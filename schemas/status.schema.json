@@ -197,6 +197,20 @@
       ],
       "minLength": 1
     },
+    "dashboard_down_reported": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": ["pid", "host", "port", "reported_at"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "host": {"type": "string", "minLength": 1},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "reported_at": {"type": "string", "format": "date-time"}
+      }
+    },
     "background_wait": {
       "type": [
         "object",

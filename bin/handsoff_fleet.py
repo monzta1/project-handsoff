@@ -560,9 +560,17 @@ def _owner_view(root: Path) -> dict | None:
     result = {key: record.get(key) for key in (
         "pid", "host", "port", "run_token", "root_sha256", "started_at", "feature",
     )}
+    # #444: the mode the record was written in, kept for the restart line even
+    # when the server is dead (view_only below is set only once verified)
+    result["recorded_view_only"] = record.get("view_only") is True
     expected_root = lib.dashboard_root_sha256(root)
     if record.get("root_sha256") != expected_root:
         return {**result, "health": "stale", "reason": "root binding mismatch"}
+    # #444: a recorded pid that is gone is a dead owner whatever answers on
+    # its port, matching or not; checked before, and apart from, the HTTP probe
+    pid = record.get("pid")
+    if type(pid) is int and pid >= 1 and not lib.owner_pid_alive(pid):
+        return {**result, "health": "stale", "reason": OWNER_PID_GONE}
     try:
         host = record.get("host") if record.get("host") in lib.DASHBOARD_LOOPBACK_HOSTS else "127.0.0.1"
         answer = lib._dashboard_json_request(
@@ -577,8 +585,23 @@ def _owner_view(root: Path) -> dict | None:
         if matched and answer.get("view_only") is True:
             result["view_only"] = True
     except (OSError, ValueError, TypeError):
-        result.update({"health": "stale", "reason": "owned dashboard is not responding"})
+        result.update({"health": "stale", "reason": OWNER_NOT_RESPONDING})
     return result
+
+
+#: #444: the two owner-view reasons that mean this run's own dashboard is dead
+OWNER_NOT_RESPONDING = "owned dashboard is not responding"
+OWNER_PID_GONE = "recorded pid is gone"
+OWNER_DOWN_REASONS = frozenset({OWNER_NOT_RESPONDING, OWNER_PID_GONE})
+
+
+def owner_restart_line(root: Path, owner: dict | None) -> str | None:
+    """#444: the restart command for a dead run-owned dashboard, or None."""
+    if not isinstance(owner, dict) or owner.get("health") == "healthy" \
+            or owner.get("reason") not in OWNER_DOWN_REASONS:
+        return None
+    return lib.dashboard_restart_line(root, owner.get("pid"), owner.get("host") or "127.0.0.1",
+                                      owner.get("port"), owner.get("recorded_view_only") is True)
 
 
 def _engine_version(root: Path) -> str:
@@ -846,11 +869,17 @@ NO_APPROVAL_PHASE7_LINE = ("Deployment approval is not required for this project
                            "Next: land the change, then run verify-live.")
 
 
-def card_next_action(status: dict, cfg: dict | None) -> str | None:
+def card_next_action(status: dict, cfg: dict | None, *, root: Path | None = None,
+                     owner: dict | None = None) -> str | None:
     """#434: the run's next_action, except at an open Phase 7 whose
     deployment approval is not required (adaptive_deployment_approval_required
     false): the card says so plainly and names the next step, whatever an
-    older next_action asked for. A run that requires approval keeps its text."""
+    older next_action asked for. A run that requires approval keeps its text.
+    #444: an open run whose owned dashboard is dead shows its restart command."""
+    if root is not None and lib.run_is_open(status):
+        restart = owner_restart_line(root, owner)
+        if restart:
+            return restart
     next_action = status.get("next_action")
     if cfg is None or int(status.get("phase_number") or 0) != 7 or status.get("status") != "in_progress" \
             or isinstance(status.get("run_closed"), dict):
@@ -919,7 +948,7 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
     elif status.get("status") == "complete":
         state = "complete"
     elif (owner is not None and owner.get("health") != "healthy"
-          and owner.get("reason") == "owned dashboard is not responding"):
+          and owner.get("reason") in OWNER_DOWN_REASONS):
         state = "offline"
     elif (snap.get("input_required", {}).get("required")
           and snap.get("input_required", {}).get("turn") == "pilot"
@@ -962,7 +991,7 @@ def project_view(entry: dict, signals: "signals_module.SignalCache | None" = Non
         "host_wait": snap.get("host_wait"),  # #194
         "phase_number": status.get("phase_number"), "progress": status.get("progress"), "state": state,
         "session_state": projected.get("state"), "session_projection": projected.get("sessions") or [],
-        "next_action": card_next_action(status, cfg), "role": role,
+        "next_action": card_next_action(status, cfg, root=root, owner=owner), "role": role,
         "started_at": (snap.get("metrics") or {}).get("started_at"),
         "asleep_seconds": (snap.get("metrics") or {}).get("asleep_seconds"),  # #193
         "phase_asleep_seconds": ((snap.get("metrics") or {}).get("phase_asleep_seconds") or {}).get(str(status.get("phase_number"))),

@@ -387,6 +387,10 @@ commands = [
   "python3 -m unittest tests.test_regression_accept_deadline.AcceptDeadlineSchema -v",
   "node --test tests/dashboard/regression_accept_deadline.test.js",
   "python3 -m unittest tests.test_commands_usage.CommandsUsageLinesRun -v",
+  "python3 -m unittest tests.test_owned_dashboard_liveness.StatusReportsDeadDashboard -v",
+  "python3 -m unittest tests.test_owned_dashboard_liveness.RecoverReportsDeadDashboard -v",
+  "python3 -m unittest tests.test_owned_dashboard_liveness.HealthyOrOutOfScopeIsQuiet -v",
+  "python3 -m unittest tests.test_owned_dashboard_liveness.FleetCardRestartLine -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.
