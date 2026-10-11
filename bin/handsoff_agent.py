@@ -91,6 +91,8 @@ HOST_DRAFT_HEADING = "# Host-drafted design proposal"
 DRAFT_MAX_BYTES = 16 * 1024
 DRAFT_MAX_FILE_BYTES = 64 * 1024
 REPLACEMENT_HANDOFF_RESERVE_BYTES = 16 * 1024
+#: a quoted path is read whole, spaces included; a bare one ends at whitespace
+_TASK_QUOTED_PATH = re.compile(r"([`'\"])(~?/[^`'\"\n]+?)\1")
 _TASK_PATH_TOKEN = re.compile(r"(?<![\w.~/-])(~?/[^\s'\"`<>()\[\]{},;]+)")
 MAX_SUPERVISOR_REQUESTS = 8
 IMPLEMENTATION_REVIEW_PACKET_HEADING = "# Implementation review delta"
@@ -287,8 +289,9 @@ def architect_task_outside_path(root: Path, task: str) -> str | None:
     Architect's sandbox may not read (another session's scratchpad), so the
     launch is refused and the host hands the draft over with --draft."""
     root = Path(root).resolve()
-    for match in _TASK_PATH_TOKEN.finditer(task):
-        token = match.group(1).rstrip(".:!?")
+    quoted = [match.group(2) for match in _TASK_QUOTED_PATH.finditer(task)]
+    bare = [match.group(1).rstrip(".:!?") for match in _TASK_PATH_TOKEN.finditer(task)]
+    for token in quoted + bare:
         try:
             candidate = Path(token).expanduser()
             if not candidate.is_file():
@@ -2447,7 +2450,7 @@ def _run_managed_process(spec: LaunchSpec, root: Path, session_id: str, process,
                 # which says why criteria-apply refused, gets them first.
                 _end_protocol_refused(
                     end_session,
-                    f"Architect criteria-apply exited {exc.returncode}: {exc.output_tail[-160:] or 'no output'}",
+                    f"Architect criteria-apply exited {exc.returncode}: {exc.tail(160) or 'no output'}",
                     session_id)
             except lib.HandsoffError as exc:
                 _end_protocol_refused(end_session, f"Architect criteria request rejected: {str(exc)[:160]}", session_id)

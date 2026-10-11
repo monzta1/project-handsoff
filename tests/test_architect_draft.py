@@ -240,6 +240,21 @@ class OutsideRootPath(ArchitectDraftCase):
         self.assertEqual(self.ledger(), before)
         self.assertNotIn("agent_sessions", json.loads(before[0]))
 
+    def test_a_quoted_path_with_spaces_is_read_whole_and_refused(self):
+        spaced = self.draft_file(proposal(), name="draft with spaces.json")
+        before = self.ledger()
+        for quote in ("'", '"', "`"):
+            task = f"Emit the proposal saved at {quote}{spaced}{quote}."
+            with self.subTest(quote=quote):
+                with self.assertRaises(lib.HandsoffError) as refused:
+                    self.spec(task)
+                self.assertIn(f"architect task names {spaced} outside the project root", str(refused.exception))
+        self.assertEqual(self.ledger(), before)
+        # the same file name inside the root is fine, quoted or not
+        inside = self.tmp / "draft with spaces.json"
+        inside.write_text("{}", encoding="utf-8")
+        self.assertEqual(self.spec(f"See '{inside.resolve()}'.").role, "architect")
+
     def test_in_root_paths_missing_paths_and_directories_are_accepted(self):
         inside = (self.tmp / "handsoff.toml").resolve()
         for task in (f"See {inside} for the checks.",
@@ -296,6 +311,7 @@ class BrokeredStderr(ArchitectDraftCase):
         self.assertEqual(error.returncode, 1)
         self.assertEqual(str(error), "brokered workflow command exited with status 1: "
                                      "Traceback: criteria file is not JSON partial")
+        self.assertEqual(error.stderr_tail, "Traceback: criteria file is not JSON")
         # the host still sees each stream, unchanged, on its own stream
         self.assertEqual(err.getvalue(), "Traceback: criteria file is not JSON\n")
         self.assertEqual(out.getvalue(), "partial\n")
@@ -311,6 +327,7 @@ class BrokeredStderr(ArchitectDraftCase):
         self.assertEqual(error.returncode, 1)
         self.assertIn("SHIP_FEATURE_BLOCKED", error.output_tail)
         self.assertIn("REQ-999", error.output_tail)
+        self.assertEqual(error.stderr_tail, "")  # the refusal is on stdout only
         self.assertIn(error.output_tail, str(error))
         self.assertIn("REQ-999", out.getvalue())
 
@@ -324,6 +341,29 @@ class BrokeredStderr(ArchitectDraftCase):
             self.assertTrue(noisy.exception.output_tail.endswith("the real reason"))
             self.assertEqual(len(noisy.exception.output_tail), broker.MAX_WORKFLOW_OUTPUT_TAIL)
             self.assertEqual(self.execute(stderr="warning only\n", code=0), 0)
+
+    def test_long_stdout_never_displaces_stderr(self):
+        limit = broker.MAX_WORKFLOW_OUTPUT_TAIL
+        with mock.patch.object(sys, "stderr", io.StringIO()), mock.patch.object(sys, "stdout", io.StringIO()):
+            with self.assertRaises(broker.BrokeredWorkflowError) as raised:
+                self.execute(stderr="DIAGNOSTIC: bad operation\n", stdout="y" * 5000 + "\n", code=1)
+        error = raised.exception
+        self.assertTrue(error.output_tail.startswith("DIAGNOSTIC: bad operation "), error.output_tail[:80])
+        self.assertEqual(len(error.output_tail), limit)  # stdout fills only the room left
+        self.assertIn("DIAGNOSTIC: bad operation", str(error))
+        # the Architect's 160-character tail keeps it too
+        self.assertTrue(error.tail(160).startswith("DIAGNOSTIC: bad operation "))
+        self.assertEqual(len(error.tail(160)), 160)
+        # boundaries: stderr filling the limit leaves no stdout; no stderr gives stdout's tail
+        full = broker.BrokeredWorkflowError(1, "e" * 2000, "o" * 50)
+        self.assertEqual(full.output_tail, "e" * limit)
+        self.assertEqual(full.tail(160), "e" * 160)
+        edge = broker.BrokeredWorkflowError(1, "e" * 159, "o" * 50)
+        self.assertEqual(edge.tail(160), "e" * 159)
+        fits = broker.BrokeredWorkflowError(1, "e" * 158, "o" * 50)
+        self.assertEqual(fits.tail(160), "e" * 158 + " o")
+        quiet = broker.BrokeredWorkflowError(1, "", "o" * 50 + " SHIP_FEATURE_BLOCKED: why")
+        self.assertTrue(quiet.tail(160).endswith("SHIP_FEATURE_BLOCKED: why"))
 
     def test_the_architect_refusal_reason_carries_the_stderr(self):
         line = (f"{runtime.SUPERVISOR_REQUEST_PREFIX} " + json.dumps({

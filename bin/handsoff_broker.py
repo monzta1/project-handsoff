@@ -36,15 +36,26 @@ MAX_WORKFLOW_OUTPUT_TAIL = 600
 
 class BrokeredWorkflowError(lib.HandsoffError):
     """#445: a brokered workflow command exited non-zero. The message names
-    the status and the tail of the command's stderr then stdout, because the
-    status alone ("exited with status 1") never said why criteria-apply
-    refused. Stdout is included because the supervisor CLI prints its
-    SHIP_FEATURE_BLOCKED refusal there."""
-    def __init__(self, returncode: int, output_tail: str):
-        message = f"brokered workflow command exited with status {returncode}"
-        super().__init__(f"{message}: {output_tail}" if output_tail else message)
+    the status and the command's output, because the status alone ("exited
+    with status 1") never said why criteria-apply refused. Stderr comes
+    first and is never displaced by stdout; stdout fills what room is left,
+    because the supervisor CLI prints its SHIP_FEATURE_BLOCKED refusal there."""
+    def __init__(self, returncode: int, stderr: str, stdout: str = ""):
         self.returncode = returncode
-        self.output_tail = output_tail
+        self.stderr_tail = " ".join(stderr.split())[-MAX_WORKFLOW_OUTPUT_TAIL:]
+        self.stdout_tail = " ".join(stdout.split())[-MAX_WORKFLOW_OUTPUT_TAIL:]
+        self.output_tail = self.tail(MAX_WORKFLOW_OUTPUT_TAIL)
+        message = f"brokered workflow command exited with status {returncode}"
+        super().__init__(f"{message}: {self.output_tail}" if self.output_tail else message)
+
+    def tail(self, limit: int) -> str:
+        """At most `limit` characters: stderr's tail, then stdout's in the rest."""
+        err, out = self.stderr_tail, self.stdout_tail
+        if not err:
+            return out[-limit:]
+        if not out or len(err) >= limit - 1:
+            return err[-limit:]
+        return f"{err} {out[-(limit - len(err) - 1):]}"
 
 
 def _relay(captured, stream) -> str:
@@ -506,8 +517,8 @@ def execute_request(root: Path, request: dict, *, capability: object,
                 text=True, shell=False, start_new_session=True,
             )
 
-            def relay() -> str:
-                return f"{_relay(err, sys.stderr)}\n{_relay(out, sys.stdout)}"
+            def relay() -> tuple[str, str]:
+                return _relay(err, sys.stderr), _relay(out, sys.stdout)
             try:
                 returncode = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired as exc:
@@ -518,10 +529,9 @@ def execute_request(root: Path, request: dict, *, capability: object,
                 agent_runtime._stop_process_group(process)
                 relay()
                 raise lib.HandsoffError("brokered workflow command cancelled") from exc
-            output = relay()
+            stderr_text, stdout_text = relay()
         if returncode:
-            raise BrokeredWorkflowError(
-                returncode, " ".join(output.split())[-MAX_WORKFLOW_OUTPUT_TAIL:])
+            raise BrokeredWorkflowError(returncode, stderr_text, stdout_text)
         return 0
     raise lib.HandsoffError("broker action must be workflow, launch_role, or quality_finding")
 
