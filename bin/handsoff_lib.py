@@ -2098,6 +2098,68 @@ def _preflight_models(cfg: dict, adapter: str) -> list[str]:
     return found or [DEFAULT_AGENT_MODEL]
 
 
+#: #446: landing (Phase 6 -> 7) runs gh pr create, ci-watch and gh release
+#: create, so a lane on a host where gh is missing or logged out stalls there.
+GH_LOGIN_FIX = "gh auth login"
+GH_INSTALL_FIX = "install gh (https://cli.github.com), then gh auth login"
+GH_STATUS_FIX = "gh auth status"
+GH_STATUS_TIMEOUT_SECONDS = 20
+_GH_LOGGED_OUT = re.compile(r"not logged in|gh auth login|token\b.*\b(?:invalid|expired)", re.I)
+
+
+def github_cli_readiness(repository: str | None, root: Path, *, which=None, runner=None) -> dict:
+    """#446: whether gh can land this repository's run.
+
+    `repository` is the owner/name the caller parsed from origin; None (no
+    GitHub remote) needs no gh and makes no call. The probe is `gh auth
+    status`, not `gh auth token`: on macOS the latter returns a keyring token
+    while `gh auth status` says no host is logged in. A failure that does not
+    say the login is missing or invalid (offline, a timeout) is `unverified`,
+    so an offline machine is never told to log in again. `which` and `runner`
+    resolve at call time so a test's patch of shutil.which/subprocess.run
+    reaches them."""
+    result = {"state": "not_required", "required": False, "repository": repository,
+              "executable": None, "detail": "origin is not a GitHub remote; landing does not use gh", "fix": None}
+    if not repository:
+        return result
+    which = which or shutil.which
+    runner = runner or subprocess.run
+    result["required"] = True
+    executable = which("gh")
+    if not executable:
+        result.update(state="missing", detail=f"gh is not on PATH; landing {repository} needs it",
+                      fix=GH_INSTALL_FIX)
+        return result
+    result["executable"] = str(executable)
+    try:
+        completed = runner([str(executable), "auth", "status", "--hostname", "github.com"], cwd=str(root),
+                           capture_output=True, text=True, timeout=GH_STATUS_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        result.update(state="unverified", detail="gh auth status timed out", fix=GH_STATUS_FIX)
+        return result
+    except OSError as exc:
+        result.update(state="unverified", detail=f"gh auth status could not run: {exc}"[:512], fix=GH_STATUS_FIX)
+        return result
+    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    if completed.returncode == 0:
+        result.update(state="ready", detail="gh is logged in to github.com")
+    elif _GH_LOGGED_OUT.search(output):
+        result.update(state="unauthenticated", detail="gh is not logged in to github.com", fix=GH_LOGIN_FIX)
+    else:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        tail = lines[-1] if lines else f"exit {completed.returncode}"
+        result.update(state="unverified", detail=f"gh auth status failed: {tail}"[:512], fix=GH_STATUS_FIX)
+    return result
+
+
+def github_cli_warning(readiness: dict) -> str | None:
+    """#446: the one warning doctor and init print, or None when gh is fine."""
+    if readiness.get("state") not in {"missing", "unauthenticated", "unverified"}:
+        return None
+    return (f"gh-not-ready: {readiness['detail']}; landing needs gh pr create, ci-watch and "
+            f"gh release create; fix: {readiness['fix']}")
+
+
 def _probe_adapter_model(adapter: str, executable: str, model: str, root: Path,
                          scratch: Path, runner, timeout) -> dict:
     # Field-note defect 1 (v0.3.22): probe with the launch argv shape so a

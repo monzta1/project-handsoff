@@ -384,6 +384,12 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
                     warnings.append("rules-set-changed: " + ", ".join(changed))
     except (lib.HandsoffError, OSError, ValueError):
         rules_note = None
+    # #446: landing needs gh; say before init that it is missing or logged out.
+    import handsoff_fleet_signals
+    github_cli = lib.github_cli_readiness(handsoff_fleet_signals.origin_repo(root), root)
+    gh_warning = lib.github_cli_warning(github_cli)
+    if gh_warning:
+        warnings.append(gh_warning)
     durability = lib.durability_capability(lib.status_path(root, cfg))
     durability["backup_suffix"] = ".bak"
     durability["restore"] = "handsoff doctor --restore-state PATH"
@@ -391,6 +397,7 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
             "rules_set": rules_note,
             "config": str(root / "handsoff.toml"),
             "adapters": lib.adapter_availability(cfg),
+            "github_cli": github_cli,
             "preflight": None if skip_preflight else lib.adapter_preflight(cfg, root),
             "state_present": lib.status_path(root, cfg).exists(),
             "console_executable": _canonical_executable(),
