@@ -65,6 +65,13 @@ UNITTEST_OPEN = re.compile(r"^(?P<test>test\w*) \((?P<where>[\w.]+)\)(?: \[[^\]]
 UNITTEST_LATE = re.compile(r"^(?P<result>ok|FAIL|ERROR|skipped(?: .*)?|expected failure|unexpected success)$")
 RESULT_KINDS = {"ok": "passed", "expected failure": "passed", "FAIL": "failed", "unexpected success": "failed",
                 "ERROR": "errors"}
+# #450: unittest reports a class- or module-level fixture outcome as ONE line
+# for the whole scope, never one line per test.
+FIXTURE_LINE = re.compile(r"^(?P<fixture>setUpClass|tearDownClass|setUpModule|tearDownModule) "
+                          r"\((?P<scope>[\w.]+)\) \.\.\. (?P<result>ERROR|FAIL|skipped.*)$")
+EXCERPT_MAX_LINES = 20
+EXCERPT_MAX_CHARS = 2000
+MISSING_MAX_IDS = 20
 
 
 def _case_name(where: str, test: str) -> str:
@@ -77,7 +84,12 @@ def parse_line(text: str, pending_name: str | None) -> tuple[dict | None, str | 
     {"name", "result"} for a finished unittest case (result is the raw
     unittest token) or {"name", "node": "ok"|"not ok"|"skip"} for a node
     test, else None. `pending_name` carries a unittest case whose result is
-    still to come (docstring second line, or leaked child output)."""
+    still to come (docstring second line, or leaked child output). A
+    fixture outcome adds "fixture" and "scope"."""
+    fixture = FIXTURE_LINE.match(text)
+    if fixture:
+        return {"name": f"{fixture.group('fixture')} ({fixture.group('scope')})", "result": fixture.group("result"),
+                "fixture": fixture.group("fixture"), "scope": fixture.group("scope")}, pending_name
     match = UNITTEST_LINE.match(text)
     if match:
         return {"name": _case_name(match.group("where"), match.group("test")), "result": match.group("result")}, None
@@ -102,8 +114,33 @@ def parse_line(text: str, pending_name: str | None) -> tuple[dict | None, str | 
     return None, pending_name
 
 
-def count_event(entry: dict, event: dict) -> None:
-    """Fold one parse_line event into a command entry."""
+def _count_fixture(entry: dict, event: dict, test_ids: list[str] | None) -> None:
+    """#450: a setUp fixture outcome accounts for the entry's not-yet-reported
+    ids under its scope; a tearDown one blocks nothing. An error or failure is
+    one error (as unittest counts it); a skip skips every blocked test."""
+    blocked = []
+    if test_ids is not None and event["fixture"].startswith("setUp"):
+        seen = set(entry.get("completed_test_ids") or []) | set(entry.get("blocked_test_ids") or [])
+        blocked = [test_id for test_id in test_ids
+                   if test_id.startswith(f"{event['scope']}.") and test_id not in seen]
+        entry.setdefault("blocked_test_ids", []).extend(blocked)
+    entry["done"] += len(blocked)
+    if event["result"].startswith("skipped"):
+        entry["skipped"] += len(blocked)
+    else:
+        entry["errors"] += 1
+        entry["failures"].append({"name": event["name"], "kind": "ERROR", "fixture": event["fixture"],
+                                  "scope": event["scope"], "excerpt": None})
+        entry["failures"] = entry["failures"][-MAX_RECENT:]
+    entry["current"] = event["name"]
+
+
+def count_event(entry: dict, event: dict, test_ids: list[str] | None = None) -> None:
+    """Fold one parse_line event into a command entry. `test_ids` is the
+    entry's inventory, which a fixture outcome accounts against."""
+    if "fixture" in event:
+        _count_fixture(entry, event, test_ids)
+        return
     entry["done"] += 1
     if "node" in event:
         kind = {"ok": "passed", "not ok": "failed", "skip": "skipped"}[event["node"]]
@@ -190,7 +227,9 @@ def _exact_ids(expected: list[str], actual: list[str], context: str) -> None:
         details.append(f"missing: {', '.join(missing)}")
     if extra:
         details.append(f"unexpected: {', '.join(extra)}")
-    raise RegressionInventoryError(f"{context} inventory mismatch ({'; '.join(details)})")
+    error = RegressionInventoryError(f"{context} inventory mismatch ({'; '.join(details)})")
+    error.missing = missing
+    raise error
 
 
 def _inventory_identity(payload: dict) -> str:
@@ -390,7 +429,7 @@ def _running_view(state: dict) -> dict:
     for entry in state.get("commands") or []:
         row = {key: value for key, value in entry.items() if key not in ("test_ids", "shards")}
         row["shards"] = [{key: value for key, value in shard.items()
-                          if key not in ("test_ids", "completed_test_ids")}
+                          if key not in ("test_ids", "completed_test_ids", "blocked_test_ids")}
                          for shard in entry.get("shards") or []]
         commands.append(row)
     view["commands"] = commands
@@ -732,7 +771,7 @@ def _new_shard(index: int, test_ids: list[str] | None) -> dict:
     return {"index": index, "label": f"Worker {index}",
             "test_count": len(test_ids) if test_ids is not None else None,
             "test_ids": list(test_ids) if test_ids is not None else None,
-            "completed_test_ids": [], "inventory_error": None,
+            "completed_test_ids": [], "blocked_test_ids": [], "inventory_error": None,
             "started_at": None, "finished_at": None, "exit_code": None, "timed_out": False,
             "done": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
             "current": None, "failures": [], "log": None, "output_sha256": None, "output_bytes": 0,
@@ -807,6 +846,35 @@ def _niced(run_spec, shell: bool) -> tuple[object, bool, int | None]:
     return [*prefix, *run_spec], False, SHARD_NICENESS
 
 
+def _accounted_ids(shard: dict) -> list[str]:
+    """#450: ids a shard reported, plus those a recorded fixture outcome covers."""
+    return list(shard.get("completed_test_ids") or []) + list(shard.get("blocked_test_ids") or [])
+
+
+def _is_rule(line: str) -> bool:
+    return len(line) >= 20 and (set(line) == {"="} or set(line) == {"-"})
+
+
+def _fixture_excerpt(log_text: str, name: str) -> str | None:
+    """#450: the end of unittest's `ERROR: <name>` traceback block in a shard
+    log, bounded to EXCERPT_MAX_LINES lines and EXCERPT_MAX_CHARS characters."""
+    lines = log_text.splitlines()
+    for at, line in enumerate(lines):
+        if line not in (f"ERROR: {name}", f"FAIL: {name}"):
+            continue
+        start = at + 2 if at + 1 < len(lines) and _is_rule(lines[at + 1]) else at + 1
+        block = []
+        for body in lines[start:]:
+            if _is_rule(body):
+                break
+            block.append(body)
+        while block and not block[-1].strip():
+            block.pop()
+        if block:
+            return "\n".join(block[-EXCERPT_MAX_LINES:])[-EXCERPT_MAX_CHARS:]
+    return None
+
+
 def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, shard: dict,
                 timeout: int, command_index: int, writer: _ProgressWriter) -> None:
     log_path = Path(tempfile.gettempdir()) / (
@@ -854,8 +922,9 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
                 if event is None:
                     continue
                 with lock:
-                    shard["completed_test_ids"].append(event["name"])
-                    count_event(shard, event)
+                    if "fixture" not in event:
+                        shard["completed_test_ids"].append(event["name"])
+                    count_event(shard, event, shard.get("test_ids"))
                     _recount_entry(entry)
                     state["totals"] = _totals(state)
                     writer.write(state, throttle=True)
@@ -871,14 +940,20 @@ def _run_worker(root: Path, run_spec, *, shell: bool, state: dict, entry: dict, 
             with lock:
                 shard["cleanup"] = "removed" if not isolation_base.exists() else "failed"
     raw = log_path.read_bytes() if log_path.is_file() else b""
+    log_text = raw.decode("utf-8", "replace")
     with lock:
+        for failure in shard["failures"]:
+            if failure.get("fixture"):
+                failure["excerpt"] = _fixture_excerpt(log_text, failure["name"])
         if shard.get("test_ids") is not None:
             try:
-                _exact_ids(shard["test_ids"], shard["completed_test_ids"],
-                           f"shard {shard['index']}")
+                _exact_ids(shard["test_ids"], _accounted_ids(shard), f"shard {shard['index']}")
             except RegressionInventoryError as exc:
                 shard["inventory_error"] = str(exc)
-                shard["failures"].append({"name": "regression inventory", "kind": "INVENTORY"})
+                missing = getattr(exc, "missing", [])
+                shard["failures"].append({"name": "regression inventory", "kind": "INVENTORY",
+                                          "missing": missing[:MISSING_MAX_IDS], "missing_count": len(missing),
+                                          "detail": str(exc)})
                 code = code or 2
         shard["finished_at"] = _now()
         shard["exit_code"] = code
@@ -918,7 +993,7 @@ def _validate_completed_shards(entry: dict, expected_ids: list[str], expected_co
         raise RegressionInventoryError("completed regression has a missing shard")
     if any(not shard.get("finished_at") for shard in shards):
         raise RegressionInventoryError("completed regression has an unfinished shard")
-    observed = [test_id for shard in shards for test_id in shard.get("completed_test_ids", [])]
+    observed = [test_id for shard in shards for test_id in _accounted_ids(shard)]
     _exact_ids(expected_ids, observed, "completed regression")
 
 
@@ -934,7 +1009,7 @@ def _merged_result(command: str, entry: dict, started: float) -> dict:
             raw = b""
         chunks.extend((header, raw))
         summaries.append({key: shard.get(key) for key in (
-            "index", "label", "test_count", "test_ids", "completed_test_ids", "inventory_error",
+            "index", "label", "test_count", "test_ids", "completed_test_ids", "blocked_test_ids", "inventory_error",
             "done", "passed", "failed", "errors", "skipped", "exit_code", "timed_out",
             "output_sha256", "output_bytes", "isolation", "cleanup", "priority"
         )})

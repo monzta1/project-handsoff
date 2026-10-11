@@ -153,7 +153,9 @@ def run_all_shard(ids: list[str], index: int, total: int) -> int:
         )
         if result.returncode != 0:
             failed.append(name)
-    print(f"\nshard {index} of {total}: {len(ids)} tests"
+    # #450: 1-based like the regression worker label; --index stays visible
+    # for CI's 0-based `python (shard I of 5)` job names.
+    print(f"\nshard {index + 1} of {total} (--index {index}): {len(ids)} tests"
           + (f"; FAILED MODULES: {' '.join(failed)}" if failed else " OK"), flush=True)
     return 1 if failed else 0
 
@@ -228,9 +230,10 @@ def main(argv: list[str] | None = None) -> int:
     if not 0 <= a.index < a.total:
         ap.error("--index must be from 0 to total-1")
     names = shards[a.index]
-    print(f"shard {a.index} of {a.total}: {' '.join(names)}", flush=True)
     if a.all:
+        print(f"shard {a.index + 1} of {a.total} (--index {a.index}): {' '.join(names)}", flush=True)
         return run_all_shard(names, a.index, a.total)
+    print(f"shard {a.index} of {a.total}: {' '.join(names)}", flush=True)
     if a.modules:
         # One process per module, as [checks] runs them: loading several of
         # these modules into one interpreter is not how they were written
