@@ -1382,7 +1382,7 @@ def validate_status_schema(status: dict) -> list[str]:
             label = f"status: regression_requests[{index}]"
             rid = item.get("request_id") if isinstance(item, dict) else None
             optional = {"release_version", "release_class", "policy_override_reason", "timeout_seconds", "env",
-                        "runner_pid"}
+                        "runner_pid", "accept_expires_at"}
             if not isinstance(item, dict) or not required <= set(item) or set(item) - required - optional:
                 errors.append(f"{label} has invalid fields")
                 continue
@@ -1425,6 +1425,14 @@ def validate_status_schema(status: dict) -> list[str]:
             pid = item.get("runner_pid", 1)  # #447
             if not isinstance(pid, int) or isinstance(pid, bool) or pid < 1:
                 errors.append(f"{label}.runner_pid is invalid")
+            if "accept_expires_at" in item:  # #442: the launch deadline regression-run enforces
+                deadline = item["accept_expires_at"]
+                try:
+                    aware = isinstance(deadline, str) and datetime.fromisoformat(deadline).tzinfo is not None
+                except ValueError:
+                    aware = False
+                if not aware:
+                    errors.append(f"{label}.accept_expires_at must be a timezone-aware timestamp")
             if item.get("state") in {"launched", "completed", "failed"} and nonce is None:
                 errors.append(f"{label} launched/terminal execution requires a nonce digest")
             if not isinstance(item.get("repository"), dict):

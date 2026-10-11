@@ -33,16 +33,16 @@
     "bin/handsoff_resources.py": "7ed15d221d01ae48bb014c292cbae9b0e784fc4cc9eb61912d3c94a7877f6444",
     "bin/handsoff_routing.py": "ca47dc078bfd0780f97d43a8d38bfa21365e302850d8d063c1bd0042ee2f0336",
     "bin/handsoff_runtime_control.py": "a5bd494691367c4e2c6497b020b262f91a30e16dcb76359b222c3ef35bdabe3e",
-    "bin/handsoff_schema.py": "8a4871d1bb3dfccacadf3c7613e7a464668139fc6519e0593187d9ae2fdb453d",
+    "bin/handsoff_schema.py": "acf9add117da44d02257b071431a9df126e3d2297ac0fe810b57042f0e7b3621",
     "bin/handsoff_shadow.py": "2b01851658ea35d362fff5650ce9077061e86480a8a555fd37e1f8cc4a8497b7",
-    "bin/handsoff_supervisor.py": "6dcb2973f75e55a763ae5fa33ffc078b93bf64a397410c6af3a2e4fd84f63f72",
+    "bin/handsoff_supervisor.py": "6e54495fccd8e977410ec6e22b24afe1d94d113cfc5046d1c7c428b3133aed6d",
     "bin/handsoff_tranche.py": "f44d9bdbcbd7ecf4cfd7097c3e7edc3b9bcf4ed45ef70d90b5fc16f242ae4923",
     "bin/handsoff_update.py": "e2ceb0ac37c35495344be13f27674129ad7a27250bd7cf30c2b8b81021455b48",
     "bin/handsoff_workflow.py": "56caf52b0992a8021a78fcf5995edbd8863e1a1f69ac690d3c3598792175a9d9",
     "bin/validate_handsoff_status.py": "c40b1fd4178c9dab041e7d64fe4fc00f5da2acfc437c5440a63d4c66131ea594",
-    "dashboard/app.js": "f8ac3543c0711bd0af826dbe223694aad9d8ecbb895816ad9a624d77b3d34559",
+    "dashboard/app.js": "70e2ed8d931a40df2df0d483adaaf1fa6d26aab6711aecb31fc57bd253e7dba4",
     "dashboard/index.html": "0eae3cfd929c2d1f656c1117fb49c8e4efce4cfb119d32087a26e7c57e064256",
-    "dashboard/lib/dashboard-logic.js": "7972c2ee2e4dbda3dc4150df5283d6908acab1709c895e6073968f290992d2c4",
+    "dashboard/lib/dashboard-logic.js": "94a7b9b7e761025fb71f6406a1fd600a86cf6ab90805db811b056dd4ca52635a",
     "dashboard/lib/run-vocabulary.js": "5e9aa33ff0915e1b2d9f73b13cdfe1cb3ffd5cc8f0ab9f54013c7ba1d43d3fb3",
     "dashboard/logo.png": "6345128f357084469b84be31c2f6d6bc26bd08950c6a9d864ea4a8902de58e59",
     "dashboard/regression.html": "8d97de2a33210dea66bf151ba282d2f789f1ec7a46af22cc386175ecfcb61b52",
@@ -75,9 +75,9 @@
     "rules/reviewer-packet-tests-executed.json": "229e2e30bb504119a985886bf5624f6e1e5ead597f654e3daaa65d7d27a42db9",
     "schemas/acceptance.schema.json": "c60d458fd22d275395af86ad3d51742c82886055c6f0868d8858bd11ea399bec",
     "schemas/snapshot.schema.json": "aa3418ba2079d8932b0a7afc327b24529687749dac7468ac47279500dccd8450",
-    "schemas/status.schema.json": "269fc6e477181c138d414286f3475624d8b44922c018a52e7559aa7e42477b32",
+    "schemas/status.schema.json": "2f5af09955ca09ec787c45d10ad943f93d5e23b075f035a6851dbb1ec1304add",
     "templates/handsoff.toml": "8a22c2e6e73ab1b9a4b0e1a33ed59971f8d827bdae59f8fd2686c96431fe73ca"
   },
   "schema": 1,
-  "version": "v0.5.27"
+  "version": "v0.5.28"
 }

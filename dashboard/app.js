@@ -647,6 +647,7 @@ function regressionRecordText(request) {
   const pair = repo.commit_pair || {};
   const results = (request.results || []).map((result) =>
     `  exit ${result.exit_code}: ${result.command}`).join("\n");
+  const deadline = regressionDeadline(request);
   return [
     request.release_version ? `Release: ${request.release_version} · ${String(request.release_class || "unknown").toUpperCase()}` : null,
     request.policy_override_reason ? `Policy override: ${request.policy_override_reason}` : null,
@@ -659,7 +660,7 @@ function regressionRecordText(request) {
     `Commit pair: ${pair.before || "unknown"} → ${pair.after || "unknown"}`,
     `Reason: ${request.reason || "not supplied"}`,
     `Requested by: ${request.requested_by || "unknown"}${request.requester_session_id ? ` (${request.requester_session_id})` : ""}`,
-    `Requested: ${request.requested_at || "unknown"} · Expires: ${request.expires_at || "unknown"}${request.expires_at ? ` (${relativeTime(request.expires_at)})` : ""}`,
+    `Requested: ${request.requested_at || "unknown"} · ${deadline.label}: ${deadline.at || "unknown"}${deadline.at ? ` (${relativeTime(deadline.at)})` : ""}`,
     request.decided_at ? `Decision: ${request.decided_by || "unknown"} at ${request.decided_at}` : null,
     request.launched_at ? `Launched: ${request.launched_at}` : null,
     request.completed_at ? `Completed: ${request.completed_at}` : null,
