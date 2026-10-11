@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -430,7 +431,7 @@ def refresh_performance_state(
         "forecast_total_seconds": forecast_total, "forecast_remaining_seconds": forecast_remaining,
         "forecast_variance_seconds": (forecast_total - 120 * 60) if forecast_total is not None else None,
         "bottleneck": bottleneck, "breaches": history["breaches"],
-        "pause": performance_pause_view(episode, active_seconds),
+        "pause": performance_pause_view(episode, active_seconds, root),
         "auto_resume": _auto_resume_view(validated_auto_resume_decision(root, cfg)),
         "auto_resumed": auto_resumed,
     }
@@ -438,7 +439,65 @@ def refresh_performance_state(
 
 #: #414: the ledger event carrying the Pilot's standing auto-resume decision
 PERFORMANCE_AUTO_RESUME_EVENT = "performance_auto_resume_decided"
-PERFORMANCE_RESUME_COMMAND = 'handsoff performance-resume --by <pilot> --reason "<why>"'
+#: #466: printed for a human, so it runs as printed through the installed
+#: CLI: the supervisor prefix, the run's root (filled by human_command), and
+#: placeholders only for what the human chooses.
+PERFORMANCE_RESUME_COMMAND = 'handsoff supervisor --root {root} performance-resume --by <pilot> --reason "<why>"'
+
+
+_SCRIPT_COMMAND_PATTERN: re.Pattern | None = None
+
+
+def _script_command_pattern() -> re.Pattern:
+    """#466: every engine-internal spelling of a supervisor command in gate
+    messages, hints and the clears-with builder, only where a real verb
+    follows: `handsoff_supervisor.py <verb>`, the launcher form `python3
+    bin/handsoff_supervisor.py <verb>` (with or without `python3`, `./`),
+    and a backticked bare `supervisor <verb>` hint. An absolute path to the
+    script and `handsoff supervisor` itself are never matched."""
+    global _SCRIPT_COMMAND_PATTERN
+    if _SCRIPT_COMMAND_PATTERN is None:
+        verbs = next(action.choices for action in build_parser()._actions
+                     if isinstance(action, argparse._SubParsersAction))
+        alternatives = "|".join(sorted(map(re.escape, verbs), key=len, reverse=True))
+        verb = rf"(?=(?:{alternatives})(?![\w-]))"
+        _SCRIPT_COMMAND_PATTERN = re.compile(
+            rf"(?<![\w/.-])(?:python3? +)?(?:(?:\./)?bin/)?handsoff_supervisor\.py +{verb}"
+            rf"|(?<=`)supervisor +{verb}")
+    return _SCRIPT_COMMAND_PATTERN
+
+
+#: #466: the actor placeholder engine hints carry (`--by ACTOR`); a human
+#: reads `<you>`, the same shape as `<pilot>` and `<why>`.
+_ACTOR_PLACEHOLDER = re.compile(r"(?<![\w<-])ACTOR(?![\w>-])")
+
+
+def human_command(template: str, root) -> str:
+    """#466: what a human runs as printed through the installed CLI.
+    `{root}` becomes the run's absolute root, shell-quoted (`<root>` only
+    when the caller has no root to name), every engine-internal spelling
+    (see _script_command_pattern) becomes `handsoff supervisor --root
+    <root> <verb>`, and the ACTOR placeholder becomes `<you>`. Any text may
+    pass through: what is not a command is returned unchanged."""
+    filled = shlex.quote(str(Path(root).resolve())) if root is not None else "<root>"
+    prefix = f"handsoff supervisor --root {filled} "
+    text = _script_command_pattern().sub(lambda _match: prefix, template.replace("{root}", filled))
+    return _ACTOR_PLACEHOLDER.sub("<you>", text)
+
+
+def humanize_commands(value, root, *, verbatim: frozenset = frozenset()):
+    """#466: human_command over every string in a JSON-shaped value (dict
+    values and list items, never keys), so a snapshot or report served to a
+    human names no command a human cannot run as printed. A key in
+    `verbatim` keeps its subtree unchanged (a role's own transcript)."""
+    if isinstance(value, str):
+        return human_command(value, root)
+    if isinstance(value, dict):
+        return {key: item if key in verbatim else humanize_commands(item, root, verbatim=verbatim)
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [humanize_commands(item, root, verbatim=verbatim) for item in value]
+    return value
 
 
 def performance_auto_resume_decision(events: list[dict]) -> dict | None:
@@ -467,9 +526,10 @@ def _auto_resume_view(standing: dict | None) -> dict | None:
     return {"decision_id": standing.get("decision_id"), "by": standing.get("by"), "at": standing.get("at")}
 
 
-def performance_pause_view(episode: dict, active_seconds: float) -> dict | None:
+def performance_pause_view(episode: dict, active_seconds: float, root=None) -> dict | None:
     """#414: what status and Mission Control show while paused: since when,
-    the active time that tripped it, and the command that resumes it."""
+    the active time that tripped it, and the command that resumes it, naming
+    this run's root (#466)."""
     if episode.get("state") != "paused_for_performance_review":
         return None
     try:  # the active time at the pause, which is what tripped it
@@ -478,7 +538,8 @@ def performance_pause_view(episode: dict, active_seconds: float) -> dict | None:
     except runtime_control.RuntimeControlError:
         pass
     return {"episode_id": episode["episode_id"], "since": episode.get("paused_at"),
-            "active_seconds": active_seconds, "resume_command": PERFORMANCE_RESUME_COMMAND}
+            "active_seconds": active_seconds,
+            "resume_command": human_command(PERFORMANCE_RESUME_COMMAND, root)}
 
 
 def _auto_resume_performance(root: Path, cfg: dict, history: dict, events: list[dict], now: datetime,
@@ -2281,6 +2342,63 @@ def _release_run_dashboard(root, cfg) -> None:
         print(f"HANDSOFF_DASHBOARD_RELEASE_FAILED (run still completed successfully): {exc}")
 
 
+def _approved_status(root: Path, cfg: dict, status: dict, acceptance: dict, by: str,
+                     auto_from: dict | None = None) -> dict:
+    """The status deployment-gate --approve would write. The approval is
+    bound to a hash of the acceptance criteria AT THE MOMENT of approval. If
+    the registry changes afterward (a criterion reopened, added, or
+    removed), the Phase 8 gate recomputes this hash and refuses the
+    now-stale approval."""
+    proposed = dict(status)
+    proposed["deployment_approved"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "by": by,
+        "acceptance_hash": lib.acceptance_hash(acceptance.get("criteria", [])),
+        "config_hash": lib.config_hash(cfg),
+        **lib.rules_binding(root, cfg),  # #170
+        **({"auto_confirmed_from": auto_from} if auto_from else {}),
+    }
+    proposed["status"] = "ready_to_deploy"
+    proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
+    proposed["next_action"] = "Deploy the reviewed change and run live verification."
+    return proposed
+
+
+def deployment_approval_refusals(root: Path, cfg: dict, status: dict, acceptance: dict,
+                                 verifications: list[dict], verification_problems: list[str]) -> list[str]:
+    """#466: every reason `deployment-gate --approve` refuses an approval in
+    this state, in the order the gate meets them; empty when it takes it
+    (or already holds a current one). The gate prints these, and Mission
+    Control offers Authorize deployment only when there are none, so the
+    offer and the gate cannot disagree. Never writes."""
+    audit_errors = _audit_errors(root, cfg, status, verifications, verification_problems)
+    if audit_errors:
+        return audit_errors
+    for refusal in (lib.lane_gate_refusal(status, "deployment-gate"),
+                    lib.amendment_decision_refusal(status, "deployment approval")):
+        if refusal:
+            return [refusal]
+    errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
+                                verification_problems=verification_problems, root=root)
+    if errors:
+        return errors
+    # Approval is only meaningful in Phase 7. Refusing earlier phases
+    # prevents premature approval; refusing later phases prevents a
+    # delayed/double-click request from mutating a completed run.
+    phase = int(status.get("phase_number", 0) or 0)
+    if phase != 7:
+        return [f"deployment approval requires Phase 7 (currently Phase {phase})"]
+    existing = status.get("deployment_approved")
+    if isinstance(existing, dict):
+        if existing.get("acceptance_hash") == lib.acceptance_hash(acceptance.get("criteria", [])) \
+                and existing.get("config_hash") == lib.config_hash(cfg):
+            return []
+        return ["existing deployment approval is stale; workflow decisions must be refreshed"]
+    proposed = _approved_status(root, cfg, status, acceptance, "PILOT")
+    return lib.compute_errors(proposed, acceptance, cfg, verifications=verifications,
+                              verification_problems=verification_problems, root=root)
+
+
 def cmd_deployment_gate(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -2316,22 +2434,13 @@ def cmd_deployment_gate(args) -> int:
                        event_message=args.reason, by=args.by, reason=args.reason)
             print("DEPLOYMENT_REVOKED")
             return 0
-        refusal = lib.amendment_decision_refusal(status, "deployment approval")
-        if refusal:
-            print(f"DEPLOYMENT_BLOCKED\n- {refusal}")
-            return 1
-        errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
-                                    verification_problems=verification_problems, root=root)
-        if errors:
+        # #466: the same refusals the dashboard reads before it offers
+        # Authorize deployment, each with the command that clears it.
+        refusals = deployment_approval_refusals(root, cfg, status, acceptance, verifications,
+                                                verification_problems)
+        if refusals:
             print("DEPLOYMENT_BLOCKED")
-            print("\n".join(f"- {x}" for x in errors))
-            return 1
-        # Approval is only meaningful in Phase 7. Refusing earlier phases
-        # prevents premature approval; refusing later phases prevents a
-        # delayed/double-click request from mutating a completed run.
-        phase = int(status.get("phase_number", 0) or 0)
-        if phase != 7:
-            print(f"DEPLOYMENT_BLOCKED\n- deployment approval requires Phase 7 (currently Phase {phase})")
+            print(_gate_lines(advance_gates(refusals, 7, status, cfg)))
             return 1
         if not args.approve:
             print("DEPLOYMENT_AWAITING_EXPLICIT_APPROVAL")
@@ -2340,19 +2449,10 @@ def cmd_deployment_gate(args) -> int:
             print("DEPLOYMENT_BLOCKED\n- --by is required when recording approval")
             return 1
         acceptance_digest = lib.acceptance_hash(acceptance.get("criteria", []))
-        config_digest = lib.config_hash(cfg)
-        existing = status.get("deployment_approved")
-        if isinstance(existing, dict):
-            if existing.get("acceptance_hash") == acceptance_digest \
-                    and existing.get("config_hash") == config_digest:
-                print("DEPLOYMENT_ALREADY_APPROVED")
-                return 0
-            print("DEPLOYMENT_BLOCKED\n- existing deployment approval is stale; workflow decisions must be refreshed")
-            return 1
-        # The approval is bound to a hash of the acceptance criteria AT
-        # THE MOMENT of approval. If the registry changes afterward (a
-        # criterion reopened, added, or removed), the Phase 8 gate
-        # recomputes this hash and refuses the now-stale approval.
+        if isinstance(status.get("deployment_approved"), dict):
+            # deployment_approval_refusals refused a stale one
+            print("DEPLOYMENT_ALREADY_APPROVED")
+            return 0
         auto_from = None
         design_digest = lib.design_hash(acceptance.get("criteria", []))
         if getattr(args, "auto", False):
@@ -2369,18 +2469,7 @@ def cmd_deployment_gate(args) -> int:
                 print("DEPLOYMENT_BLOCKED\n- no prior approval for this design hash")
                 return 1
             auto_from = {"by": prior.get("by"), "at": prior.get("at")}
-        proposed = dict(status)
-        proposed["deployment_approved"] = {
-            "at": datetime.now(timezone.utc).isoformat(),
-            "by": args.by,
-            "acceptance_hash": acceptance_digest,
-            "config_hash": config_digest,
-            **lib.rules_binding(root, cfg),  # #170
-            **({"auto_confirmed_from": auto_from} if auto_from else {}),
-        }
-        proposed["status"] = "ready_to_deploy"
-        proposed["updated_at"] = datetime.now(timezone.utc).isoformat()
-        proposed["next_action"] = "Deploy the reviewed change and run live verification."
+        proposed = _approved_status(root, cfg, status, acceptance, args.by, auto_from)
         proposed_errors = lib.compute_errors(
             proposed, acceptance, cfg, verifications=verifications,
             verification_problems=verification_problems, root=root,

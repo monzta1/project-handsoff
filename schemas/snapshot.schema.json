@@ -615,6 +615,21 @@
             "integer",
             "null"
           ]
+        },
+        "performance_episode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deployment_approval_offered": {
+          "type": "boolean"
+        },
+        "deployment_approval_refusals": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       },
       "additionalProperties": false,
