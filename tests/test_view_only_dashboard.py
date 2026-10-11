@@ -136,6 +136,30 @@ class ViewOnlyDashboardCase(HandsoffTestCase):
         launch.assert_not_called()
         execute.assert_not_called()
 
+    def test_operator_action_recover_is_refused_409_before_dispatch(self):
+        server = self.view_only_server()
+        port = self.listen(server)
+        snapshot = {"operator_actions": [{"action_id": "recover:x", "kind": "recover"}], "status": {}}
+        with mock.patch.object(dashboard, "build_snapshot", return_value=snapshot), \
+                mock.patch.object(handsoff_agent, "execute_with_recovery") as execute, \
+                mock.patch.object(dashboard.supervisor, "cmd_recover", return_value=0) as recover:
+            status, body = self.post_json(port, "/api/operator-action", {"action_id": "recover:x", "reason": "stuck"})
+        self.assertEqual(status, 409, body)
+        self.assertFalse(body["ok"])
+        self.assertIn("view-only", body["error"])
+        recover.assert_not_called()
+        execute.assert_not_called()
+
+    def test_operator_action_pause_still_works_through_the_view_only_server(self):
+        server = self.view_only_server()
+        port = self.listen(server)
+        snapshot = {"operator_actions": [{"action_id": "pause:x", "kind": "pause"}], "status": {}}
+        with mock.patch.object(dashboard, "build_snapshot", return_value=snapshot), \
+                mock.patch.object(dashboard.supervisor, "cmd_human_pause_start", return_value=0) as pause:
+            status, body = self.post_json(port, "/api/operator-action", {"action_id": "pause:x", "reason": "hold"})
+        self.assertEqual(status, 200, body)
+        pause.assert_called_once()
+
     def test_direct_launch_managed_role_refuses(self):
         server = self.view_only_server()
         with mock.patch.object(handsoff_agent, "build_launch_spec") as spec, \

@@ -2015,6 +2015,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 pilot = "Mission Control Pilot"
                 status = snapshot.get("status") or {}
                 kind = action["kind"]
+                # #456: recover launches a replacement through cmd_recover's
+                # own launcher, so a view-only server refuses it before dispatch.
+                if kind == "recover" and self.server.view_only:
+                    self._json_response(HTTPStatus.CONFLICT, {"ok": False, "error": VIEW_ONLY_LAUNCH_REFUSAL})
+                    return
                 gate_reason = None
                 if kind == "design_approve":
                     review = status.get("design_review") or {}
