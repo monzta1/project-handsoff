@@ -6,7 +6,7 @@
     "bin/handsoff_analyzer.py": "5ff494f22c6675fa23c2a894f6688f8ece47ba8f9d9446ee7bd813e42c4eb89e",
     "bin/handsoff_broker.py": "d2fe14adb0d757b57ed0f62ca08ebf7bb18475d2da3e87b8706da4c2e6434c8c",
     "bin/handsoff_checkpoint.py": "624f3bc4ba55c8e6605a211f9ac31ca31902d7ec392cf116099cfd70fcf256ce",
-    "bin/handsoff_cli.py": "52dcbb6191f5272ba7528bbd1c6cfa41670f87b80b748550d745df511c7d5beb",
+    "bin/handsoff_cli.py": "f00aa00a30e4640308f5f8c894b02db8791b7107bcee985309dc9d925dcd74ce",
     "bin/handsoff_close_transaction.py": "c86290d7b27c2e7666d95a4901658fc777a0cb95166eb53610bfe434fd8f12df",
     "bin/handsoff_cohorts.py": "d7b253993955ab7dce8f65aa2d3b8a33420ba5f3a84c8a84c03fcd51d4b50e35",
     "bin/handsoff_config.py": "072bbda12aedf7da87267c93e1513f53df269d77d18a8534ebaaaa977ef492f3",
@@ -79,5 +79,5 @@
     "templates/handsoff.toml": "8a22c2e6e73ab1b9a4b0e1a33ed59971f8d827bdae59f8fd2686c96431fe73ca"
   },
   "schema": 1,
-  "version": "v0.5.24"
+  "version": "v0.5.25"
 }
