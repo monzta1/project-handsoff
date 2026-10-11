@@ -286,8 +286,10 @@ function projectCard(project) {
   // #207: a root that is gone says since when; the card is forgotten on the next pass.
   const missing = state === "orphaned" && project.missing_since
     ? ` · <span class="missing">MISSING since ${esc(stamp(project.missing_since))}, forgotten on the next pass</span>` : "";
+  // #456: a view-only dashboard is the run's dashboard but never launches a role; say so on the link.
+  const viewOnly = project.owner?.view_only === true;
   const link = project.dashboard_url
-    ? `<a class="open-dashboard" href="${esc(project.dashboard_url)}" target="_blank" rel="noopener">OPEN DASHBOARD</a>`
+    ? `<a class="open-dashboard" href="${esc(project.dashboard_url)}" target="_blank" rel="noopener">OPEN DASHBOARD${viewOnly ? " · VIEW ONLY" : ""}</a>`
     : `<span class="dashboard-note">${esc(project.dashboard_note)}</span>`;
   const ownerLabel = project.owner ? `PORT ${esc(project.owner.port)} · ${esc(project.owner.health)}` : "NO OWNED PORT";
   const crew = project.role ? `${esc(project.role.toUpperCase())} · ${esc(project.adapter || "-")}/${esc(project.model || "-")}` : "NO ACTIVE ROLE";

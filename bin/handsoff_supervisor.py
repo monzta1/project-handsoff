@@ -7184,7 +7184,8 @@ def cmd_dashboard(args) -> int:
     root = lib.resolve_root(args.root)
     from handsoff_dashboard import serve
     return serve(root, host=args.host, port=args.port, open_browser=not args.no_open,
-                 owned_by_run=bool(getattr(args, "owned_by_run", False)))
+                 owned_by_run=bool(getattr(args, "owned_by_run", False)),
+                 view_only=bool(getattr(args, "view_only", False)))
 
 
 def _close_transaction_identity(root: Path, cfg: dict) -> tuple[str, Path]:
@@ -7962,11 +7963,16 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--no-open", action="store_true", help="serve without opening a browser")
-    dashboard.add_argument("--owned-by-run", action="store_true",
-                           help="mark this server as owned by the current run: it writes "
-                                ".handsoff-dashboard-owner.json and `advance 8` with status complete "
-                                "shuts it down so the port is free for the next run (the persistent "
-                                "LaunchAgent and manual launches leave this off)")
+    dashboard_mode = dashboard.add_mutually_exclusive_group()
+    dashboard_mode.add_argument("--owned-by-run", action="store_true",
+                                help="mark this server as owned by the current run: it writes "
+                                     ".handsoff-dashboard-owner.json and `advance 8` with status complete "
+                                     "shuts it down so the port is free for the next run (the persistent "
+                                     "LaunchAgent and manual launches leave this off)")
+    dashboard_mode.add_argument("--view-only", action="store_true",
+                                help="register as the run's dashboard (owner file marked view_only) but "
+                                     "start no orchestration, recovery watchdog or performance clock and "
+                                     "never launch a role; for a run a host drives itself (Sentinel)")
 
     verify = sub.add_parser("verify")
     verify_scope = verify.add_mutually_exclusive_group(required=True)
