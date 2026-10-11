@@ -250,6 +250,9 @@ from handsoff_agent_runtime import (  # noqa: E402,F401
     owned_paths_overlap,
     progress_summary,
     read_session_liveness,
+    regression_finalize_hint,
+    regression_liveness,
+    STRANDED_REGRESSION_SECONDS,
     remove_implementer_workspace,
     role_session_ids,
     runtime_identity,
@@ -4484,6 +4487,13 @@ def recover_run(root: Path, *, actor: str, launcher, now: datetime | None = None
         cfg = load_config(root)
         status = load_unique_json(status_path(root, cfg))
         load_unique_json(acceptance_path(root, cfg))
+        if regression_liveness(root, status, now) is not None:
+            # #447: a launched regression is never recovered; report it read-only
+            # (stranded names regression-finalize) instead of refusing or
+            # expiring a lease under the regression's mutation lock
+            return {"action": "skipped", "assessment": recovery_assessment(
+                status, cfg, read_session_liveness(root), read_events(root, cfg), now, root=root,
+            )}
         ensure_no_launched_regression(status)
         _assert_agent_telemetry_integrity(root, cfg, status)
         if _expire_recovery_lease(status, now):

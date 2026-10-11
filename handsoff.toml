@@ -138,6 +138,10 @@ operation_grace_seconds = 120
 # [[regressions]] (issue #28) and are gated behind Mission Control
 # Accept/Decline.
 commands = [
+    "python3 -m unittest tests.test_stranded_regression.StrandedStatusTests -v",
+    "python3 -m unittest tests.test_stranded_regression.StrandedRecoverTests -v",
+    "python3 -m unittest tests.test_stranded_regression.StrandedLivenessTests -v",
+    "python3 -m unittest tests.test_stranded_regression.StrandedRefusalTests -v",
     "python3 -m unittest tests.test_packaging.StableDashboardCommandTests -v",
     "python3 -m unittest tests.test_view_only_dashboard -v",
     "node --test tests/dashboard/fleet_view_only.test.js",

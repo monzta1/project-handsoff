@@ -1975,11 +1975,81 @@ def active_regression_request(status: dict) -> dict | None:
                  if item.get("state") in {"awaiting_approval", "accepted", "launched"}), None)
 
 
+#: #447: a launched regression's runner heartbeats its progress file every
+#: 5 s; this long without one (or without its own progress and its runner
+#: pid) the runner is gone and the request is stranded in `launched`.
+STRANDED_REGRESSION_SECONDS = 300
+
+
+def regression_finalize_hint(request_id: object) -> str:
+    """#447: the one way out of a launched request whose runner is gone."""
+    return (f"if its runner is gone, terminalize it with "
+            f"regression-finalize --request-id {request_id} --by <pilot>")
+
+
+def _regression_runner_alive(pid: object) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def regression_liveness(root: Path, status: dict, now: datetime | None = None) -> dict | None:
+    """#447: whether the launched regression request still has a runner.
+    Read-only. The request's own progress heartbeat is authoritative: stale
+    past STRANDED_REGRESSION_SECONDS is stranded even when the recorded pid
+    exists, since a reboot can hand that pid to another process. Without its
+    own progress (missing, or replaced by another execution) the request is
+    stranded once launched_at is that old and its runner pid is not alive or
+    was never recorded (a request launched before #447)."""
+    item = active_regression_request(status)
+    if not item or item.get("state") != "launched":
+        return None
+    import handsoff_progress as test_progress
+    now = now or datetime.now(timezone.utc)
+    try:
+        progress = json.loads(test_progress.progress_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        progress = None
+    own = isinstance(progress, dict) and progress.get("request_id") == item.get("request_id")
+    terminal = own and progress.get("state") in test_progress.TERMINAL_STATES
+    reference = test_progress._parse(
+        (progress.get("finished_at") if terminal else progress.get("heartbeat_at")) if own
+        else item.get("launched_at"))
+    silent = round((now - reference).total_seconds(), 3) if reference else None
+    pid = item.get("runner_pid")
+    alive = _regression_runner_alive(pid)
+    stale = silent is None or silent > STRANDED_REGRESSION_SECONDS
+    stranded = stale if own else (stale and not alive)
+    return {
+        "request_id": item.get("request_id"),
+        "state": "stranded" if stranded else "running",
+        "signal": "heartbeat" if own else "launch",
+        "silent_seconds": silent,
+        "threshold_seconds": STRANDED_REGRESSION_SECONDS,
+        "runner_pid": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
+        "runner_alive": alive,
+        "required_action": (
+            f"Regression {item.get('request_id')} is stranded: no runner "
+            f"{'heartbeat' if own else 'process'} for {int(silent or 0)} s; "
+            f"{regression_finalize_hint(item.get('request_id'))}."
+        ) if stranded else None,
+    }
+
+
 def ensure_no_launched_regression(status: dict) -> None:
     item = active_regression_request(status)
     if item and item.get("state") == "launched":
         raise HandsoffError(
-            f"regression {item.get('request_id')} is running; workflow mutations are locked until it terminalizes"
+            f"regression {item.get('request_id')} is running; workflow mutations are locked until it "
+            f"terminalizes; {regression_finalize_hint(item.get('request_id'))}"
         )
 
 
