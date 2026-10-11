@@ -367,6 +367,7 @@ commands = [
   "python3 -m unittest tests.test_regression_io.CheapDashboardSignature -v",
   "python3 -m unittest tests.test_regression_io.SharedSseSignature -v",
   "python3 -m unittest tests.test_regression_io.ShardPriority -v",
+  "python3 -m unittest tests.test_regress.IsolatedWorkerHead -v",
 ]
 # Commands that verify the deployed system. Phase 8 is blocked until these
 # run successfully after deployment approval.

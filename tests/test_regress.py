@@ -416,5 +416,133 @@ class TestCompleteShardHelper(unittest.TestCase):
         self.assertEqual(len(observed), len(set(observed)))
 
 
+class IsolatedWorkerHead(unittest.TestCase):
+    """#449: a worker's source snapshot has one commit recording its index."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="handsoff-head-"))
+        self.root = self.tmp / "project"
+        (self.root / "sub").mkdir(parents=True)
+        (self.root / ".gitignore").write_text("*.log\n")
+        (self.root / "a.txt").write_text("a\n")
+        (self.root / "sub" / "b.py").write_text("B = 1\n")
+        (self.root / "ignored.log").write_text("runtime\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _git(self, cwd: Path, *args: str) -> subprocess.CompletedProcess:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env)
+
+    def _worker(self) -> Path:
+        source, _isolation, _env = regress._isolated_worker(self.root, 1, 1)
+        self.addCleanup(shutil.rmtree, source.parent, True)
+        return source
+
+    def _assert_snapshot(self, source: Path, expected: list[str]) -> str:
+        head = self._git(source, "rev-parse", "HEAD")
+        self.assertEqual(head.returncode, 0, head.stderr)
+        tracked = self._git(source, "ls-files").stdout.splitlines()
+        committed = self._git(source, "ls-tree", "-r", "--name-only", "HEAD").stdout.splitlines()
+        self.assertEqual(tracked, committed)
+        self.assertEqual(sorted(committed), sorted(expected))
+        self.assertEqual(self._git(source, "status", "--porcelain").stdout, "")
+        return head.stdout.strip()
+
+    def test_snapshot_head_records_the_index_and_is_clean(self):
+        source = self._worker()
+        self._assert_snapshot(source, [".gitignore", "a.txt", "sub/b.py"])
+
+    def test_snapshot_ignores_hostile_caller_git_config(self):
+        home = self.tmp / "home"
+        hooks = home / "hooks"
+        hooks.mkdir(parents=True)
+        for name in ("pre-commit", "commit-msg"):
+            hook = hooks / name
+            hook.write_text("#!/bin/sh\nexit 1\n")
+            hook.chmod(0o755)
+        (home / ".gitconfig").write_text(
+            f"[commit]\n\tgpgsign = true\n[core]\n\thooksPath = {hooks}\n")
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        with mock.patch.dict(os.environ, {"HOME": str(home), "XDG_CONFIG_HOME": str(home / "xdg")},
+                             clear=False):
+            for key in [key for key in os.environ if key.startswith("GIT_")]:
+                del os.environ[key]
+            # The hostile configuration does break an ordinary commit.
+            probe = self.tmp / "probe"
+            probe.mkdir()
+            env = {**clean, "HOME": str(home), "XDG_CONFIG_HOME": str(home / "xdg")}
+            subprocess.run(["git", "init", "--quiet"], cwd=str(probe), env=env, check=True,
+                           capture_output=True)
+            plain = subprocess.run(["git", "commit", "--allow-empty", "-m", "x"], cwd=str(probe),
+                                   env=env, capture_output=True, text=True)
+            self.assertNotEqual(plain.returncode, 0)
+            source = self._worker()
+        self._assert_snapshot(source, [".gitignore", "a.txt", "sub/b.py"])
+
+    def test_snapshot_ignores_inherited_invalid_identity_and_date(self):
+        with mock.patch.dict(os.environ, {"GIT_AUTHOR_NAME": "", "GIT_AUTHOR_DATE": "invalid"}):
+            source = self._worker()
+        self._assert_snapshot(source, [".gitignore", "a.txt", "sub/b.py"])
+
+    def test_snapshot_of_a_tree_with_no_committable_files(self):
+        shutil.rmtree(self.root)
+        self.root.mkdir()
+        source = self._worker()
+        self._assert_snapshot(source, [])
+
+    def test_snapshot_leaves_an_inherited_repository_untouched(self):
+        other = self.tmp / "other"
+        other.mkdir()
+        (other / "kept.txt").write_text("kept\n")
+        for args in (("init", "--quiet"), ("add", "kept.txt"),
+                     ("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                      "commit", "--quiet", "--no-verify", "-m", "other")):
+            done = self._git(other, *args)
+            self.assertEqual(done.returncode, 0, done.stderr)
+        head_before = self._git(other, "rev-parse", "HEAD").stdout
+        index = other / ".git" / "index"
+        index_before = index.read_bytes()
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other),
+                                          "GIT_INDEX_FILE": str(index)}):
+            source = self._worker()
+        self.assertEqual(self._git(other, "rev-parse", "HEAD").stdout, head_before)
+        self.assertEqual(index.read_bytes(), index_before)
+        self.assertNotEqual(self._assert_snapshot(source, [".gitignore", "a.txt", "sub/b.py"]),
+                            head_before.strip())
+
+    def test_five_shards_can_clone_and_check_out_their_head(self):
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "__init__.py").write_text("")
+        (self.root / "tests" / "test_head.py").write_text(textwrap.dedent('''
+            import os, subprocess, tempfile, unittest
+
+            class TestHead(unittest.TestCase):
+                def _exercise(self):
+                    sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                                         text=True, check=True).stdout.strip()
+                    with tempfile.TemporaryDirectory() as clone:
+                        subprocess.run(["git", "clone", "--quiet", os.getcwd(), clone],
+                                       capture_output=True, check=True)
+                        subprocess.run(["git", "checkout", "--quiet", "--detach", sha],
+                                       cwd=clone, capture_output=True, check=True)
+                test_a = _exercise
+                test_b = _exercise
+                test_c = _exercise
+                test_d = _exercise
+                test_e = _exercise
+        '''))
+        for name in ("handsoff.toml", "handsoff-runtime.json"):
+            shutil.copy(ROOT / name, self.root / name)
+        results = regress.run_battery_results(
+            self.root, "head", ["python3 -m unittest tests.test_head"], timeout=120,
+            request_id="rg-head", command_sha256="f" * 64, max_shards=5,
+        )
+        self.assertEqual(results[0]["exit_code"], 0, results[0]["output_tail"])
+        self.assertEqual(len(results[0]["shards"]), 5)
+        self.assertTrue(all(row["cleanup"] == "removed" for row in results[0]["shards"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
