@@ -739,6 +739,14 @@ def _new_shard(index: int, test_ids: list[str] | None) -> dict:
             "isolation": None, "cleanup": None, "priority": None}
 
 
+def _snapshot_git_env() -> dict[str, str]:
+    """#449: the snapshot's Git calls ignore the caller's GIT_* state and identity."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update({"GIT_AUTHOR_NAME": "handsoff", "GIT_COMMITTER_NAME": "handsoff",
+                "GIT_AUTHOR_EMAIL": "handsoff@localhost", "GIT_COMMITTER_EMAIL": "handsoff@localhost"})
+    return env
+
+
 def _isolated_worker(root: Path, command_index: int, shard_index: int) -> tuple[Path, dict, dict[str, str]]:
     """Copy one immutable launch snapshot and allocate unique mutable namespaces."""
     base = Path(tempfile.mkdtemp(prefix=f"handsoff-shard-{command_index}-{shard_index}-"))
@@ -752,15 +760,22 @@ def _isolated_worker(root: Path, command_index: int, shard_index: int) -> tuple[
     # Keep that contract without sharing the caller's mutable .git directory:
     # every worker gets a fresh repository and index over its copied tree.
     # The copied .gitignore keeps runtime artifacts out of that index.
+    # One snapshot commit records that index, so tests reading HEAD (e.g.
+    # ReproducibleBuildTest) work; caller hooks, signing and identity do not apply.
+    git_env = _snapshot_git_env()
     try:
         subprocess.run(["git", "init", "--quiet"], cwd=str(source), check=True,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=git_env)
         subprocess.run(["git", "add", "--all"], cwd=str(source), check=True,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=git_env)
+        subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={os.devnull}",
+                        "commit", "--quiet", "--no-verify", "--allow-empty",
+                        "-m", "handsoff isolated worker snapshot"],
+                       cwd=str(source), check=True, capture_output=True, text=True, env=git_env)
     except (OSError, subprocess.CalledProcessError) as exc:
         shutil.rmtree(base, ignore_errors=True)
         detail = getattr(exc, "stderr", None) or str(exc)
-        raise RuntimeError(f"could not create isolated worker Git index: {detail.strip()}") from exc
+        raise RuntimeError(f"could not create isolated worker Git snapshot: {detail.strip()}") from exc
     namespaces = {}
     for name in ("tmp", "cache", "state", "service"):
         target = base / name

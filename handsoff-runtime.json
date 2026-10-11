@@ -27,7 +27,7 @@
     "bin/handsoff_progress.py": "c1f570f5d9183c3b8775a81ff32e4bc472f3adfda2b2607da577c69975c6ab72",
     "bin/handsoff_projection.py": "2bba85d074514ae2dd716de8bdd7e0e7dd15af00b8e3e1a04d1156ac8a038100",
     "bin/handsoff_queue.py": "ffd84c7a868797f27eaae30ec0860c8136b675db4c7f7ea291ef7a2885f0267c",
-    "bin/handsoff_regress.py": "0f22bc568d9eb1d15938bc2b713a4363413eaf62f198a1b1e74f11f8134af1be",
+    "bin/handsoff_regress.py": "10cfe7ea6be4fc42ae4f369cc1234c411e2b5b5a1e25788ab37ca0b6dfd171e6",
     "bin/handsoff_release_runtime.py": "a8886b5e27c9d2167d922c1e41b742dab1fef85e71ce9984f5308d8a94e8e2aa",
     "bin/handsoff_release_transaction.py": "672f9b59ec31bdbf7755ae3541dd13dd28b8b9797b1404f727fa0a8cf4a1d5e5",
     "bin/handsoff_resources.py": "7ed15d221d01ae48bb014c292cbae9b0e784fc4cc9eb61912d3c94a7877f6444",
@@ -79,5 +79,5 @@
     "templates/handsoff.toml": "8a22c2e6e73ab1b9a4b0e1a33ed59971f8d827bdae59f8fd2686c96431fe73ca"
   },
   "schema": 1,
-  "version": "v0.5.19"
+  "version": "v0.5.20"
 }
