@@ -7952,8 +7952,11 @@ def cmd_evidence_refresh_plan(args) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Project Handsoff supervisor and gatekeeper")
+def build_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    # #443: the CLI passes prog="handsoff supervisor" so every subcommand's
+    # usage line names the runnable prefix; argparse's default would be
+    # basename(argv[0]), which prints `handsoff <verb>`.
+    p = argparse.ArgumentParser(prog=prog, description="Project Handsoff supervisor and gatekeeper")
     p.add_argument("--root", default=None, help="project root (default: nearest ancestor with handsoff.toml, else cwd)")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -8647,8 +8650,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(prog: str | None = None) -> int:
+    args = build_parser(prog).parse_args()
     handlers = {
         "init": cmd_init, "status": cmd_status, "validate": cmd_validate,
         "advance": cmd_advance, "deployment-gate": cmd_deployment_gate,

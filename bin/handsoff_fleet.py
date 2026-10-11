@@ -1620,8 +1620,9 @@ def queue_command(args) -> int:
     return 0
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Handsoff Fleet Mission Control")
+def main(prog: str | None = None):
+    # #443: the CLI passes prog="handsoff fleet" so usage reads as runnable.
+    parser = argparse.ArgumentParser(prog=prog, description="Handsoff Fleet Mission Control")
     sub = parser.add_subparsers(dest="command", required=True)
     register = sub.add_parser("register")
     register.add_argument("root")
