@@ -48,6 +48,7 @@ from handsoff_agent_runtime import (
     agent_profiles,
     current_agent_sessions,
     default_agent_adapter,
+    regression_liveness,
     design_review_budget,
     live_implementer_sessions,
     read_session_liveness,
@@ -420,6 +421,11 @@ def _recovery_assessment(status: dict, cfg: dict, liveness: dict | None,
     role = assigned_role(status)
     result = {"state": "not_applicable", "reason": "disabled", "assigned_role": role,
               "silent_minutes": None, "threshold_minutes": None, "lost_session_id": None}
+    # #447: a stranded launch outranks every other reason, whatever the run state
+    stranded = regression_liveness(root, status, now) if root is not None else None
+    if stranded and stranded["state"] == "stranded":
+        result.update(reason="regression_stranded", required_action=stranded["required_action"])
+        return result
     if not recovery.get("enabled", True):
         return result
     open_regression = next((item for item in status.get("regression_requests", [])

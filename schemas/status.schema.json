@@ -770,6 +770,10 @@
             ],
             "pattern": "^[0-9a-f]{64}$"
           },
+          "runner_pid": {
+            "type": "integer",
+            "minimum": 1
+          },
           "repository": {
             "type": "object"
           },

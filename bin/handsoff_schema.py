@@ -1381,7 +1381,8 @@ def validate_status_schema(status: dict) -> list[str]:
             }
             label = f"status: regression_requests[{index}]"
             rid = item.get("request_id") if isinstance(item, dict) else None
-            optional = {"release_version", "release_class", "policy_override_reason", "timeout_seconds", "env"}
+            optional = {"release_version", "release_class", "policy_override_reason", "timeout_seconds", "env",
+                        "runner_pid"}
             if not isinstance(item, dict) or not required <= set(item) or set(item) - required - optional:
                 errors.append(f"{label} has invalid fields")
                 continue
@@ -1421,6 +1422,9 @@ def validate_status_schema(status: dict) -> list[str]:
             nonce = item.get("launch_nonce_sha256")
             if nonce is not None and (not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{64}", nonce)):
                 errors.append(f"{label}.launch_nonce_sha256 is invalid")
+            pid = item.get("runner_pid", 1)  # #447
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid < 1:
+                errors.append(f"{label}.runner_pid is invalid")
             if item.get("state") in {"launched", "completed", "failed"} and nonce is None:
                 errors.append(f"{label} launched/terminal execution requires a nonce digest")
             if not isinstance(item.get("repository"), dict):

@@ -1210,6 +1210,7 @@ def cmd_status(args) -> int:
             inherited = inherited_regressions_view(root, cfg, status, acceptance)  # REQ-001
         except lib.HandsoffError as exc:
             inherited = [{"error": str(exc)}]
+        regression = lib.regression_liveness(root, status)
     progress_shown = lib.progress_view(status, acceptance, cfg)  # #415
     print(__import__("json").dumps({
         "performance_pause": performance.get("pause"),
@@ -1221,7 +1222,9 @@ def cmd_status(args) -> int:
         "engine_history": lib.engine_history(lib.read_events(root, cfg)),
         "work_item_completion": lib.work_item_completion_lines(
             lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)),
-        "status": status.get("status"), "next_action": status.get("next_action"),
+        "status": status.get("status"),
+        # #447: a stranded regression's way out replaces the stored step, unstored
+        "next_action": (regression or {}).get("required_action") or status.get("next_action"),
         # P2.4: the close outcome with its reason and known risk
         "run_closed": status.get("run_closed"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
@@ -1266,6 +1269,7 @@ def cmd_status(args) -> int:
         "risk_class": status.get("risk_class"),
         "updated_at": status.get("updated_at"),
         "regression_requests": status.get("regression_requests") or [],
+        "regression_liveness": regression,  # #447
         "recovery_lease": status.get("recovery_lease"),
         "deployment_approved": status.get("deployment_approved"),
         "design_approved": status.get("design_approved"),
@@ -3120,8 +3124,10 @@ def cmd_regression_request(args) -> int:
                 print(f"REGRESSION_BLOCKED: {plan.get('release_class')} releases use targeted tests; "
                       "record an explicit full-regression override reason to proceed")
                 return 1
-        if lib.active_regression_request(status):
-            print("REGRESSION_BLOCKED: another regression request is already live")
+        live = lib.active_regression_request(status)
+        if live:
+            print("REGRESSION_BLOCKED: another regression request is already live"
+                  + _launched_regression_hint(live))
             return 1
         now = datetime.now(timezone.utc)
         requests = list(status.get("regression_requests") or [])
@@ -3196,7 +3202,8 @@ def cmd_regression_cancel(args) -> int:
         status, _ = _load(root, cfg)
         item = _regression_request(status, args.request_id)
         if not item or item.get("state") not in {"awaiting_approval", "accepted"}:
-            print("REGRESSION_BLOCKED: only a pending or accepted request can be cancelled")
+            print("REGRESSION_BLOCKED: only a pending or accepted request can be cancelled"
+                  + _launched_regression_hint(item))
             return 1
         now = datetime.now(timezone.utc).isoformat()
         item["state"] = "cancelled"
@@ -3218,7 +3225,7 @@ def cmd_regression_run(args) -> int:
         status, acceptance = _load(root, cfg)
         item = _regression_request(status, args.request_id)
         if not item or item.get("state") != "accepted":
-            print("REGRESSION_BLOCKED: request has not been accepted")
+            print("REGRESSION_BLOCKED: request has not been accepted" + _launched_regression_hint(item))
             return 1
         now = datetime.now(timezone.utc)
         accepted_at = datetime.fromisoformat(item["decided_at"])
@@ -3234,6 +3241,7 @@ def cmd_regression_run(args) -> int:
         item["state"] = "launched"
         item["launched_at"] = now.isoformat()
         item["launch_nonce_sha256"] = nonce_digest
+        item["runner_pid"] = os.getpid()  # #447: lets status tell a dead runner from a live one
         status["updated_at"] = now.isoformat()
         commands = list(item["commands"])
         lib.commit(root, cfg, status=status, event_kind="regression_launched",
@@ -3269,6 +3277,13 @@ def cmd_regression_run(args) -> int:
                    event_message=f"Regression request {item['state']}", request_id=item["request_id"])
     print(__import__("json").dumps({"request_id": item["request_id"], "state": item["state"], "results": results}, indent=2))
     return 0 if item["state"] == "completed" else 1
+
+
+def _launched_regression_hint(item: dict | None) -> str:
+    """#447: a refusal on a launched request names the way out."""
+    if not item or item.get("state") != "launched":
+        return ""
+    return f"; {item.get('request_id')} is launched, and {lib.regression_finalize_hint(item.get('request_id'))}"
 
 
 def cmd_regression_finalize(args) -> int:
@@ -6703,6 +6718,8 @@ def cmd_recover(args) -> int:
         "failed": "RECOVERY_FAILED", "escalated": "RECOVERY_ESCALATED",
     }[result["action"]]
     print(f"{label}: {result.get('recovery_id') or result['assessment']['reason']}")
+    if result["assessment"].get("required_action"):  # #447: a stranded regression's way out
+        print(result["assessment"]["required_action"])
     return 1 if result["action"] in {"failed", "escalated"} else 0
 
 
