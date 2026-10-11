@@ -161,6 +161,49 @@ function renderEnginePanel(engine) {
     + `<p class="engine-release">${latest}</p><ul class="engine-pins">${rows}</ul>`;
 }
 
+// #453: what Sentinel has queued, per repository: the run holding the slot
+// (or SLOT FREE), the queued issues in admission order and the items held
+// at the rig. Hidden while no repository has anything queued or held.
+function waited(value) {
+  return value ? relative(value).replace(/ ago$/, "") : "unknown";
+}
+
+function issueLink(item) {
+  const label = `#${esc(item.number)}`;
+  return typeof item.url === "string" && item.url.startsWith("https://github.com/")
+    ? `<a class="queue-number" href="${esc(item.url)}" target="_blank" rel="noopener">${label}</a>`
+    : `<span class="queue-number">${label}</span>`;
+}
+
+function issueTitle(item) {
+  return item.title ? `<span class="queue-title">${esc(item.title)}</span>` : '<span class="queue-title missing">title not cached</span>';
+}
+
+function sentinelRepo(name, repo) {
+  const running = repo.running
+    ? `<p class="queue-running">RUNNING ${issueLink(repo.running)} ${issueTitle(repo.running)} <span class="queue-meta">${esc(String(repo.running.state || "").toUpperCase())} · ${esc(repo.running.phase || "")}</span></p>`
+    : '<p class="queue-running queue-free">SLOT FREE</p>';
+  const queued = (repo.queued || []).map((item, index) =>
+    `<li class="queue-item"><span class="queue-position">${index + 1}</span>${issueLink(item)}${issueTitle(item)}<span class="queue-meta">${esc(String(item.trigger || "unknown").toUpperCase())} · WAITING ${esc(waited(item.queued_at))}</span></li>`).join("");
+  const rig = (repo.rig || []).map((item) =>
+    `<li class="queue-item queue-rig"><span class="queue-position">RIG</span>${issueLink(item)}${issueTitle(item)}<span class="queue-meta">${esc(item.reason || "held at the rig")} · WAITING ${esc(waited(item.held_at))}</span></li>`).join("");
+  return `<div class="queue-repo" data-repo="${esc(name)}"><p class="queue-repo-name">${esc(name)}</p>${running}`
+    + `${queued ? `<ol class="queue-list">${queued}</ol>` : ""}${rig ? `<ul class="queue-list">${rig}</ul>` : ""}</div>`;
+}
+
+function renderSentinelQueue(view) {
+  const panel = $("sentinel-queue");
+  if (!panel) return;
+  const repos = Object.entries((view && view.repos) || {})
+    .filter(([, repo]) => (repo.queued || []).length || (repo.rig || []).length);
+  panel.classList.toggle("hidden", repos.length === 0);
+  const count = repos.reduce((sum, [, repo]) => sum + (repo.queued || []).length, 0);
+  panel.innerHTML = repos.length
+    ? `<div class="section-head"><div><p class="panel-label">SENTINEL</p><h2>Queued</h2></div><span class="section-meta">${count} QUEUED</span></div>`
+      + repos.map(([name, repo]) => sentinelRepo(name, repo)).join("")
+    : "";
+}
+
 function engineMeta(project) {
   const own = project.engine_version || "unknown";
   const fleetVersion = fleetEngineVersion();
@@ -282,6 +325,7 @@ function render(data) {
   fleet = data;
   renderEngineBadge(data);
   renderEnginePanel(data.engine);
+  renderSentinelQueue(data.sentinel_queue);
   $("synced").textContent = `SYNCED ${new Date(data.generated_at).toLocaleTimeString()}`;
   $("summary").innerHTML = STATE_ORDER.map((state) => `<article class="${data.counts[state] ? "has-some" : ""}" data-state="${state}"><span>${esc(STATE_LABELS[state] || state.toUpperCase())}</span><strong>${data.counts[state] || 0}</strong></article>`).join("");
   $("decisions").classList.toggle("hidden", !data.decisions.length);

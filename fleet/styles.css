@@ -289,3 +289,15 @@ main { display: grid; gap: 14px; padding-top: 16px; }
 .engine-pin .pin-ok { color: #7ee2a8; }
 .engine-pin .pin-refused { color: var(--red); font-weight: 700; }
 .engine-pin .pin-upgrade { color: var(--amber); user-select: all; }
+/* #453: what Sentinel has queued, per repository */
+.queue-panel { margin-bottom: 18px; }
+.queue-repo + .queue-repo { margin-top: 12px; }
+.queue-repo-name { margin: 0 0 6px; font: 700 12px/1.4 var(--mono); letter-spacing: .04em; }
+.queue-running { margin: 0 0 6px; font: 600 11px/1.4 var(--mono); }
+.queue-free { color: var(--muted, #8fa0b3); }
+.queue-list { display: grid; gap: 4px; margin: 0 0 6px; padding: 0; list-style: none; }
+.queue-item { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; font: 600 11px/1.4 var(--mono); }
+.queue-position { min-width: 2.5em; color: var(--faint); }
+.queue-number { color: var(--amber); }
+.queue-meta { color: var(--muted, #8fa0b3); letter-spacing: .04em; }
+.queue-rig .queue-position { color: var(--amber); }

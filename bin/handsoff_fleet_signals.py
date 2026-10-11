@@ -17,6 +17,9 @@ here runs on that path: a SignalCache is filled by a background refresh and
   attributes it, no `result.json` means in flight, and the newest finished
   beam is `last`. No worker on this machine means the signal is None.
 
+#453: the refresh also reads Sentinel's run state and queue stores, read
+only and only when their file signatures change, for Fleet's Queued view.
+
 Failure semantics are per project and atomic: a refresh that fails for one
 project keeps that project's previous good values, sets `error`, and leaves
 `fetched_at` at the last success. The cache persists to
@@ -377,6 +380,142 @@ def beakon_signal(root: Path, scan: dict | None) -> dict | None:
             "fetched_at": scan.get("fetched_at")}
 
 
+# --- Sentinel (#453) ---------------------------------------------------------
+
+#: Sentinel's runner.HOLDS_SLOT: a run in one of these states holds its
+#: repository's slot; released, withdrawn and closed runs are history.
+SENTINEL_SLOT_STATES = ("admitting", "running", "paused", "awaiting_approval", "resuming", "withdrawing")
+SENTINEL_STORE_FILE = "fleet-queue.json"
+_SENTINEL_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _sentinel_config() -> dict:
+    """The [sentinel] table of ~/.config/sentinel/sentinel.toml; {} when absent or unreadable."""
+    if tomllib is None:
+        return {}
+    try:
+        table = tomllib.loads((Path.home() / ".config" / "sentinel" / "sentinel.toml").read_text(encoding="utf-8")).get("sentinel")
+    except (OSError, ValueError):
+        return {}
+    return table if isinstance(table, dict) else {}
+
+
+def sentinel_paths() -> tuple[Path, Path]:
+    """(state file, queue directory). SENTINEL_STATE_FILE wins and puts the
+    queue stores beside it in `queue/`; else `state_file` and `queue_dir` in
+    ~/.config/sentinel/sentinel.toml; else Sentinel's own defaults."""
+    override = os.environ.get("SENTINEL_STATE_FILE", "").strip()
+    if override:
+        state = Path(override).expanduser()
+        return state, state.parent / "queue"
+    config = _sentinel_config()
+    state, queue = config.get("state_file"), config.get("queue_dir")
+    state = Path(state).expanduser() if isinstance(state, str) and state.strip() else Path.home() / ".sentinel" / "state.json"
+    queue = Path(queue).expanduser() if isinstance(queue, str) and queue.strip() else Path.home() / ".sentinel" / "queue"
+    return state, queue
+
+
+def sentinel_state_path() -> Path:
+    return sentinel_paths()[0]
+
+
+def _read_json_file(path: Path):
+    """The one read of a Sentinel file; tests count calls through it."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _store_path(queue_dir: Path, store) -> Path:
+    """Sentinel's runner.queue_dir_for: queue_dir/<owner__name>, or the old
+    single store at queue_dir itself when the record names none."""
+    store = store if isinstance(store, str) and store and "/" not in store and store not in (".", "..") else None
+    return (queue_dir / store if store else queue_dir) / SENTINEL_STORE_FILE
+
+
+def _issue_number(key) -> int | None:
+    return int(key) if isinstance(key, str) and key.isdigit() else None
+
+
+def _empty_sentinel(note: str | None) -> dict:
+    return {"fetched_at": utcnow(), "note": note, "repos": {}}
+
+
+def scan_sentinel(state_path: Path, queue_dir: Path) -> tuple[dict, list[Path]]:
+    """Sentinel's queue as Fleet shows it, read-only, and the queue store
+    files the scan read (their signatures key the cache). The view is
+    {fetched_at, note, repos: {OWNER/NAME: {running, slot_free, queued, rig}}}:
+    `running` is the slot holder {number, state, phase, url, title} or None,
+    `queued` is in admission order (the store's created_at, then job id; a
+    job the store lacks sorts last by queued_at, then number) and `rig` is
+    the items held at the rig. A missing, unreadable or malformed state file
+    is an empty view with a short note. Nothing here writes or raises."""
+    try:
+        state = _read_json_file(state_path)
+    except FileNotFoundError:
+        return _empty_sentinel("no Sentinel state on this machine"), []
+    except OSError as exc:
+        return _empty_sentinel(f"Sentinel state unreadable ({type(exc).__name__})"), []
+    except ValueError:
+        return _empty_sentinel("Sentinel state malformed"), []
+    repos = state.get("repos") if isinstance(state, dict) else None
+    if not isinstance(repos, dict):
+        return _empty_sentinel("Sentinel state malformed"), []
+    stores: dict[Path, dict] = {}
+
+    def jobs_in(path: Path) -> dict:
+        if path not in stores:
+            try:
+                jobs = _read_json_file(path).get("jobs")
+            except (OSError, ValueError, AttributeError):
+                jobs = None
+            stores[path] = jobs if isinstance(jobs, dict) else {}
+        return stores[path]
+
+    view: dict[str, dict] = {}
+    for repo, entry in sorted(repos.items()):
+        if not isinstance(repo, str) or not _SENTINEL_REPO.match(repo) or not isinstance(entry, dict):
+            continue
+        url = f"https://github.com/{repo}/issues/"
+        runs = entry.get("runs") if isinstance(entry.get("runs"), dict) else {}
+        holders = [(number, run) for number, run in ((_issue_number(key), run) for key, run in runs.items())
+                   if number is not None and isinstance(run, dict) and run.get("state") in SENTINEL_SLOT_STATES]
+        running = None
+        if holders:
+            number, run = max(holders, key=lambda pair: (str(pair[1].get("admitted_at") or ""), pair[0]))
+            running = {"number": number, "state": run.get("state"), "phase": run.get("phase"), "url": f"{url}{number}",
+                       "title": run.get("title") if isinstance(run.get("title"), str) else None}
+        queued = []
+        for key, item in (entry.get("queued") or {}).items() if isinstance(entry.get("queued"), dict) else ():
+            number = _issue_number(key)
+            if number is None or not isinstance(item, dict):
+                continue
+            job = jobs_in(_store_path(queue_dir, item.get("queue_store"))).get(item.get("job"))
+            created = job.get("created_at") if isinstance(job, dict) and isinstance(job.get("created_at"), str) else None
+            queued_at = item.get("queued_at") if isinstance(item.get("queued_at"), str) else None
+            order = (0, created, str(item.get("job")), 0) if created else (1, queued_at or "", "", number)
+            queued.append((order, {"number": number, "url": f"{url}{number}", "title": None,
+                                   "trigger": item.get("trigger") if isinstance(item.get("trigger"), str) else None,
+                                   "queued_at": queued_at}))
+        queued.sort(key=lambda pair: pair[0])
+        rig = []
+        for key, item in (entry.get("waiting_rig") or {}).items() if isinstance(entry.get("waiting_rig"), dict) else ():
+            number = _issue_number(key)
+            if number is None:
+                continue
+            item = item if isinstance(item, dict) else {}
+            rig.append({"number": number, "url": f"{url}{number}", "title": None,
+                        "reason": item.get("reason") if isinstance(item.get("reason"), str) else None,
+                        "held_at": item.get("held_at") if isinstance(item.get("held_at"), str) else None})
+        rig.sort(key=lambda row: row["number"])
+        view[repo] = {"running": running, "slot_free": running is None,
+                      "queued": [row for _, row in queued], "rig": rig}
+    return {"fetched_at": utcnow(), "note": None, "repos": view}, sorted(stores)
+
+
+def sentinel_signature(state_path: Path, stores) -> tuple:
+    """The change signal for a scan: the state file's and every store's (mtime_ns, size)."""
+    return (registry_signature(state_path), tuple((str(path), registry_signature(path)) for path in stores))
+
+
 # --- The cache ---------------------------------------------------------------
 
 EMPTY = {"github": None, "beakon": None}
@@ -393,6 +532,11 @@ class SignalCache:
         self.loaded_at: str | None = None
         self.refreshed_at: str | None = None
         self.backoff: dict[str, float] = {}  # #433: repository -> epoch second its rate limit resets
+        # #453: Sentinel's queue, kept in memory only and rescanned when the
+        # state file's or a read store's signature changes.
+        self._sentinel: dict | None = None
+        self._sentinel_key: tuple | None = None
+        self._sentinel_stores: list[Path] = []
         self.load()
 
     def load(self) -> None:
@@ -435,8 +579,34 @@ class SignalCache:
         with self._lock:
             return {root: dict(value) for root, value in self._data.items()}
 
+    def sentinel_queue(self) -> dict:
+        """#453: the last Sentinel queue view (a copy); empty before the first refresh."""
+        with self._lock:
+            view = self._sentinel
+        return json.loads(json.dumps(view)) if view else {"fetched_at": None, "note": None, "repos": {}}
+
+    def refresh_sentinel(self, paths: tuple[Path, Path] | None = None) -> dict:
+        """#453: rescan Sentinel's state when its signature (or a store the
+        last scan read) changed; an unchanged file is not read again. Only
+        reads; a failure is an empty view with a note, never an exception."""
+        try:
+            state_path, queue_dir = paths or sentinel_paths()
+            key = (str(state_path), str(queue_dir), sentinel_signature(state_path, self._sentinel_stores))
+            if self._sentinel is not None and key == self._sentinel_key:
+                return self.sentinel_queue()
+            state_signature = registry_signature(state_path)
+            view, stores = scan_sentinel(state_path, queue_dir)
+            key = (str(state_path), str(queue_dir),
+                   (state_signature, sentinel_signature(state_path, stores)[1]))
+        except Exception as exc:  # noqa: BLE001 - Fleet's build must outlive any Sentinel file
+            view, stores, key = _empty_sentinel(f"Sentinel state unreadable ({type(exc).__name__})"), [], None
+        with self._lock:
+            self._sentinel, self._sentinel_key, self._sentinel_stores = view, key, stores
+        return self.sentinel_queue()
+
     def refresh(self, roots, *, github_fetch=None, beakon_scan=None,
-                work_root: Path | None = None, client=_ASK, now: float | None = None) -> dict[str, dict]:
+                work_root: Path | None = None, client=_ASK, now: float | None = None,
+                sentinel: tuple[Path, Path] | None = None) -> dict[str, dict]:
         """Recompute every registered project's signals and swap them in.
         `github_fetch(root, client)` and `beakon_scan(work_root)` are the
         seams tests inject (the module functions when left out, looked up
@@ -445,7 +615,10 @@ class SignalCache:
         #433: roots sharing a repository share one fetch per refresh, and a
         repository GitHub rate-limited is not fetched again before the reset
         it reported; meanwhile its roots keep their last good values under
-        the plain rate-limited line. `now` (epoch seconds) is for tests."""
+        the plain rate-limited line. `now` (epoch seconds) is for tests.
+        #453: `sentinel` is the (state file, queue directory) pair, None
+        meaning "ask sentinel_paths()"."""
+        self.refresh_sentinel(sentinel)
         github_fetch = github_fetch or fetch_github
         beakon_scan = beakon_scan or scan_beakon
         roots = [Path(root).resolve() for root in roots]
