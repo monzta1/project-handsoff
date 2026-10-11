@@ -969,6 +969,22 @@ def validate_status_schema(status: dict) -> list[str]:
                     errors.append("status: 'last_heartbeat_at' must include a timezone")
             except ValueError:
                 errors.append("status: 'last_heartbeat_at' must be an ISO-8601 timestamp")
+    # #444: the dead run-owned dashboard last ledgered, so it is reported once
+    down = status.get("dashboard_down_reported")
+    if down is not None:
+        valid = isinstance(down, dict) and set(down) == {"pid", "host", "port", "reported_at"} \
+            and type(down["pid"]) is int and down["pid"] >= 1 \
+            and isinstance(down["host"], str) and bool(down["host"]) \
+            and type(down["port"]) is int and 1 <= down["port"] <= 65535
+        if valid:
+            try:
+                valid = isinstance(down["reported_at"], str) \
+                    and datetime.fromisoformat(down["reported_at"]).tzinfo is not None
+            except ValueError:
+                valid = False
+        if not valid:
+            errors.append("status: 'dashboard_down_reported' must be null or "
+                          "{pid, host, port, reported_at} with a timezone-aware timestamp")
     heartbeat_owner = status.get("last_heartbeat_owner")
     if heartbeat_owner is not None and (not isinstance(heartbeat_owner, str) or not heartbeat_owner.strip()):
         errors.append("status: 'last_heartbeat_owner' must be a non-empty string or null")

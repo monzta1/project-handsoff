@@ -1170,6 +1170,16 @@ def _read_design_take_up(path: Path) -> dict:
     return block
 
 
+def _owned_dashboard_probe(root: Path, cfg: dict) -> dict | None:
+    """#444: judge the run-owned dashboard before the lock is taken (the
+    probe is network I/O); the locked transition rechecks the run."""
+    try:
+        status = lib.load_unique_json(lib.status_path(root, cfg))
+    except (lib.HandsoffError, OSError, ValueError):
+        return None
+    return lib.owned_dashboard_state(root, status)
+
+
 def cmd_status(args) -> int:
     root = lib.resolve_root(args.root)
     cfg = lib.load_config(root)
@@ -1177,12 +1187,15 @@ def cmd_status(args) -> int:
         lib.reconcile_gone_sessions(root)  # #420: a gone process never stays live
     except (lib.HandsoffError, OSError, ValueError):
         pass  # the read below reports what is wrong
+    dashboard = _owned_dashboard_probe(root, cfg)
     with lib.project_lock(root):
         try:
             status, acceptance, verifications, verification_problems = _load_all(root, cfg)
         except lib.HandsoffError as e:
             print(f"SHIP_FEATURE_BLOCKED: {e}")
             return 1
+        if not lib.run_is_open(status):
+            dashboard = None  # #444: the run closed after the probe; nothing to report
         errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
                                     verification_problems=verification_problems, root=root)
         # #41: the same activity reading the dashboard snapshot carries.
@@ -1196,6 +1209,7 @@ def cmd_status(args) -> int:
                 session_states, liveness["stall_warning"])}
         warning = liveness["stall_warning"]
         lib.record_stall_transition(root, cfg, warning)
+        lib.record_dashboard_down_transition(root, cfg, dashboard)  # #444
         activity = liveness.get("activity_note")
         live = lib.live_status(status, cfg, root)
         budget = lib.design_review_budget(status, cfg)
@@ -1223,8 +1237,11 @@ def cmd_status(args) -> int:
         "work_item_completion": lib.work_item_completion_lines(
             lib.work_item_checkpoints(status, acceptance, None, verifications, cfg)),
         "status": status.get("status"),
-        # #447: a stranded regression's way out replaces the stored step, unstored
-        "next_action": (regression or {}).get("required_action") or status.get("next_action"),
+        # #447: a stranded regression's way out replaces the stored step, unstored;
+        # #444: then a dead run-owned dashboard's restart command
+        "next_action": (regression or {}).get("required_action") or (dashboard or {}).get("required_action")
+        or status.get("next_action"),
+        "owned_dashboard": dashboard,  # #444
         # P2.4: the close outcome with its reason and known risk
         "run_closed": status.get("run_closed"),
         "design_round": status.get("design_round"), "review_round": status.get("review_round"),
@@ -6721,6 +6738,9 @@ def cmd_recover(args) -> int:
                        event_message="One automatic retry authorized after an engine-classified failure",
                        by=args.by, session_id=sid, category=failure.get("category"))
         print(f"RECOVERY_AUTO_CONFIRMED: {sid}")
+    dashboard = _owned_dashboard_probe(root, cfg)  # #444: watch loops through here
+    with lib.project_lock(root):
+        lib.record_dashboard_down_transition(root, cfg, dashboard)
     result = lib.recover_run(root, actor=args.by, launcher=launcher)
     label = {
         "skipped": "RECOVERY_SKIPPED", "recovered": "RECOVERY_RECOVERED",
@@ -6729,6 +6749,8 @@ def cmd_recover(args) -> int:
     print(f"{label}: {result.get('recovery_id') or result['assessment']['reason']}")
     if result["assessment"].get("required_action"):  # #447: a stranded regression's way out
         print(result["assessment"]["required_action"])
+    if (dashboard or {}).get("required_action"):  # #444: a dead run-owned dashboard
+        print(dashboard["required_action"])
     return 1 if result["action"] in {"failed", "escalated"} else 0
 
 
@@ -7441,18 +7463,6 @@ def _reconcile_report_items(root: Path, cfg: dict, transaction, *, by: str, reva
                                       "detail": None, "head": prepared["head"]}, by=by)
 
 
-def _owner_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
 def _dashboard_ownership(root: Path) -> dict:
     """#381: who owns the run's dashboard, decided by
     close_transaction.resource_ownership. The owner record binds its root
@@ -7483,7 +7493,7 @@ def _dashboard_ownership(root: Path) -> dict:
                 endpoint = {"root": str(root) if answer.get("root_sha256") == expected_sha else None,
                             "run_token": answer.get("run_token"), "pid": record.get("pid")}
     expected = {"root": str(root), "run_token": record.get("run_token"), "pid": record.get("pid")}
-    return close_transaction.resource_ownership(expected, metadata, endpoint, pid_alive=_owner_pid_alive)
+    return close_transaction.resource_ownership(expected, metadata, endpoint, pid_alive=lib.owner_pid_alive)
 
 
 def _release_owned_dashboard(root: Path, cfg: dict) -> None:
