@@ -891,10 +891,14 @@ function renderOperations(operations = {}, actions = []) {
   // cards when the bound action ids are unchanged, and carry typed drafts
   // across a rebuild otherwise.
   const shown = [...decisions, ...routine];
-  const signature = shown.map((action) => action.action_id).join("|");
+  // #466: where the gate would refuse an approval the run does not wait
+  // on, the panel names why and the command that clears it, not a button.
+  const refusals = state.inputRequired ? [] : (state.deploymentRefusals || []);
+  const signature = [...shown.map((action) => action.action_id),
+                     ...refusals.map((item) => `${item.message}|${item.command || ""}`)].join("|");
   state.reasonDrafts = state.reasonDrafts || {};
   document.querySelectorAll("[data-reason-for]").forEach((input) => { if (input.value) state.reasonDrafts[input.dataset.reasonFor] = input.value; });
-  if (signature === state.actionSignature && list.childElementCount + (routineList ? routineList.childElementCount : 0) === shown.length) {
+  if (signature === state.actionSignature && list.childElementCount + (routineList ? routineList.childElementCount : 0) === shown.length + (refusals.length ? 1 : 0)) {
     renderInventory(inventory, actionKinds, OP_CLASSES);
     renderConsoleForms(inventory, operations, actions);
     return;
@@ -933,6 +937,20 @@ function renderOperations(operations = {}, actions = []) {
     card.append(copy, controls);
     if (ROUTINE_KINDS.has(action.kind) && routineList) routineList.append(card);
     else list.append(card);
+  }
+  if (refusals.length) {
+    const card = document.createElement("article");
+    card.className = "operator-action operator-action-unavailable";
+    card.id = "deployment-approval-refusal";
+    const title = document.createElement("strong");
+    title.textContent = "Authorize deployment unavailable";
+    card.append(title);
+    for (const item of refusals) {
+      const line = document.createElement("p");
+      line.textContent = item.command ? `${item.message} · clears with: ${item.command}` : item.message;
+      card.append(line);
+    }
+    list.append(card);
   }
   renderInventory(inventory, actionKinds, OP_CLASSES);
   renderConsoleForms(inventory, operations, actions);
@@ -1935,6 +1953,7 @@ function render(snapshot) {
   state.phaseNumber = snapshot.status?.phase_number ?? null;
   state.performance = snapshot.performance || null;
   state.operatorActions = snapshot.operator_actions || [];
+  state.deploymentRefusals = snapshot.input_required?.deployment_approval_refusals || [];
   renderMetrics(snapshot.metrics || null);
   renderInputAlert(snapshot.input_required, snapshot.project.feature, snapshot.regression);
   renderOperations(snapshot.operations || {}, snapshot.operator_actions || []);

@@ -13,15 +13,22 @@ Now a performance pause is the request (Resume, nothing the gate refuses),
 an unrecorded approval at Phase 7 is offered whenever the gate would take
 it, and every command printed for a human parses with the stable CLI.
 """
+import ast
 import contextlib
 import http.client
 import io
 import json
+import os
+import re
 import shlex
 import shutil
 import sys
+import tempfile
 import threading
+import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest import mock
 
 from tests.fixture_state import write_version_pin
 from tests.test_handsoff_supervisor import BIN, HandsoffTestCase, run
@@ -35,6 +42,96 @@ import handsoff_supervisor as supervisor  # noqa: E402
 #: the 2026-10-11 banner command, verbatim with its placeholders filled
 OLD_RESUME_COMMAND = 'handsoff performance-resume --by Pilot --reason "reevaluated"'
 PLACEHOLDERS = {"<pilot>": "Pilot", "<why>": "reevaluated", "ACTOR": "Pilot", "TEXT": "reevaluated"}
+
+
+#: a human's choices in a printed command, token by token
+TOKEN_PLACEHOLDERS = {"ACTOR": "Pilot", "PILOT": "Pilot", "REVIEWER": "reviewer-2", "ARCHITECT": "architect-1",
+                      "TEXT": "reevaluated", "RUN_ID": "vr-1", "N": "7", "FEATURE": "feature", "REF": "HEAD",
+                      "...": "reevaluated", "<pilot>": "Pilot", "<why>": "reevaluated", "<you>": "Pilot",
+                      "<run_id>": "vr-1", "OWNER": "owner-1", "ENV": "production", "PATH": "/",
+                      "FILE": "bin/x.py", "FUNCTION": "f", "DIMENSION=TEXT": "input=empty"}
+#: where a command printed inside a sentence ends
+COMMAND_END = re.compile(r"[;,`)\n]| \(| or | before | then | to | and | if | on the |(?<!\.)\.(?!\.)(?=\s|$)|$")
+PRINTED = re.compile(r"handsoff supervisor --root ")
+ROOT_TEMPLATE = "handsoff supervisor --root {root} "
+
+
+def fill_placeholders(command: str) -> str:
+    return shlex.join(TOKEN_PLACEHOLDERS.get(token, token) for token in shlex.split(command))
+
+
+def printed_commands(text: str) -> list[str]:
+    """Every `handsoff supervisor --root ...` command in printed text."""
+    commands = []
+    for match in PRINTED.finditer(text):
+        rest = text[match.start():]
+        commands.append(rest[:COMMAND_END.search(rest, len(match.group(0))).start()].strip())
+    return commands
+
+
+def _render(node, cmd_is_supervisor):
+    """A string expression's printed text: formatted values as a stand-in
+    value, and `cmd` (the clears-with builder's prefix) as the script."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id == "cmd" and cmd_is_supervisor:
+        return "handsoff_supervisor.py "
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                parts.append(value.value)
+            elif isinstance(value.value, ast.Name) and value.value.id == "_SUPERVISOR_CMD":
+                parts.append("handsoff_supervisor.py")
+            elif isinstance(value.value, ast.Name) and value.value.id == "cmd" and cmd_is_supervisor:
+                parts.append("handsoff_supervisor.py ")
+            else:  # a value the engine fills; --kind takes one of its choices
+                parts.append("manual" if parts and parts[-1].endswith("--kind ") else "7")
+        return "".join(parts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _render(node.left, cmd_is_supervisor), _render(node.right, cmd_is_supervisor)
+        return left + right if left is not None and right is not None else None
+    return None
+
+
+def printed_templates() -> list[tuple[str, str]]:
+    """(verb, template) for every command the engine prints for a human:
+    each `handsoff_supervisor.py <verb>` in a string of bin/handsoff*.py
+    (gate messages, hints, the clears-with builder, whose `cmd` is the
+    script prefix), and each `handsoff supervisor --root {root}` template.
+    Docstrings are not printed and are skipped."""
+    found = []
+    script = re.compile(r"(?<![\w/.-])handsoff_supervisor\.py (?=[a-z])")
+    for path in sorted(BIN.glob("handsoff*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        skipped = {id(node.body[0].value) for node in ast.walk(tree)
+                   if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef))
+                   and node.body and isinstance(node.body[0], ast.Expr)
+                   and isinstance(node.body[0].value, ast.Constant)}
+        # only whole expressions: a part of an f-string or a concatenation
+        # is a fragment of the printed text, read with its whole
+        skipped |= {id(child) for node in ast.walk(tree)
+                    if isinstance(node, ast.JoinedStr) or (isinstance(node, ast.BinOp)
+                                                           and isinstance(node.op, ast.Add))
+                    for child in ast.iter_child_nodes(node)}
+        scopes = [tree] + [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+        seen = set()
+        for scope in scopes:
+            cmd_is_supervisor = scope is not tree and any(
+                isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "cmd" for t in node.targets)
+                and "_SUPERVISOR_CMD" in ast.dump(node.value) for node in ast.walk(scope))
+            for node in ast.walk(scope):
+                if id(node) in skipped or (id(node), cmd_is_supervisor) in seen:
+                    continue
+                seen.add((id(node), cmd_is_supervisor))
+                text = _render(node, cmd_is_supervisor)
+                if not text:
+                    continue
+                starts = [ROOT_TEMPLATE + text[match.end():] for match in script.finditer(text)]
+                starts += [text[match.start():] for match in re.finditer(re.escape(ROOT_TEMPLATE), text)]
+                found += [rest[:COMMAND_END.search(rest, len(ROOT_TEMPLATE)).start()].strip() for rest in starts]
+    unique = sorted(set(found))
+    return [(command.split()[4], command) for command in unique]
 
 
 def kinds(snapshot):
@@ -231,6 +328,110 @@ class ThroughTheServer(DeploymentGateCase):
         self.assertEqual(body["deployment_approved"]["by"], "Mission Control Pilot")
 
 
+class StaleEvidenceAtTheGate(DeploymentGateCase):
+    """Review attempt 1: after evidence drifted at Phase 7 the page still
+    offered Authorize deployment, and deployment-gate --approve refused it
+    (DEPLOYMENT_BLOCKED). The offer now reads the gate's own predicate."""
+
+    def drift(self):
+        # repository content, outside the runtime manifest, so the
+        # installed-CLI path below still passes its integrity check
+        (self.tmp / "feature_change.py").write_text("# evidence drift #466\n")
+
+    def assert_names_runnable_verify(self, commands):
+        parsed = []
+        for command in commands:
+            try:
+                parsed.append(parse_stable(fill_placeholders(command)))
+            except SystemExit:
+                self.fail(f"not runnable as printed: {command}")
+        self.assertTrue(parsed, commands)
+        for item in parsed:
+            self.assertEqual(item.root, str(self.tmp.resolve()))
+        self.assertIn("verify", [item.command for item in parsed], commands)
+
+    def assert_gate_refuses(self):
+        gate = run(["deployment-gate", "--approve", "--by", "Pilot"], cwd=self.tmp)
+        self.assertEqual(gate.returncode, 1, gate.stdout + gate.stderr)
+        self.assertIn("DEPLOYMENT_BLOCKED", gate.stdout)
+        self.assertIn("clears with:", gate.stdout)
+        self.assertIsNone(self.read_status().get("deployment_approved"))
+
+    def test_optional_approval_with_stale_evidence_offers_no_authorize_and_names_the_command(self):
+        self.phase7(approval_required=False, host="Sentinel")
+        self.assertIn("deployment_approve", kinds(self.snapshot()))
+        self.drift()
+        snapshot = self.snapshot()
+        request = snapshot["input_required"]
+        self.assertNotIn("deployment_approve", kinds(snapshot))
+        self.assertFalse(request["deployment_approval_offered"])
+        refusals = request["deployment_approval_refusals"]
+        self.assertTrue(refusals)
+        self.assertNotIn("handsoff_supervisor.py", json.dumps(refusals))
+        self.assert_names_runnable_verify([item["command"] for item in refusals if item["command"]])
+        self.assert_gate_refuses()
+
+    def test_required_approval_with_stale_evidence_names_the_command_and_offers_no_authorize(self):
+        self.phase7(approval_required=True)
+        self.drift()
+        snapshot = self.snapshot()
+        request = snapshot["input_required"]
+        self.assertTrue(request["required"])
+        self.assertIn(request["kind"], {"evidence_drift", "deployment_blocked"})
+        self.assertNotIn("deployment_approve", kinds(snapshot))
+        self.assertNotIn("handsoff_supervisor.py", request["message"])
+        self.assert_names_runnable_verify(printed_commands(request["message"]))
+        self.assert_gate_refuses()
+
+    def test_the_approval_endpoint_names_the_refusal_through_a_view_only_server(self):
+        self.phase7(approval_required=False, host="Sentinel")
+        self.drift()
+        port = self.serve(view_only=True)
+        code, body = self.post(port, "/api/deployment-approval", {})
+        self.assertEqual(code, 409, body)
+        self.assertIn("Deployment cannot be authorized yet", body["error"])
+        self.assert_names_runnable_verify(printed_commands(body["error"]))
+        self.assertIsNone(self.read_status().get("deployment_approved"))
+
+    def test_the_gate_refusal_through_the_installed_cli_prints_runnable_commands(self):
+        """End to end through the stable console's dispatch: every command
+        in the refusal, the clears-with lines included, runs as printed."""
+        self.phase7(approval_required=False, host="Sentinel")
+        self.drift()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli._dispatch_supervisor(["--root", str(self.tmp), "deployment-gate", "--approve",
+                                             "--by", "Pilot"])
+        text = out.getvalue()
+        self.assertEqual(code, 1, text)
+        self.assertIn("DEPLOYMENT_BLOCKED", text)
+        self.assertNotIn("handsoff_supervisor.py", text)
+        clears = [line.split("clears with: ", 1)[1] for line in text.splitlines() if "clears with: " in line]
+        self.assertTrue(clears, text)
+        self.assert_names_runnable_verify([command for line in clears for command in printed_commands(line)])
+        self.assert_names_runnable_verify(printed_commands(text))
+
+
+class ScratchRunFixture(unittest.TestCase):
+    def test_the_fixture_script_builds_the_paused_phase7_run_the_page_needs(self):
+        """REQ-003's scratch run: what the browser click-through starts from."""
+        from tests.fixtures import make_paused_phase7_run as fixture
+        parent = Path(tempfile.mkdtemp(prefix="handsoff-scratch-"))
+        self.addCleanup(shutil.rmtree, parent, True)
+        root = parent / "run"
+        with mock.patch.dict(os.environ), contextlib.redirect_stdout(io.StringIO()):
+            fixture.build(root)
+            status = json.loads((root / "handsoff-status.json").read_text())
+            snapshot = dashboard.build_snapshot(root)
+        self.assertEqual((status["phase_number"], status["status"]), (7, "ready_to_deploy"))
+        self.assertIsNone(status.get("deployment_approved"))
+        self.assertEqual(snapshot["input_required"]["kind"], "performance_pause")
+        self.assertIn("performance_resume", kinds(snapshot))
+        self.assertNotIn("deployment_approve", kinds(snapshot))
+        self.assertEqual(parse_stable(snapshot["performance"]["pause"]["resume_command"]).root,
+                         str(root.resolve()))
+
+
 class PrintedCommandsRun(DeploymentGateCase):
     """REQ-002: the closed set of command templates the dashboard and the
     supervisor print for a human, each filled and parsed by the stable CLI."""
@@ -268,6 +469,26 @@ class PrintedCommandsRun(DeploymentGateCase):
     def test_the_2026_10_11_command_is_rejected(self):
         with self.assertRaises(SystemExit):
             parse_stable(OLD_RESUME_COMMAND)
+
+    def test_every_printed_command_in_the_engine_source_runs_through_the_stable_cli(self):
+        """The closed set, read from the source rather than listed by hand:
+        every `handsoff_supervisor.py <verb>` a gate message, hint or the
+        clears-with builder prints, and every `{root}` template. Each, as
+        human_command prints it, parses with the stable CLI and names the
+        run's root."""
+        root = str(self.tmp.resolve())
+        found = printed_templates()
+        verbs = {verb for verb, _template in found}
+        self.assertGreaterEqual(len(found), 35, found)
+        self.assertTrue({"verify", "record-symptom-resolved", "deployment-gate", "verify-live",
+                         "design-review-authorize", "session-result-adopt", "performance-resume",
+                         "human-pause-end", "workflow-check", "record-review"} <= verbs, verbs)
+        for verb, template in found:
+            with self.subTest(template=template):
+                printed = supervisor.human_command(template, self.tmp)
+                self.assertNotIn("handsoff_supervisor.py", printed)
+                parsed = parse_stable(fill_placeholders(printed))
+                self.assertEqual((parsed.command, parsed.root), (verb, root), printed)
 
     def test_the_commands_on_the_page_parse_too(self):
         self.phase7(approval_required=True)

@@ -666,10 +666,35 @@ def _decision_headline(input_request: dict) -> tuple[str, str]:
     return ("Pilot approval needed", "Holding position. Awaiting your command, Pilot.")
 
 
+def _deployment_approval_refusals(root: Path, cfg: dict, status: dict, acceptance: dict,
+                                  verifications: list[dict], verification_problems: list[str]) -> list[dict]:
+    """#466: at Phase 7 without an approval, each refusal the gate would
+    meet (supervisor.deployment_approval_refusals) with the command that
+    clears it, runnable as printed; empty elsewhere and when it takes it."""
+    if int(status.get("phase_number", 0) or 0) != 7 or status.get("deployment_approved"):
+        return []
+    try:
+        refusals = supervisor.deployment_approval_refusals(root, cfg, status, acceptance,
+                                                           verifications, verification_problems)
+    except (lib.HandsoffError, OSError, ValueError) as exc:
+        refusals = [f"deployment gate not evaluated: {exc}"]
+    return [{"message": supervisor.human_command(message, root),
+             "command": supervisor.human_command(command, root) if command else None}
+            for _gate, message, command in supervisor.advance_gates(refusals, 7, status, cfg)]
+
+
+def deployment_refusal_message(refusals: list[dict]) -> str:
+    """#466: why Authorize deployment is not offered, and what clears it."""
+    parts = [item["message"] + (f" (clears with: {item['command']})" if item.get("command") else "")
+             for item in refusals]
+    return "Deployment cannot be authorized yet: " + "; ".join(parts)
+
+
 def _input_request(status: dict, cfg: dict, root: Path | None = None,
                    acceptance: dict | None = None,
                    verifications: list[dict] | None = None,
-                   performance: dict | None = None) -> dict:
+                   performance: dict | None = None,
+                   approval_refusals: list[dict] | None = None) -> dict:
     """Translate an explicit workflow pause into a dashboard alert.
 
     Supervisors record user-dependent pauses as status=blocked with the exact
@@ -681,7 +706,8 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
         return {"required": False, "kind": None, "message": None, "blockers": [], "request_id": None,
                 "amendment_id": None, "amendment_decision": None, "question_id": None,
                 "question_cards": [], "turn": None, "preauthorized": None, "amendment_round": None,
-                "performance_episode": None, "deployment_approval_offered": False}
+                "performance_episode": None, "deployment_approval_offered": False,
+                "deployment_approval_refusals": []}
     workflow_status = str(status.get("status") or "")
     regression = next((item for item in reversed(status.get("regression_requests") or [])
                        if item.get("state") == "awaiting_approval"), None)
@@ -704,10 +730,13 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     # it (status ready_to_deploy, no approval). Where the project does not
     # require it the dashboard still offers the control the gate would take,
     # without holding the run on it; a required approval keeps its request.
+    # The gate's own refusals (stale evidence among them) withhold it too:
+    # the page names each and the command that clears it instead.
+    approval_refusals = approval_refusals or []
     optional_approval_offered = (
         phase == 7 and not awaiting_approval and not status.get("deployment_approved")
         and not isinstance(status.get("human_pause"), dict) and performance_pause is None
-        and not lib.amendment_decision_refusal(status, "deployment approval")
+        and not approval_refusals
     )
     drift = (lib.evidence_drift(root, cfg, acceptance, verifications)
              if root is not None and acceptance is not None and verifications is not None
@@ -794,6 +823,9 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
         kind = "evidence_drift"
         message = (f"Automated evidence for {', '.join(drift['stale'])} is stale; run "
                    f"{', '.join(drift['refresh_commands'])} before deployment can be authorized.")
+    elif approval_missing and approval_refusals:
+        kind = "deployment_blocked"
+        message = deployment_refusal_message(approval_refusals)
     elif approval_missing:
         kind = "deployment_approval"
         message = "Pilot authorization required: grant explicit deployment approval before live verification can continue."
@@ -819,9 +851,11 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
     preauthorized = (_standing_preauthorization(root, cfg)
                      if required and turn == "pilot" and kind != "performance_pause" else None)
     amendment_round = _amendment_round(root, cfg, amendment) if amendment else None
+    # #466: a command in the banner runs as printed through the installed CLI
     return {"required": required, "kind": kind if required else None,
-            "message": message if required else None,
-            "blockers": blockers if required and kind == "design_approval" else [],
+            "message": supervisor.human_command(message, root) if required else None,
+            "blockers": ([supervisor.human_command(item, root) for item in blockers]
+                         if required and kind == "design_approval" else []),
             "request_id": regression.get("request_id") if regression else None,
             "amendment_id": amendment.get("amendment_id") if amendment else None,
             "amendment_decision": amendment_decision,
@@ -830,7 +864,9 @@ def _input_request(status: dict, cfg: dict, root: Path | None = None,
             "turn": turn, "preauthorized": preauthorized, "amendment_round": amendment_round,
             "performance_episode": performance_pause.get("episode_id") if performance_pause else None,
             "deployment_approval_offered": (required and kind == "deployment_approval")
-                                           or bool(optional_approval_offered)}
+                                           or bool(optional_approval_offered),
+            # shown in place of Authorize deployment, required or optional
+            "deployment_approval_refusals": approval_refusals if performance_pause is None else []}
 
 
 class _ThreadCaptureStdout:
@@ -896,18 +932,22 @@ def _run_gate(command_fn, command) -> tuple[int, str | None]:
         code = command_fn(command)
     finally:
         proxy.release()
-    text = buffer.getvalue()
+    # #466: a refusal names its commands as the installed CLI runs them
+    text = supervisor.human_command(buffer.getvalue(), getattr(command, "root", None))
     if code == 0:
         # A success line (DESIGN_APPROVAL_RECORDED and the like) still
         # belongs in the server log.
         proxy.write(text)
         return 0, None
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    start = next((i for i, line in enumerate(lines) if line.startswith("SHIP_FEATURE_BLOCKED")), None)
+    markers = ("SHIP_FEATURE_BLOCKED", "DEPLOYMENT_BLOCKED")
+    start = next((i for i, line in enumerate(lines) if line.startswith(markers)), None)
     if start is None:
         return code, None
-    reason = lines[start][len("SHIP_FEATURE_BLOCKED"):].lstrip(": ").strip()
-    details = [line.lstrip("- ").strip() for line in lines[start + 1:] if line.startswith("-")]
+    marker = next(item for item in markers if lines[start].startswith(item))
+    reason = lines[start][len(marker):].lstrip(": ").strip()
+    details = [line.lstrip("- ").strip() for line in lines[start + 1:]
+               if line.startswith(("-", "clears with:"))]
     reason = "; ".join([part for part in [reason, *details] if part])
     return code, reason[:600] or None
 
@@ -1184,6 +1224,10 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
             events = _read_events(root, cfg)
             gate_errors = lib.compute_errors(status, acceptance, cfg, verifications=verifications,
                                              verification_problems=verification_problems)
+            # #466: what deployment-gate --approve would refuse, read through
+            # the gate's own predicate before the control is offered.
+            approval_refusals = _deployment_approval_refusals(root, cfg, status, acceptance,
+                                                              verifications, verification_problems)
             event_errors = lib.verify_event_log(root, cfg)
             actual_head = verifications[-1].get("hash") if verifications else "GENESIS"
             audit_errors = [*event_errors]
@@ -1264,7 +1308,8 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
     except (lib.HandsoffError, OSError, ValueError) as exc:
         performance = {"state": "unavailable", "block_new_work": False, "error": str(exc)}
     # #466: read before the request, so a performance pause is the request
-    input_request = _input_request(status, cfg, root, acceptance, verifications, performance)
+    input_request = _input_request(status, cfg, root, acceptance, verifications, performance,
+                                   approval_refusals)
     operator_actions = _operator_actions(status, cfg, input_request)
     operations_inventory = lib.operation_inventory(status, acceptance, cfg, root,
                                                     _operation_binding(status, input_request))
@@ -1274,6 +1319,8 @@ def build_snapshot(root: Path, cfg: dict | None = None) -> dict:
     display_status["progress"] = shown_progress["progress"]
     display_status["progress_source"] = shown_progress["source"]
     display_status["work_item_done_condition"] = lib.WORK_ITEM_DONE_CONDITION
+    if isinstance(status.get("next_action"), str):  # #466: runnable as printed
+        display_status["next_action"] = supervisor.human_command(status["next_action"], root)
     if isinstance(status.get("run_closed"), dict):
         display_status["status"] = "closed"
         display_status["phase"] = "Run closed"
@@ -2361,12 +2408,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # #466: the same offer the operator action carries, required or optional
                 if input_request.get("kind") != "deployment_approval" \
                         and not input_request.get("deployment_approval_offered"):
-                    # #422: a pause that blocks the approval says so.
+                    # #422: a pause that blocks the approval says so; #466: so
+                    # does a gate refusal, with the commands that clear it.
                     blocked = input_request.get("kind") in {"approval_blocked_by_pause", "performance_pause"}
+                    refusals = input_request.get("deployment_approval_refusals") or []
                     self._json_response(
                         HTTPStatus.CONFLICT,
                         {"ok": False, "error": input_request.get("message") if blocked
-                         else "The current mission is not awaiting deployment authorization"},
+                         else deployment_refusal_message(refusals) if refusals
+                         else "The current mission is not awaiting deployment authorization",
+                         "refusals": refusals},
                     )
                     return
                 command = argparse.Namespace(

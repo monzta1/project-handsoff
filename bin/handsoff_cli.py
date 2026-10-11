@@ -412,24 +412,52 @@ def doctor(root: Path, *, skip_preflight: bool = False) -> dict:
             "python": ".".join(map(str, sys.version_info[:3]))}
 
 
-def _dispatch(module_main, args: list[str]) -> int:
-    previous = sys.argv
+class _HumanCommandStdout:
+    """#466: what the installed CLI prints, a human runs as printed. Gate
+    messages and hints name commands in the engine's internal spelling
+    (`handsoff_supervisor.py <verb>`, which a managed role's launcher runs
+    from the tree); through this console each becomes `handsoff supervisor
+    --root <the run's root> <verb>` (handsoff_supervisor.human_command)."""
+
+    def __init__(self, stream, root):
+        self._stream, self._root = stream, root
+
+    def write(self, text):
+        return self._stream.write(handsoff_supervisor.human_command(text, self._root))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _root_option(args: list[str]) -> str | None:
+    if "--root" not in args:
+        return None
+    index = args.index("--root")
+    if index + 1 >= len(args):
+        raise lib.HandsoffError("--root requires a project path")
+    return args[index + 1]
+
+
+def _dispatch(module_main, args: list[str], root: Path | None = None) -> int:
+    previous, stdout = sys.argv, sys.stdout
     try:
         sys.argv = [previous[0], *args]
+        if root is not None:
+            sys.stdout = _HumanCommandStdout(stdout, root)
         return int(module_main())
     finally:
-        sys.argv = previous
+        sys.argv, sys.stdout = previous, stdout
 
 
 def _dispatch_supervisor(args: list[str]) -> int:
-    root_value = None
-    if "--root" in args:
-        index = args.index("--root")
-        if index + 1 >= len(args):
-            raise lib.HandsoffError("--root requires a project path")
-        root_value = args[index + 1]
-    lib.validate_runtime_integrity(lib.resolve_root(root_value))
-    return _dispatch(functools.partial(handsoff_supervisor.main, prog="handsoff supervisor"), args)
+    root = lib.resolve_root(_root_option(args))
+    lib.validate_runtime_integrity(root)
+    return _dispatch(functools.partial(handsoff_supervisor.main, prog="handsoff supervisor"), args, root)
+
+
+def _dispatch_agent(args: list[str]) -> int:
+    return _dispatch(functools.partial(handsoff_agent.main, prog="handsoff agent"), args,
+                     lib.resolve_root(_root_option(args)))
 
 
 def _passthrough(argv: list[str]) -> int | None:
@@ -445,7 +473,7 @@ def _passthrough(argv: list[str]) -> int | None:
             if argv[1] == "supervisor":
                 return _dispatch_supervisor(argv[2:])
             if argv[1] == "agent":
-                return _dispatch(functools.partial(handsoff_agent.main, prog="handsoff agent"), argv[2:])
+                return _dispatch_agent(argv[2:])
             return _dispatch(functools.partial(handsoff_fleet.main, prog="handsoff fleet"), argv[2:])
         except lib.HandsoffError as exc:
             print(f"HANDSOFF_BLOCKED: {exc}", file=sys.stderr)
@@ -615,7 +643,7 @@ def main() -> int:
         elif args.command == "supervisor":
             return _dispatch_supervisor(args.args)
         elif args.command == "agent":
-            return _dispatch(functools.partial(handsoff_agent.main, prog="handsoff agent"), args.args)
+            return _dispatch_agent(args.args)
         elif args.command == "fleet":
             return _dispatch(functools.partial(handsoff_fleet.main, prog="handsoff fleet"), args.args)
         else:
