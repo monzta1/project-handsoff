@@ -52,3 +52,13 @@ a client set narrower than the engine's, pending Pilot input mistaken for a
 host's silence, a maintenance wake counted as a wake, a decline recorded
 before its closure could fail. Answer each by number with a concrete change
 and a test; never argue a finding away in prose.
+
+A round that dies on its token budget still spends a review attempt (cap 3),
+and any commit after the approval (a changelog, a report line) changes the
+digest, so evidence and the review must be redone. Write docs and the
+changelog before the first verify; a late docs fix cost two extra rounds and
+two owner `review-cap-override` calls (2026-11-13).
+
+A review that reads only session data (notes, FX params, envelopes) cannot
+see playback defects; for a song it found six data faults and missed about
+ten audible ones. Media checks pair the snapshot with measured audio.

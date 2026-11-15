@@ -10,6 +10,7 @@ import shutil
 import sys
 import unittest
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from tests.test_handsoff_supervisor import ROOT, HandsoffTestCase, run
@@ -140,9 +141,14 @@ class LaunchHarness(HandsoffTestCase):
                 else evidence.UNKNOWN}
 
     def _rich_history(self):
-        """Cheap haiku fails often; sonnet succeeds every time."""
+        """Cheap haiku fails often; sonnet succeeds every time.
+
+        The launch path judges staleness against the real clock (not NOW), so
+        this history is dated six days before today; the fixed RECENT date went
+        stale on 2026-10-25 and turned the assisted launch tests red."""
         key = self._launch_key()
-        return batch(HAIKU, 8, 22, key=key) + batch(SONNET, 30, key=key)
+        recent = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+        return batch(HAIKU, 8, 22, key=key, ended=recent) + batch(SONNET, 30, key=key, ended=recent)
 
     def _finding(self):
         records = training_success() + shadow_many(30, 100, task_class="feature") \
