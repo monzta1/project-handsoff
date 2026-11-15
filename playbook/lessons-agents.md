@@ -49,3 +49,11 @@ with the number.
   told to emit "the proposal saved at /tmp/.../design.json" raised a blocking
   question (#445). Hand a host draft over with `launch architect --draft
   FILE`; the engine refuses a task naming a file outside the root.
+- A managed role's sandbox cannot reach a desktop app the owner has open:
+  `REAPER -nonewinst` from an implementer started a second, empty REAPER
+  and exported 0 tracks (Terminator review, 2026-11-13). The host runs every
+  step that touches the live app; managed roles read an exported snapshot
+  (`check_session.py REQ --no-export`) and write scripts the host runs.
+- Size `[agent_budget]` before launch for media or session audits: a Fable
+  architect used about 120k against 40k and recorded nothing, and an astra
+  reviewer that restores each defect needed about 85k against 80k.
